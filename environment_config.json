@@ -1,0 +1,16 @@
+{
+  "current_environment": "testnet",
+  "last_switch": null,
+  "environments": {
+    "testnet": {
+      "name": "Testnet (Simulation)",
+      "description": "Environnement de test sans argent r\u00e9el",
+      "safe": true
+    },
+    "mainnet": {
+      "name": "Mainnet (Production)",
+      "description": "Environnement de production avec argent r\u00e9el",
+      "safe": false
+    }
+  }
+}
