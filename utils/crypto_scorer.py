@@ -1,12 +1,14 @@
 import time
 from datetime import datetime
+import os
 
 class CryptoScorer:
     def __init__(self, min_score=50, max_tradeable=2):
         self.min_score = min_score
         self.max_tradeable = max_tradeable
         self.blacklist = {}
-        self.blacklist_duration = 3600  # 1 heure
+        self.blacklist_duration = 3600
+        self.optimizer = None  # Sera défini par le bot
         
     def calculate_volatility_score(self, klines):
         """Score basé sur volatilité (0-30 points)"""
@@ -126,55 +128,82 @@ class CryptoScorer:
             return 0
     
     def rank_cryptos(self, bot, trading_pairs, stuck_positions):
-        """Classe toutes les cryptos et retourne les meilleures"""
-        scores = []
-        balance = bot.get_balance()
+        """Classe toutes les cryptos et retourne les meilleures (OPTIMISÉ)"""
+        use_optimizer = os.getenv('ENABLE_LATENCY_OPTIMIZER', 'True') == 'True' and hasattr(bot, 'optimizer')
+        
+        # Récupération parallèle si optimiseur disponible
+        if use_optimizer:
+            data = bot.optimizer.fetch_all_parallel(trading_pairs)
+            balance = data['balance']
+            prices_cache = data['prices']
+            klines_cache = data['klines']
+        else:
+            balance = bot.get_balance()
+            prices_cache = {}
+            klines_cache = {}
+        
         usdt_available = balance.get('USDT', {}).get('free', 0)
+        scores = []
         
         for pair in trading_pairs:
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
             base_currency = symbol.split('/')[0]
-            min_cost = bot.get_min_amount(symbol)['min_cost']
             
-            # Vérifier si crypto détenue est poussière
+            # Min cost avec cache
+            if use_optimizer:
+                min_cost = bot.optimizer.get_min_amount_cached(symbol)['min_cost']
+            else:
+                min_cost = bot.get_min_amount(symbol)['min_cost']
+            
+            # Vérifier poussière
             crypto_balance = balance.get(base_currency, {}).get('free', 0)
             if crypto_balance > 0.00001:
-                price = bot.get_price(symbol)
-                crypto_value = crypto_balance * price
-                # Si poussière (< min_cost), ignorer cette paire
-                if crypto_value < min_cost:
+                price = prices_cache.get(symbol) or bot.get_price(symbol)
+                if (crypto_balance * price) < min_cost:
                     continue
             
-            # Ignorer si solde USDT insuffisant
             if usdt_available < min_cost:
                 continue
             
-            score = self.score_crypto(bot, symbol, stuck_positions)
-            breakdown = self.get_score_breakdown(bot, symbol, stuck_positions)
+            # Récupérer données (cache ou parallèle)
+            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 10)
+            price = prices_cache.get(symbol) or bot.get_price(symbol)
             
+            if not klines or len(klines) < 10:
+                continue
+            
+            # Scoring optimisé NumPy si disponible
+            if use_optimizer:
+                result = bot.optimizer.numpy_opt.score_crypto_fast(klines)
+                if result:
+                    history_score = 0 if symbol in stuck_positions else 10
+                    total = result['total'] + history_score
+                    scores.append({
+                        'symbol': symbol,
+                        'score': total,
+                        'volatility': result['vol_score'],
+                        'volume': result['volume_score'],
+                        'min_cost': min_cost
+                    })
+                    continue
+            
+            # Fallback standard
+            score = self.score_crypto(bot, symbol, stuck_positions)
             if score > 0:
+                breakdown = self.get_score_breakdown(bot, symbol, stuck_positions)
                 scores.append({
                     'symbol': symbol,
                     'score': score,
-                    'breakdown': breakdown,
+                    'volatility': breakdown['volatility'],
+                    'volume': breakdown['volume'],
                     'min_cost': min_cost
                 })
         
         scores.sort(key=lambda x: x['score'], reverse=True)
-        
-        # Format compact avec solde minimum
-        tradeable = [
-            c['symbol'] for c in scores[:self.max_tradeable]
-            if c['score'] >= self.min_score
-        ]
+        tradeable = [c['symbol'] for c in scores[:self.max_tradeable] if c['score'] >= self.min_score]
         
         if tradeable:
-            top_display = []
-            for c in scores[:self.max_tradeable]:
-                if c['score'] >= self.min_score:
-                    b = c['breakdown']
-                    crypto_name = c['symbol'].replace('/USDT', '')
-                    top_display.append(f"{crypto_name} {c['score']} (V{b['volatility']} L{b['volume']} M{int(c['min_cost'])})")
+            top_display = [f"{c['symbol'].replace('/USDT', '')} {c['score']} (V{c['volatility']} L{c['volume']} M{int(c['min_cost'])})" for c in scores[:self.max_tradeable] if c['score'] >= self.min_score]
             print(f"🎯 TOP: {' | '.join(top_display)} → TRADING")
         else:
             print(f"⚠️ Aucune crypto ≥{self.min_score}/100")

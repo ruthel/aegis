@@ -14,6 +14,7 @@ from utils.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from utils.safety_manager import SafetyManager
 from utils.stuck_position_manager import StuckPositionManager
 from utils.crypto_scorer import CryptoScorer
+from utils.decision_display import DecisionDisplay
 import logging
 
 class BinanceSpotBot:
@@ -51,6 +52,9 @@ class BinanceSpotBot:
         # Notifications
         if self.notify_trades:
             self.notifier = NotificationManager()
+            self.notifier.set_bot(self)
+            self.status_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
+            self.last_status_time = 0
         
         # WebSocket
         self.websocket = WebSocketManager()
@@ -94,6 +98,12 @@ class BinanceSpotBot:
         self.crypto_scorer = CryptoScorer(
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '50')),
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
+        )
+        
+        # Affichage décisions transparentes
+        self.decision_display = DecisionDisplay(
+            show_decisions=os.getenv('SHOW_DECISIONS', 'True') == 'True',
+            show_details=os.getenv('SHOW_DECISION_DETAILS', 'True') == 'True'
         )
         
         # Cache analyses techniques (throttling intelligent)
@@ -683,6 +693,7 @@ class BinanceSpotBot:
     def scalping_strategy(self, symbol, amount, current_price):
         # Vérifications de sécurité
         if not self.safety_manager.can_trade():
+            self.decision_display.show_decision('SKIP', symbol, 'Limites de sécurité atteintes')
             return
         
         # Analyse multi-timeframes avec throttling intelligent
@@ -703,6 +714,7 @@ class BinanceSpotBot:
             self.correlation_manager.can_open_position(symbol, self)):
             
             trade_amount = smart_amount / current_price
+            self.decision_display.show_decision('BUY_READY', symbol, f"Signal fort (confiance {global_signal['confidence']:.0f}%)")
             print(f"🟢 SIGNAL ACHAT - Montant: {trade_amount:.6f} {symbol.split('/')[0]}")
             
             result = self.buy_market(symbol, trade_amount)
@@ -712,6 +724,14 @@ class BinanceSpotBot:
                 self.correlation_manager.add_position(symbol)
                 self.safety_manager.record_trade(0)
                 print(f"✅ Ordre + Trailing Stop activé: {result.get('id', 'N/A')}")
+        else:
+            # Afficher pourquoi on n'achète pas
+            conditions = {
+                'Signal fort': global_signal['action'] in ['BUY', 'STRONG_BUY'],
+                f"Confiance ≥60%": global_signal['confidence'] >= 60,
+                'Corrélation OK': self.correlation_manager.can_open_position(symbol, self)
+            }
+            self.decision_display.show_conditions_check(symbol, 'ACHAT', conditions)
         
         # Mise à jour trailing stop
         self.trailing_stop.update_position(symbol, current_price)
@@ -736,6 +756,7 @@ class BinanceSpotBot:
                 )
                 
                 if should_sell:
+                    self.decision_display.show_decision('SELL_READY', symbol, f"Profit {expected_profit_pct*100:+.2f}% atteint")
                     print(f"🔴 SIGNAL VENTE - Montant: {available:.6f} {base_currency}")
                     print(f"💰 Profit attendu: {expected_profit_pct*100:+.2f}% (Min: {min_profit_needed*100:.2f}%)")
                     
@@ -748,12 +769,14 @@ class BinanceSpotBot:
                         self.correlation_manager.remove_position(symbol)
                         print(f"✅ Vente exécutée: {result.get('id', 'N/A')}")
                 else:
-                    print(f"⏳ Profit insuffisant: {expected_profit_pct*100:+.2f}% < {min_profit_needed*100:.2f}%")
+                    # Afficher progression vers objectif
+                    progress = (expected_profit_pct / min_profit_needed) * 100 if min_profit_needed > 0 else 0
+                    self.decision_display.show_decision('HOLD', symbol, f"Profit {expected_profit_pct*100:+.2f}% (objectif {min_profit_needed*100:.2f}%)", progress=progress)
         
         elif available == 0:
-            print("🔄 Aucune position - Attente signal d'achat")
+            self.decision_display.show_decision('HOLD', symbol, 'Aucune position - Attente signal')
         else:
-            print("🔄 Signal faible ou conditions non remplies - Attente")
+            self.decision_display.show_decision('HOLD', symbol, 'Conditions non remplies')
     
     def dca_strategy(self, symbol, amount, current_price):
         trade_amount = amount / current_price
@@ -984,6 +1007,7 @@ class BinanceSpotBot:
     def intelligent_strategy(self, symbol, amount, current_price):
         """Stratégie intelligente qui choisit stratégie ET type d'ordre optimal"""
         if not self.safety_manager.can_trade():
+            self.decision_display.show_decision('SKIP', symbol, 'Limites de sécurité atteintes')
             return
         
         # Analyse complète avec throttling
@@ -1003,6 +1027,8 @@ class BinanceSpotBot:
         if strategy_choice in ['scalping', 'dca']:
             print(f"⚡ {symbol} {current_price:.2f} → {strategy_choice.upper()} ({global_signal.get('dominant_trend', 'unknown')} {global_signal['confidence']:.0f}%)")
             print(f"📊 V{market_metrics['volatility']:.1f}% | L:{market_metrics['liquidity']} | S{market_metrics['spread']:.3f}% | 🎯{order_type.upper()}")
+        elif strategy_choice == 'hold':
+            self.decision_display.show_decision('HOLD', symbol, f"Conditions défavorables (conf {global_signal['confidence']:.0f}%, vol {market_metrics['volatility']:.1f}%)")
         
         # Exécuter avec stratégie et ordre optimaux
         if strategy_choice == 'scalping':
@@ -1572,6 +1598,13 @@ class BinanceSpotBot:
                             print(f"\n🎯 NOUVEAUX ACHATS: {', '.join(best_cryptos)}")
                             for symbol in best_cryptos:
                                 self.execute_strategy(symbol, strategy_type, trade_amount)
+                
+                # Notification status périodique
+                if self.notify_trades:
+                    current_time = time.time()
+                    if current_time - self.last_status_time >= self.status_interval:
+                        self.notifier.send_status_update()
+                        self.last_status_time = current_time
                 
                 time.sleep(check_interval)
                 
