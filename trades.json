@@ -1,10 +1,82 @@
 [
   {
-    "timestamp": "2025-10-13T15:15:21.066445",
+    "timestamp": "2025-10-13T14:45:18.233074",
     "action": "BUY",
     "symbol": "SOL/USDT",
-    "amount": 0.0410361631187484,
-    "price": 194.95,
+    "amount": 0.04111842105263158,
+    "price": 194.56,
+    "profit": 0,
+    "value": 8.0
+  },
+  {
+    "timestamp": "2025-10-13T20:56:31.341585",
+    "action": "SELL",
+    "symbol": "SOL/USDT",
+    "amount": 0.038,
+    "price": 206.69,
+    "profit": 0.4609399999999998,
+    "value": 7.85422
+  },
+  {
+    "timestamp": "2025-10-14T06:02:17.497817",
+    "action": "BUY",
+    "symbol": "SOL/USDT",
+    "amount": 0.03953155111923704,
+    "price": 202.37,
+    "profit": 0,
+    "value": 8.0
+  },
+  {
+    "timestamp": "2025-10-14T07:35:02.296111",
+    "action": "SELL",
+    "symbol": "SOL/USDT",
+    "amount": 0.039847,
+    "price": 197.04,
+    "profit": -0.2123845100000005,
+    "value": 7.85145288
+  },
+  {
+    "timestamp": "2025-10-14T07:37:07.605835",
+    "action": "BUY",
+    "symbol": "SOL/USDT",
+    "amount": 0.04050632911392405,
+    "price": 197.5,
+    "profit": 0,
+    "value": 8.0
+  },
+  {
+    "timestamp": "2025-10-14T07:47:07.158607",
+    "action": "SELL",
+    "symbol": "SOL/USDT",
+    "amount": 0.040807,
+    "price": 194.06,
+    "profit": -0.14037607999999993,
+    "value": 7.9190064200000005
+  },
+  {
+    "timestamp": "2025-10-14T07:47:30.852508",
+    "action": "BUY",
+    "symbol": "SOL/USDT",
+    "amount": 0.0413244485768893,
+    "price": 193.59,
+    "profit": 0,
+    "value": 8.0
+  },
+  {
+    "timestamp": "2025-10-14T07:48:10.125357",
+    "action": "SELL",
+    "symbol": "SOL/USDT",
+    "amount": 0.041766,
+    "price": 193.42,
+    "profit": -0.007100220000000664,
+    "value": 8.07837972
+  },
+  {
+    "timestamp": "2025-10-14T07:49:10.850973",
+    "action": "BUY",
+    "symbol": "SOL/USDT",
+    "amount": 0.04106987011653576,
+    "price": 194.79,
     "profit": 0,
     "value": 8.0
   }

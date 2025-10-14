@@ -10,9 +10,12 @@ class WebSocketManager:
         self.prices = {}
         self.klines = {symbol: deque(maxlen=100) for symbol in symbols}  # 100 dernières bougies
         self.ws = None
+        self.ws_user = None  # WebSocket User Data Stream
         self.running = False
         self.reconnect_attempts = 0
         self.max_reconnect = 5
+        self.balance_callback = None
+        self.listen_key = None
         
     def start(self):
         """Démarre la connexion WebSocket"""
@@ -60,7 +63,12 @@ class WebSocketManager:
             if 'c' in data:  # Prix de clôture
                 symbol = data['s']  # BTCUSDT
                 price = float(data['c'])
+                old_price = self.prices.get(symbol, price)
                 self.prices[symbol] = price
+                
+                # Déclencher analyse temps réel sur CHAQUE changement de prix
+                if price != old_price:  # Tout changement déclenche l'analyse
+                    self.trigger_realtime_analysis(symbol, price)
                 
             # Données kline pour indicateurs
             elif 'k' in data:
@@ -76,9 +84,97 @@ class WebSocketManager:
                         'volume': float(kline['v'])
                     }
                     self.klines[symbol].append(candle)
+                    # Déclencher analyse sur nouvelle bougie
+                    self.trigger_realtime_analysis(symbol, float(kline['c']))
                     
         except Exception as e:
             print(f"Erreur traitement message: {e}")
+    
+    def trigger_realtime_analysis(self, symbol, price):
+        """Déclenche l'analyse temps réel"""
+        if hasattr(self, 'bot_callback') and self.bot_callback:
+            try:
+                self.bot_callback(symbol, price)
+            except Exception as e:
+                print(f"Erreur callback temps réel: {e}")
+    
+    def set_bot_callback(self, callback):
+        """Définit le callback pour le bot"""
+        self.bot_callback = callback
+    
+    def set_balance_callback(self, callback):
+        """Définit le callback pour les changements de solde"""
+        self.balance_callback = callback
+    
+    def start_user_data_stream(self, bot):
+        """Démarre le User Data Stream pour synchronisation temps réel"""
+        if bot.paper_trading:
+            return
+        
+        try:
+            # Obtenir listen key
+            response = bot.safe_request(bot.exchange.fapiPrivatePostListenKey)
+            self.listen_key = response.get('listenKey')
+            
+            if not self.listen_key:
+                print("⚠️ Impossible d'obtenir listen key")
+                return
+            
+            # Connexion WebSocket User Data
+            url = f"wss://stream.binance.com:9443/ws/{self.listen_key}"
+            
+            self.ws_user = websocket.WebSocketApp(
+                url,
+                on_message=self.on_user_message,
+                on_error=self.on_error,
+                on_close=self.on_close
+            )
+            
+            # Démarrer dans un thread séparé
+            self.ws_user_thread = threading.Thread(target=self.ws_user.run_forever)
+            self.ws_user_thread.daemon = True
+            self.ws_user_thread.start()
+            
+            print("✅ User Data Stream connecté - Sync temps réel active")
+            
+            # Keepalive toutes les 30 minutes
+            self.start_keepalive(bot)
+            
+        except Exception as e:
+            print(f"❌ Erreur User Data Stream: {e}")
+    
+    def on_user_message(self, ws, message):
+        """Traite les messages User Data (solde, ordres, etc.)"""
+        try:
+            data = json.loads(message)
+            
+            # Mise à jour solde
+            if data.get('e') == 'outboundAccountPosition':
+                if self.balance_callback:
+                    self.balance_callback(data)
+            
+            # Exécution ordre
+            elif data.get('e') == 'executionReport':
+                if self.balance_callback:
+                    self.balance_callback(data)
+                    
+        except Exception as e:
+            print(f"⚠️ Erreur traitement user message: {e}")
+    
+    def start_keepalive(self, bot):
+        """Maintient le listen key actif"""
+        def keepalive():
+            while self.running:
+                try:
+                    time.sleep(1800)  # 30 minutes
+                    if self.listen_key:
+                        bot.safe_request(bot.exchange.fapiPrivatePutListenKey, {'listenKey': self.listen_key})
+                except:
+                    pass
+        
+        keepalive_thread = threading.Thread(target=keepalive)
+        keepalive_thread.daemon = True
+        keepalive_thread.start()
     
     def on_error(self, ws, error):
         """Gère les erreurs WebSocket"""
@@ -122,3 +218,5 @@ class WebSocketManager:
         self.running = False
         if self.ws:
             self.ws.close()
+        if self.ws_user:
+            self.ws_user.close()

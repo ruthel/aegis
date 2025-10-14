@@ -48,8 +48,17 @@ class AdvancedRiskManager:
         risk_factor = max_risk_percent / (volatility * 100)
         adjusted_amount = base_amount * min(risk_factor, 2.0)  # Max 2x le montant de base
         
-        # Minimum 5 USDT, maximum 25 USDT
-        position_size = max(5, min(25, adjusted_amount))
+        # Minimums spécifiques par paire
+        min_notionals = {
+            'BTC/USDT': 5,
+            'ETH/USDT': 10,
+            'SOL/USDT': 8,
+            'BNB/USDT': 12
+        }
+        min_required = min_notionals.get(symbol, 10)
+        
+        # Minimum selon la paire, maximum 25 USDT
+        position_size = max(min_required, min(25, adjusted_amount))
         
         print(f"📊 {symbol}: Volatilité {volatility:.1%} → Position {position_size:.1f} USDT")
         return position_size

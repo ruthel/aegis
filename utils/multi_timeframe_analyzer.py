@@ -1,6 +1,9 @@
 import numpy as np
 from collections import deque
-from technical_indicators import TechnicalIndicators
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.technical_indicators import TechnicalIndicators
 
 class MultiTimeframeAnalyzer:
     def __init__(self):

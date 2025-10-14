@@ -1,0 +1,198 @@
+2025-10-13 19:47:37,616 - INFO - Websocket connected
+2025-10-13 19:48:24,762 - INFO - Websocket connected
+2025-10-13 19:51:58,491 - INFO - Websocket connected
+2025-10-13 19:54:27,886 - ERROR - Erreur achat ETH/USDT: binance {"code":-2010,"msg":"Symbol not whitelisted for API key."}
+2025-10-13 20:00:17,073 - INFO - Websocket connected
+2025-10-13 20:10:26,204 - INFO - Websocket connected
+2025-10-13 20:22:52,670 - INFO - Websocket connected
+2025-10-13 20:36:24,319 - INFO - Websocket connected
+2025-10-13 20:37:57,167 - ERROR - Erreur achat ETH/USDT: binance {"code":-2010,"msg":"Symbol not whitelisted for API key."}
+2025-10-13 20:40:29,070 - ERROR - Erreur achat SOL/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 20:46:53,646 - INFO - Websocket connected
+2025-10-13 20:50:44,349 - INFO - Websocket connected
+2025-10-13 21:00:55,138 - INFO - Websocket connected
+2025-10-13 21:07:06,558 - ERROR - Erreur achat ETH/USDT: binance {"code":-2010,"msg":"Symbol not whitelisted for API key."}
+2025-10-13 21:08:25,909 - ERROR - Erreur achat ETH/USDT: binance {"code":-2010,"msg":"Symbol not whitelisted for API key."}
+2025-10-13 21:23:03,882 - INFO - Websocket connected
+2025-10-13 21:38:38,792 - INFO - Websocket connected
+2025-10-13 21:54:02,194 - INFO - Websocket connected
+2025-10-13 21:56:46,374 - INFO - Websocket connected
+2025-10-13 21:58:21,571 - INFO - Websocket connected
+2025-10-13 22:00:08,337 - INFO - Websocket connected
+2025-10-13 22:01:26,247 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:01:51,587 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:02:18,603 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:02:33,148 - ERROR - Erreur achat ETH/USDT: binance {"code":-2010,"msg":"Symbol not whitelisted for API key."}
+2025-10-13 22:02:57,553 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:03:23,504 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:03:48,477 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:04:16,399 - ERROR - Erreur achat BTC/USDT: binance {"code":-1013,"msg":"Filter failure: NOTIONAL"}
+2025-10-13 22:04:30,749 - ERROR - Erreur achat ETH/USDT: binance {"code":-2010,"msg":"Symbol not whitelisted for API key."}
+2025-10-13 22:30:16,872 - INFO - Websocket connected
+2025-10-13 22:41:51,363 - INFO - Websocket connected
+2025-10-13 22:48:57,183 - INFO - Websocket connected
+2025-10-13 22:55:21,368 - INFO - Websocket connected
+2025-10-13 23:00:04,442 - INFO - Websocket connected
+2025-10-13 23:02:58,515 - INFO - Websocket connected
+2025-10-13 23:11:40,127 - INFO - Websocket connected
+2025-10-13 23:24:28,586 - INFO - Websocket connected
+2025-10-13 23:27:52,418 - INFO - Websocket connected
+2025-10-13 23:28:51,644 - INFO - Websocket connected
+2025-10-13 23:32:41,051 - INFO - Websocket connected
+2025-10-13 23:36:27,706 - INFO - Websocket connected
+2025-10-14 05:08:49,467 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:08:52,980 - INFO - Websocket connected
+2025-10-14 05:12:35,336 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:12:38,455 - INFO - Websocket connected
+2025-10-14 05:16:14,379 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:16:17,819 - INFO - Websocket connected
+2025-10-14 05:18:41,416 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:18:44,920 - INFO - Websocket connected
+2025-10-14 05:22:19,141 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:22:22,626 - INFO - Websocket connected
+2025-10-14 05:27:11,689 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:27:15,114 - INFO - Websocket connected
+2025-10-14 05:33:14,655 - ERROR - [WinError 10053] Une connexion établie a été abandonnée par un logiciel de votre ordinateur hôte - goodbye
+2025-10-14 05:33:18,158 - INFO - Websocket connected
+2025-10-14 05:36:54,056 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:36:57,220 - INFO - Websocket connected
+2025-10-14 05:39:20,773 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:39:24,243 - INFO - Websocket connected
+2025-10-14 05:42:59,654 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 05:43:03,073 - INFO - Websocket connected
+2025-10-14 05:46:38,758 - ERROR - [WinError 10053] Une connexion établie a été abandonnée par un logiciel de votre ordinateur hôte - goodbye
+2025-10-14 05:46:42,192 - INFO - Websocket connected
+2025-10-14 05:48:29,612 - ERROR - close status: 1008
+2025-10-14 05:51:09,475 - INFO - Websocket connected
+2025-10-14 05:51:18,183 - INFO - Websocket connected
+2025-10-14 05:54:19,005 - ERROR - [WinError 10053] Une connexion établie a été abandonnée par un logiciel de votre ordinateur hôte - goodbye
+2025-10-14 05:54:22,415 - INFO - Websocket connected
+2025-10-14 05:58:12,033 - INFO - Websocket connected
+2025-10-14 06:00:04,776 - INFO - Websocket connected
+2025-10-14 06:01:53,282 - INFO - Websocket connected
+2025-10-14 06:02:51,292 - INFO - Websocket connected
+2025-10-14 06:26:49,821 - INFO - Websocket connected
+2025-10-14 06:31:32,708 - INFO - Websocket connected
+2025-10-14 08:38:42,021 - INFO - Websocket connected
+2025-10-14 08:41:35,574 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:41:38,655 - INFO - Websocket connected
+2025-10-14 08:42:38,698 - INFO - Websocket connected
+2025-10-14 08:45:46,084 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:45:49,226 - INFO - Websocket connected
+2025-10-14 08:47:50,959 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:47:54,449 - INFO - Websocket connected
+2025-10-14 08:48:25,304 - INFO - Websocket connected
+2025-10-14 08:50:05,078 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:50:08,494 - INFO - Websocket connected
+2025-10-14 08:50:26,799 - INFO - Websocket connected
+2025-10-14 08:53:22,549 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:53:35,618 - ERROR - [Errno 11001] getaddrinfo failed - goodbye
+2025-10-14 08:54:56,812 - INFO - Websocket connected
+2025-10-14 08:56:31,851 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:56:35,391 - INFO - Websocket connected
+2025-10-14 08:59:00,558 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 08:59:04,073 - INFO - Websocket connected
+2025-10-14 08:59:55,426 - INFO - Websocket connected
+2025-10-14 09:02:29,378 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:02:32,775 - INFO - Websocket connected
+2025-10-14 09:03:19,042 - INFO - Websocket connected
+2025-10-14 09:05:27,118 - INFO - Websocket connected
+2025-10-14 09:07:20,950 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:07:25,431 - INFO - Websocket connected
+2025-10-14 09:08:00,581 - INFO - Websocket connected
+2025-10-14 09:09:45,973 - ERROR - close status: 1008
+2025-10-14 09:09:50,069 - INFO - Websocket connected
+2025-10-14 09:12:37,903 - INFO - Websocket connected
+2025-10-14 09:14:47,225 - ERROR - close status: 1008
+2025-10-14 09:14:51,562 - INFO - Websocket connected
+2025-10-14 09:17:37,552 - ERROR - close status: 1008
+2025-10-14 09:17:44,961 - INFO - Websocket connected
+2025-10-14 09:20:36,330 - ERROR - close status: 1008
+2025-10-14 09:20:39,850 - INFO - Websocket connected
+2025-10-14 09:23:12,901 - ERROR - close status: 1008
+2025-10-14 09:23:17,598 - INFO - Websocket connected
+2025-10-14 09:26:03,638 - ERROR - close status: 1008
+2025-10-14 09:26:18,959 - ERROR - [Errno 11001] getaddrinfo failed - goodbye
+2025-10-14 09:26:22,200 - INFO - Websocket connected
+2025-10-14 09:26:58,953 - INFO - Websocket connected
+2025-10-14 09:29:48,124 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:29:51,603 - INFO - Websocket connected
+2025-10-14 09:32:06,369 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:32:09,508 - INFO - Websocket connected
+2025-10-14 09:33:45,973 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:33:49,392 - INFO - Websocket connected
+2025-10-14 09:35:31,103 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:35:34,574 - INFO - Websocket connected
+2025-10-14 09:37:55,227 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:37:58,724 - INFO - Websocket connected
+2025-10-14 09:38:16,833 - INFO - Websocket connected
+2025-10-14 09:40:37,027 - ERROR - close status: 1008
+2025-10-14 09:40:41,864 - INFO - Websocket connected
+2025-10-14 09:42:37,339 - INFO - Websocket connected
+2025-10-14 09:44:02,865 - INFO - Websocket connected
+2025-10-14 09:45:39,651 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:45:43,112 - INFO - Websocket connected
+2025-10-14 09:46:47,806 - INFO - Websocket connected
+2025-10-14 09:48:36,677 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:48:40,126 - INFO - Websocket connected
+2025-10-14 09:50:34,216 - ERROR - close status: 1008
+2025-10-14 09:50:39,571 - INFO - Websocket connected
+2025-10-14 09:53:20,610 - ERROR - close status: 1008
+2025-10-14 09:53:24,232 - INFO - Websocket connected
+2025-10-14 09:55:18,647 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:55:23,314 - INFO - Websocket connected
+2025-10-14 09:57:29,910 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:57:33,363 - INFO - Websocket connected
+2025-10-14 09:59:41,107 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 09:59:44,957 - INFO - Websocket connected
+2025-10-14 10:02:53,284 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:02:56,700 - INFO - Websocket connected
+2025-10-14 10:04:24,761 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:04:28,276 - INFO - Websocket connected
+2025-10-14 10:08:19,653 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:08:24,197 - INFO - Websocket connected
+2025-10-14 10:10:13,363 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:10:16,505 - INFO - Websocket connected
+2025-10-14 10:13:45,086 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:13:48,519 - INFO - Websocket connected
+2025-10-14 10:17:11,773 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:17:14,942 - INFO - Websocket connected
+2025-10-14 10:18:47,547 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:18:50,682 - INFO - Websocket connected
+2025-10-14 10:21:39,721 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:21:43,275 - INFO - Websocket connected
+2025-10-14 10:23:36,152 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:23:39,600 - INFO - Websocket connected
+2025-10-14 10:25:18,954 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:25:22,450 - INFO - Websocket connected
+2025-10-14 10:29:09,372 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:29:12,793 - INFO - Websocket connected
+2025-10-14 10:33:02,794 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:33:06,295 - INFO - Websocket connected
+2025-10-14 10:34:57,806 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:35:01,347 - INFO - Websocket connected
+2025-10-14 10:37:59,308 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:38:02,823 - INFO - Websocket connected
+2025-10-14 10:40:18,690 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:40:22,144 - INFO - Websocket connected
+2025-10-14 10:42:44,431 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:42:47,566 - INFO - Websocket connected
+2025-10-14 10:45:16,208 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:45:19,300 - INFO - Websocket connected
+2025-10-14 10:48:43,122 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:48:46,549 - INFO - Websocket connected
+2025-10-14 10:50:54,873 - ERROR - close status: 1008
+2025-10-14 10:51:22,377 - INFO - Websocket connected
+2025-10-14 10:51:23,061 - INFO - Websocket connected
+2025-10-14 10:52:23,340 - INFO - Websocket connected
+2025-10-14 10:52:24,078 - INFO - Websocket connected
+2025-10-14 10:54:26,111 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:54:29,615 - INFO - Websocket connected
+2025-10-14 10:55:06,423 - INFO - Websocket connected
+2025-10-14 10:55:07,155 - INFO - Websocket connected
+2025-10-14 10:57:01,470 - INFO - Websocket connected
+2025-10-14 10:57:08,049 - INFO - Websocket connected
+2025-10-14 10:58:47,562 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 10:58:51,067 - INFO - Websocket connected
+2025-10-14 11:00:40,474 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 11:00:43,890 - INFO - Websocket connected

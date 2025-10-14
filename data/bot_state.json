@@ -1,0 +1,14 @@
+{
+  "positions": [
+    {
+      "symbol": "BNB/USDT",
+      "side": "buy",
+      "amount": 0.00049806,
+      "price": 1199.01,
+      "timestamp": "2025-10-14T09:46:55.222099",
+      "order_id": "synced",
+      "paper": false
+    }
+  ],
+  "last_update": "2025-10-14T11:02:05.510884"
+}
