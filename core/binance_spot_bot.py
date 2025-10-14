@@ -1582,12 +1582,10 @@ class BinanceSpotBot:
                 
                 # Traiter uniquement paires tradables
                 if tradable_pairs:
-                    # Vérifier positions existantes à vendre
+                    # CORRECTION: Toujours appeler la stratégie pour vérifier les ventes
+                    # La stratégie elle-même gère les conditions d'achat/vente
                     for symbol in tradable_pairs:
-                        base_currency = symbol.split('/')[0]
-                        available = balance.get(base_currency, {}).get('free', 0)
-                        if available > 0:
-                            self.execute_strategy(symbol, strategy_type, trade_amount)
+                        self.execute_strategy(symbol, strategy_type, trade_amount)
                     
                     # Nouveaux achats si solde USDT suffisant
                     if usdt_available >= trade_amount:
@@ -1597,7 +1595,9 @@ class BinanceSpotBot:
                         if best_cryptos:
                             print(f"\n🎯 NOUVEAUX ACHATS: {', '.join(best_cryptos)}")
                             for symbol in best_cryptos:
-                                self.execute_strategy(symbol, strategy_type, trade_amount)
+                                # Éviter double appel si déjà traité
+                                if symbol not in tradable_pairs:
+                                    self.execute_strategy(symbol, strategy_type, trade_amount)
                 
                 # Notification status périodique
                 if self.notify_trades:
