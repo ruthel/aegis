@@ -85,6 +85,36 @@ class NotificationManager:
         else:
             msg += f"\n⏳ Aucune position\n"
         
+        # Prévisions achats
+        msg += f"\n🔮 Prévisions Achats:\n"
+        predictions_added = False
+        
+        for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
+            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            crypto = symbol.split('/')[0]
+            
+            try:
+                prediction = bot.predict_next_buy_opportunity(symbol)
+                
+                if prediction['status'] == 'READY':
+                    msg += f"✅ {crypto}: Maintenant ({prediction['confidence']:.0f}%)\n"
+                    predictions_added = True
+                elif prediction['status'] == 'WAITING':
+                    msg += f"⏳ {crypto}: {prediction['time_estimate']}\n"
+                    msg += f"   {prediction['reason']}\n"
+                    predictions_added = True
+                elif prediction['status'] == 'BLOCKED':
+                    msg += f"🔒 {crypto}: {prediction['reason']}\n"
+                    predictions_added = True
+                elif prediction['status'] == 'NO_FUNDS':
+                    msg += f"💰 {crypto}: {prediction['reason']}\n"
+                    predictions_added = True
+            except:
+                pass
+        
+        if not predictions_added:
+            msg += "  Aucune prévision disponible\n"
+        
         msg += f"\n⏰ Prochain: {self.periodic_interval//60}min"
         
         return msg

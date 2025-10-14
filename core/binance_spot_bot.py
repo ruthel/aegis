@@ -1330,6 +1330,106 @@ class BinanceSpotBot:
         
         return analysis
     
+    def predict_next_buy_opportunity(self, symbol):
+        """Prédit quand le prochain achat sera possible"""
+        try:
+            current_price = self.get_price(symbol)
+            balance = self.get_balance()
+            usdt_available = balance.get('USDT', {}).get('free', 0)
+            base_currency = symbol.split('/')[0]
+            crypto_balance = balance.get(base_currency, {}).get('free', 0)
+            
+            # Vérifier si position déjà ouverte
+            if crypto_balance > 0:
+                position_value = crypto_balance * current_price
+                min_trade_value = self.get_min_amount(symbol)['min_cost']
+                if position_value >= min_trade_value:
+                    return {
+                        'status': 'BLOCKED',
+                        'time_estimate': 'Position ouverte',
+                        'reason': 'Attente vente'
+                    }
+            
+            # Vérifier solde USDT
+            trade_amount = float(os.getenv('TRADE_AMOUNT', '8'))
+            if usdt_available < trade_amount:
+                return {
+                    'status': 'NO_FUNDS',
+                    'time_estimate': 'Fonds insuffisants',
+                    'reason': f'{usdt_available:.2f} USDT disponible'
+                }
+            
+            # Analyse multi-timeframes
+            analysis = self.get_cached_analysis(symbol, current_price)
+            signal = analysis['global_signal']
+            
+            # Conditions actuelles
+            can_buy_now = (
+                signal['action'] in ['BUY', 'STRONG_BUY'] and
+                signal['confidence'] >= 60 and
+                self.correlation_manager.can_open_position(symbol, self)
+            )
+            
+            if can_buy_now:
+                return {
+                    'status': 'READY',
+                    'time_estimate': 'Maintenant',
+                    'confidence': signal['confidence'],
+                    'target_price': current_price,
+                    'reason': f"Signal {signal['action']}"
+                }
+            
+            # Calculer distance au signal (éviter négatif)
+            confidence_gap = max(0, 60 - signal['confidence'])
+            
+            # Estimer temps basé sur volatilité et confiance
+            klines = self.get_klines(symbol, 20)
+            if len(klines) >= 10:
+                prices = [k['close'] for k in klines[-10:]]
+                volatility = (max(prices) - min(prices)) / min(prices) * 100
+                
+                # Si confiance proche (50-59%)
+                if confidence_gap < 10:
+                    time_estimate = "5-10min" if volatility > 5 else "10-20min" if volatility > 2 else "20-40min"
+                # Si confiance moyenne (40-49%)
+                elif confidence_gap < 20:
+                    time_estimate = "10-20min" if volatility > 5 else "20-40min" if volatility > 2 else "40min+"
+                # Si confiance faible (<40%)
+                else:
+                    time_estimate = "20-40min" if volatility > 5 else "40min+" if volatility > 2 else "1h+"
+            else:
+                time_estimate = "Indéterminé"
+            
+            # Prix cible pour achat
+            if signal['action'] == 'HOLD':
+                # Attendre baisse de 1-2%
+                target_price = current_price * 0.98
+                reason = f"Baisse → {target_price:.2f}"
+            elif signal['action'] in ['SELL', 'STRONG_SELL']:
+                # Attendre retournement
+                target_price = current_price * 0.95
+                reason = f"Retournement attendu"
+            else:
+                # Attendre amélioration signal
+                target_price = current_price
+                reason = f"Signal {signal['confidence']:.0f}%→60%"
+            
+            return {
+                'status': 'WAITING',
+                'time_estimate': time_estimate,
+                'target_price': target_price,
+                'current_confidence': signal['confidence'],
+                'current_price': current_price,
+                'reason': reason
+            }
+            
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'time_estimate': 'Erreur',
+                'reason': str(e)
+            }
+    
     def show_realtime_prices(self, trading_pairs):
         """Affiche les prix en temps réel (format compact, asynchrone)"""
         prices = []
@@ -1548,6 +1648,24 @@ class BinanceSpotBot:
                 self.show_spot_balances(trading_pairs)
                 self.earn_manager.show_earn_performance()
                 self.show_realtime_prices(trading_pairs)
+                
+                # Prévisions prochains achats
+                print("\n🔮 PRÉVISIONS ACHATS:")
+                for pair in trading_pairs:
+                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                    prediction = self.predict_next_buy_opportunity(symbol)
+                    crypto = symbol.split('/')[0]
+                    
+                    if prediction['status'] == 'READY':
+                        print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%) - {prediction['reason']}")
+                    elif prediction['status'] == 'WAITING':
+                        print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}")
+                    elif prediction['status'] == 'BLOCKED':
+                        print(f"🔒 {crypto}: {prediction['time_estimate']} - {prediction['reason']}")
+                    elif prediction['status'] == 'NO_FUNDS':
+                        print(f"💰 {crypto}: {prediction['time_estimate']} - {prediction['reason']}")
+                    else:
+                        print(f"❌ {crypto}: {prediction['time_estimate']}")
                 
                 # Vérifier et récupérer positions bloquées
                 self.check_and_recover_stuck_positions()
