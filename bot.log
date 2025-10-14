@@ -313,3 +313,7 @@
 2025-10-14 13:01:02,252 - INFO - Websocket connected
 2025-10-14 13:03:20,305 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
 2025-10-14 13:03:24,283 - INFO - Websocket connected
+2025-10-14 13:05:42,356 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 13:05:45,955 - INFO - Websocket connected
+2025-10-14 13:08:03,081 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-14 13:08:08,003 - INFO - Websocket connected
