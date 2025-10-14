@@ -15,13 +15,11 @@ class BinanceEarnManager:
         self.locked_threshold = float(os.getenv('LOCKED_STAKING_THRESHOLD', '50'))
         self.earn_withdraw_threshold = float(os.getenv('EARN_WITHDRAW_THRESHOLD', '5'))
         
-        # Tenter les nouvelles API Simple Earn
+        # Tenter les nouvelles API Simple Earn (silencieux)
         if not bot.paper_trading:
             self.earn_api = BinanceEarnAPI(bot.api_key, bot.api_secret, testnet=False)
-            print("🏦 Binance Earn: Mode LIVE avec nouvelles API Simple Earn")
         else:
             self.earn_api = None
-            print("🏦 Binance Earn: Mode SIMULATION (Paper Trading)")
         
         self.earn_positions = self.load_earn_positions()
         self.last_allocation_check = 0

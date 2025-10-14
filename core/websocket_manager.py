@@ -51,7 +51,6 @@ class WebSocketManager:
     
     def on_open(self, ws):
         """Callback à l'ouverture de la connexion"""
-        print("✅ WebSocket connecté - Données temps réel actives")
         self.reconnect_attempts = 0
     
     def on_message(self, ws, message):
@@ -135,7 +134,7 @@ class WebSocketManager:
             self.ws_user_thread.daemon = True
             self.ws_user_thread.start()
             
-            print("✅ User Data Stream connecté - Sync temps réel active")
+            pass  # Silencieux
             
             # Keepalive toutes les 30 minutes
             self.start_keepalive(bot)
@@ -177,25 +176,44 @@ class WebSocketManager:
         keepalive_thread.start()
     
     def on_error(self, ws, error):
-        """Gère les erreurs WebSocket"""
-        print(f"❌ Erreur WebSocket: {error}")
+        """Gère les erreurs WebSocket (silencieux)"""
+        pass
     
     def on_close(self, ws, close_status_code, close_msg):
-        """Gère la fermeture de connexion"""
-        print("⚠️ WebSocket fermé")
+        """Gère la fermeture de connexion (silencieux)"""
         if self.running:
             self.reconnect()
     
     def reconnect(self):
-        """Reconnexion automatique"""
+        """Reconnexion automatique (silencieux)"""
         if self.reconnect_attempts < self.max_reconnect:
             self.reconnect_attempts += 1
-            print(f"🔄 Reconnexion WebSocket {self.reconnect_attempts}/{self.max_reconnect}...")
             time.sleep(2 ** self.reconnect_attempts)  # Backoff exponentiel
             self.connect()
         else:
-            print("❌ Échec reconnexion WebSocket - Passage en mode REST")
-            self.running = False
+            print("❌ WebSocket déconnecté - Mode REST")
+            # Ne pas arrêter, continuer en mode REST
+            self.reconnect_attempts = 0
+            # Tenter reconnexion toutes les 60 secondes
+            self.start_reconnect_loop()
+    
+    def start_reconnect_loop(self):
+        """Boucle de reconnexion en arrière-plan"""
+        def reconnect_task():
+            while self.running:
+                time.sleep(60)  # Attendre 60 secondes
+                if not self.is_connected():
+                    try:
+                        self.connect()
+                        if self.is_connected():
+                            print("✅ WebSocket reconnecté")
+                            break
+                    except:
+                        pass
+        
+        thread = threading.Thread(target=reconnect_task)
+        thread.daemon = True
+        thread.start()
     
     def get_price(self, symbol):
         """Récupère le prix en temps réel"""

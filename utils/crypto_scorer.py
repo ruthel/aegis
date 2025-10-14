@@ -128,9 +128,27 @@ class CryptoScorer:
     def rank_cryptos(self, bot, trading_pairs, stuck_positions):
         """Classe toutes les cryptos et retourne les meilleures"""
         scores = []
+        balance = bot.get_balance()
+        usdt_available = balance.get('USDT', {}).get('free', 0)
         
         for pair in trading_pairs:
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            base_currency = symbol.split('/')[0]
+            min_cost = bot.get_min_amount(symbol)['min_cost']
+            
+            # Vérifier si crypto détenue est poussière
+            crypto_balance = balance.get(base_currency, {}).get('free', 0)
+            if crypto_balance > 0.00001:
+                price = bot.get_price(symbol)
+                crypto_value = crypto_balance * price
+                # Si poussière (< min_cost), ignorer cette paire
+                if crypto_value < min_cost:
+                    continue
+            
+            # Ignorer si solde USDT insuffisant
+            if usdt_available < min_cost:
+                continue
+            
             score = self.score_crypto(bot, symbol, stuck_positions)
             breakdown = self.get_score_breakdown(bot, symbol, stuck_positions)
             
@@ -138,12 +156,13 @@ class CryptoScorer:
                 scores.append({
                     'symbol': symbol,
                     'score': score,
-                    'breakdown': breakdown
+                    'breakdown': breakdown,
+                    'min_cost': min_cost
                 })
         
         scores.sort(key=lambda x: x['score'], reverse=True)
         
-        # Format compact: afficher uniquement le TOP 2
+        # Format compact avec solde minimum
         tradeable = [
             c['symbol'] for c in scores[:self.max_tradeable]
             if c['score'] >= self.min_score
@@ -155,7 +174,7 @@ class CryptoScorer:
                 if c['score'] >= self.min_score:
                     b = c['breakdown']
                     crypto_name = c['symbol'].replace('/USDT', '')
-                    top_display.append(f"{crypto_name} {c['score']} (V{b['volatility']} L{b['volume']} M{b['momentum']})")
+                    top_display.append(f"{crypto_name} {c['score']} (V{b['volatility']} L{b['volume']} M{int(c['min_cost'])})")
             print(f"🎯 TOP: {' | '.join(top_display)} → TRADING")
         else:
             print(f"⚠️ Aucune crypto ≥{self.min_score}/100")

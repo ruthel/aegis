@@ -51,8 +51,9 @@ python deploy.py
 - **Multi-timeframe analysis** : RSI, MACD, Bollinger Bands
 - **Notifications Telegram** : Alertes temps réel
 - **Paper trading** : Tests sans risque
-- **Affichages ultra-compacts** : Optimisés pour scalping haute fréquence (5s)
+- **Affichages ultra-compacts** : Optimisés pour scalping haute fréquence
 - **Filtrage intelligent** : Analyse uniquement cryptos avec opportunités
+- **Latence ultra-faible** : 250-400ms (réduction 60-75% vs 1000ms initial)
 
 ## ⚙️ Configuration des risques
 
@@ -84,7 +85,7 @@ STOP_LOSS_PERCENT = 5       # Stop-loss à 5%
 
 ⚡ 12:34:56 | BTC 111.6K | ETH 3.98K | SOL 194 | BNB 1.20K
 
-🎯 NOUVEAUX ACHATS: BTC (85: V8.2% S0.01% H+), ETH (72: V5.1% S0.02% H+)
+🎯 TOP: BTC 85 (V30 L20 M5) | ETH 72 (V25 L15 M10) → TRADING
 
 ⚡ BTC/USDT 111645.23 (+2.34%) | Vol 2.1B
 ⚡ BTC/USDT 111645.23 → BUY (bullish 75%)

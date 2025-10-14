@@ -102,7 +102,8 @@ class StuckPositionManager:
         # Exécuter l'action
         if strategy['action'] == 'buy_more':
             # DCA pour moyenner
-            base_amount = float(bot.os.getenv('TRADE_AMOUNT', '8'))
+            import os
+            base_amount = float(os.getenv('TRADE_AMOUNT', '8'))
             dca_amount = base_amount * strategy['amount_multiplier']
             
             print(f"🔄 DCA: Achat {dca_amount:.2f} USDT pour moyenner")
