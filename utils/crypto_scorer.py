@@ -99,19 +99,10 @@ class CryptoScorer:
             return 0
     
     def rank_cryptos(self, bot, trading_pairs, stuck_positions):
-        """Classe toutes les cryptos et retourne les meilleures (OPTIMISÉ)"""
-        use_optimizer = os.getenv('ENABLE_LATENCY_OPTIMIZER', 'True') == 'True' and hasattr(bot, 'optimizer')
-        
-        # Récupération parallèle si optimiseur disponible
-        if use_optimizer:
-            data = bot.optimizer.fetch_all_parallel(trading_pairs)
-            balance = data['balance']
-            prices_cache = data['prices']
-            klines_cache = data['klines']
-        else:
-            balance = bot.balance_manager.get_balance()
-            prices_cache = {}
-            klines_cache = {}
+        """Classe toutes les cryptos et retourne les meilleures"""
+        balance = bot.balance_manager.get_balance()
+        prices_cache = {}
+        klines_cache = {}
         
         usdt_available = balance.get('USDT', {}).get('free', 0)
         scores = []
@@ -120,11 +111,8 @@ class CryptoScorer:
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
             base_currency = symbol.split('/')[0]
             
-            # Min cost avec cache
-            if use_optimizer:
-                min_cost = bot.optimizer.get_min_amount_cached(symbol)['min_cost']
-            else:
-                min_cost = bot.get_min_amount(symbol)['min_cost']
+            # Min cost
+            min_cost = bot.get_min_amount(symbol)['min_cost']
             
             # Vérifier poussière
             crypto_balance = balance.get(base_currency, {}).get('free', 0)
@@ -143,22 +131,7 @@ class CryptoScorer:
             if not klines or len(klines) < 10:
                 continue
             
-            # Scoring optimisé NumPy si disponible
-            if use_optimizer:
-                result = bot.optimizer.numpy_opt.score_crypto_fast(klines)
-                if result:
-                    history_score = 0 if symbol in stuck_positions else 10
-                    total = result['total'] + history_score
-                    scores.append({
-                        'symbol': symbol,
-                        'score': total,
-                        'volatility': result['vol_score'],
-                        'volume': result['volume_score'],
-                        'min_cost': min_cost
-                    })
-                    continue
-            
-            # Fallback standard avec volatilité réelle
+            # Scoring standard avec volatilité réelle
             score = self.score_crypto(bot, symbol, stuck_positions)
             if score > 0:
                 breakdown = self.get_score_breakdown(bot, symbol, stuck_positions)

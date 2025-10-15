@@ -76,10 +76,7 @@ SHOW_DECISIONS = os.getenv('SHOW_DECISIONS', 'True').lower() == 'true'
 SHOW_DECISION_DETAILS = os.getenv('SHOW_DECISION_DETAILS', 'True').lower() == 'true'
 
 # ===== OPTIMISATIONS =====
-ENABLE_LATENCY_OPTIMIZER = os.getenv('ENABLE_LATENCY_OPTIMIZER', 'True').lower() == 'true'
-PARALLEL_WORKERS = int(os.getenv('PARALLEL_WORKERS', '10'))
-WS_PURE_MODE = os.getenv('WS_PURE_MODE', 'True').lower() == 'true'
-EVENT_DRIVEN = os.getenv('EVENT_DRIVEN', 'True').lower() == 'true'
+# Variables supprimées (code mort): ENABLE_LATENCY_OPTIMIZER, PARALLEL_WORKERS, WS_PURE_MODE, EVENT_DRIVEN
 
 # ===== SYNCHRONISATION =====
 FORCE_BALANCE_REFRESH = os.getenv('FORCE_BALANCE_REFRESH', 'True').lower() == 'true'

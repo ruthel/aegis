@@ -81,25 +81,29 @@ class SyncMixin:
         try:
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
             
+            # Nettoyer d'abord les ordres locaux obsolètes
+            all_open_order_ids = set()
+            
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                 open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                 
                 for order in open_orders:
                     order_id = str(order['id'])
+                    all_open_order_ids.add(order_id)
+                    
                     if order_id not in self.pending_orders:
                         self.pending_orders[order_id] = {
                             'order': order, 'timestamp': order['timestamp'] / 1000,
                             'symbol': symbol, 'side': order['side']
                         }
-                
-                open_order_ids = {str(o['id']) for o in open_orders}
-                executed_orders = [oid for oid in self.pending_orders.keys() 
-                                 if self.pending_orders[oid]['symbol'] == symbol 
-                                 and oid not in open_order_ids]
-                
-                for order_id in executed_orders:
+            
+            # Supprimer les ordres qui n'existent plus sur Binance
+            local_order_ids = list(self.pending_orders.keys())
+            for order_id in local_order_ids:
+                if order_id not in all_open_order_ids:
                     del self.pending_orders[order_id]
+                    
         except Exception as e:
             print(f"⚠️ Erreur sync ordres: {e}")
     
@@ -148,19 +152,12 @@ class SyncMixin:
             if 'symbol' not in order_data:
                 continue
             
-            symbol = order_data['symbol']
-            current_price = self.get_price(symbol)
-            order_price = order_data['order']['price']
-            price_diff_pct = ((current_price - order_price) / order_price) * 100
-            
-            if order_data['side'] == 'sell' and price_diff_pct < -3:
-                orders_to_cancel.append(order_id)
-            elif order_data['side'] == 'buy' and price_diff_pct > 3:
-                orders_to_cancel.append(order_id)
-            elif now_timestamp - order_data['timestamp'] > self.order_timeout:
+            # Annuler uniquement si timeout (24h par défaut)
+            if now_timestamp - order_data['timestamp'] > self.order_timeout:
                 orders_to_cancel.append(order_id)
         
         for order_id in orders_to_cancel:
+            print(f"⏰ Annulation ordre timeout: {order_id}")
             self.cancel_order(order_id)
     
     def cancel_order(self, order_id):

@@ -105,8 +105,13 @@ class DisplayMixin:
             if not buy_price:
                 continue
             
-            pnl_pct = ((current_price - buy_price) / buy_price) * 100
+            # Si locked, afficher ordre limite actif
+            if locked > 0.00001:
+                target_price = buy_price * (1 + min_profit_needed)
+                self.async_print(f"🟡 {base_currency} {current_holding:.6f} - Ordre limite @ {target_price:.2f} (actuel: {current_price:.2f})")
+                continue
             
+            pnl_pct = ((current_price - buy_price) / buy_price) * 100
             target_price = buy_price * (1 + min_profit_needed)
             
             if pnl_pct >= min_profit_needed * 100:

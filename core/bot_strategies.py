@@ -45,6 +45,11 @@ class StrategiesMixin:
         
         base_currency = symbol.split('/')[0]
         available = balance.get(base_currency, {}).get('free', 0)
+        locked = balance.get(base_currency, {}).get('used', 0)
+        
+        # Ne pas placer d'ordre si déjà locked (ordre actif)
+        if locked > 0.00001:
+            return
         
         if available > 0.00001:
             position_value = available * current_price
