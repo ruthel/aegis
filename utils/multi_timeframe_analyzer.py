@@ -10,7 +10,6 @@ from utils.market_calculator import MarketCalculator
 class MultiTimeframeAnalyzer:
     def __init__(self):
         self.indicators = TechnicalIndicators()
-        self.timeframes = ['1m', '5m', '15m']
         self.data_cache = {}  # Cache des données par timeframe
         
     def get_klines_for_timeframe(self, bot, symbol, timeframe, limit=50):
@@ -37,8 +36,20 @@ class MultiTimeframeAnalyzer:
     
     def get_timeframe_multiplier(self, timeframe):
         """Retourne le multiplicateur pour le timeframe"""
-        multipliers = {'1m': 1, '5m': 5, '15m': 15}
+        multipliers = {'1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240}
         return multipliers.get(timeframe, 1)
+    
+    def get_adaptive_timeframes(self, volatility):
+        """Sélectionne les timeframes optimaux selon la volatilité"""
+        if volatility >= 4.0:
+            # Haute volatilité: timeframes courts pour réactivité
+            return ['15m', '5m', '1m'], {'15m': 5, '5m': 3, '1m': 2}
+        elif volatility >= 2.5:
+            # Volatilité moyenne: équilibre standard
+            return ['1h', '15m', '5m'], {'1h': 5, '15m': 3, '5m': 2}
+        else:
+            # Faible volatilité: timeframes longs pour filtrer bruit
+            return ['4h', '1h', '15m'], {'4h': 5, '1h': 3, '15m': 2}
     
     def convert_to_timeframe(self, klines_1m, target_timeframe):
         """Convertit les données 1m vers le timeframe cible"""
@@ -176,30 +187,36 @@ class MultiTimeframeAnalyzer:
     
     def analyze_all_timeframes(self, bot, symbol, current_price):
         """Analyse tous les timeframes et génère un signal global"""
-        timeframe_analysis = {}
+        # Calculer volatilité d'abord pour adapter les timeframes
+        volatility = self.calculate_volatility(bot, symbol)
         
-        for tf in self.timeframes:
+        # Sélectionner timeframes adaptatifs selon volatilité (TOUJOURS actif)
+        active_timeframes, weights = self.get_adaptive_timeframes(volatility)
+        
+        timeframe_analysis = {}
+        for tf in active_timeframes:
             klines = self.get_klines_for_timeframe(bot, symbol, tf)
             analysis = self.analyze_timeframe(klines, current_price)
             timeframe_analysis[tf] = analysis
         
-        volatility = self.calculate_volatility(bot, symbol)
-        global_signal = self.generate_global_signal(timeframe_analysis, current_price, symbol, volatility)
+        global_signal = self.generate_global_signal(timeframe_analysis, current_price, symbol, volatility, weights)
         
         return {
             'timeframes': timeframe_analysis,
             'global_signal': global_signal,
             'volatility': volatility,
+            'active_timeframes': active_timeframes,
             'timestamp': bot.exchange.milliseconds() if hasattr(bot, 'exchange') else None
         }
     
-    def generate_global_signal(self, timeframe_analysis, current_price, symbol='', volatility=2.0):
+    def generate_global_signal(self, timeframe_analysis, current_price, symbol='', volatility=2.0, weights=None):
         """Génère un signal global basé sur tous les timeframes"""
-        weights = {'15m': 3, '5m': 2, '1m': 1}
+        if weights is None:
+            weights = {'15m': 3, '5m': 2, '1m': 1}
         
         total_strength = 0
         max_weight = 0
-        trend_votes = {'bullish': 0, 'bearish': 0, 'neutral': 0}
+        trend_votes = {'bullish': 0, 'bearish': 0, 'neutral': 0, 'unknown': 0}
         all_signals = []
         
         for tf, analysis in timeframe_analysis.items():
@@ -216,6 +233,9 @@ class MultiTimeframeAnalyzer:
         
         avg_strength = total_strength / max_weight if max_weight > 0 else 0
         dominant_trend = max(trend_votes, key=trend_votes.get)
+        # Convertir 'unknown' en 'neutral'
+        if dominant_trend == 'unknown':
+            dominant_trend = 'neutral'
         action = self.determine_action(avg_strength, dominant_trend, timeframe_analysis)
         base_confidence = self.calculate_confidence(timeframe_analysis, avg_strength)
         
@@ -283,6 +303,6 @@ class MultiTimeframeAnalyzer:
     def generate_summary(self, action, strength, trend, confidence, volatility=2.0):
         """Génère un résumé textuel de l'analyse"""
         strength_desc = "forte" if abs(strength) > 2 else "modérée" if abs(strength) > 1 else "faible"
-        trend_desc = {"bullish": "haussière", "bearish": "baissière", "neutral": "neutre"}[trend]
+        trend_desc = {"bullish": "haussière", "bearish": "baissière", "neutral": "neutre", "unknown": "indéterminée"}.get(trend, "neutre")
         
         return f"{action} - Tendance {trend_desc}, force {strength_desc} (conf: {confidence}%, vol: {volatility:.1f}/5)"

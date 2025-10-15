@@ -73,9 +73,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.websocket.set_balance_callback(self.on_balance_update)
         self.websocket.start()
         
-        # Trading temps réel
-        self.realtime_trading = os.getenv('REALTIME_TRADING', 'False') == 'True'
+        # Trading temps réel (TOUJOURS activé par défaut)
+        self.realtime_trading = True
         self.last_analysis = {}
+        
+        # Détection tendance cumulative
+        self.cumulative_tracker = {}  # {symbol: {'direction': 1/-1, 'count': 0, 'start_price': 0}}
         
         # Ordres
         self.order_type = os.getenv('ORDER_TYPE', 'adaptive')
@@ -112,7 +115,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Cache
         self.analysis_cache = {}
         self.analysis_cache_timeout = 5
-        self.price_change_threshold = 0.001
+        self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
         # Gestionnaire de balance centralisé
         self.balance_manager = BalanceManager(self)
@@ -407,18 +410,75 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             print(f"❌ Erreur test API: {e}")
             return False
     
+    def track_cumulative_trend(self, symbol, current_price):
+        """Détecte les tendances cumulatives (ex: 6x -0.1% = -0.6%)"""
+        if symbol not in self.cumulative_tracker:
+            self.cumulative_tracker[symbol] = {
+                'start_price': current_price,
+                'last_price': current_price,
+                'direction': 0,
+                'count': 0,
+                'cumulative_change': 0
+            }
+            return False
+        
+        tracker = self.cumulative_tracker[symbol]
+        price_change = (current_price - tracker['last_price']) / tracker['last_price']
+        
+        # Déterminer direction (-1 baisse, +1 hausse)
+        if abs(price_change) < 0.0005:  # Ignore variations < 0.05%
+            return False
+        
+        current_direction = 1 if price_change > 0 else -1
+        
+        # Si même direction, incrémenter compteur
+        if current_direction == tracker['direction']:
+            tracker['count'] += 1
+            tracker['cumulative_change'] += price_change
+        else:
+            # Changement de direction, reset
+            tracker['direction'] = current_direction
+            tracker['count'] = 1
+            tracker['start_price'] = tracker['last_price']
+            tracker['cumulative_change'] = price_change
+        
+        tracker['last_price'] = current_price
+        
+        # Alerte si 4+ variations consécutives dans même direction
+        if tracker['count'] >= 4:
+            total_change_pct = abs(tracker['cumulative_change']) * 100
+            if total_change_pct >= 0.3:  # Cumul ≥ 0.3%
+                direction_text = "baisse" if tracker['direction'] < 0 else "hausse"
+                print(f"📊 {symbol}: Tendance cumulative détectée! {tracker['count']}x {direction_text} = {total_change_pct:.2f}%")
+                # Reset après alerte
+                tracker['count'] = 0
+                tracker['start_price'] = current_price
+                tracker['cumulative_change'] = 0
+                return True
+        
+        return False
+    
     def on_realtime_signal(self, symbol, price):
         if not self.realtime_trading:
             return
+        
+        formatted_symbol = f"{symbol[:-4]}/{symbol[-4:]}"
+        
+        # Détecter tendance cumulative
+        cumulative_trend = self.track_cumulative_trend(formatted_symbol, price)
+        
         now = time.time()
-        last_time = self.last_analysis.get(symbol, 0)
-        if now - last_time < 0.1:
+        last_time = self.last_analysis.get(formatted_symbol, 0)
+        
+        # Si tendance cumulative détectée, forcer analyse immédiate
+        if cumulative_trend:
+            print(f"⚡ Analyse forcée suite à tendance cumulative {formatted_symbol}")
+        elif now - last_time < 0.1:
             return
-        self.last_analysis[symbol] = now
+        
+        self.last_analysis[formatted_symbol] = now
         try:
-            formatted_symbol = f"{symbol[:-4]}/{symbol[-4:]}"
             strategy_type = os.getenv('STRATEGY_TYPE', 'scalping')
-            # Utiliser le minimum de la paire
             trade_amount = self.get_min_amount(formatted_symbol)['min_cost']
             if strategy_type == 'intelligent':
                 self.realtime_intelligent(formatted_symbol, trade_amount, price)

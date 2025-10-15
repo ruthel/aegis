@@ -34,7 +34,8 @@ python run.py
 
 ### 🎯 Trading Intelligent
 - **Stratégie Adaptive** : Choix automatique Scalping/DCA selon conditions marché
-- **Multi-Timeframes** : Analyse simultanée 1m/5m/15m avec signaux pondérés
+- **Timeframes Adaptatifs** : Sélection automatique 4H/1H/15M ou 15M/5M/1M selon volatilité
+- **Détection Tendances Cumulatives** : Capture 6x -0.1% = -0.6% (variations progressives)
 - **Crypto Scoring** : Sélection automatique des meilleures cryptos (score 0-100)
 - **Latence Ultra-Faible** : 10-20ms (réduction 98% vs 1000ms initial)
 - **Position Sizing** : Basé sur volatilité et corrélation entre positions
@@ -117,7 +118,7 @@ binance-bot-v2/
 ├── utils/                       # Utilitaires spécialisés
 │   ├── crypto_scorer.py        # Scoring cryptos 0-100
 │   ├── advanced_risk_manager.py # Gestion risques professionnelle
-│   ├── multi_timeframe_analyzer.py # Analyse 1m/5m/15m
+│   ├── multi_timeframe_analyzer.py # Timeframes adaptatifs (4H/1H/15M ou 15M/5M/1M)
 │   ├── volatility_calculator.py # Calculs volatilité centralisés
 │   └── market_calculator.py    # Métriques marché centralisées
 ├── config.py                   # Configuration centralisée (.env)
@@ -209,6 +210,8 @@ python run.py  # Redémarrage automatique sur modification .py
 ## 📚 Documentation Complète
 
 ### Guides Spécialisés
+- **[Timeframes Adaptatifs](docs/ADAPTIVE_TIMEFRAMES.md)** - Stratégie professionnelle multi-timeframes
+- **[Détection Tendances Cumulatives](docs/CUMULATIVE_TREND_DETECTION.md)** - Capture variations progressives
 - **[Optimisations Latence](docs/QUICK_START_OPTIMIZATIONS.md)** - Guide 2min réduction 98%
 - **[Décisions Trading](docs/DECISIONS_GUIDE.md)** - Transparence signaux
 - **[Architecture](docs/CENTRALIZATION_SUMMARY.md)** - Structure modulaire
