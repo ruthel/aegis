@@ -108,15 +108,16 @@ class WebSocketManager:
     def start_user_data_stream(self, bot):
         """Démarre le User Data Stream pour synchronisation temps réel"""
         if bot.paper_trading:
+            print("📝 Paper trading - WebSocket User Data désactivé")
             return
         
         try:
-            # Obtenir listen key
-            response = bot.safe_request(bot.exchange.fapiPrivatePostListenKey)
+            # Obtenir listen key pour SPOT (pas futures)
+            response = bot.safe_request(bot.exchange.sapiPostUserDataStream)
             self.listen_key = response.get('listenKey')
             
             if not self.listen_key:
-                print("⚠️ Impossible d'obtenir listen key")
+                print("❌ Impossible d'obtenir listen key")
                 return
             
             # Connexion WebSocket User Data
@@ -125,8 +126,8 @@ class WebSocketManager:
             self.ws_user = websocket.WebSocketApp(
                 url,
                 on_message=self.on_user_message,
-                on_error=self.on_error,
-                on_close=self.on_close
+                on_error=self.on_user_error,
+                on_close=self.on_user_close,
             )
             
             # Démarrer dans un thread séparé
@@ -134,31 +135,45 @@ class WebSocketManager:
             self.ws_user_thread.daemon = True
             self.ws_user_thread.start()
             
-            pass  # Silencieux
-            
             # Keepalive toutes les 30 minutes
             self.start_keepalive(bot)
             
         except Exception as e:
             print(f"❌ Erreur User Data Stream: {e}")
     
+    def on_user_error(self, ws, error):
+        print(f"❌ Erreur User Data Stream: {error}")
+    
+    def on_user_close(self, ws, close_status_code, close_msg):
+        print(f"⚠️ User Data Stream fermé: {close_status_code} - {close_msg}")
+    
     def on_user_message(self, ws, message):
         """Traite les messages User Data (solde, ordres, etc.)"""
         try:
             data = json.loads(message)
+            event_type = data.get('e')
+            
+            print(f"📨 User Data reçu: {event_type}")
             
             # Mise à jour solde
-            if data.get('e') == 'outboundAccountPosition':
+            if event_type == 'outboundAccountPosition':
+                print("💰 Changement de solde détecté")
                 if self.balance_callback:
                     self.balance_callback(data)
             
             # Exécution ordre
-            elif data.get('e') == 'executionReport':
+            elif event_type == 'executionReport':
+                print("📋 Exécution d'ordre détectée")
                 if self.balance_callback:
                     self.balance_callback(data)
+            
+            # Autres événements
+            else:
+                print(f"📊 Événement User Data: {event_type}")
                     
         except Exception as e:
             print(f"⚠️ Erreur traitement user message: {e}")
+            print(f"📄 Message brut: {message[:200]}...")
     
     def start_keepalive(self, bot):
         """Maintient le listen key actif"""
@@ -167,9 +182,11 @@ class WebSocketManager:
                 try:
                     time.sleep(1800)  # 30 minutes
                     if self.listen_key:
-                        bot.safe_request(bot.exchange.fapiPrivatePutListenKey, {'listenKey': self.listen_key})
-                except:
-                    pass
+                        print("🔄 Keepalive User Data Stream...")
+                        bot.safe_request(bot.exchange.sapiPutUserDataStream, {'listenKey': self.listen_key})
+                        print("✅ Keepalive OK")
+                except Exception as e:
+                    print(f"⚠️ Erreur keepalive: {e}")
         
         keepalive_thread = threading.Thread(target=keepalive)
         keepalive_thread.daemon = True

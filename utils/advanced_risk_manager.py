@@ -19,27 +19,43 @@ class AdvancedRiskManager:
             return 0.02  # Volatilité par défaut (2%)
 
     def calculate_position_size(self, bot, symbol, base_amount=10, max_risk_percent=2):
-        """Calcule la taille de position basée sur la volatilité"""
-        volatility = self.calculate_volatility(bot, symbol)
+        """Calcule la taille de position basée sur la volatilité et configuration"""
+        from config import USE_FULL_BALANCE, MAX_BALANCE_PER_TRADE
         
-        # Plus la volatilité est élevée, plus on réduit la position
-        risk_factor = max_risk_percent / (volatility * 100)
-        adjusted_amount = base_amount * min(risk_factor, 2.0)  # Max 2x le montant de base
-        
-        # Minimums spécifiques par paire
-        min_notionals = {
-            'BTC/USDT': 5,
-            'ETH/USDT': 10,
-            'SOL/USDT': 8,
-            'BNB/USDT': 12
-        }
-        min_required = min_notionals.get(symbol, 10)
-        
-        # Minimum selon la paire, maximum 25 USDT
-        position_size = max(min_required, min(25, adjusted_amount))
-        
-        print(f"📊 {symbol}: Volatilité {volatility:.1%} → Position {position_size:.1f} USDT")
-        return position_size
+        if USE_FULL_BALANCE:
+            # Mode: Utiliser tout le solde disponible (comportement actuel)
+            balance = bot.balance_manager.get_balance()
+            usdt_available = balance.get('USDT', {}).get('free', 0)
+            
+            # Limiter selon MAX_BALANCE_PER_TRADE (% du solde)
+            max_allowed = usdt_available * (MAX_BALANCE_PER_TRADE / 100)
+            position_size = min(usdt_available, max_allowed)
+            
+            print(f"💰 {symbol}: Mode FULL_BALANCE → {position_size:.1f} USDT ({MAX_BALANCE_PER_TRADE}% max)")
+            return max(base_amount, position_size)
+        else:
+            # Mode: Montant fixe basé sur volatilité (nouveau comportement)
+            volatility = self.calculate_volatility(bot, symbol)
+            
+            # Plus la volatilité est élevée, plus on réduit la position
+            risk_factor = max_risk_percent / (volatility * 100)
+            adjusted_amount = base_amount * min(risk_factor, 2.0)  # Max 2x le montant de base
+            
+            # Minimums spécifiques par paire
+            min_notionals = {
+                'BTC/USDT': 5,
+                'ETH/USDT': 10,
+                'SOL/USDT': 8,
+                'BNB/USDT': 12
+            }
+            min_required = min_notionals.get(symbol, 10)
+            
+            # Minimum selon la paire, maximum selon TRADE_AMOUNT
+            max_amount = getattr(bot, 'trade_amount', base_amount) * 2
+            position_size = max(min_required, min(max_amount, adjusted_amount))
+            
+            print(f"📊 {symbol}: Mode Fixed Amount → {position_size:.1f} USDT (vol: {volatility:.1%})")
+            return position_size
 
 class TrailingStopManager:
     def __init__(self, trailing_percent=3.0):
@@ -131,7 +147,7 @@ class CorrelationManager:
     def can_open_position(self, symbol, bot):
         """Vérifie si on peut ouvrir une position selon la corrélation"""
         # Synchroniser avec le solde réel
-        balance = bot.get_balance()
+        balance = bot.balance_manager.get_balance()
         base_currency = symbol.split('/')[0]
         current_holding = balance.get(base_currency, {}).get('free', 0)
         

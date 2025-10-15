@@ -47,7 +47,7 @@ class TradingMonitor:
     
     def print_dashboard(self, bot):
         stats = self.get_stats()
-        balance = bot.get_balance()
+        balance = bot.balance_manager.get_balance()
         
         print("\n" + "="*50)
         print("DASHBOARD TRADING")

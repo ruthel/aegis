@@ -109,7 +109,7 @@ class CryptoScorer:
             prices_cache = data['prices']
             klines_cache = data['klines']
         else:
-            balance = bot.get_balance()
+            balance = bot.balance_manager.get_balance()
             prices_cache = {}
             klines_cache = {}
         

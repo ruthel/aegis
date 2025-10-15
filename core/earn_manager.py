@@ -99,7 +99,7 @@ class BinanceEarnManager:
     def get_available_balance(self):
         """Récupère le solde USDT disponible"""
         try:
-            balance = self.bot.get_balance()
+            balance = self.bot.balance_manager.get_balance()
             return balance.get('USDT', {}).get('free', 0)
         except Exception as e:
             print(f"❌ Erreur récupération solde: {e}")

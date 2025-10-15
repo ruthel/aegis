@@ -47,7 +47,7 @@ class PortfolioManager:
         self.max_crypto_allocation = max_crypto_allocation
         
     def should_diversify(self, bot):
-        balance = bot.get_balance()
+        balance = bot.balance_manager.get_balance()
         total_usdt = balance.get('USDT', {}).get('free', 0)
         
         crypto_value = 0

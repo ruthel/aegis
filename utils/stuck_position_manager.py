@@ -121,7 +121,7 @@ class StuckPositionManager:
             # Vente d'urgence
             print(f"🚨 VENTE D'URGENCE - Perte: {loss_percent:.2f}%")
             base_currency = symbol.split('/')[0]
-            balance = bot.get_balance()
+            balance = bot.balance_manager.get_balance()
             available = balance.get(base_currency, {}).get('free', 0)
             
             if available > 0:
@@ -139,7 +139,7 @@ class StuckPositionManager:
             if current_price >= sell_target:
                 print(f"🎯 Rebond atteint! Vente à {current_price:.6f}")
                 base_currency = symbol.split('/')[0]
-                balance = bot.get_balance()
+                balance = bot.balance_manager.get_balance()
                 available = balance.get(base_currency, {}).get('free', 0)
                 
                 if available > 0:

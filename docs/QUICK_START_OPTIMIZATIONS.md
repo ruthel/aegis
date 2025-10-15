@@ -52,7 +52,7 @@ if not self.should_analyze_optimized(symbol):
 
 Lancer le bot:
 ```bash
-python deploy.py
+python run.py
 ```
 
 Vous devriez voir:

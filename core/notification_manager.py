@@ -2,22 +2,23 @@ import requests
 import os
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class NotificationManager:
     def __init__(self):
         self.telegram_token = "8048049962:AAGUNfTjlkADCRZEVKieM-t9Nvn8oTPzKpI"
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.enabled = bool(self.chat_id)
-        self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))  # 5min par défaut
+        self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
         self.last_status_time = 0
         self.bot_ref = None
+        self.daily_stats = {'start_balance': 0, 'trades': [], 'start_time': None}
         
     def set_bot(self, bot):
         """Référence au bot pour status périodique"""
         self.bot_ref = bot
         
-    def notify(self, message):
+    def notify(self, message, emoji="🤖"):
         if not self.enabled:
             print(f"📢 {message}")
             return False
@@ -26,7 +27,7 @@ class NotificationManager:
             url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
             data = {
                 'chat_id': self.chat_id,
-                'text': f"🤖 {message}",
+                'text': f"{emoji} {message}",
                 'parse_mode': 'HTML'
             }
             response = requests.post(url, data=data, timeout=10)
@@ -34,6 +35,111 @@ class NotificationManager:
         except:
             print(f"📢 {message}")
             return False
+    
+    def notify_trade_buy(self, symbol, amount, price, total, signal_data):
+        """Notification achat avec contexte"""
+        crypto = symbol.split('/')[0]
+        msg = f"🟢 ACHAT {crypto}\n\n"
+        msg += f"💰 Montant: {amount:.6f} {crypto}\n"
+        msg += f"💵 Prix: {price:.2f} USDT\n"
+        msg += f"📊 Total: {total:.2f} USDT\n\n"
+        msg += f"📈 Signal: {signal_data.get('trend', 'N/A')} {signal_data.get('confidence', 0):.0f}%\n"
+        msg += f"⚡ Vol: {signal_data.get('volatility', 0):.1f}/5 | Conf: {signal_data.get('confidence', 0):.0f}%\n\n"
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
+    def notify_trade_sell(self, symbol, amount, price, total, buy_price, pnl, hold_time):
+        """Notification vente avec P&L"""
+        crypto = symbol.split('/')[0]
+        pnl_pct = ((price - buy_price) / buy_price) * 100
+        emoji = "🟢" if pnl > 0 else "🔴"
+        
+        msg = f"🔴 VENTE {crypto}\n\n"
+        msg += f"💰 Montant: {amount:.6f} {crypto}\n"
+        msg += f"💵 Prix: {price:.2f} USDT\n"
+        msg += f"📊 Total: {total:.2f} USDT\n\n"
+        msg += f"💸 P&L: {emoji} {pnl:+.2f} USDT ({pnl_pct:+.1f}%)\n"
+        msg += f"⏱️ Détention: {hold_time}\n\n"
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
+    def notify_limit_order(self, symbol, amount, price, profit_pct, estimation):
+        """Notification ordre limite placé"""
+        crypto = symbol.split('/')[0]
+        msg = f"🎯 ORDRE LIMITE {crypto}\n\n"
+        msg += f"📤 Vente @ {price:.2f} USDT\n"
+        msg += f"💰 Quantité: {amount:.6f} {crypto}\n"
+        msg += f"🎯 Profit cible: +{profit_pct:.2f}%\n\n"
+        
+        if estimation:
+            msg += f"⏳ Estimation: {estimation.get('time_estimate', 'N/A')}\n"
+            msg += f"📊 Probabilité: {estimation.get('probability', 0)}%\n\n"
+        
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
+    def notify_error(self, error_type, details):
+        """Notification erreur critique"""
+        msg = f"⚠️ ALERTE CRITIQUE\n\n"
+        msg += f"❌ Erreur: {error_type}\n"
+        msg += f"📍 Détails: {details}\n\n"
+        msg += f"🔧 Action: Vérifier le bot\n\n"
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
+    def notify_stuck_position(self, symbol, loss_pct, loss_amount, duration, action):
+        """Notification position bloquée"""
+        crypto = symbol.split('/')[0]
+        msg = f"⚠️ POSITION BLOQUÉE\n\n"
+        msg += f"🪙 Crypto: {crypto}\n"
+        msg += f"💸 Perte: {loss_pct:.1f}% ({loss_amount:.2f} USDT)\n"
+        msg += f"⏳ Durée: {duration}\n\n"
+        msg += f"🎯 Action: {action}\n\n"
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
+    def notify_daily_summary(self):
+        """Résumé journalier automatique"""
+        if not self.bot_ref:
+            return
+        
+        bot = self.bot_ref
+        balance = bot.balance_manager.get_balance()
+        current_balance = balance.get('USDT', {}).get('free', 0)
+        
+        # Calculer capital total (USDT + cryptos)
+        total_value = current_balance
+        for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
+            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            crypto = symbol.split('/')[0]
+            amount = balance.get(crypto, {}).get('free', 0)
+            if amount > 0.00001:
+                price = bot.get_price(symbol)
+                total_value += amount * price
+        
+        start_balance = self.daily_stats.get('start_balance', total_value)
+        variation = total_value - start_balance
+        variation_pct = (variation / start_balance * 100) if start_balance > 0 else 0
+        
+        win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
+        
+        msg = f"📊 RÉSUMÉ JOURNALIER\n"
+        msg += f"{datetime.now().strftime('%d %b %Y')}\n\n"
+        msg += f"💰 Capital\n"
+        msg += f"├─ Début: {start_balance:.2f} USDT\n"
+        msg += f"├─ Fin: {total_value:.2f} USDT\n"
+        msg += f"└─ Variation: {variation:+.2f} ({variation_pct:+.1f}%)\n\n"
+        msg += f"📈 Trading\n"
+        msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
+        msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
+        msg += f"└─ Frais: ~{bot.total_trades * 0.02:.2f} USDT\n\n"
+        msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        
+        self.notify(msg, "")
+        
+        # Reset stats pour demain
+        self.daily_stats['start_balance'] = total_value
+        self.daily_stats['start_time'] = datetime.now()
     
     def send_status_update(self):
         """Envoie status périodique"""
@@ -53,41 +159,52 @@ class NotificationManager:
             pass
     
     def _build_status_message(self):
-        """Construit message status"""
+        """Construit message status ultra-compact"""
         bot = self.bot_ref
-        balance = bot.get_balance()
+        balance = bot.balance_manager.get_balance()
         usdt = balance.get('USDT', {}).get('free', 0)
         
-        # Positions
-        positions = []
+        # Portfolio
+        portfolio_items = [f"USDT: {usdt:.2f}"]
+        total_value = usdt
+        
         for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
             crypto = symbol.split('/')[0]
-            amount = balance.get(crypto, {}).get('free', 0)
-            if amount > 0.00001:
+            free = balance.get(crypto, {}).get('free', 0)
+            locked = balance.get(crypto, {}).get('used', 0)
+            total = free + locked
+            
+            if total > 0.00001:
                 price = bot.get_price(symbol)
-                value = amount * price
+                value = total * price
                 if value >= bot.get_min_amount(symbol)['min_cost']:
-                    positions.append(f"{crypto}: {amount:.4f}")
+                    status = " (ordre actif)" if locked > 0 else ""
+                    portfolio_items.append(f"{crypto}: {total:.3f}{status}")
+                    total_value += value
         
         # Stats
         win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
         
         msg = f"📊 STATUS {datetime.now().strftime('%H:%M')}\n\n"
-        msg += f"💰 USDT: {usdt:.2f}\n"
-        msg += f"📈 P&L: {bot.daily_pnl:+.2f} USDT\n"
-        msg += f"🔄 Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
+        msg += f"💼 Portfolio\n"
+        for i, item in enumerate(portfolio_items):
+            prefix = "├─" if i < len(portfolio_items) - 1 else "└─"
+            msg += f"{prefix} {item}\n"
+        msg += f"└─ Total: ~{total_value:.2f} USDT\n\n"
         
-        if positions:
-            msg += f"\n📦 Positions:\n"
-            for pos in positions:
-                msg += f"  • {pos}\n"
+        msg += f"📈 Performance\n"
+        msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
+        msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
+        
+        if bot.total_trades > 0:
+            msg += f"└─ Meilleur: N/A\n\n"
         else:
-            msg += f"\n⏳ Aucune position\n"
+            msg += f"└─ Aucun trade\n\n"
         
-        # Prévisions achats
-        msg += f"\n🔮 Prévisions Achats:\n"
-        predictions_added = False
+        # Opportunités
+        msg += f"🔮 Opportunités\n"
+        opps = []
         
         for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
@@ -97,23 +214,19 @@ class NotificationManager:
                 prediction = bot.predict_next_buy_opportunity(symbol)
                 
                 if prediction['status'] == 'READY':
-                    msg += f"✅ {crypto}: Maintenant ({prediction['confidence']:.0f}%)\n"
-                    predictions_added = True
+                    opps.append(f"{crypto}: Maintenant ({prediction['confidence']:.0f}%)")
                 elif prediction['status'] == 'WAITING':
-                    msg += f"⏳ {crypto}: {prediction['time_estimate']}\n"
-                    msg += f"   {prediction['reason']}\n"
-                    predictions_added = True
-                elif prediction['status'] == 'BLOCKED':
-                    msg += f"🔒 {crypto}: {prediction['reason']}\n"
-                    predictions_added = True
-                elif prediction['status'] == 'NO_FUNDS':
-                    msg += f"💰 {crypto}: {prediction['reason']}\n"
-                    predictions_added = True
+                    price = prediction.get('target_price', 0)
+                    opps.append(f"{crypto}: {prediction['time_estimate']} (↓ {price:.0f})")
             except:
                 pass
         
-        if not predictions_added:
-            msg += "  Aucune prévision disponible\n"
+        if opps:
+            for i, opp in enumerate(opps):
+                prefix = "├─" if i < len(opps) - 1 else "└─"
+                msg += f"{prefix} {opp}\n"
+        else:
+            msg += "└─ Aucune\n"
         
         msg += f"\n⏰ Prochain: {self.periodic_interval//60}min"
         

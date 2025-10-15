@@ -1519,7 +1519,29 @@
       "source": "binance_history",
       "fee": 3.63e-06,
       "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "buy",
+      "amount": 0.038,
+      "price": 205.23,
+      "timestamp": "2025-10-15T11:28:17.572000",
+      "order_id": "1634035196",
+      "source": "binance_history",
+      "fee": 4.93e-06,
+      "paper": false
+    },
+    {
+      "symbol": "ETH/USDT",
+      "side": "buy",
+      "amount": 0.0024,
+      "price": 4007.73,
+      "timestamp": "2025-10-15T15:59:50.322000",
+      "order_id": "2996870707",
+      "source": "binance_history",
+      "fee": 6.17e-06,
+      "paper": false
     }
   ],
-  "last_update": "2025-10-15T10:51:00.019376"
+  "last_update": "2025-10-15T16:04:34.712679"
 }
