@@ -2,43 +2,21 @@ import json
 import time
 from datetime import datetime, timedelta
 import statistics
+from utils.volatility_calculator import VolatilityCalculator
 
 class AdvancedRiskManager:
     def __init__(self):
-        self.volatility_cache = {}
         self.correlation_data = {}
         self.active_positions = {}
         
     def calculate_volatility(self, bot, symbol, periods=20):
-        """Calcule la volatilité sur les dernières périodes"""
-        if symbol in self.volatility_cache:
-            cache_time = self.volatility_cache[symbol].get('timestamp', 0)
-            if time.time() - cache_time < 300:  # Cache 5 minutes
-                return self.volatility_cache[symbol]['volatility']
-        
+        """Calcule la volatilité réelle sur les dernières périodes"""
         try:
-            # Simuler le calcul de volatilité avec les prix récents
-            current_price = bot.get_price(symbol)
-            # Pour simplifier, on estime la volatilité basée sur le symbol
-            volatility_map = {
-                'BTC/USDT': 0.03,  # 3% volatilité moyenne
-                'ETH/USDT': 0.04,  # 4% volatilité moyenne  
-                'SOL/USDT': 0.08,  # 8% volatilité élevée
-                'BNB/USDT': 0.05   # 5% volatilité moyenne
-            }
-            
-            volatility = volatility_map.get(symbol, 0.05)
-            
-            self.volatility_cache[symbol] = {
-                'volatility': volatility,
-                'timestamp': time.time()
-            }
-            
-            return volatility
-            
+            klines = bot.get_klines(symbol, periods)
+            return VolatilityCalculator.calculate(klines, symbol) / 100  # Convertir en décimal
         except Exception as e:
             print(f"Erreur calcul volatilité {symbol}: {e}")
-            return 0.05  # Volatilité par défaut
+            return 0.02  # Volatilité par défaut (2%)
 
     def calculate_position_size(self, bot, symbol, base_amount=10, max_risk_percent=2):
         """Calcule la taille de position basée sur la volatilité"""

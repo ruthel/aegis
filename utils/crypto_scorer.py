@@ -1,6 +1,8 @@
 import time
 from datetime import datetime
 import os
+from utils.volatility_calculator import VolatilityCalculator
+from utils.market_calculator import MarketCalculator
 
 class CryptoScorer:
     def __init__(self, min_score=50, max_tradeable=2):
@@ -10,18 +12,14 @@ class CryptoScorer:
         self.blacklist_duration = 3600
         self.optimizer = None  # Sera défini par le bot
         
-    def calculate_volatility_score(self, klines, symbol=''):
+    def calculate_volatility_score(self, klines, symbol='', volatility=None):
         """Score basé sur volatilité (0-30 points)"""
         if len(klines) < 10:
             return 0
         
-        # Volatilité réaliste hardcodée
-        vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
-        volatility = 2.0
-        for k, v in vol_defaults.items():
-            if k in symbol:
-                volatility = v
-                break
+        # Calculer volatilité réelle si non fournie
+        if volatility is None:
+            volatility = VolatilityCalculator.calculate(klines, symbol)
         
         if volatility >= 3:
             return 30
@@ -38,42 +36,11 @@ class CryptoScorer:
     
     def calculate_volume_score(self, klines):
         """Score basé sur volume/liquidité (0-25 points)"""
-        if len(klines) < 5:
-            return 0
-        
-        avg_volume = sum(k['volume'] for k in klines[-5:]) / 5
-        
-        if avg_volume >= 5000000:
-            return 25
-        elif avg_volume >= 1000000:
-            return 20
-        elif avg_volume >= 500000:
-            return 15
-        elif avg_volume >= 100000:
-            return 10
-        else:
-            return 5
+        return MarketCalculator.calculate_volume_score(klines)
     
     def calculate_momentum_score(self, klines):
         """Score basé sur momentum/tendance (0-25 points)"""
-        if len(klines) < 10:
-            return 0
-        
-        prices = [k['close'] for k in klines[-10:]]
-        momentum = (prices[-1] - prices[0]) / prices[0] * 100
-        
-        if momentum >= 1:
-            return 25
-        elif momentum >= 0.5:
-            return 20
-        elif momentum >= 0.2:
-            return 15
-        elif momentum >= 0:
-            return 10
-        elif momentum >= -0.5:
-            return 8
-        else:
-            return 5
+        return MarketCalculator.calculate_momentum_score(klines)
     
     def calculate_spread_score(self, symbol, current_price):
         """Score basé sur spread estimé (0-10 points)"""
@@ -103,7 +70,7 @@ class CryptoScorer:
         
         return 10
     
-    def score_crypto(self, bot, symbol, stuck_positions):
+    def score_crypto(self, bot, symbol, stuck_positions, volatility=None):
         """Calcule le score total d'une crypto (0-100)"""
         try:
             klines = bot.get_klines(symbol, 20)
@@ -112,7 +79,7 @@ class CryptoScorer:
             if not klines or len(klines) < 10:
                 return 0
             
-            volatility_score = self.calculate_volatility_score(klines, symbol)
+            volatility_score = self.calculate_volatility_score(klines, symbol, volatility)
             volume_score = self.calculate_volume_score(klines)
             momentum_score = self.calculate_momentum_score(klines)
             spread_score = self.calculate_spread_score(symbol, current_price)
@@ -192,7 +159,7 @@ class CryptoScorer:
                     })
                     continue
             
-            # Fallback standard
+            # Fallback standard avec volatilité réelle
             score = self.score_crypto(bot, symbol, stuck_positions)
             if score > 0:
                 breakdown = self.get_score_breakdown(bot, symbol, stuck_positions)
@@ -220,7 +187,7 @@ class CryptoScorer:
         self.blacklist[symbol] = time.time()
         print(f"🚫 {symbol} ajouté à la blacklist pour {self.blacklist_duration/3600:.1f}h")
     
-    def get_score_breakdown(self, bot, symbol, stuck_positions):
+    def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None):
         """Détails du score pour debug"""
         klines = bot.get_klines(symbol, 20)
         current_price = bot.get_price(symbol)
@@ -229,7 +196,7 @@ class CryptoScorer:
             return None
         
         return {
-            'volatility': self.calculate_volatility_score(klines, symbol),
+            'volatility': self.calculate_volatility_score(klines, symbol, volatility),
             'volume': self.calculate_volume_score(klines),
             'momentum': self.calculate_momentum_score(klines),
             'spread': self.calculate_spread_score(symbol, current_price),

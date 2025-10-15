@@ -1,6 +1,7 @@
 import time
 import json
 from datetime import datetime, timedelta
+from utils.market_calculator import MarketCalculator
 
 class StuckPositionManager:
     def __init__(self, max_loss_percent=15, stuck_threshold_hours=24):
@@ -11,8 +12,8 @@ class StuckPositionManager:
         
     def check_stuck_position(self, symbol, current_price, buy_price, buy_time):
         """Vérifie si une position est bloquée"""
-        loss_percent = ((current_price - buy_price) / buy_price) * 100
-        hours_held = (time.time() - buy_time) / 3600
+        loss_percent = MarketCalculator.calculate_loss_percent(current_price, buy_price)
+        hours_held = MarketCalculator.calculate_hours_held(buy_time)
         
         is_stuck = (
             loss_percent < -5 and  # Perte > 5%
@@ -86,7 +87,7 @@ class StuckPositionManager:
         
         stuck_data = self.stuck_positions[symbol]
         buy_price = stuck_data['buy_price']
-        loss_percent = ((current_price - buy_price) / buy_price) * 100
+        loss_percent = MarketCalculator.calculate_loss_percent(current_price, buy_price)
         
         strategy = self.get_recovery_strategy(symbol, loss_percent, current_price, buy_price)
         

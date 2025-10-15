@@ -4,6 +4,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.technical_indicators import TechnicalIndicators
+from utils.volatility_calculator import VolatilityCalculator
+from utils.market_calculator import MarketCalculator
 
 class MultiTimeframeAnalyzer:
     def __init__(self):
@@ -161,39 +163,16 @@ class MultiTimeframeAnalyzer:
             return 'below_middle'
     
     def calculate_volatility(self, bot, symbol):
-        """Calcule la volatilité récente - Utilise valeurs réalistes par défaut"""
-        defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
-        for key, val in defaults.items():
-            if key in symbol:
-                return val
-        return 2.0
+        """Calcule la volatilité réelle sur les dernières 24h"""
+        try:
+            klines = bot.get_klines(symbol, 100)
+            return VolatilityCalculator.calculate(klines, symbol)
+        except Exception as e:
+            return 2.0
     
     def get_crypto_profile(self, symbol, volatility):
         """Retourne le profil adaptatif selon crypto et volatilité"""
-        if volatility >= 3.0:
-            return {
-                'min_confidence': 45,
-                'profit_target': 1.5,
-                'confidence_adjustment': +5
-            }
-        elif volatility >= 2.0:
-            return {
-                'min_confidence': 50,
-                'profit_target': 1.0,
-                'confidence_adjustment': +3
-            }
-        elif volatility >= 1.0:
-            return {
-                'min_confidence': 55,
-                'profit_target': 0.7,
-                'confidence_adjustment': 0
-            }
-        else:
-            return {
-                'min_confidence': 60,
-                'profit_target': 0.5,
-                'confidence_adjustment': 0
-            }
+        return MarketCalculator.get_crypto_profile(volatility)
     
     def analyze_all_timeframes(self, bot, symbol, current_price):
         """Analyse tous les timeframes et génère un signal global"""

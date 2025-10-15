@@ -9,37 +9,24 @@ except ImportError:
     NUMPY_AVAILABLE = False
     print("⚠️ NumPy non installé - Calculs standards utilisés")
 
+from utils.volatility_calculator import VolatilityCalculator
+from utils.market_calculator import MarketCalculator
+
 class NumpyOptimizer:
     @staticmethod
     def calculate_volatility_fast(klines, symbol=''):
         """Calcul volatilité vectorisé (gain 5-10x)"""
-        # Volatilité réaliste hardcodée
-        vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
-        volatility = 2.0
-        for k, v in vol_defaults.items():
-            if k in symbol:
-                volatility = v
-                break
-        return volatility
+        return VolatilityCalculator.calculate(klines, symbol)
     
     @staticmethod
     def calculate_momentum_fast(klines):
         """Calcul momentum vectorisé"""
-        if not NUMPY_AVAILABLE or len(klines) < 10:
-            prices = [k['close'] for k in klines[-10:]]
-            return (prices[-1] - prices[0]) / prices[0] * 100
-        
-        prices = np.array([k['close'] for k in klines[-10:]])
-        return (prices[-1] - prices[0]) / prices[0] * 100
+        return MarketCalculator.calculate_momentum(klines)
     
     @staticmethod
     def calculate_volume_avg_fast(klines):
         """Calcul volume moyen vectorisé"""
-        if not NUMPY_AVAILABLE or len(klines) < 5:
-            return sum(k['volume'] for k in klines[-5:]) / 5
-        
-        volumes = np.array([k['volume'] for k in klines[-5:]])
-        return volumes.mean()
+        return MarketCalculator.calculate_volume_avg(klines)
     
     @staticmethod
     def score_crypto_fast(klines):
@@ -47,19 +34,15 @@ class NumpyOptimizer:
         if not NUMPY_AVAILABLE or len(klines) < 10:
             return None
         
-        # Extraire données
-        prices = np.array([k['close'] for k in klines[-20:]])
-        volumes = np.array([k['volume'] for k in klines[-5:]])
+        # Calculs centralisés
+        volatility = VolatilityCalculator.calculate(klines)
+        momentum = MarketCalculator.calculate_momentum(klines)
+        avg_volume = MarketCalculator.calculate_volume_avg(klines)
         
-        # Volatilité réaliste hardcodée (pas de calcul)
-        volatility = 2.0  # Valeur par défaut
-        momentum = (prices[-1] - prices[-10]) / prices[-10] * 100
-        avg_volume = volumes.mean()
-        
-        # Scoring inline
+        # Scoring centralisé
         vol_score = 30 if volatility >= 3 else 25 if volatility >= 2 else 20 if volatility >= 1 else 15 if volatility >= 0.5 else 10 if volatility >= 0.3 else 5
-        mom_score = 25 if momentum >= 1 else 20 if momentum >= 0.5 else 15 if momentum >= 0.2 else 10 if momentum >= 0 else 8 if momentum >= -0.5 else 5
-        vol_score_val = 25 if avg_volume >= 5000000 else 20 if avg_volume >= 1000000 else 15 if avg_volume >= 500000 else 10 if avg_volume >= 100000 else 5
+        mom_score = MarketCalculator.calculate_momentum_score([{'close': 0}] * 10 if len([k for k in klines]) < 10 else klines)
+        vol_score_val = MarketCalculator.calculate_volume_score(klines)
         
         return {
             'volatility': volatility,
