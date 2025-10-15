@@ -5,7 +5,7 @@ class VolatilityCalculator:
     
     _instance = None
     _cache = {}
-    _cache_timeout = 300  # 5 minutes
+    _cache_timeout = 60  # 1 minute
     
     def __new__(cls):
         if cls._instance is None:
@@ -28,6 +28,8 @@ class VolatilityCalculator:
         if symbol and symbol in cls._cache:
             cache_data = cls._cache[symbol]
             if time.time() - cache_data['timestamp'] < cls._cache_timeout:
+                # DEBUG: Afficher cache hit
+                # print(f"[VOL CACHE] {symbol}: {cache_data['volatility']:.1f}/5")
                 return cache_data['volatility']
         
         try:
@@ -44,33 +46,59 @@ class VolatilityCalculator:
             # Calcul ATR (Average True Range) temps réel
             true_ranges = []
             for i in range(1, len(recent_klines)):
-                high = recent_klines[i].get('high', closes[i])
-                low = recent_klines[i].get('low', closes[i])
-                prev_close = closes[i-1]
+                kline = recent_klines[i]
+                high = kline.get('high', closes[i] if i < len(closes) else 0)
+                low = kline.get('low', closes[i] if i < len(closes) else 0)
+                prev_close = closes[i-1] if i-1 < len(closes) else 0
+                
+                # Éviter division par zéro ou valeurs invalides
+                if high <= 0 or low <= 0 or prev_close <= 0 or high < low:
+                    continue
                 
                 tr = max(
                     high - low,
                     abs(high - prev_close),
                     abs(low - prev_close)
                 )
-                true_ranges.append(tr)
+                if tr > 0:
+                    true_ranges.append(tr)
             
-            if not true_ranges:
+            # Fallback: calculer volatilité simple sur les closes
+            price_changes = [abs(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes)) if closes[i-1] > 0]
+            if not price_changes:
                 return 2.0
             
-            atr = sum(true_ranges) / len(true_ranges)
-            current_price = closes[-1]
+            if not true_ranges or len(true_ranges) < 5:
+                # Utiliser changements de prix simples
+                avg_change = sum(price_changes) / len(price_changes)
+                volatility_hourly = avg_change * 100
+            else:
+                # Utiliser ATR si disponible
+                atr = sum(true_ranges) / len(true_ranges)
+                current_price = closes[-1]
+                
+                if current_price <= 0:
+                    avg_change = sum(price_changes) / len(price_changes)
+                    volatility_hourly = avg_change * 100
+                else:
+                    volatility_hourly = (atr / current_price) * 100
             
-            # Volatilité horaire en % (ATR sur 60 bougies 1m = 1h)
-            volatility_hourly = (atr / current_price) * 100
-            
-            # Mapper vers score 1-5 pour scalping temps réel
-            # 0-0.8% horaire → 1/5 (très calme)
-            # 0.8-1.6% horaire → 2/5 (calme)
-            # 1.6-3.2% horaire → 3/5 (moyen)
-            # 3.2-4.8% horaire → 4/5 (volatil)
-            # 4.8%+ horaire → 5/5 (très volatil)
-            volatility_score = min(max(volatility_hourly * 1.25, 1.0), 5.0)
+            # Mapper vers score 1-5 pour scalping temps réel (ajusté marché crypto)
+            # 0-0.15% horaire → 1/5 (très calme)
+            # 0.15-0.30% horaire → 2/5 (calme)
+            # 0.30-0.60% horaire → 3/5 (moyen)
+            # 0.60-1.20% horaire → 4/5 (volatil)
+            # 1.20%+ horaire → 5/5 (très volatil)
+            if volatility_hourly < 0.15:
+                volatility_score = 1.0
+            elif volatility_hourly < 0.30:
+                volatility_score = 2.0
+            elif volatility_hourly < 0.60:
+                volatility_score = 3.0
+            elif volatility_hourly < 1.20:
+                volatility_score = 4.0
+            else:
+                volatility_score = 5.0
             
             # Mettre en cache
             if symbol:

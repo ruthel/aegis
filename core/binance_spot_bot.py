@@ -15,6 +15,7 @@ from utils.safety_manager import SafetyManager
 from utils.stuck_position_manager import StuckPositionManager
 from utils.crypto_scorer import CryptoScorer
 from utils.decision_display import DecisionDisplay
+from utils.confidence_calculator import ConfidenceCalculator
 import logging
 
 class BinanceSpotBot:
@@ -536,8 +537,8 @@ class BinanceSpotBot:
             min_trade_value = self.get_min_amount(symbol)['min_cost']
             
             if position_value < min_trade_value:
-                # Position poussière - Autoriser nouvel achat
-                print(f"🧹 {base_currency} poussière ({position_value:.2f} < {min_trade_value:.2f}) - achat autorisé")
+                # Position poussière - Autoriser nouvel achat (sans affichage)
+                pass
             else:
                 # Position normale - Bloquer
                 print(f"⚠️ {base_currency} déjà détenu ({position_value:.2f} USDT) - 1 max/crypto")
@@ -728,8 +729,10 @@ class BinanceSpotBot:
             else:
                 change_24h = 2.5
             
-            # Affichage prix uniquement (asynchrone)
-            self.async_print(f"\n⚡ {symbol} {price:.2f} ({change_24h:+.2f}%)")
+            # Affichage prix + volatilité (asynchrone)
+            analysis = self.get_cached_analysis(symbol, price)
+            vol_display = analysis.get('volatility', 2.0)
+            self.async_print(f"\n⚡ {symbol} {price:.2f} ({change_24h:+.2f}%) | Vol {vol_display:.1f}/5")
             
             if strategy_type == 'intelligent':
                 self.intelligent_strategy(symbol, amount, price)
@@ -756,32 +759,30 @@ class BinanceSpotBot:
         # Afficher analyse UNIQUEMENT si signal BUY/SELL (asynchrone)
         if global_signal['action'] in ['BUY', 'STRONG_BUY', 'SELL', 'STRONG_SELL']:
             vol_display = multi_tf_analysis.get('volatility', 2.0)
-            self.async_print(f"🎯 {global_signal['action']} (Force: {global_signal['strength']:.1f}, Conf: {global_signal['confidence']:.1f}%, Vol: {vol_display:.1f}%)")
+            self.async_print(f"🎯 {global_signal['action']} (Force: {global_signal['strength']:.1f}, Conf: {global_signal['confidence']:.1f}%, Vol: {vol_display:.1f}/5)")
             self.async_print(f"📝 {global_signal['summary']}")
         
         # Position sizing intelligent
         smart_amount = self.risk_manager.calculate_position_size(self, symbol, amount)
         
-        # Logique d'achat avancée (seuil adaptatif selon volatilité Binance 1-5)
+        # Logique d'achat avancée (seuil adaptatif selon volatilité)
         vol_value = multi_tf_analysis.get('volatility', 2.0)
+        min_confidence = ConfidenceCalculator.get_min_confidence(vol_value)
         
-        if vol_value >= 4.0:
-            min_confidence = 45
-        elif vol_value >= 3.0:
-            min_confidence = 50
-        elif vol_value >= 2.0:
-            min_confidence = 55
-        else:
-            min_confidence = 60
-        
-        # Vérifier chaque condition (>= au lieu de >)
+        # Vérifier chaque condition
         action_ok = global_signal['action'] in ['BUY', 'STRONG_BUY']
         conf_ok = global_signal['confidence'] >= min_confidence
         corr_ok = self.correlation_manager.can_open_position(symbol, self)
         
-        print(f"🔍 {symbol.split('/')[0]}: vol={vol_value:.1f}/5 action={global_signal['action']}({action_ok}) conf={global_signal['confidence']:.0f}≥{min_confidence}({conf_ok}) corr={corr_ok}")
+        # Vérifier solde USDT disponible
+        balance = self.get_balance()
+        usdt_available = balance.get('USDT', {}).get('free', 0)
+        min_cost = self.get_min_amount(symbol)['min_cost']
+        funds_ok = usdt_available >= min_cost
         
-        if action_ok and conf_ok and corr_ok:
+        print(f"🔍 {symbol.split('/')[0]}: vol={vol_value:.1f}/5 action={global_signal['action']}({action_ok}) conf={global_signal['confidence']:.0f}≥{min_confidence}({conf_ok}) corr={corr_ok} funds={funds_ok}")
+        
+        if action_ok and conf_ok and corr_ok and funds_ok:
             trade_amount = smart_amount / current_price
             print(f"🟢 ACHAT {symbol.split('/')[0]}: conf {global_signal['confidence']:.0f}% ≥ {min_confidence}%, vol {vol_value:.1f}/5")
             
@@ -799,7 +800,9 @@ class BinanceSpotBot:
             elif not conf_ok:
                 print(f"⏳ HOLD {symbol.split('/')[0]}: Confiance {global_signal['confidence']:.0f}% < {min_confidence}%")
             elif not corr_ok:
-                print(f"⏳ HOLD {symbol.split('/')[0]}: Position déjà ouverte ou corrélation bloquée")
+                print(f"⏳ HOLD {symbol.split('/')[0]}: Position déjà ouverte")
+            elif not funds_ok:
+                print(f"⏳ HOLD {symbol.split('/')[0]}: Fonds insuffisants ({usdt_available:.2f} < {min_cost:.2f})")
             else:
                 print(f"⏳ HOLD {symbol.split('/')[0]}: Conditions défavorables")
         
@@ -821,16 +824,15 @@ class BinanceSpotBot:
                 return
             
             # Placer ordre limite dès détection position
-            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-            if buy_positions:
-                avg_buy_price = sum(p['price'] for p in buy_positions) / len(buy_positions)
-                expected_profit_pct = (current_price - avg_buy_price) / avg_buy_price
+            real_buy_price = self.get_real_buy_price(symbol)
+            if real_buy_price:
+                expected_profit_pct = (current_price - real_buy_price) / real_buy_price
                 min_profit_needed = self.min_profit_threshold + (2 * self.trading_fee)
                 
                 # Calculer prix limite optimal
                 target_profit = self.min_profit_threshold + (2 * self.trading_fee)
-                limit_price = avg_buy_price * (1 + target_profit)
-                profit_at_limit = ((limit_price - avg_buy_price) / avg_buy_price) * 100
+                limit_price = real_buy_price * (1 + target_profit)
+                profit_at_limit = ((limit_price - real_buy_price) / real_buy_price) * 100
                 
                 # Vérifier si ordre limite déjà placé pour ce symbol au même prix
                 existing_order = None
@@ -868,13 +870,9 @@ class BinanceSpotBot:
     
     def calculate_pnl(self, symbol, side, amount, price):
         if side == 'sell':
-            buy_positions = [p for p in self.state['positions'] 
-                           if p['symbol'] == symbol and p['side'] == 'buy']
-            if buy_positions:
-                avg_buy_price = sum(p['price'] for p in buy_positions) / len(buy_positions)
-                
-                # Calcul avec frais
-                buy_cost = avg_buy_price * amount * (1 + self.trading_fee)
+            real_buy_price = self.get_real_buy_price(symbol)
+            if real_buy_price:
+                buy_cost = real_buy_price * amount * (1 + self.trading_fee)
                 sell_revenue = price * amount * (1 - self.trading_fee)
                 pnl = sell_revenue - buy_cost
                 
@@ -882,7 +880,7 @@ class BinanceSpotBot:
                 if pnl > 0:
                     self.winning_trades += 1
                 
-                fee_cost = (avg_buy_price + price) * amount * self.trading_fee
+                fee_cost = (real_buy_price + price) * amount * self.trading_fee
                 print(f"💰 P&L: {pnl:+.2f} USDT (Frais: -{fee_cost:.2f})")
                 
                 return pnl
@@ -968,16 +966,14 @@ class BinanceSpotBot:
         available = balance.get(base_currency, {}).get('free', 0)
         
         if available > 0:
-            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-            if buy_positions:
-                avg_buy_price = sum(p['price'] for p in buy_positions) / len(buy_positions)
-                expected_profit_pct = (current_price - avg_buy_price) / avg_buy_price
+            real_buy_price = self.get_real_buy_price(symbol)
+            if real_buy_price:
+                expected_profit_pct = (current_price - real_buy_price) / real_buy_price
                 min_profit_needed = self.min_profit_threshold + (2 * self.trading_fee)
                 
-                # Calculer prix limite optimal
                 target_profit = self.min_profit_threshold + (2 * self.trading_fee)
-                limit_price = avg_buy_price * (1 + target_profit)
-                profit_at_limit = ((limit_price - avg_buy_price) / avg_buy_price) * 100
+                limit_price = real_buy_price * (1 + target_profit)
+                profit_at_limit = ((limit_price - real_buy_price) / real_buy_price) * 100
                 
                 # Vérifier si ordre limite déjà placé pour ce symbol au même prix
                 existing_order = None
@@ -1312,6 +1308,48 @@ class BinanceSpotBot:
             print(f"❌ Erreur vente limite: {e}")
             return None
     
+    def get_real_buy_price(self, symbol):
+        """Récupère prix réel d'achat de la position ACTUELLE (dernier achat non vendu)"""
+        if not self.paper_trading:
+            try:
+                # Récupérer solde actuel
+                balance = self.get_balance()
+                base_currency = symbol.split('/')[0]
+                current_amount = balance.get(base_currency, {}).get('free', 0) + balance.get(base_currency, {}).get('used', 0)
+                
+                if current_amount <= 0.00001:
+                    return None
+                
+                # Récupérer trades récents
+                trades = self.safe_request(self.exchange.fetch_my_trades, symbol, limit=100)
+                
+                # Calculer solde net depuis les trades
+                net_amount = 0
+                weighted_price = 0
+                
+                # Parcourir trades du plus récent au plus ancien
+                for trade in reversed(trades):
+                    if trade['side'] == 'buy':
+                        net_amount += trade['amount']
+                        weighted_price += trade['price'] * trade['amount']
+                    else:  # sell
+                        net_amount -= trade['amount']
+                    
+                    # Arrêter quand on a couvert le solde actuel
+                    if net_amount >= current_amount:
+                        break
+                
+                if net_amount > 0:
+                    return weighted_price / net_amount
+            except:
+                pass
+        
+        # Fallback: dernier achat bot_state
+        buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+        if buy_positions:
+            return buy_positions[-1]['price']
+        return None
+    
     def handle_sell_logic(self, symbol, current_price, order_type, global_signal):
         """Gestion intelligente de la vente"""
         base_currency = symbol.split('/')[0]
@@ -1319,10 +1357,9 @@ class BinanceSpotBot:
         available = balance.get(base_currency, {}).get('free', 0)
         
         if available > 0:
-            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-            if buy_positions:
-                avg_buy_price = sum(p['price'] for p in buy_positions) / len(buy_positions)
-                expected_profit_pct = (current_price - avg_buy_price) / avg_buy_price
+            real_buy_price = self.get_real_buy_price(symbol)
+            if real_buy_price:
+                expected_profit_pct = (current_price - real_buy_price) / real_buy_price
                 min_profit_needed = self.min_profit_threshold + (2 * self.trading_fee)
                 
                 # PRIORITÉ AU PROFIT: Vendre dès que profit suffisant
@@ -1339,11 +1376,11 @@ class BinanceSpotBot:
                     
                     # Profit cible adapté
                     adaptive_profit = profile['profit_target'] / 100  # Convertir en décimal
-                    limit_price = avg_buy_price * (1 + adaptive_profit)
+                    limit_price = real_buy_price * (1 + adaptive_profit)
                     
-                    profit_pct_at_limit = ((limit_price - avg_buy_price) / avg_buy_price) * 100
+                    profit_pct_at_limit = ((limit_price - real_buy_price) / real_buy_price) * 100
                     print(f"🎯 VENTE LIMIT ADAPTIVE: {available:.6f} {base_currency} à {limit_price:.2f} (profit {profit_pct_at_limit:+.2f}%)")
-                    print(f"📊 Vol: {volatility:.1f}% | Target: +{profile['profit_target']:.1f}% | Breakeven: {avg_buy_price * (1 + min_profit_needed):.2f}")
+                    print(f"📊 Vol: {volatility:.1f}% | Target: +{profile['profit_target']:.1f}% | Breakeven: {real_buy_price * (1 + min_profit_needed):.2f}")
                     
                     result = self.sell_limit(symbol, available, limit_price)
                     if result:
@@ -1431,7 +1468,10 @@ class BinanceSpotBot:
     
     def get_cached_analysis(self, symbol, current_price, force=False):
         """Récupère analyse depuis cache ou calcule si nécessaire (throttling intelligent)"""
-        # TOUJOURS recalculer pour avoir volatilité correcte
+        # Vider cache volatilité pour recalcul frais
+        from utils.volatility_calculator import VolatilityCalculator
+        VolatilityCalculator.clear_cache(symbol)
+        
         analysis = self.multi_tf_analyzer.analyze_all_timeframes(self, symbol, current_price)
         return analysis
     
@@ -1582,14 +1622,19 @@ class BinanceSpotBot:
                     'reason': f'{usdt_available:.2f} USDT disponible'
                 }
             
-            # Analyse multi-timeframes
+            # Analyse multi-timeframes (sans cache pour cohérence)
+            from utils.volatility_calculator import VolatilityCalculator
+            VolatilityCalculator.clear_cache(symbol)
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
             
-            # Conditions actuelles (seuil 60%)
+            # Conditions actuelles (seuil adaptatif selon volatilité)
+            vol_value = analysis.get('volatility', 2.0)
+            min_conf = ConfidenceCalculator.get_min_confidence(vol_value)
+            
             can_buy_now = (
                 signal['action'] in ['BUY', 'STRONG_BUY'] and
-                signal['confidence'] >= 60 and
+                signal['confidence'] >= min_conf and
                 self.correlation_manager.can_open_position(symbol, self)
             )
             
@@ -1599,11 +1644,12 @@ class BinanceSpotBot:
                     'time_estimate': 'Maintenant',
                     'confidence': signal['confidence'],
                     'target_price': current_price,
+                    'min_confidence': min_conf,
                     'reason': f"Signal {signal['action']}"
                 }
             
-            # Calculer distance au signal (éviter négatif) - seuil 60%
-            confidence_gap = max(0, 60 - signal['confidence'])
+            # Calculer distance au signal (éviter négatif) - seuil adaptatif
+            confidence_gap = max(0, min_conf - signal['confidence'])
             
             # Analyse avancée pour prévision précise
             klines = self.get_klines(symbol, 20)
@@ -1673,7 +1719,7 @@ class BinanceSpotBot:
             else:
                 # Attendre amélioration signal
                 target_price = current_price
-                reason = f"Signal {signal['confidence']:.0f}%→60%"
+                reason = f"Signal {signal['confidence']:.0f}%→{min_conf}%"
             
             return {
                 'status': 'WAITING',
@@ -1757,10 +1803,11 @@ class BinanceSpotBot:
             if not buy_positions:
                 continue
             
-            # Utiliser la position la plus récente
-            latest_position = buy_positions[-1]
-            buy_price = latest_position['price']
-            buy_time = datetime.fromisoformat(latest_position['timestamp']).timestamp()
+            buy_price = self.get_real_buy_price(symbol)
+            if not buy_price:
+                continue
+            
+            buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp']).timestamp()
             current_price = self.get_price(symbol)
             
             is_stuck, loss_percent = self.stuck_manager.check_stuck_position(
@@ -1849,7 +1896,10 @@ class BinanceSpotBot:
                 continue
             
             has_positions = True
-            buy_price = buy_positions[-1]['price']
+            buy_price = self.get_real_buy_price(symbol)
+            if not buy_price:
+                continue
+            
             pnl_pct = ((current_price - buy_price) / buy_price) * 100
             
             # Affichage conditionnel compact (asynchrone)
@@ -1959,14 +2009,16 @@ class BinanceSpotBot:
                     prediction = self.predict_next_buy_opportunity(symbol)
                     crypto = symbol.split('/')[0]
                     
-                    if prediction['status'] in ['READY', 'WAITING']:
+                    # Afficher seulement si READY ou WAITING (pas BLOCKED/NO_FUNDS)
+                    if prediction and prediction['status'] in ['READY', 'WAITING']:
                         buy_predictions.append((crypto, prediction))
                 
                 if buy_predictions:
                     print("\n🔮 PRÉVISIONS ACHATS:")
                     for crypto, prediction in buy_predictions:
                         if prediction['status'] == 'READY':
-                            print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%) - {prediction['reason']}")
+                            min_conf = prediction.get('min_confidence', 60)
+                            print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}")
                         elif prediction['status'] == 'WAITING':
                             print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}")
                 
@@ -2002,25 +2054,35 @@ class BinanceSpotBot:
                     if can_buy or can_sell:
                         tradable_pairs.append(symbol)
                 
-                # Traiter uniquement paires tradables
-                print(f"🔍 Tradable: {[s.split('/')[0] for s in tradable_pairs]} | USDT: {usdt_available:.2f}")
+                # Traiter uniquement paires tradables (sans poussière)
+                tradable_display = []
+                for s in tradable_pairs:
+                    base = s.split('/')[0]
+                    free = balance.get(base, {}).get('free', 0)
+                    if free > 0.00001:
+                        value = free * self.get_price(s)
+                        if value >= self.get_min_amount(s)['min_cost']:
+                            tradable_display.append(base)
+                    else:
+                        tradable_display.append(base)
+                
+                print(f"🔍 Tradable: {tradable_display} | USDT: {usdt_available:.2f}")
                 if tradable_pairs:
-                    # CORRECTION: Toujours appeler la stratégie pour vérifier les ventes
-                    # La stratégie elle-même gère les conditions d'achat/vente
+                    # Toujours appeler la stratégie pour gérer ventes
                     for symbol in tradable_pairs:
                         self.execute_strategy(symbol, strategy_type, trade_amount)
+                
+                # Nouveaux achats si solde USDT suffisant
+                if usdt_available >= trade_amount:
+                    stuck_positions = self.stuck_manager.stuck_positions
+                    best_cryptos = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
                     
-                    # Nouveaux achats si solde USDT suffisant
-                    if usdt_available >= trade_amount:
-                        stuck_positions = self.stuck_manager.stuck_positions
-                        best_cryptos = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
-                        
-                        if best_cryptos:
-                            print(f"\n🎯 NOUVEAUX ACHATS: {', '.join(best_cryptos)}")
-                            for symbol in best_cryptos:
-                                # Éviter double appel si déjà traité
-                                if symbol not in tradable_pairs:
-                                    self.execute_strategy(symbol, strategy_type, trade_amount)
+                    if best_cryptos:
+                        print(f"\n🎯 TOP SCORES: {', '.join([s.split('/')[0] for s in best_cryptos])}")
+                        # Analyser mais ne pas forcer l'achat
+                        for symbol in best_cryptos:
+                            if symbol not in tradable_pairs:
+                                self.execute_strategy(symbol, strategy_type, trade_amount)
                 
                 # Notification status périodique
                 if self.notify_trades:

@@ -13,7 +13,7 @@ class CryptoScorer:
         self.optimizer = None  # Sera défini par le bot
         
     def calculate_volatility_score(self, klines, symbol='', volatility=None):
-        """Score basé sur volatilité (0-30 points)"""
+        """Score basé sur volatilité 1-5 (0-30 points)"""
         if len(klines) < 10:
             return 0
         
@@ -21,15 +21,14 @@ class CryptoScorer:
         if volatility is None:
             volatility = VolatilityCalculator.calculate(klines, symbol)
         
-        if volatility >= 3:
+        # Mapping score 1-5 → points
+        if volatility >= 4.0:
             return 30
-        elif volatility >= 2:
+        elif volatility >= 3.0:
             return 25
-        elif volatility >= 1:
+        elif volatility >= 2.0:
             return 20
-        elif volatility >= 0.5:
-            return 15
-        elif volatility >= 0.3:
+        elif volatility >= 1.5:
             return 10
         else:
             return 5
@@ -175,7 +174,19 @@ class CryptoScorer:
         tradeable = [c['symbol'] for c in scores[:self.max_tradeable] if c['score'] >= self.min_score]
         
         if tradeable:
-            top_display = [f"{c['symbol'].replace('/USDT', '')} {c['score']} (V{c['volatility']} L{c['volume']} M{int(c['min_cost'])})" for c in scores[:self.max_tradeable] if c['score'] >= self.min_score]
+            top_display = []
+            for c in scores[:self.max_tradeable]:
+                if c['score'] >= self.min_score:
+                    vol_score = c['volatility']
+                    if vol_score >= 30:
+                        vol_display = 4.0
+                    elif vol_score >= 25:
+                        vol_display = 3.0
+                    elif vol_score >= 20:
+                        vol_display = 2.0
+                    else:
+                        vol_display = 1.0
+                    top_display.append(f"{c['symbol'].replace('/USDT', '')} {c['score']} (V{vol_display:.1f} L{c['volume']} M{int(c['min_cost'])})")
             print(f"🎯 TOP: {' | '.join(top_display)} → TRADING")
         else:
             print(f"⚠️ Aucune crypto ≥{self.min_score}/100")

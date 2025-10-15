@@ -1420,7 +1420,106 @@
       "source": "binance_history",
       "fee": 4.94e-06,
       "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "buy",
+      "amount": 0.038,
+      "price": 206.97,
+      "timestamp": "2025-10-15T10:16:16.476000",
+      "order_id": "1633895186",
+      "source": "binance_history",
+      "fee": 4.93e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "sell",
+      "amount": 0.038,
+      "price": 206.95,
+      "timestamp": "2025-10-15T10:16:19.165000",
+      "order_id": "1633895272",
+      "source": "binance_history",
+      "fee": 4.93e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "buy",
+      "amount": 0.038,
+      "price": 206.41,
+      "timestamp": "2025-10-15T10:20:06.068000",
+      "order_id": "1633904222",
+      "source": "binance_history",
+      "fee": 4.92e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "sell",
+      "amount": 0.038,
+      "price": 206.4,
+      "timestamp": "2025-10-15T10:20:08.804000",
+      "order_id": "1633904228",
+      "source": "binance_history",
+      "fee": 4.94e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "buy",
+      "amount": 0.038,
+      "price": 206.32,
+      "timestamp": "2025-10-15T10:22:00.096000",
+      "order_id": "1633907926",
+      "source": "binance_history",
+      "fee": 4.93e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "sell",
+      "amount": 0.038,
+      "price": 206.29,
+      "timestamp": "2025-10-15T10:22:03.182000",
+      "order_id": "1633907967",
+      "source": "binance_history",
+      "fee": 4.92e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "buy",
+      "amount": 0.038,
+      "price": 206.55,
+      "timestamp": "2025-10-15T10:48:38.173000",
+      "order_id": "1633967974",
+      "source": "binance_history",
+      "fee": 4.94e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "sell",
+      "amount": 0.01,
+      "price": 206.52,
+      "timestamp": "2025-10-15T10:48:40.626000",
+      "order_id": "1633968020",
+      "source": "binance_history",
+      "fee": 1.29e-06,
+      "paper": false
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "sell",
+      "amount": 0.028,
+      "price": 206.52,
+      "timestamp": "2025-10-15T10:48:40.626000",
+      "order_id": "1633968021",
+      "source": "binance_history",
+      "fee": 3.63e-06,
+      "paper": false
     }
   ],
-  "last_update": "2025-10-15T09:43:01.395134"
+  "last_update": "2025-10-15T10:51:00.019376"
 }

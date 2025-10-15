@@ -163,9 +163,9 @@ class MultiTimeframeAnalyzer:
             return 'below_middle'
     
     def calculate_volatility(self, bot, symbol):
-        """Calcule la volatilité réelle sur les dernières 24h"""
+        """Calcule la volatilité réelle - MÉTHODE CENTRALISÉE"""
         try:
-            klines = bot.get_klines(symbol, 100)
+            klines = bot.get_klines(symbol, 60)
             return VolatilityCalculator.calculate(klines, symbol)
         except Exception as e:
             return 2.0
@@ -232,11 +232,11 @@ class MultiTimeframeAnalyzer:
             'signals': all_signals[:5],
             'volatility': volatility,
             'profile': profile,
-            'summary': self.generate_summary(action, avg_strength, dominant_trend, adjusted_confidence)
+            'summary': self.generate_summary(action, avg_strength, dominant_trend, adjusted_confidence, volatility)
         }
     
     def determine_action(self, avg_strength, dominant_trend, timeframe_analysis):
-        """Détermine l'action recommandée"""
+        """Détermine l'action recommandée - SIMPLIFIÉ"""
         strong_buy_threshold = 1.5
         buy_threshold = 0.3
         sell_threshold = -0.3
@@ -246,6 +246,7 @@ class MultiTimeframeAnalyzer:
         trend_consistency = trends.count(dominant_trend) / len(trends)
         adjusted_strength = avg_strength * trend_consistency
         
+        # Logique simplifiée: strength détermine l'action
         if adjusted_strength >= strong_buy_threshold:
             return 'STRONG_BUY'
         elif adjusted_strength >= buy_threshold:
@@ -279,9 +280,9 @@ class MultiTimeframeAnalyzer:
         
         return round(confidence, 1)
     
-    def generate_summary(self, action, strength, trend, confidence):
+    def generate_summary(self, action, strength, trend, confidence, volatility=2.0):
         """Génère un résumé textuel de l'analyse"""
         strength_desc = "forte" if abs(strength) > 2 else "modérée" if abs(strength) > 1 else "faible"
         trend_desc = {"bullish": "haussière", "bearish": "baissière", "neutral": "neutre"}[trend]
         
-        return f"{action} - Tendance {trend_desc}, force {strength_desc} (confiance: {confidence}%)"
+        return f"{action} - Tendance {trend_desc}, force {strength_desc} (conf: {confidence}%, vol: {volatility:.1f}/5)"
