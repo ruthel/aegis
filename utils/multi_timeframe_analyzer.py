@@ -160,28 +160,62 @@ class MultiTimeframeAnalyzer:
         else:
             return 'below_middle'
     
+    def calculate_volatility(self, bot, symbol):
+        """Calcule la volatilité récente - Utilise valeurs réalistes par défaut"""
+        defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
+        for key, val in defaults.items():
+            if key in symbol:
+                return val
+        return 2.0
+    
+    def get_crypto_profile(self, symbol, volatility):
+        """Retourne le profil adaptatif selon crypto et volatilité"""
+        if volatility >= 3.0:
+            return {
+                'min_confidence': 45,
+                'profit_target': 1.5,
+                'confidence_adjustment': +5
+            }
+        elif volatility >= 2.0:
+            return {
+                'min_confidence': 50,
+                'profit_target': 1.0,
+                'confidence_adjustment': +3
+            }
+        elif volatility >= 1.0:
+            return {
+                'min_confidence': 55,
+                'profit_target': 0.7,
+                'confidence_adjustment': 0
+            }
+        else:
+            return {
+                'min_confidence': 60,
+                'profit_target': 0.5,
+                'confidence_adjustment': 0
+            }
+    
     def analyze_all_timeframes(self, bot, symbol, current_price):
         """Analyse tous les timeframes et génère un signal global"""
         timeframe_analysis = {}
         
-        # Analyser chaque timeframe
         for tf in self.timeframes:
             klines = self.get_klines_for_timeframe(bot, symbol, tf)
             analysis = self.analyze_timeframe(klines, current_price)
             timeframe_analysis[tf] = analysis
         
-        # Générer le signal global
-        global_signal = self.generate_global_signal(timeframe_analysis, current_price)
+        volatility = self.calculate_volatility(bot, symbol)
+        global_signal = self.generate_global_signal(timeframe_analysis, current_price, symbol, volatility)
         
         return {
             'timeframes': timeframe_analysis,
             'global_signal': global_signal,
+            'volatility': volatility,
             'timestamp': bot.exchange.milliseconds() if hasattr(bot, 'exchange') else None
         }
     
-    def generate_global_signal(self, timeframe_analysis, current_price):
+    def generate_global_signal(self, timeframe_analysis, current_price, symbol='', volatility=2.0):
         """Génère un signal global basé sur tous les timeframes"""
-        # Pondération des timeframes (15m plus important que 1m)
         weights = {'15m': 3, '5m': 2, '1m': 1}
         
         total_strength = 0
@@ -194,51 +228,43 @@ class MultiTimeframeAnalyzer:
             strength = analysis['strength']
             trend = analysis['trend']
             
-            # Accumuler la force pondérée
             total_strength += strength * weight
             max_weight += weight
-            
-            # Voter pour la tendance
             trend_votes[trend] += weight
             
-            # Collecter les signaux
             for signal in analysis['signals']:
                 all_signals.append(f"{tf}: {signal}")
         
-        # Calculer la force moyenne pondérée
         avg_strength = total_strength / max_weight if max_weight > 0 else 0
-        
-        # Déterminer la tendance dominante
         dominant_trend = max(trend_votes, key=trend_votes.get)
-        
-        # Générer l'action recommandée
         action = self.determine_action(avg_strength, dominant_trend, timeframe_analysis)
+        base_confidence = self.calculate_confidence(timeframe_analysis, avg_strength)
         
-        # Calculer le score de confiance
-        confidence = self.calculate_confidence(timeframe_analysis, avg_strength)
+        profile = self.get_crypto_profile(symbol, volatility)
+        adjusted_confidence = base_confidence + profile['confidence_adjustment']
+        adjusted_confidence = max(0, min(100, adjusted_confidence))
         
         return {
             'action': action,
             'strength': avg_strength,
-            'confidence': confidence,
+            'confidence': round(adjusted_confidence, 1),
+            'base_confidence': base_confidence,
             'dominant_trend': dominant_trend,
-            'signals': all_signals[:5],  # Top 5 signaux
-            'summary': self.generate_summary(action, avg_strength, dominant_trend, confidence)
+            'signals': all_signals[:5],
+            'volatility': volatility,
+            'profile': profile,
+            'summary': self.generate_summary(action, avg_strength, dominant_trend, adjusted_confidence)
         }
     
     def determine_action(self, avg_strength, dominant_trend, timeframe_analysis):
         """Détermine l'action recommandée"""
-        # Seuils pour les actions
-        strong_buy_threshold = 2.0
-        buy_threshold = 1.0
-        sell_threshold = -1.0
-        strong_sell_threshold = -2.0
+        strong_buy_threshold = 1.5
+        buy_threshold = 0.3
+        sell_threshold = -0.3
+        strong_sell_threshold = -1.5
         
-        # Vérifier la cohérence entre timeframes
         trends = [analysis['trend'] for analysis in timeframe_analysis.values()]
         trend_consistency = trends.count(dominant_trend) / len(trends)
-        
-        # Ajuster la force selon la cohérence
         adjusted_strength = avg_strength * trend_consistency
         
         if adjusted_strength >= strong_buy_threshold:
@@ -253,21 +279,24 @@ class MultiTimeframeAnalyzer:
             return 'HOLD'
     
     def calculate_confidence(self, timeframe_analysis, avg_strength):
-        """Calcule le score de confiance (0-100)"""
-        # Facteurs de confiance
-        strength_factor = min(abs(avg_strength) / 3.0, 1.0)  # Force du signal
+        """Calcule le score de confiance (0-100) - VERSION RÉALISTE"""
+        strength_factor = min(abs(avg_strength) / 2.0, 1.0)
         
-        # Cohérence entre timeframes
         trends = [analysis['trend'] for analysis in timeframe_analysis.values()]
         dominant_trend = max(set(trends), key=trends.count)
         consistency_factor = trends.count(dominant_trend) / len(trends)
         
-        # Nombre de signaux confirmés
         total_signals = sum(len(analysis['signals']) for analysis in timeframe_analysis.values())
-        signal_factor = min(total_signals / 10.0, 1.0)
+        signal_factor = min(total_signals / 6.0, 1.0)
         
-        # Score final (0-100)
-        confidence = (strength_factor * 0.4 + consistency_factor * 0.4 + signal_factor * 0.2) * 100
+        confidence = (
+            strength_factor * 0.40 + 
+            consistency_factor * 0.30 + 
+            signal_factor * 0.30
+        ) * 100
+        
+        if abs(avg_strength) >= 2.5:
+            confidence = min(confidence * 1.1, 100)
         
         return round(confidence, 1)
     

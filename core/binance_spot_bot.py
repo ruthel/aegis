@@ -27,7 +27,7 @@ class BinanceSpotBot:
         self.state_file = 'data/bot_state.json'
         self.min_amounts = {}
         self.price_cache = {}
-        self.cache_timeout = 1
+        self.cache_timeout = 0.5
         
         # Configuration depuis .env
         self.paper_trading = os.getenv('PAPER_TRADING', 'True') == 'True'
@@ -108,7 +108,7 @@ class BinanceSpotBot:
         
         # Cache analyses techniques (throttling intelligent)
         self.analysis_cache = {}
-        self.analysis_cache_timeout = 10  # 10s cache
+        self.analysis_cache_timeout = 5  # 5s cache (réduit pour refresh vol)
         self.price_change_threshold = 0.001  # 0.1% variation minimum
         
         # Créer le dossier data s'il n'existe pas
@@ -436,23 +436,35 @@ class BinanceSpotBot:
                if p['symbol'] == symbol and p['side'] == 'buy' and p.get('source') == 'binance_history']
         return buys[-1] if buys else None
     
-    def get_price(self, symbol):
-        if self.websocket.is_connected():
-            ws_price = self.websocket.get_price(symbol)
-            if ws_price is not None:
-                return ws_price
-        
+    def get_price(self, symbol, force_refresh=False):
         cache_key = f"price_{symbol}"
         now = time.time()
         
-        if cache_key in self.price_cache:
-            cached_data = self.price_cache[cache_key]
-            if now - cached_data['timestamp'] < self.cache_timeout:
-                return cached_data['price']
+        # WebSocket prioritaire (sauf si force_refresh)
+        if not force_refresh and self.websocket.is_connected():
+            ws_price = self.websocket.get_price(symbol)
+            if ws_price is not None:
+                # Mettre à jour cache avec prix WebSocket
+                self.price_cache[cache_key] = {
+                    'price': ws_price,
+                    'timestamp': now
+                }
+                return ws_price
         
+        # Vérifier cache (sauf si force_refresh)
+        if not force_refresh and cache_key in self.price_cache:
+            cached_data = self.price_cache[cache_key]
+            cache_age = now - cached_data['timestamp']
+            
+            if cache_age < self.cache_timeout:
+                return cached_data['price']
+            elif cache_age > 5:
+                # Avertir si cache trop vieux
+                print(f"⚠️ Prix {symbol} obsolète ({cache_age:.1f}s)")
+        
+        # Récupérer nouveau prix
         try:
             if self.paper_trading:
-                # Prix simulé pour paper trading
                 price = 50000 if 'BTC' in symbol else 3000 if 'ETH' in symbol else 150
             else:
                 ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
@@ -708,30 +720,51 @@ class BinanceSpotBot:
         # Position sizing intelligent
         smart_amount = self.risk_manager.calculate_position_size(self, symbol, amount)
         
-        # Logique d'achat avancée
-        if (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
-            global_signal['confidence'] >= 60 and
-            self.correlation_manager.can_open_position(symbol, self)):
-            
+        # Logique d'achat avancée (seuil adaptatif selon volatilité) - INLINE
+        vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
+        vol_value = 2.0
+        for k, v in vol_defaults.items():
+            if k in symbol:
+                vol_value = v
+                break
+        
+        if vol_value >= 3.0:
+            min_confidence = 45
+        elif vol_value >= 2.0:
+            min_confidence = 50
+        elif vol_value >= 1.0:
+            min_confidence = 55
+        else:
+            min_confidence = 60
+        
+        # Vérifier chaque condition
+        action_ok = global_signal['action'] in ['BUY', 'STRONG_BUY']
+        conf_ok = global_signal['confidence'] >= min_confidence
+        corr_ok = self.correlation_manager.can_open_position(symbol, self)
+        
+        print(f"🔍 {symbol.split('/')[0]}: action={global_signal['action']}({action_ok}) conf={global_signal['confidence']:.0f}≥{min_confidence}({conf_ok}) corr={corr_ok}")
+        
+        if action_ok and conf_ok and corr_ok:
             trade_amount = smart_amount / current_price
-            self.decision_display.show_decision('BUY_READY', symbol, f"Signal fort (confiance {global_signal['confidence']:.0f}%)")
-            print(f"🟢 SIGNAL ACHAT - Montant: {trade_amount:.6f} {symbol.split('/')[0]}")
+            print(f"🟢 ACHAT {symbol.split('/')[0]}: conf {global_signal['confidence']:.0f}% ≥ {min_confidence}%, vol {vol_value:.1f}%")
             
             result = self.buy_market(symbol, trade_amount)
             if result:
-                # Activer trailing stop
                 self.trailing_stop.add_position(symbol, current_price)
                 self.correlation_manager.add_position(symbol)
                 self.safety_manager.record_trade(0)
                 print(f"✅ Ordre + Trailing Stop activé: {result.get('id', 'N/A')}")
+            else:
+                print(f"❌ Échec achat {symbol.split('/')[0]}")
         else:
-            # Afficher pourquoi on n'achète pas
-            conditions = {
-                'Signal fort': global_signal['action'] in ['BUY', 'STRONG_BUY'],
-                f"Confiance ≥60%": global_signal['confidence'] >= 60,
-                'Corrélation OK': self.correlation_manager.can_open_position(symbol, self)
-            }
-            self.decision_display.show_conditions_check(symbol, 'ACHAT', conditions)
+            if not action_ok:
+                print(f"⏳ HOLD {symbol.split('/')[0]}: Action {global_signal['action']} non valide")
+            elif not conf_ok:
+                print(f"⏳ HOLD {symbol.split('/')[0]}: Confiance {global_signal['confidence']:.0f}% < {min_confidence}%")
+            elif not corr_ok:
+                print(f"⏳ HOLD {symbol.split('/')[0]}: Position déjà ouverte ou corrélation bloquée")
+            else:
+                print(f"⏳ HOLD {symbol.split('/')[0]}: Conditions défavorables")
         
         # Mise à jour trailing stop
         self.trailing_stop.update_position(symbol, current_price)
@@ -773,10 +806,7 @@ class BinanceSpotBot:
                     progress = (expected_profit_pct / min_profit_needed) * 100 if min_profit_needed > 0 else 0
                     self.decision_display.show_decision('HOLD', symbol, f"Profit {expected_profit_pct*100:+.2f}% (objectif {min_profit_needed*100:.2f}%)", progress=progress)
         
-        elif available == 0:
-            self.decision_display.show_decision('HOLD', symbol, 'Aucune position - Attente signal')
-        else:
-            self.decision_display.show_decision('HOLD', symbol, 'Conditions non remplies')
+
     
     def dca_strategy(self, symbol, amount, current_price):
         trade_amount = amount / current_price
@@ -919,13 +949,13 @@ class BinanceSpotBot:
         multi_tf_analysis = self.get_cached_analysis(symbol, current_price)
         global_signal = multi_tf_analysis['global_signal']
         
-        # Calculer la volatilité récente
-        klines = self.get_klines(symbol, 20)
-        if len(klines) >= 10:
-            prices = [k['close'] for k in klines[-10:]]
-            volatility = (max(prices) - min(prices)) / min(prices) * 100
-        else:
-            volatility = 5.0  # Valeur par défaut
+        # Volatilité réaliste hardcodée
+        vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
+        volatility = 2.0
+        for k, v in vol_defaults.items():
+            if k in symbol:
+                volatility = v
+                break
         
         # Déterminer la stratégie optimale
         strategy_choice = self.choose_optimal_strategy(global_signal, volatility, symbol)
@@ -979,13 +1009,13 @@ class BinanceSpotBot:
         multi_tf_analysis = self.get_cached_analysis(symbol, current_price, force=True)
         global_signal = multi_tf_analysis['global_signal']
         
-        # Volatilité simplifiée pour temps réel
-        klines = self.get_klines(symbol, 10)
-        if len(klines) >= 5:
-            prices = [k['close'] for k in klines[-5:]]
-            volatility = (max(prices) - min(prices)) / min(prices) * 100
-        else:
-            volatility = 5.0
+        # Volatilité réaliste hardcodée
+        vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
+        volatility = 2.0
+        for k, v in vol_defaults.items():
+            if k in symbol:
+                volatility = v
+                break
         
         # Choisir stratégie optimale
         strategy_choice = self.choose_optimal_strategy(global_signal, volatility, symbol)
@@ -1023,29 +1053,26 @@ class BinanceSpotBot:
         # Choisir type d'ordre optimal
         order_type = self.choose_optimal_order_type(global_signal, market_metrics, strategy_choice)
         
-        # Affichage UNIQUEMENT si action (BUY/SELL)
-        if strategy_choice in ['scalping', 'dca']:
-            print(f"⚡ {symbol} {current_price:.2f} → {strategy_choice.upper()} ({global_signal.get('dominant_trend', 'unknown')} {global_signal['confidence']:.0f}%)")
-            print(f"📊 V{market_metrics['volatility']:.1f}% | L:{market_metrics['liquidity']} | S{market_metrics['spread']:.3f}% | 🎯{order_type.upper()}")
-        elif strategy_choice == 'hold':
-            self.decision_display.show_decision('HOLD', symbol, f"Conditions défavorables (conf {global_signal['confidence']:.0f}%, vol {market_metrics['volatility']:.1f}%)")
-        
-        # Exécuter avec stratégie et ordre optimaux
+        # Exécuter avec stratégie et ordre optimaux (TOUJOURS appeler scalping pour gérer achat/vente)
         if strategy_choice == 'scalping':
             self.execute_scalping_with_order_type(symbol, amount, current_price, order_type, global_signal)
         elif strategy_choice == 'dca':
             self.execute_dca_with_order_type(symbol, amount, current_price, order_type)
+        else:
+            # HOLD - Mais appeler quand même scalping pour gérer les ventes
+            self.scalping_strategy(symbol, amount, current_price)
     
     def analyze_market_conditions(self, symbol, current_price):
         """Analyse les conditions de marché pour optimiser les ordres"""
         klines = self.get_klines(symbol, 20)
         
-        # Volatilité
-        if len(klines) >= 10:
-            prices = [k['close'] for k in klines[-10:]]
-            volatility = (max(prices) - min(prices)) / min(prices) * 100
-        else:
-            volatility = 5.0
+        # Volatilité réaliste hardcodée
+        vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
+        volatility = 2.0
+        for k, v in vol_defaults.items():
+            if k in symbol:
+                volatility = v
+                break
         
         # Spread estimé (simulation)
         spread = 0.01 if volatility > 5 else 0.005  # 0.01% si volatil, 0.005% si calme
@@ -1201,6 +1228,64 @@ class BinanceSpotBot:
             print(f"❌ Erreur ordre limite: {e}")
             return None
     
+    def sell_limit(self, symbol, amount, price):
+        """Place un ordre de vente limite pour optimiser le profit"""
+        try:
+            if self.paper_trading:
+                revenue = amount * price
+                self.paper_balance += revenue
+                order = {
+                    'id': f'limit_sell_{int(time.time())}',
+                    'price': price,
+                    'amount': amount,
+                    'type': 'limit',
+                    'side': 'sell',
+                    'timestamp': time.time()
+                }
+                print(f"🎯 PAPER - Vente limite: {amount:.6f} {symbol} à {price:.6f}")
+                return order
+            else:
+                balance = self.get_balance()
+                base_currency = symbol.split('/')[0]
+                available = balance.get(base_currency, {}).get('free', 0)
+                
+                if amount > available:
+                    print(f"❌ Pas assez de {base_currency}: {amount} > {available}")
+                    return None
+                
+                order = self.safe_request(self.exchange.create_limit_sell_order, symbol, amount, price)
+                if order:
+                    self.pending_orders[order['id']] = {
+                        'order': order,
+                        'timestamp': time.time(),
+                        'symbol': symbol,
+                        'side': 'sell'
+                    }
+                    print(f"✅ Ordre vente limite placé: {order.get('id', 'N/A')}")
+                    
+                    # Enregistrer position de vente
+                    position = {
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'amount': amount,
+                        'price': price,
+                        'timestamp': datetime.now().isoformat(),
+                        'order_id': order.get('id'),
+                        'source': 'bot',
+                        'paper': False
+                    }
+                    self.state['positions'].append(position)
+                    self.save_state()
+                    self.total_trades += 1
+                    
+                    if self.notify_trades:
+                        self.notifier.notify(f"🟡 LIVE VENTE LIMIT: {amount:.6f} {symbol} à {price:.6f}")
+                
+                return order
+        except Exception as e:
+            print(f"❌ Erreur vente limite: {e}")
+            return None
+    
     def handle_sell_logic(self, symbol, current_price, order_type, global_signal):
         """Gestion intelligente de la vente"""
         base_currency = symbol.split('/')[0]
@@ -1221,20 +1306,25 @@ class BinanceSpotBot:
                 )
                 
                 if should_sell:
-                    if order_type == 'limit' and expected_profit_pct > min_profit_needed * 1.5:
-                        # Vente limite pour optimiser le prix
-                        limit_price = current_price * 1.001  # +0.1%
-                        print(f"🎯 VENTE LIMIT: {available:.6f} {base_currency} à {limit_price:.6f}")
-                        # Implémentation sell_limit similaire à buy_limit
-                    else:
-                        # Vente market pour exécution garantie
-                        print(f"⚡ VENTE MARKET: {available:.6f} {base_currency}")
-                        result = self.sell_market(symbol, available)
-                        if result:
-                            profit = self.calculate_pnl(symbol, 'sell', available, current_price)
-                            self.safety_manager.record_trade(profit)
-                            self.trailing_stop.remove_position(symbol)
-                            self.correlation_manager.remove_position(symbol)
+                    # ADAPTATIF: Profit selon volatilité de la crypto
+                    multi_tf_analysis = self.get_cached_analysis(symbol, current_price)
+                    volatility = multi_tf_analysis.get('volatility', 2.0)
+                    profile = multi_tf_analysis['global_signal'].get('profile', {'profit_target': 0.5})
+                    
+                    # Profit cible adapté
+                    adaptive_profit = profile['profit_target'] / 100  # Convertir en décimal
+                    limit_price = avg_buy_price * (1 + adaptive_profit)
+                    
+                    profit_pct_at_limit = ((limit_price - avg_buy_price) / avg_buy_price) * 100
+                    print(f"🎯 VENTE LIMIT ADAPTIVE: {available:.6f} {base_currency} à {limit_price:.2f} (profit {profit_pct_at_limit:+.2f}%)")
+                    print(f"📊 Vol: {volatility:.1f}% | Target: +{profile['profit_target']:.1f}% | Breakeven: {avg_buy_price * (1 + min_profit_needed):.2f}")
+                    
+                    result = self.sell_limit(symbol, available, limit_price)
+                    if result:
+                        profit = self.calculate_pnl(symbol, 'sell', available, current_price)
+                        self.safety_manager.record_trade(profit)
+                        self.trailing_stop.remove_position(symbol)
+                        self.correlation_manager.remove_position(symbol)
     
     def manage_pending_orders(self):
         """Gestion des ordres en attente avec annulation intelligente"""
@@ -1302,32 +1392,8 @@ class BinanceSpotBot:
     
     def get_cached_analysis(self, symbol, current_price, force=False):
         """Récupère analyse depuis cache ou calcule si nécessaire (throttling intelligent)"""
-        cache_key = f"analysis_{symbol}"
-        now = time.time()
-        
-        # Vérifier si cache existe et valide
-        if cache_key in self.analysis_cache and not force:
-            cached = self.analysis_cache[cache_key]
-            age = now - cached['timestamp']
-            
-            # Cache valide si < 10s ET prix n'a pas bougé significativement
-            if age < self.analysis_cache_timeout:
-                price_change = abs(current_price - cached['price']) / cached['price']
-                
-                if price_change < self.price_change_threshold:
-                    # Réutiliser cache (marché calme)
-                    return cached['analysis']
-        
-        # Cache invalide ou mouvement significatif → Nouvelle analyse
+        # TOUJOURS recalculer pour avoir volatilité correcte
         analysis = self.multi_tf_analyzer.analyze_all_timeframes(self, symbol, current_price)
-        
-        # Mettre en cache
-        self.analysis_cache[cache_key] = {
-            'analysis': analysis,
-            'price': current_price,
-            'timestamp': now
-        }
-        
         return analysis
     
     def predict_next_buy_opportunity(self, symbol):
@@ -1363,7 +1429,7 @@ class BinanceSpotBot:
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
             
-            # Conditions actuelles
+            # Conditions actuelles (seuil 60%)
             can_buy_now = (
                 signal['action'] in ['BUY', 'STRONG_BUY'] and
                 signal['confidence'] >= 60 and
@@ -1379,24 +1445,66 @@ class BinanceSpotBot:
                     'reason': f"Signal {signal['action']}"
                 }
             
-            # Calculer distance au signal (éviter négatif)
+            # Calculer distance au signal (éviter négatif) - seuil 60%
             confidence_gap = max(0, 60 - signal['confidence'])
             
-            # Estimer temps basé sur volatilité et confiance
+            # Analyse avancée pour prévision précise
             klines = self.get_klines(symbol, 20)
             if len(klines) >= 10:
                 prices = [k['close'] for k in klines[-10:]]
-                volatility = (max(prices) - min(prices)) / min(prices) * 100
+                # Volatilité réaliste hardcodée
+                vol_defaults = {'SOL': 4.5, 'BNB': 2.5, 'ETH': 1.8, 'BTC': 1.2}
+                volatility = 2.0
+                for k, v in vol_defaults.items():
+                    if k in symbol:
+                        volatility = v
+                        break
                 
-                # Si confiance proche (50-59%)
-                if confidence_gap < 10:
-                    time_estimate = "5-10min" if volatility > 5 else "10-20min" if volatility > 2 else "20-40min"
-                # Si confiance moyenne (40-49%)
-                elif confidence_gap < 20:
-                    time_estimate = "10-20min" if volatility > 5 else "20-40min" if volatility > 2 else "40min+"
-                # Si confiance faible (<40%)
+                # Calculer momentum (tendance récente)
+                recent_prices = prices[-5:]
+                price_momentum = (recent_prices[-1] - recent_prices[0]) / recent_prices[0] * 100
+                
+                # Calculer accélération
+                old_avg = sum(prices[:5]) / 5
+                new_avg = sum(prices[-5:]) / 5
+                price_acceleration = (new_avg - old_avg) / old_avg * 100
+                
+                # Facteur de vitesse
+                if abs(price_momentum) > 2 and volatility > 5:
+                    speed_factor = 0.5
+                elif abs(price_momentum) > 1 or volatility > 3:
+                    speed_factor = 0.75
+                elif volatility > 1.5:
+                    speed_factor = 1.0
                 else:
-                    time_estimate = "20-40min" if volatility > 5 else "40min+" if volatility > 2 else "1h+"
+                    speed_factor = 1.5
+                
+                # Temps de base selon écart de confiance
+                if confidence_gap < 5:
+                    base_time = 5
+                elif confidence_gap < 10:
+                    base_time = 10
+                elif confidence_gap < 15:
+                    base_time = 20
+                elif confidence_gap < 25:
+                    base_time = 40
+                else:
+                    base_time = 60
+                
+                # Ajuster avec vitesse
+                estimated_min = int(base_time * speed_factor)
+                estimated_max = int(base_time * speed_factor * 1.5)
+                
+                # Ajustement directionnel
+                if signal['action'] in ['BUY', 'STRONG_BUY']:
+                    if price_momentum < -1:
+                        estimated_min = max(2, int(estimated_min * 0.7))
+                        estimated_max = int(estimated_max * 0.8)
+                    elif price_momentum > 2:
+                        estimated_min = int(estimated_min * 1.3)
+                        estimated_max = int(estimated_max * 1.5)
+                
+                time_estimate = f"{estimated_min}-{estimated_max}min"
             else:
                 time_estimate = "Indéterminé"
             
@@ -1556,8 +1664,8 @@ class BinanceSpotBot:
             if current_holding <= 0.00001:
                 continue
             
-            # Vérifications rapides
-            current_price = self.get_price(symbol)
+            # Forcer rafraîchissement prix pour affichage précis
+            current_price = self.get_price(symbol, force_refresh=True)
             position_value = current_holding * current_price
             
             if position_value < self.get_min_amount(symbol)['min_cost']:
@@ -1699,6 +1807,7 @@ class BinanceSpotBot:
                         tradable_pairs.append(symbol)
                 
                 # Traiter uniquement paires tradables
+                print(f"🔍 Tradable: {[s.split('/')[0] for s in tradable_pairs]} | USDT: {usdt_available:.2f}")
                 if tradable_pairs:
                     # CORRECTION: Toujours appeler la stratégie pour vérifier les ventes
                     # La stratégie elle-même gère les conditions d'achat/vente

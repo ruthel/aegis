@@ -152,6 +152,21 @@ class CorrelationManager:
     
     def can_open_position(self, symbol, bot):
         """Vérifie si on peut ouvrir une position selon la corrélation"""
+        # Synchroniser avec le solde réel
+        balance = bot.get_balance()
+        base_currency = symbol.split('/')[0]
+        current_holding = balance.get(base_currency, {}).get('free', 0)
+        
+        # Si position déjà ouverte (solde réel), bloquer
+        if current_holding > 0.00001:
+            position_value = current_holding * bot.get_price(symbol)
+            min_trade_value = bot.get_min_amount(symbol)['min_cost']
+            if position_value >= min_trade_value:
+                print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USDT)")
+                return False
+            else:
+                print(f"🧹 {base_currency} poussière ignorée: {current_holding:.6f} ({position_value:.2f} < {min_trade_value:.2f})")
+        
         self.update_market_sentiment(bot)
         
         # Trouver le groupe de la crypto
@@ -162,22 +177,24 @@ class CorrelationManager:
                 break
         
         if not symbol_group:
-            return True  # Crypto non classée, on autorise
+            return True
         
-        # Compter les positions actives dans le même groupe
+        # Compter positions réelles dans le même groupe
         group_positions = 0
-        for active_symbol in self.active_positions:
-            if active_symbol in self.crypto_groups[symbol_group]:
-                group_positions += 1
+        for group_symbol in self.crypto_groups[symbol_group]:
+            if group_symbol == symbol:
+                continue
+            group_base = group_symbol.split('/')[0]
+            group_holding = balance.get(group_base, {}).get('free', 0)
+            if group_holding > 0.00001:
+                group_value = group_holding * bot.get_price(group_symbol)
+                if group_value >= bot.get_min_amount(group_symbol)['min_cost']:
+                    group_positions += 1
         
-        # Limiter les positions corrélées
         if group_positions >= self.max_correlated_positions:
-            print(f"⚠️ Trop de positions dans le groupe {symbol_group}: {group_positions}")
             return False
         
-        # En marché baissier, on évite les nouvelles positions
         if self.market_sentiment == 'bearish':
-            print("⚠️ Marché baissier détecté, pas de nouvelle position")
             return False
             
         return True

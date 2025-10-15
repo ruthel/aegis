@@ -3,12 +3,12 @@
     {
       "amount": 5.53e-06,
       "product_id": "USDT001",
-      "apy": 0.0226867,
-      "start_date": "2025-10-14T10:57:06.079956",
+      "apy": 0.02254938,
+      "start_date": "2025-10-14T17:14:21.409373",
       "status": "active"
     }
   ],
   "locked_staking": [],
   "total_earned": 0,
-  "last_update": "2025-10-14T10:57:06.079964"
+  "last_update": "2025-10-14T17:14:21.409390"
 }
