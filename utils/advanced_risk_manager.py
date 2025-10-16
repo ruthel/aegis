@@ -158,8 +158,8 @@ class CorrelationManager:
             if position_value >= min_trade_value:
                 print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USDT)")
                 return False
-            else:
-                print(f"🧹 {base_currency} poussière ignorée: {current_holding:.6f} ({position_value:.2f} < {min_trade_value:.2f})")
+            # else:
+            #     print(f"🧹 {base_currency} poussière ignorée: {current_holding:.6f} ({position_value:.2f} < {min_trade_value:.2f})")
         
         self.update_market_sentiment(bot)
         

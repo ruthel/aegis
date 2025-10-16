@@ -163,7 +163,19 @@ class WebSocketManager:
             
             # Exécution ordre
             elif event_type == 'executionReport':
-                print("📋 Exécution d'ordre détectée")
+                order_status = data.get('X')  # Order status
+                if order_status == 'CANCELED':
+                    print("❌ Ordre annulé détecté")
+                elif order_status == 'NEW':
+                    symbol = data.get('s', '')
+                    side = data.get('S', '')
+                    price = data.get('p', '0')
+                    print(f"✅ Nouvel ordre: {symbol} {side} @ {price}")
+                elif order_status == 'REPLACED':
+                    symbol = data.get('s', '')
+                    price = data.get('p', '0')
+                    print(f"🔄 {symbol}: Ordre modifié instantanément @ {price}")
+                
                 if self.balance_callback:
                     self.balance_callback(data)
             
@@ -238,11 +250,37 @@ class WebSocketManager:
         ws_symbol = symbol.replace('/', '')
         return self.prices.get(ws_symbol, None)
     
+    def get_ticker(self, symbol):
+        """Récupère les données ticker depuis WebSocket"""
+        ws_symbol = symbol.replace('/', '')
+        
+        # Calculer change 24h depuis les klines si disponibles
+        klines = self.get_klines(symbol, 1440)  # 24h de données
+        current_price = self.get_price(symbol)
+        
+        if len(klines) >= 2 and current_price:
+            price_24h_ago = klines[0]['close']
+            change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
+            
+            return {
+                'last': current_price,
+                'percentage': change_24h,
+                'symbol': symbol
+            }
+        
+        return None
+    
     def get_klines(self, symbol, count=50):
         """Récupère les dernières bougies"""
         ws_symbol = symbol.replace('/', '')
         klines = list(self.klines.get(ws_symbol, []))
         return klines[-count:] if len(klines) >= count else klines
+    
+    def get_balance(self):
+        """Récupère les balances temps réel (WebSocket User Data)"""
+        # Les balances sont mises à jour via User Data Stream
+        # Pour l'instant, retourner None pour forcer fallback API
+        return None
     
     def is_connected(self):
         """Vérifie si WebSocket est connecté"""

@@ -8,7 +8,7 @@ class BinanceEarnManager:
     def __init__(self, bot):
         self.bot = bot
         self.enabled = os.getenv('ENABLE_EARN', 'True') == 'True'
-        self.tirelire_mode = os.getenv('TIRELIRE_MODE', 'False') == 'True'
+
         self.min_trading_balance = float(os.getenv('MIN_TRADING_BALANCE', '10'))
         self.earn_allocation_percent = float(os.getenv('EARN_ALLOCATION_PERCENT', '80'))
         self.flexible_threshold = float(os.getenv('FLEXIBLE_SAVINGS_THRESHOLD', '5'))
@@ -29,6 +29,17 @@ class BinanceEarnManager:
         self.usdt_flexible_product = None
         self.usdt_locked_product = None
         self.last_product_refresh = 0
+        
+        # Différer l'initialisation pour éviter les erreurs d'attributs
+        self.initialized = False
+        
+        # Sync temps réel toutes les 30 secondes
+        self.last_earn_sync = 0
+        self.earn_sync_interval = 30
+        
+        # WebSocket tracking pour profits Earn
+        self.last_earn_balance = 0
+        self.last_earn_rewards = 0
         
     def load_earn_positions(self):
         """Charge les positions Earn sauvegardées"""
@@ -71,12 +82,27 @@ class BinanceEarnManager:
             self.last_product_refresh = now
             
             if self.usdt_flexible_product:
-                print(f"🎯 Flexible USDT: {self.usdt_flexible_product.get('avgAnnualInterestRate', 3.5):.2f}% APY")
+                min_amt = self.usdt_flexible_product.get('minPurchaseAmount', 0.1)
+                print(f"\n🎯 Flexible USDT: {self.usdt_flexible_product.get('avgAnnualInterestRate', 3.5):.2f}% APY (min: {min_amt})")
+            else:
+                # Utiliser le produit existant depuis earn_positions.json
+                existing_positions = [p for p in self.earn_positions['flexible_savings'] if p['status'] == 'active']
+                if existing_positions and 'product_id' in existing_positions[0]:
+                    product_id = existing_positions[0]['product_id']
+                    self.usdt_flexible_product = {
+                        'productId': product_id,
+                        'avgAnnualInterestRate': existing_positions[0].get('apy', 2.19),
+                        'minPurchaseAmount': 0.1
+                    }
+                    print(f"🎯 Flexible USDT: {self.usdt_flexible_product['avgAnnualInterestRate']:.2f}% APY (produit existant: {product_id})\n")
+                else:
+                    print("❌ Aucun produit Flexible USDT trouvé")
+                
             if self.usdt_locked_product:
                 print(f"🔒 Locked USDT 30j: {self.usdt_locked_product.get('interestRate', 8.0):.2f}% APY")
                 
         except Exception as e:
-            print(f"⚠️ Erreur nouvelles API Simple Earn: {e}")
+            print(f"⚠️ Erreur API Simple Earn: {e}")
             print("📝 Basculement vers mode simulation")
             self.earn_api = None
     
@@ -138,20 +164,30 @@ class BinanceEarnManager:
                 self.earn_positions['flexible_savings'].append(position)
                 if self.bot.paper_trading:
                     self.bot.paper_balance -= amount
-                pass  # Message déjà affiché dans tirelire_auto_manage
                 return True
             else:
                 # Mode live avec nouvelles API
                 if not self.usdt_flexible_product:
+                    print(f"🐷 Erreur: Aucun produit USDT Flexible trouvé")
                     return False
                 
-                print(f"🔄 Tentative souscription LIVE: {amount:.2f} USDT")
-                result = self.earn_api.subscribe_flexible_product(
-                    self.usdt_flexible_product['productId'], 
-                    amount
-                )
+                # Vérifier montant minimum (0.1 USDT pour Binance Earn)
+                min_amount = max(float(self.usdt_flexible_product.get('minPurchaseAmount', 0.1)), 0.1)
+                if amount < min_amount:
+                    print(f"🐷 Montant trop petit: {amount:.2f} < {min_amount:.2f} USDT")
+                    return False
                 
-                print(f"📝 Réponse API: {result}")
+                print(f"🔄 Souscription: {amount:.2f} USDT (ProductID: {self.usdt_flexible_product['productId']})")
+                
+                try:
+                    result = self.earn_api.subscribe_flexible_product(
+                        self.usdt_flexible_product['productId'], 
+                        amount
+                    )
+                    print(f"📝 Réponse: {result}")
+                except Exception as api_error:
+                    print(f"🐷 Erreur API subscribe: {api_error}")
+                    return False
                 
                 if result and (result.get('purchaseId') or result.get('success')):
                     position = {
@@ -163,7 +199,6 @@ class BinanceEarnManager:
                         'status': 'active'
                     }
                     self.earn_positions['flexible_savings'].append(position)
-                    pass  # Message déjà affiché dans tirelire_auto_manage
                     return True
                 else:
                     print(f"❌ Échec souscription: {result}")
@@ -197,15 +232,14 @@ class BinanceEarnManager:
             print(f"❌ Erreur Locked Staking: {e}")
             return False
     
-    def sync_earn_positions_from_api(self):
-        """Synchronise les positions Earn depuis l'API Binance"""
+    def silent_sync_earn_positions(self):
+        """Synchronisation silencieuse au démarrage"""
         if self.earn_api is None or self.bot.paper_trading:
             return
         
         try:
             result = self.earn_api.get_flexible_positions()
             if result and 'rows' in result:
-                old_count = len([p for p in self.earn_positions['flexible_savings'] if p['status'] == 'active'])
                 self.earn_positions['flexible_savings'] = []
                 
                 for pos in result['rows']:
@@ -218,12 +252,44 @@ class BinanceEarnManager:
                             'status': 'active'
                         })
                 
-                new_count = len(self.earn_positions['flexible_savings'])
-                if new_count != old_count:
-                    self.save_earn_positions()
+                self.save_earn_positions(silent=True)
+        except:
+            pass  # Silencieux
+    
+    def sync_earn_positions_from_api(self):
+        """Synchronise les positions Earn depuis l'API Binance"""
+        if self.earn_api is None or self.bot.paper_trading:
+            return
+        
+        # Sync temps réel toutes les 30 secondes
+        now = time.time()
+        if now - self.last_earn_sync < self.earn_sync_interval:
+            return
+        
+        self.last_earn_sync = now
+        
+        try:
+            result = self.earn_api.get_flexible_positions()
+            if result and 'rows' in result:
+                old_total = sum(pos['amount'] for pos in self.earn_positions['flexible_savings'] if pos['status'] == 'active')
+                self.earn_positions['flexible_savings'] = []
+                
+                for pos in result['rows']:
+                    if pos.get('asset') == 'USDT' and float(pos.get('totalAmount', 0)) > 0:
+                        self.earn_positions['flexible_savings'].append({
+                            'amount': float(pos['totalAmount']),
+                            'product_id': pos['productId'],
+                            'apy': float(pos.get('latestAnnualPercentageRate', 0)),
+                            'start_date': datetime.now().isoformat(),
+                            'status': 'active'
+                        })
+                
+                new_total = sum(pos['amount'] for pos in self.earn_positions['flexible_savings'] if pos['status'] == 'active')
+                if abs(new_total - old_total) > 0.01:  # Changement significatif
+                    self.save_earn_positions(silent=True)
                     
         except Exception as e:
-            print(f"⚠️ Erreur sync Earn: {e}")
+            pass  # Silencieux en temps réel
     
     def withdraw_from_flexible(self, amount_needed):
         """Retire des fonds du Flexible Savings pour trading"""
@@ -303,10 +369,25 @@ class BinanceEarnManager:
         
         return total_rewards
     
+    def ensure_initialized(self):
+        """Initialisation différée pour éviter les erreurs d'attributs"""
+        if not self.initialized:
+            try:
+                # Forcer la recherche de produits
+                self.refresh_available_products()
+                # Sync silencieuse initiale
+                self.silent_sync_earn_positions()
+                self.initialized = True
+            except:
+                pass  # Silencieux si le bot n'est pas prêt
+    
     def tirelire_auto_manage(self):
         """Gestion automatique tirelire: < 5 USDT → Earn, Earn >= 5 USDT → Spot"""
-        if not self.tirelire_mode:
-            return
+        # Initialisation différée
+        self.ensure_initialized()
+        
+        # Sync temps réel des positions Earn
+        self.sync_earn_positions_from_api()
         
         available_balance = self.get_available_balance()
         summary = self.get_earn_summary()
@@ -314,10 +395,12 @@ class BinanceEarnManager:
         
         # Règle 1: Si Spot < 5 USDT ET > 0.01 USDT → Mettre dans Earn
         if 0.01 < available_balance < self.min_trading_balance:
+            print(f"🐷 Tentative: {available_balance:.2f} USDT → Earn...")
             if self.allocate_to_flexible_savings(available_balance):
                 self.save_earn_positions()
-                print(f"🐷 {available_balance:.2f} → Earn ✅")
-            # Pas d'affichage si échec en paper trading (normal)
+                print(f"🐷 {available_balance:.2f} USDT → Earn ✅")
+            else:
+                print(f"🐷 {available_balance:.2f} USDT → Earn ❌ (vérifiez API Earn)")
         
         # Règle 2: Si Earn >= 5 USDT → Retirer vers Spot
         elif earn_balance >= self.earn_withdraw_threshold:
@@ -331,40 +414,6 @@ class BinanceEarnManager:
         
         else:
             print(f"🐷 OK (Spot {available_balance:.2f} | Earn {earn_balance:.2f})")
-    
-    def auto_allocate_idle_funds(self):
-        """Allocation automatique des fonds inactifs"""
-        # Mode tirelire prioritaire
-        if self.tirelire_mode:
-            self.tirelire_auto_manage()
-            return
-        """Allocation automatique des fonds inactifs"""
-        if not self.should_allocate_to_earn():
-            return
-        
-        available_balance = self.get_available_balance()
-        allocation_amount, allocation_type = self.calculate_allocation(available_balance)
-        
-        if allocation_amount > 0:
-            print(f"\n💼 EARN ALLOCATION")
-            print(f"💰 Solde disponible: {available_balance:.2f} USDT")
-            print(f"📊 Montant à allouer: {allocation_amount:.2f} USDT")
-            print(f"🎯 Type: {allocation_type}")
-            
-            if allocation_type == 'flexible_savings':
-                success = self.allocate_to_flexible_savings(allocation_amount)
-            elif allocation_type == 'locked_staking':
-                success = self.allocate_to_locked_staking(allocation_amount)
-            
-            if success:
-                self.save_earn_positions()
-                if self.bot.notify_trades:
-                    self.bot.notifier.notify(f"🏦 Earn: {allocation_amount:.2f} USDT → {allocation_type}")
-        else:
-            if allocation_type == 'insufficient_balance':
-                print(f"💼 Solde insuffisant pour Earn: {available_balance:.2f} < {self.min_trading_balance}")
-            elif allocation_type == 'amount_too_small':
-                print(f"💼 Montant trop petit pour Earn: {allocation_amount:.2f} < {self.flexible_threshold}")
     
     def get_earn_summary(self):
         """Résumé des positions Earn"""
@@ -383,15 +432,32 @@ class BinanceEarnManager:
         }
     
     def show_earn_performance(self):
-        """Affiche les performances Earn (format compact)"""
+        """Affiche les performances Earn avec détection WebSocket des changements"""
         if not self.enabled:
             return
         
         summary = self.get_earn_summary()
+        current_balance = summary['total_invested']
+        current_rewards = summary['estimated_rewards']
         
-        if summary['total_invested'] > 0:
-            # Format détaillé si Earn actif
-            print(f"🏦 EARN: Flex {summary['flexible_savings']:.2f} | Lock {summary['locked_staking']:.2f} | +{summary['estimated_rewards']:.2f} → Total {summary['total_value']:.2f} USDT")
+        # Détection WebSocket des changements (seuils ultra-bas)
+        balance_changed = abs(current_balance - self.last_earn_balance) > 0.00000001
+        rewards_changed = abs(current_rewards - self.last_earn_rewards) > 0.00000001
+        
+        if current_balance > 0.00000001:
+            # Affichage détaillé avec précision maximale
+            display_text = f"🏦 EARN: Flex {summary['flexible_savings']:.8f} | Lock {summary['locked_staking']:.8f} | +{current_rewards:.8f} → Total {summary['total_value']:.8f} USDT"
+            
+            # WebSocket: Détecter profit en temps réel (même minime)
+            if rewards_changed and current_rewards > self.last_earn_rewards:
+                profit_increase = current_rewards - self.last_earn_rewards
+                display_text += f" 📈 +{profit_increase:.8f}"
+            
+            print(display_text)
         else:
-            # Format minimal si Earn vide
-            print(f"🏦 EARN: 0.00 USDT (vide)")
+            # Log silencieux si Earn vide (pas d'affichage)
+            pass
+        
+        # Mettre à jour le tracking
+        self.last_earn_balance = current_balance
+        self.last_earn_rewards = current_rewards

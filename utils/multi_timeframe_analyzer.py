@@ -174,8 +174,13 @@ class MultiTimeframeAnalyzer:
             return 'below_middle'
     
     def calculate_volatility(self, bot, symbol):
-        """Calcule la volatilité réelle - MÉTHODE CENTRALISÉE"""
+        """Calcule la volatilité réelle - MÉTHODE CENTRALISÉE avec WebSocket"""
         try:
+            # Utiliser WebSocket si disponible
+            if hasattr(bot, 'websocket') and bot.websocket.is_connected():
+                return VolatilityCalculator.calculate_from_websocket(bot.websocket, symbol)
+            
+            # Fallback API REST
             klines = bot.get_klines(symbol, 60)
             return VolatilityCalculator.calculate(klines, symbol)
         except Exception as e:

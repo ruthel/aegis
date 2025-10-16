@@ -1,6 +1,9 @@
-"""Module stratégies - Scalping, DCA, Intelligent"""
+"""Module stratégies - Scalping, DCA, Intelligent, Pullback"""
 from utils.confidence_calculator import ConfidenceCalculator
+from utils.ema_analyzer import BinanceEMAAnalyzer
+from utils.pullback_detector import PullbackDetector
 import time
+import os
 
 class StrategiesMixin:
     """Mixin pour les stratégies de trading"""
@@ -88,19 +91,148 @@ class StrategiesMixin:
         if not self.safety_manager.can_trade():
             return
         
+        # SÉLECTION AUTOMATIQUE DE STRATÉGIE
+        strategy_mode = self.auto_select_strategy(symbol, current_price)
+        
+        # INCOHÉRENCE #6: Si hold, ne rien faire
+        if strategy_mode == 'hold':
+            return
+        
+        if strategy_mode == 'scalping_pullback':
+            self.scalping_pullback_strategy(symbol, amount, current_price)
+        elif strategy_mode == 'momentum':
+            self.scalping_strategy(symbol, amount, current_price)
+        elif strategy_mode == 'dca':
+            self.dca_strategy(symbol, amount, current_price)
+    
+    def auto_select_strategy(self, symbol, current_price):
+        """Sélection automatique de la meilleure stratégie"""
+        # Initialiser analyseurs si nécessaire
+        if not hasattr(self, 'ema_analyzer'):
+            self.ema_analyzer = BinanceEMAAnalyzer()
+        if not hasattr(self, 'pullback_detector'):
+            self.pullback_detector = PullbackDetector()
+        if not hasattr(self, 'strategy_cooldown'):
+            self.strategy_cooldown = {}  # INCOHÉRENCE #3: Mémoriser tentatives
+        
+        # INCOHÉRENCE #3: Vérifier cooldown
+        cooldown_key = f"{symbol}_failed"
+        if cooldown_key in self.strategy_cooldown:
+            if time.time() - self.strategy_cooldown[cooldown_key] < 300:  # 5 min
+                return 'hold'  # Skip pendant cooldown
+        
+        # INCOHÉRENCE #2: Vérifier position ouverte
+        if not self.correlation_manager.can_open_position(symbol, self):
+            return 'hold'
+        
+        # INCOHÉRENCE #1: Vérifier fonds disponibles
+        balance = self.balance_manager.get_balance()
+        usdt_available = balance.get('USDT', {}).get('free', 0)
+        min_cost = self.get_min_amount(symbol)['min_cost']
+        
+        if usdt_available < min_cost:
+            return 'hold'  # Pas assez de fonds
+        
+        # Récupérer priorités
+        pullback_priority = int(os.getenv('SCALPING_PULLBACK_PRIORITY', '10'))
+        momentum_priority = int(os.getenv('MOMENTUM_PRIORITY', '7'))
+        dca_priority = int(os.getenv('DCA_PRIORITY', '5'))
+        
+        # Analyse EMA Binance
+        klines = self.get_klines(symbol, 100)
+        ema_analysis = self.ema_analyzer.analyze(klines, current_price)
+        
+        scores = {}
+        
+        # Score Scalping Pullback
+        if ema_analysis and ema_analysis['case'] == 3:
+            pullback_data = self.pullback_detector.detect_pullback(self, symbol, current_price, ema_analysis)
+            if pullback_data and pullback_data['is_valid']:
+                scores['scalping_pullback'] = pullback_priority * 10
+                print(f"🎯 CAS 3 détecté: {ema_analysis['case_name']} - Pullback {pullback_data['pullback_pct']:.2f}%")
+        
+        # Score Momentum Trading
         multi_tf_analysis = self.get_cached_analysis(symbol, current_price)
         global_signal = multi_tf_analysis['global_signal']
-        market_metrics = self.analyze_market_conditions(symbol, current_price)
         
-        strategy_choice = self.choose_optimal_strategy_advanced(global_signal, market_metrics)
-        order_type = self.choose_optimal_order_type(global_signal, market_metrics, strategy_choice)
+        if global_signal['action'] in ['BUY', 'STRONG_BUY']:
+            confidence_factor = global_signal['confidence'] / 100
+            scores['momentum'] = momentum_priority * confidence_factor * 10
         
-        if strategy_choice == 'scalping':
-            self.execute_scalping_with_order_type(symbol, amount, current_price, order_type, global_signal)
-        elif strategy_choice == 'dca':
-            self.execute_dca_with_order_type(symbol, amount, current_price, order_type)
-        else:
-            self.scalping_strategy(symbol, amount, current_price)
+        # Score DCA
+        if ema_analysis and ema_analysis['case'] in [5, 6]:
+            klines = self.get_klines(symbol, 20)
+            if len(klines) >= 14:
+                closes = [k['close'] for k in klines]
+                rsi = self.pullback_detector.calculate_rsi(closes)
+                if rsi and rsi < 30:
+                    scores['dca'] = dca_priority * 10
+        
+        # Sélectionner meilleur score
+        if scores:
+            best_strategy = max(scores, key=scores.get)
+            best_score = scores[best_strategy]
+            print(f"🤖 Sélection auto: {best_strategy.upper()} (score: {best_score:.0f})")
+            for strat, score in scores.items():
+                status = "✅" if strat == best_strategy else "❌"
+                print(f"   {status} {strat}: {score:.0f}")
+            return best_strategy
+        
+        return 'hold'  # INCOHÉRENCE #6: Retourner hold au lieu de momentum
+    
+    def scalping_pullback_strategy(self, symbol, amount, current_price):
+        """Stratégie scalping sur pullback avec ordre limite"""
+        if not self.safety_manager.can_trade():
+            return
+        
+        # INCOHÉRENCE #2: Vérifier position déjà ouverte EN PREMIER
+        if not self.correlation_manager.can_open_position(symbol, self):
+            return
+        
+        # INCOHÉRENCE #1: Vérifier fonds disponibles AVANT analyse
+        balance = self.balance_manager.get_balance()
+        usdt_available = balance.get('USDT', {}).get('free', 0)
+        min_cost = self.get_min_amount(symbol)['min_cost']
+        
+        if usdt_available < min_cost:
+            return  # Pas assez de fonds, skip silencieusement
+        
+        # Analyse EMA
+        klines = self.get_klines(symbol, 100)
+        ema_analysis = self.ema_analyzer.analyze(klines, current_price)
+        
+        if not ema_analysis or ema_analysis['case'] != 3:
+            return
+        
+        # Détecter pullback
+        pullback_data = self.pullback_detector.detect_pullback(self, symbol, current_price, ema_analysis)
+        
+        if not pullback_data or not pullback_data['is_valid']:
+            return
+        
+        # Calculer montant
+        smart_amount = self.risk_manager.calculate_position_size(self, symbol, amount)
+        trade_amount = smart_amount / pullback_data['entry_price']
+        
+        # Vérifier encore une fois les fonds (double sécurité)
+        if smart_amount > usdt_available:
+            return
+        
+        # Placer ordre limite ACHAT
+        print(f"📊 SCALPING PULLBACK activé pour {symbol}")
+        print(f"   🟡 EMA 7: {ema_analysis['ema_7']:.2f}")
+        print(f"   💗 EMA 25: {ema_analysis['ema_25']:.2f}")
+        print(f"   🟣 EMA 99: {ema_analysis['ema_99']:.2f}")
+        print(f"   💰 Prix: {current_price:.2f}")
+        print(f"   🎯 Entrée: {pullback_data['entry_price']:.2f}")
+        print(f"   🎯 Cible: {pullback_data['target_price']:.2f} (+{float(os.getenv('SCALPING_PROFIT_TARGET', '0.3')):.1f}%)")
+        
+        order = self.pullback_detector.place_limit_buy_order(
+            self, symbol, pullback_data['entry_price'], trade_amount
+        )
+        
+        if order:
+            self.correlation_manager.add_position(symbol)
     
     def adaptive_strategy(self, symbol, amount, current_price):
         if not self.safety_manager.can_trade():
@@ -289,16 +421,17 @@ class StrategiesMixin:
         if not self.safety_manager.can_trade():
             return
         
-        multi_tf_analysis = self.get_cached_analysis(symbol, current_price, force=True)
-        global_signal = multi_tf_analysis['global_signal']
-        market_metrics = self.analyze_market_conditions(symbol, current_price)
+        # Vérifier et annuler ordres expirés
+        if hasattr(self, 'pullback_detector'):
+            self.pullback_detector.check_and_cancel_expired_orders(self)
         
-        strategy_choice = self.choose_optimal_strategy_advanced(global_signal, market_metrics)
-        order_type = self.choose_optimal_order_type(global_signal, market_metrics, strategy_choice)
+        # Sélection automatique
+        strategy_mode = self.auto_select_strategy(symbol, current_price)
         
-        self.manage_pending_orders()
-        
-        if strategy_choice == 'scalping':
-            self.execute_scalping_with_order_type(symbol, amount, current_price, order_type, global_signal)
-        elif strategy_choice == 'dca' and global_signal['action'] in ['BUY', 'STRONG_BUY']:
-            self.execute_dca_with_order_type(symbol, amount, current_price, order_type)
+        if strategy_mode == 'scalping_pullback':
+            self.scalping_pullback_strategy(symbol, amount, current_price)
+        elif strategy_mode == 'momentum':
+            self.realtime_scalping(symbol, amount, current_price)
+        elif strategy_mode == 'dca':
+            trade_amount = amount / current_price
+            self.buy_market(symbol, trade_amount)

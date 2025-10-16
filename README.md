@@ -33,7 +33,9 @@ python run.py
 ## ⚡ Fonctionnalités Principales
 
 ### 🎯 Trading Intelligent
-- **Stratégie Adaptive** : Choix automatique Scalping/DCA selon conditions marché
+- **EMA Binance 7/25/99** : Détection automatique des 6 cas de configuration
+- **Scalping Pullback** : Ordres limite ACHAT sur Cas 3 (votre stratégie!)
+- **Sélection Auto Stratégie** : Choix intelligent Pullback/Momentum/DCA
 - **Timeframes Adaptatifs** : Sélection automatique 4H/1H/15M ou 15M/5M/1M selon volatilité
 - **Détection Tendances Cumulatives** : Capture 6x -0.1% = -0.6% (variations progressives)
 - **Crypto Scoring** : Sélection automatique des meilleures cryptos (score 0-100)
@@ -210,6 +212,7 @@ python run.py  # Redémarrage automatique sur modification .py
 ## 📚 Documentation Complète
 
 ### Guides Spécialisés
+- **[EMA Trading Guide](docs/EMA_TRADING_GUIDE.md)** - Les 6 cas Binance + Scalping Pullback
 - **[Timeframes Adaptatifs](docs/ADAPTIVE_TIMEFRAMES.md)** - Stratégie professionnelle multi-timeframes
 - **[Détection Tendances Cumulatives](docs/CUMULATIVE_TREND_DETECTION.md)** - Capture variations progressives
 - **[Optimisations Latence](docs/QUICK_START_OPTIMIZATIONS.md)** - Guide 2min réduction 98%

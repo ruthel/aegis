@@ -12,32 +12,18 @@ class BalanceManager:
         self.bot = bot
         
     def get_balance(self, force_refresh=False):
-        """Récupère le solde SPOT avec cache intelligent"""
+        """Récupère le solde SPOT temps réel via WebSocket"""
         if self.bot.paper_trading:
             return {'USDT': {'free': self.bot.paper_balance}}
         
-        if force_refresh:
-            # Appel direct sans cache
-            return self.bot.safe_request(self.bot.exchange.fetch_balance)
-        else:
-            # Utiliser le cache du bot si disponible
-            if hasattr(self.bot, 'balance_cache') and 'balance' in self.bot.balance_cache:
-                cache_age = time.time() - self.bot.balance_cache['timestamp']
-                if cache_age < 3:  # 3 secondes de cache
-                    return self.bot.balance_cache['balance']
-            
-            # Sinon faire un appel API
-            balance = self.bot.safe_request(self.bot.exchange.fetch_balance)
-            
-            # Mettre en cache dans le bot
-            if not hasattr(self.bot, 'balance_cache'):
-                self.bot.balance_cache = {}
-            self.bot.balance_cache = {
-                'balance': balance,
-                'timestamp': time.time()
-            }
-            
-            return balance
+        # WebSocket User Data Stream pour balances temps réel
+        if hasattr(self.bot, 'websocket') and self.bot.websocket.is_connected():
+            ws_balance = self.bot.websocket.get_balance()
+            if ws_balance is not None:
+                return ws_balance
+        
+        # Fallback API REST direct (WebSocket déconnecté)
+        return self.bot.safe_request(self.bot.exchange.fetch_balance)
     
     def get_funding_balance(self):
         """Récupère le solde du portefeuille de financement"""

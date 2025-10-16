@@ -3,6 +3,7 @@ from datetime import datetime
 from utils.confidence_calculator import ConfidenceCalculator
 from utils.volatility_calculator import VolatilityCalculator
 from utils.market_calculator import MarketCalculator
+from utils.ema_analyzer import BinanceEMAAnalyzer
 import time
 
 class AnalysisMixin:
@@ -10,8 +11,18 @@ class AnalysisMixin:
     
     def get_cached_analysis(self, symbol, current_price, force=False):
         """Récupère analyse depuis cache ou calcule si nécessaire"""
-        VolatilityCalculator.clear_cache(symbol)
         analysis = self.multi_tf_analyzer.analyze_all_timeframes(self, symbol, current_price)
+        
+        # Enrichir avec analyse EMA Binance
+        if not hasattr(self, 'ema_analyzer'):
+            self.ema_analyzer = BinanceEMAAnalyzer()
+        
+        klines = self.get_klines(symbol, 100)
+        ema_analysis = self.ema_analyzer.analyze(klines, current_price)
+        
+        if ema_analysis:
+            analysis['ema_binance'] = ema_analysis
+        
         return analysis
     
     def analyze_market_conditions(self, symbol, current_price):
@@ -45,17 +56,22 @@ class AnalysisMixin:
             if crypto_locked <= 0.00001:
                 return None
             
-            pending_order = None
-            for order_id, order_data in self.pending_orders.items():
-                if order_data['symbol'] == symbol and order_data['side'] == 'sell':
-                    pending_order = order_data
-                    break
+            # Récupérer le prix réel de l'ordre sur Binance
+            target_price = None
+            if not self.paper_trading:
+                try:
+                    open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                    for order in open_orders:
+                        if order['side'] == 'sell':
+                            target_price = order['price']
+                            break
+                except:
+                    pass
             
-            if not pending_order:
+            if not target_price:
                 return None
             
             current_price = self.get_price(symbol)
-            target_price = pending_order['order']['price']
             distance_pct = ((target_price - current_price) / current_price) * 100
             
             klines = self.get_klines(symbol, 30)
@@ -149,7 +165,6 @@ class AnalysisMixin:
             if usdt_available < trade_amount:
                 return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usdt_available:.2f} USDT disponible'}
             
-            VolatilityCalculator.clear_cache(symbol)
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
             vol_value = analysis.get('volatility', 2.0)

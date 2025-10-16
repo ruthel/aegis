@@ -5,12 +5,12 @@ import time
 class TradingMixin:
     """Mixin pour les opérations de trading"""
     
-    def buy_market(self, symbol, amount):
+    def buy_market(self, symbol, amount, allow_averaging=False):
         balance = self.balance_manager.get_balance()
         base_currency = symbol.split('/')[0]
         current_holding = balance.get(base_currency, {}).get('free', 0)
         
-        if current_holding > 0.00001:
+        if current_holding > 0.00001 and not allow_averaging:
             position_value = current_holding * self.get_price(symbol)
             min_trade_value = self.get_min_amount(symbol)['min_cost']
             
@@ -40,16 +40,19 @@ class TradingMixin:
             if self.paper_trading:
                 self.paper_balance -= cost
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': cost}
-                print(f"🧪 PAPER - Achat simulé: {amount:.6f} {symbol} à {price:.6f}")
+                action_text = "moyennage" if allow_averaging else "achat"
+                print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f}")
             else:
                 order = self.safe_request(self.exchange.create_market_buy_order, symbol, amount)
-                print(f"✅ Achat exécuté: {amount:.6f} {symbol}")
+                action_text = "Moyennage" if allow_averaging else "Achat"
+                print(f"✅ {action_text} exécuté: {amount:.6f} {symbol}")
             
             if order:
                 position = {
                     'symbol': symbol, 'side': 'buy', 'amount': amount,
                     'price': order.get('price', price), 'timestamp': datetime.now().isoformat(),
-                    'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading
+                    'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
+                    'averaging': allow_averaging
                 }
                 self.state['positions'].append(position)
                 self.save_state()
@@ -212,3 +215,217 @@ class TradingMixin:
                 
                 return pnl
         return None
+    
+    def optimize_existing_position(self, symbol):
+        """Optimise une position existante en recalculant la moyenne des positions"""
+        balance = self.balance_manager.get_balance()
+        base_currency = symbol.split('/')[0]
+        free_holding = balance.get(base_currency, {}).get('free', 0)
+        locked_holding = balance.get(base_currency, {}).get('used', 0)
+        
+        total_amount = free_holding + locked_holding
+        
+        if total_amount <= 0.00001:
+            return False
+        
+        # Si tout est libre (pas d'ordre actif), placer un ordre de vente
+        if locked_holding <= 0.00001:
+            avg_buy_price = self.get_real_buy_price(symbol)
+            if avg_buy_price:
+                min_profit = self.min_profit_threshold + (2 * self.trading_fee)
+                sell_price = avg_buy_price * (1 + min_profit)
+                sell_order = self.sell_limit(symbol, free_holding, sell_price)
+                if sell_order:
+                    print(f"💰 Ordre de vente placé: {free_holding:.6f} {base_currency} @ {sell_price:.2f}")
+                    return True
+            return False
+        
+        # Calculer la moyenne pondérée des deux positions
+        total_amount = free_holding + locked_holding
+        avg_buy_price = self.get_real_buy_price(symbol)
+        
+        if not avg_buy_price:
+            print(f"   ❌ Échec: Prix d'achat introuvable")
+            return False
+        
+        current_price = self.get_price(symbol)
+        
+        # Récupérer le VRAI prix de l'ordre de vente ouvert et sync
+        actual_sell_price = None
+        if not self.paper_trading:
+            try:
+                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                # Sync automatique des ordres modifiés
+                for order in open_orders:
+                    order_id = str(order['id'])
+                    if order_id in self.pending_orders:
+                        old_price = self.pending_orders[order_id]['order'].get('price')
+                        if old_price and abs(old_price - order['price']) > 0.01:
+                            print(f"🔄 Ordre modifié détecté: {old_price:.2f} → {order['price']:.2f}")
+                    self.pending_orders[order_id] = {'order': order, 'timestamp': order['timestamp'] / 1000, 'symbol': symbol}
+                    
+                    if order['side'] == 'sell':
+                        actual_sell_price = order['price']
+            except:
+                pass
+        
+        if not actual_sell_price:
+            # Fallback sur calcul théorique
+            min_profit = self.min_profit_threshold + (2 * self.trading_fee)
+            actual_sell_price = avg_buy_price * (1 + min_profit)
+        
+        distance_pct = ((actual_sell_price - current_price) / current_price) * 100
+        
+        if distance_pct < 2:  # Pas besoin d'optimiser si <2%
+            return False
+        
+        # Calculer nouveau target optimisé basé sur la moyenne
+        min_profit = self.min_profit_threshold + (2 * self.trading_fee)
+        optimized_target = avg_buy_price * (1 + min_profit * 0.7)  # Réduire le profit de 30%
+        reduction = actual_sell_price - optimized_target
+        
+        if reduction < 2:  # Pas d'amélioration significative
+            return False
+        
+        try:
+            # 1. Annuler l'ordre de vente existant
+            if not self.paper_trading:
+                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                for order in open_orders:
+                    if order['side'] == 'sell':
+                        self.safe_request(self.exchange.cancel_order, order['id'], symbol)
+                        print(f"   ❌ Ordre annulé: {order['price']:.2f}")
+            
+            # 2. Attendre que l'annulation soit effective
+            import time
+            time.sleep(1)
+            
+            # 3. Rafraîchir les balances
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            total_free = balance.get(base_currency, {}).get('free', 0)
+            
+            print(f"   🔄 Après annulation: {total_free:.6f} {base_currency} libre")
+            
+            # 4. Replacer ordre de vente optimisé
+            print(f"   💰 Placement ordre: {total_free:.6f} {base_currency} @ {optimized_target:.2f}")
+            sell_order = self.sell_limit(symbol, total_free, optimized_target)
+            
+            if sell_order:
+                print(f"   ✅ Position optimisée! Target: {optimized_target:.2f}")
+                return True
+            else:
+                print(f"   ❌ Échec placement nouvel ordre")
+            
+        except Exception as e:
+            print(f"   ❌ Erreur: {e}")
+        
+        return False
+    
+
+    
+    def detect_order_modifications(self):
+        """Détecte les modifications d'ordres faites manuellement sur Binance"""
+        if self.paper_trading:
+            return
+        
+        try:
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            for pair in trading_pairs:
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                
+                for order in open_orders:
+                    order_id = str(order['id'])
+                    if order_id in self.pending_orders:
+                        old_price = self.pending_orders[order_id]['order'].get('price')
+                        if old_price and abs(old_price - order['price']) > 0.01:
+                            crypto = symbol.split('/')[0]
+                            print(f"🔄 {crypto}: Ordre modifié {old_price:.2f} → {order['price']:.2f}")
+                    
+                    self.pending_orders[order_id] = {
+                        'order': order, 'timestamp': order['timestamp'] / 1000, 
+                        'symbol': symbol, 'side': order['side']
+                    }
+        except Exception as e:
+            pass
+    
+    def optimize_by_partial_sell(self, symbol, balance, min_cost_needed, usdt_available):
+        """Optimise en vendant partiellement la position pour libérer des USDT"""
+        print(f"   🔄 OPTIMISATION PAR VENTE PARTIELLE:")
+        
+        base_currency = symbol.split('/')[0]
+        current_holding = balance.get(base_currency, {}).get('free', 0)
+        current_price = self.get_price(symbol)
+        
+        # Calculer combien vendre pour obtenir les USDT nécessaires
+        shortage = min_cost_needed - usdt_available + 1  # +1 USDT de marge
+        amount_to_sell = shortage / current_price
+        
+        print(f"   Besoin: {shortage:.2f} USDT -> Vendre {amount_to_sell:.6f} {base_currency}")
+        
+        # Vérifier qu'on a assez à vendre
+        if amount_to_sell > current_holding:
+            print(f"   ❌ Pas assez de {base_currency} libre pour vendre")
+            return False
+        
+        # Vérifier les limites minimales
+        min_limits = self.get_min_amount(symbol)
+        if amount_to_sell < min_limits['min_amount']:
+            amount_to_sell = min_limits['min_amount']
+            print(f"   Ajustement au minimum: {amount_to_sell:.6f} {base_currency}")
+        
+        try:
+            # 1. Annuler l'ordre de vente existant
+            if not self.paper_trading:
+                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                for order in open_orders:
+                    if order['side'] == 'sell':
+                        self.safe_request(self.exchange.cancel_order, order['id'], symbol)
+                        print(f"   ❌ Ordre de vente annulé: {order['price']:.2f}")
+            
+            # 2. Vendre une partie au marché pour libérer des USDT
+            print(f"   💰 Vente partielle: {amount_to_sell:.6f} {base_currency} à {current_price:.2f}")
+            sell_order = self.sell_market(symbol, amount_to_sell)
+            
+            if not sell_order:
+                print(f"   ❌ Échec vente partielle")
+                return False
+            
+            # 3. Attendre et rafraîchir les balances
+            import time
+            time.sleep(2)
+            new_balance = self.balance_manager.get_balance(force_refresh=True)
+            new_usdt = new_balance.get('USDT', {}).get('free', 0)
+            remaining_crypto = new_balance.get(base_currency, {}).get('free', 0)
+            
+            print(f"   ✅ Nouveau solde: {new_usdt:.2f} USDT, {remaining_crypto:.6f} {base_currency}")
+            
+            # 4. Racheter immédiatement pour moyenner
+            if new_usdt >= min_cost_needed:
+                buy_amount = min_cost_needed / current_price
+                print(f"   🔄 Rachat moyennage: {buy_amount:.6f} {base_currency}")
+                
+                buy_order = self.buy_market(symbol, buy_amount, allow_averaging=True)
+                if buy_order:
+                    # 5. Replacer ordre de vente sur la position totale
+                    time.sleep(1)
+                    final_balance = self.balance_manager.get_balance(force_refresh=True)
+                    total_crypto = final_balance.get(base_currency, {}).get('free', 0)
+                    
+                    # Calculer nouveau prix moyen
+                    buy_price = self.get_real_buy_price(symbol)
+                    if buy_price:
+                        min_profit = self.min_profit_threshold + (2 * self.trading_fee)
+                        new_target = buy_price * (1 + min_profit)
+                        
+                        sell_order = self.sell_limit(symbol, total_crypto, new_target)
+                        if sell_order:
+                            print(f"   ✅ Position optimisée! Nouveau target: {new_target:.2f}")
+                            return True
+            
+            print(f"   ❌ Échec optimisation complète")
+            return False
+            
+        except Exception as e:
+            print(f"   ❌ Erreur optimisation partielle: {e}")
+            return False

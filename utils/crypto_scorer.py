@@ -12,14 +12,14 @@ class CryptoScorer:
         self.blacklist_duration = 3600
         self.optimizer = None  # Sera défini par le bot
         
-    def calculate_volatility_score(self, klines, symbol='', volatility=None):
+    def calculate_volatility_score(self, klines, symbol='', volatility=None, websocket_manager=None):
         """Score basé sur volatilité 1-5 (0-30 points)"""
         if len(klines) < 10:
             return 0
         
         # Calculer volatilité réelle si non fournie
         if volatility is None:
-            volatility = VolatilityCalculator.calculate(klines, symbol)
+            volatility = VolatilityCalculator.calculate(klines, symbol, websocket_manager)
         
         # Mapping score 1-5 → points
         if volatility >= 4.0:
@@ -69,7 +69,7 @@ class CryptoScorer:
         
         return 10
     
-    def score_crypto(self, bot, symbol, stuck_positions, volatility=None):
+    def score_crypto(self, bot, symbol, stuck_positions, websocket_manager=None, volatility=None):
         """Calcule le score total d'une crypto (0-100)"""
         try:
             klines = bot.get_klines(symbol, 20)
@@ -78,7 +78,7 @@ class CryptoScorer:
             if not klines or len(klines) < 10:
                 return 0
             
-            volatility_score = self.calculate_volatility_score(klines, symbol, volatility)
+            volatility_score = self.calculate_volatility_score(klines, symbol, volatility, websocket_manager)
             volume_score = self.calculate_volume_score(klines)
             momentum_score = self.calculate_momentum_score(klines)
             spread_score = self.calculate_spread_score(symbol, current_price)
@@ -131,10 +131,11 @@ class CryptoScorer:
             if not klines or len(klines) < 10:
                 continue
             
-            # Scoring standard avec volatilité réelle
-            score = self.score_crypto(bot, symbol, stuck_positions)
+            # Scoring standard avec volatilité réelle (WebSocket)
+            websocket_manager = getattr(bot, 'websocket', None)
+            score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
             if score > 0:
-                breakdown = self.get_score_breakdown(bot, symbol, stuck_positions)
+                breakdown = self.get_score_breakdown(bot, symbol, stuck_positions, websocket_manager=websocket_manager)
                 scores.append({
                     'symbol': symbol,
                     'score': score,
@@ -171,7 +172,7 @@ class CryptoScorer:
         self.blacklist[symbol] = time.time()
         print(f"🚫 {symbol} ajouté à la blacklist pour {self.blacklist_duration/3600:.1f}h")
     
-    def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None):
+    def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None, websocket_manager=None):
         """Détails du score pour debug"""
         klines = bot.get_klines(symbol, 20)
         current_price = bot.get_price(symbol)
@@ -180,7 +181,7 @@ class CryptoScorer:
             return None
         
         return {
-            'volatility': self.calculate_volatility_score(klines, symbol, volatility),
+            'volatility': self.calculate_volatility_score(klines, symbol, volatility, websocket_manager),
             'volume': self.calculate_volume_score(klines),
             'momentum': self.calculate_momentum_score(klines),
             'spread': self.calculate_spread_score(symbol, current_price),

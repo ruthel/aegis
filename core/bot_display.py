@@ -83,7 +83,7 @@ class DisplayMixin:
             if current_holding <= 0.00001:
                 continue
             
-            current_price = self.get_price(symbol, force_refresh=True)
+            current_price = self.get_price(symbol)  # WebSocket temps réel, pas de cache
             position_value = current_holding * current_price
             
             if position_value < self.get_min_amount(symbol)['min_cost']:
@@ -105,10 +105,32 @@ class DisplayMixin:
             if not buy_price:
                 continue
             
-            # Si locked, afficher ordre limite actif
+            # Si locked, afficher ordre limite actif avec prix réel Binance
             if locked > 0.00001:
-                target_price = buy_price * (1 + min_profit_needed)
-                self.async_print(f"🟡 {base_currency} {current_holding:.6f} - Ordre limite @ {target_price:.2f} (actuel: {current_price:.2f})")
+                # Récupérer le prix réel de l'ordre depuis Binance
+                real_order_price = None
+                if not self.paper_trading:
+                    try:
+                        open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                        for order in open_orders:
+                            if order['side'] == 'sell':
+                                real_order_price = order['price']
+                                break
+                    except:
+                        pass
+                
+                # Fallback sur prix calculé si pas trouvé
+                if real_order_price is None:
+                    real_order_price = buy_price * (1 + min_profit_needed)
+                
+                distance_pct = ((real_order_price - current_price) / current_price) * 100
+                
+                # Marquer les ordres éloignés comme bloquants
+                if distance_pct > 5:
+                    self.async_print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USDT)")
+                else:
+                    self.async_print(f"🟡 {base_currency}: Ordre @ {real_order_price:.2f} USDT")
+                    self.async_print(f"   📍 Actuel: {current_price:.2f} (+{distance_pct:.1f}% à atteindre)")
                 continue
             
             pnl_pct = ((current_price - buy_price) / buy_price) * 100
@@ -162,7 +184,7 @@ class DisplayMixin:
         print("🛑 Ctrl+C pour arrêter")
     
     def show_tradable_pairs(self, tradable_pairs, usdt_available):
-        """Affiche les paires tradables"""
+        """Affiche les paires tradables (silencieux si vide)"""
         balance = self.balance_manager.get_balance()
         tradable_display = []
         
@@ -175,6 +197,10 @@ class DisplayMixin:
                     tradable_display.append(base)
             else:
                 tradable_display.append(base)
+        
+        # Log silencieux si aucun tradable disponible
+        if not tradable_display or usdt_available < 0.01:
+            return
         
         print(f"🔍 Tradable: {tradable_display} | USDT: {usdt_available:.2f}")
     

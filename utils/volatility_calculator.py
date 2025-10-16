@@ -1,36 +1,24 @@
-import time
-
 class VolatilityCalculator:
-    """Calculateur centralisé de volatilité avec cache"""
-    
-    _instance = None
-    _cache = {}
-    _cache_timeout = 60  # 1 minute
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    """Calculateur centralisé de volatilité avec WebSocket"""
     
     @classmethod
-    def calculate(cls, klines, symbol=''):
+    def calculate(cls, klines, symbol='', websocket_manager=None):
         """
         Calcule la volatilité temps réel - Score 1-5 pour scalping
         
         Args:
             klines: Liste de klines avec 'close' prices (1m)
-            symbol: Symbole pour le cache (optionnel)
+            symbol: Symbole pour WebSocket
+            websocket_manager: Instance WebSocketManager pour données temps réel
         
         Returns:
             float: Score volatilité 1-5 (1=calme, 5=très volatil)
         """
-        # Vérifier cache si symbol fourni
-        if symbol and symbol in cls._cache:
-            cache_data = cls._cache[symbol]
-            if time.time() - cache_data['timestamp'] < cls._cache_timeout:
-                # DEBUG: Afficher cache hit
-                # print(f"[VOL CACHE] {symbol}: {cache_data['volatility']:.1f}/5")
-                return cache_data['volatility']
+        # Priorité aux données WebSocket si disponibles
+        if websocket_manager and websocket_manager.is_connected():
+            ws_klines = websocket_manager.get_klines(symbol, 60)
+            if len(ws_klines) >= 10:
+                klines = ws_klines
         
         try:
             if len(klines) < 10:
@@ -100,13 +88,6 @@ class VolatilityCalculator:
             else:
                 volatility_score = 5.0
             
-            # Mettre en cache
-            if symbol:
-                cls._cache[symbol] = {
-                    'volatility': volatility_score,
-                    'timestamp': time.time()
-                }
-            
             return volatility_score
             
         except Exception as e:
@@ -114,8 +95,15 @@ class VolatilityCalculator:
     
     @classmethod
     def clear_cache(cls, symbol=None):
-        """Vide le cache (tout ou un symbole spécifique)"""
-        if symbol:
-            cls._cache.pop(symbol, None)
-        else:
-            cls._cache.clear()
+        """Méthode conservée pour compatibilité (ne fait rien)"""
+        pass
+    
+    @classmethod
+    def calculate_from_websocket(cls, websocket_manager, symbol):
+        """Calcule volatilité directement depuis WebSocket"""
+        if not websocket_manager or not websocket_manager.is_connected():
+            return 2.0
+        
+        klines = websocket_manager.get_klines(symbol, 60)
+        return cls.calculate(klines, symbol, websocket_manager)
+

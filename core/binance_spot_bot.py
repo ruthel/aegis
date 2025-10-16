@@ -38,8 +38,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.retry_delay = 5
         self.state_file = 'data/bot_state.json'
         self.min_amounts = {}
-        self.price_cache = {}
-        self.cache_timeout = 0.5
         
         # Configuration
         self.paper_trading = os.getenv('PAPER_TRADING', 'True') == 'True'
@@ -112,10 +110,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             show_details=os.getenv('SHOW_DECISION_DETAILS', 'True') == 'True'
         )
         
-        # Cache
-        self.analysis_cache = {}
-        self.analysis_cache_timeout = 5
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
+        
+
         
         # Gestionnaire de balance centralisé
         self.balance_manager = BalanceManager(self)
@@ -274,33 +271,53 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         return True
     
     def get_price(self, symbol, force_refresh=False):
-        cache_key = f"price_{symbol}"
-        now = time.time()
-        if not force_refresh and self.websocket.is_connected():
+        # WebSocket temps réel - AUCUN cache
+        if self.websocket.is_connected():
             ws_price = self.websocket.get_price(symbol)
             if ws_price is not None:
-                self.price_cache[cache_key] = {'price': ws_price, 'timestamp': now}
                 return ws_price
-        if not force_refresh and cache_key in self.price_cache:
-            cached_data = self.price_cache[cache_key]
-            cache_age = now - cached_data['timestamp']
-            if cache_age < self.cache_timeout:
-                return cached_data['price']
-            elif cache_age > 5:
-                print(f"⚠️ Prix {symbol} obsolète ({cache_age:.1f}s)")
+        
+        # Fallback API REST direct (WebSocket déconnecté)
         try:
             if self.paper_trading:
-                price = 50000 if 'BTC' in symbol else 3000 if 'ETH' in symbol else 150
+                now = time.time()
+                base_prices = {
+                    'BTC': 43000 + (int(now) % 1000),
+                    'ETH': 2500 + (int(now) % 100), 
+                    'SOL': 100 + (int(now) % 50),
+                    'BNB': 300 + (int(now) % 20)
+                }
+                crypto = symbol.split('/')[0]
+                return base_prices.get(crypto, 100)
             else:
                 ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
-                price = ticker['last']
-            self.price_cache[cache_key] = {'price': price, 'timestamp': now}
-            return price
+                return ticker['last']
         except Exception as e:
-            print(f"Erreur récupération prix {symbol}: {e}")
-            if cache_key in self.price_cache:
-                return self.price_cache[cache_key]['price']
+            print(f"❌ Erreur prix {symbol}: {e}")
             raise e
+    
+    def get_ticker(self, symbol):
+        """Récupère ticker avec WebSocket prioritaire et fallback REST API"""
+        # WebSocket temps réel prioritaire
+        if self.websocket.is_connected():
+            ws_ticker = self.websocket.get_ticker(symbol)
+            if ws_ticker is not None:
+                return ws_ticker
+        
+        # Fallback API REST
+        try:
+            if self.paper_trading:
+                current_price = self.get_price(symbol)
+                return {
+                    'last': current_price,
+                    'percentage': 2.5,  # Simulation
+                    'symbol': symbol
+                }
+            else:
+                return self.safe_request(self.exchange.fetch_ticker, symbol)
+        except Exception as e:
+            print(f"❌ Erreur ticker {symbol}: {e}")
+            return {'last': self.get_price(symbol), 'percentage': 0, 'symbol': symbol}
     
     def get_klines(self, symbol, count=50):
         if self.websocket.is_connected():
@@ -344,11 +361,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             can_sell = crypto_value >= min_cost
             if not can_buy and not can_sell:
                 return
-            if not self.paper_trading:
-                ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
-                change_24h = ticker.get('percentage') or 0
-            else:
-                change_24h = 2.5
+            # Utiliser get_ticker avec WebSocket prioritaire et fallback REST API
+            ticker = self.get_ticker(symbol)
+            change_24h = ticker.get('percentage', 0)
             analysis = self.get_cached_analysis(symbol, price)
             vol_display = analysis.get('volatility', 2.0)
             self.show_strategy_execution(symbol, price, change_24h, vol_display)
@@ -600,8 +615,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # Vérifier avec le minimum requis
                 min_required = min(self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost'] for p in trading_pairs)
                 self.ensure_trading_balance(min_required)
-                self.earn_manager.auto_allocate_idle_funds()
+                self.earn_manager.tirelire_auto_manage()
                 self.sync_positions_from_exchange()
+                self.detect_order_modifications()
                 # Rafraîchir les balances selon configuration
                 from config import FORCE_BALANCE_REFRESH
                 balance = self.balance_manager.get_balance(force_refresh=FORCE_BALANCE_REFRESH)
@@ -631,6 +647,30 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if tradable_pairs:
                     for symbol in tradable_pairs:
                         self.execute_strategy(symbol, strategy_type, 0)  # amount sera calculé dynamiquement
+                
+                # Vérifier optimisation positions existantes (toujours, pas seulement si fonds insuffisants)
+                optimized_any = False
+                for pair in trading_pairs:
+                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                    base_currency = symbol.split('/')[0]
+                    free_holding = balance.get(base_currency, {}).get('free', 0)
+                    locked_holding = balance.get(base_currency, {}).get('used', 0)
+                    total_holding = free_holding + locked_holding
+                    
+                    # Optimiser si position existe (libre ou verrouillée)
+                    if total_holding > 0.00001:
+                        position_value = total_holding * self.get_price(symbol)
+                        min_cost = self.get_min_amount(symbol)['min_cost']
+                        if position_value >= min_cost:
+                            if self.optimize_existing_position(symbol):
+                                optimized_any = True
+                                break  # Une optimisation à la fois
+                
+                if optimized_any:
+                    print(f"🔄 Position optimisée - Nouvelle analyse dans 10s")
+                    time.sleep(10)
+                    continue
+                
                 if usdt_available >= min_required:
                     stuck_positions = self.stuck_manager.stuck_positions
                     best_cryptos = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
