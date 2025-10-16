@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  binance-bot:
+    build: .
+    container_name: binance-bot-v2
+    restart: unless-stopped
+    
+    # Variables d'environnement
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    # Fichier d'environnement (créer .env.docker)
+    env_file:
+      - .env.docker
+    
+    # Volumes pour persistance des données
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    
+    # Limites de ressources
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Réseau
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge

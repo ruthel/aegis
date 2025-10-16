@@ -79,7 +79,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.cumulative_tracker = {}  # {symbol: {'direction': 1/-1, 'count': 0, 'start_price': 0}}
         
         # Ordres
-        self.order_type = os.getenv('ORDER_TYPE', 'adaptive')
         self.pending_orders = {}
         self.order_timeout = 86400
         
@@ -105,10 +104,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '50')),
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
         )
-        self.decision_display = DecisionDisplay(
-            show_decisions=os.getenv('SHOW_DECISIONS', 'True') == 'True',
-            show_details=os.getenv('SHOW_DECISION_DETAILS', 'True') == 'True'
-        )
+        self.decision_display = DecisionDisplay()
         
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
@@ -532,30 +528,13 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if is_stuck:
                 self.stuck_manager.execute_recovery(self, symbol, current_price)
     
-    def run_backtest(self):
-        days = int(os.getenv('BACKTEST_DAYS', '30'))
-        symbol = os.getenv('BACKTEST_SYMBOL', 'BTCUSDT')
-        print(f"🔄 Backtest sur {days} jours - {symbol}")
-        print("⚠️ Fonctionnalité en développement")
-        start_balance = 1000
-        current_balance = start_balance
-        trades = 0
-        for day in range(days):
-            if day % 3 == 0:
-                trades += 1
-                profit = (0.5 - 1) * 10
-                current_balance += profit
-        total_return = ((current_balance - start_balance) / start_balance) * 100
-        print(f"\n📊 RÉSULTATS BACKTEST")
-        print(f"💰 Balance finale: {current_balance:.2f} USDT")
-        print(f"📈 Rendement: {total_return:+.2f}%")
-        print(f"🔄 Trades: {trades}")
+
     
     def run(self):
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
         strategy_type = os.getenv('STRATEGY_TYPE', 'scalping')
         check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
-        backtesting = os.getenv('BACKTEST_ENABLED', 'False') == 'True'
+
         balance = self.balance_manager.get_balance()
         active_positions = 0
         for pair in trading_pairs:
@@ -570,9 +549,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     active_positions += 1
         
         self.show_header(trading_pairs, strategy_type, 0, active_positions)
-        if backtesting:
-            self.run_backtest()
-            return
+
         if self.notify_trades:
             mode = "PAPER" if self.paper_trading else "LIVE"
             self.notifier.notify(f"🤖 Bot démarré - {mode}")

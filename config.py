@@ -12,7 +12,7 @@ TESTNET = os.getenv('TESTNET', 'True').lower() == 'true'
 # ===== TRADING =====
 TRADING_PAIRS = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
 STRATEGY_TYPE = os.getenv('STRATEGY_TYPE', 'intelligent')
-ORDER_TYPE = os.getenv('ORDER_TYPE', 'adaptive')
+
 TRADE_AMOUNT = float(os.getenv('TRADE_AMOUNT', '5'))
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '5'))
 REALTIME_TRADING = os.getenv('REALTIME_TRADING', 'True').lower() == 'true'
@@ -33,8 +33,6 @@ MIN_PROFIT_THRESHOLD = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8'))
 
 # Variables supplémentaires du .env actuel
 RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '2'))
-MIN_PRICE_CHANGE = float(os.getenv('MIN_PRICE_CHANGE', '0.005'))
-DEBOUNCE_TIME = int(os.getenv('DEBOUNCE_TIME', '2'))
 ALERT_ON_LOSS = os.getenv('ALERT_ON_LOSS', 'True').lower() == 'true'
 
 # ===== PAPER TRADING =====
@@ -64,27 +62,17 @@ CURRENT_ENVIRONMENT = os.getenv('CURRENT_ENVIRONMENT', 'testnet')
 # ===== NOTIFICATIONS TELEGRAM =====
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-NOTIFY_TRADES = os.getenv('NOTIFY_TRADES', 'True').lower() == 'true'
-NOTIFY_ERRORS = os.getenv('NOTIFY_ERRORS', 'True').lower() == 'true'
 TELEGRAM_STATUS_INTERVAL = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
 
 # ===== MONITORING =====
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 SAVE_LOGS = os.getenv('SAVE_LOGS', 'True').lower() == 'true'
 SHOW_PERFORMANCE = os.getenv('SHOW_PERFORMANCE', 'True').lower() == 'true'
-SHOW_DECISIONS = os.getenv('SHOW_DECISIONS', 'True').lower() == 'true'
-SHOW_DECISION_DETAILS = os.getenv('SHOW_DECISION_DETAILS', 'True').lower() == 'true'
-
-# ===== OPTIMISATIONS =====
-# Variables supprimées (code mort): ENABLE_LATENCY_OPTIMIZER, PARALLEL_WORKERS, WS_PURE_MODE, EVENT_DRIVEN
 
 # ===== SYNCHRONISATION =====
 FORCE_BALANCE_REFRESH = os.getenv('FORCE_BALANCE_REFRESH', 'True').lower() == 'true'
 
-# ===== BACKTESTING =====
-BACKTEST_ENABLED = os.getenv('BACKTEST_ENABLED', 'False').lower() == 'true'
-BACKTEST_DAYS = int(os.getenv('BACKTEST_DAYS', '30'))
-BACKTEST_SYMBOL = os.getenv('BACKTEST_SYMBOL', 'BTCUSDT')
+
 
 # ===== COMPATIBILITÉ (anciens noms) =====
 BINANCE_MAINNET_API_KEY = BINANCE_API_KEY

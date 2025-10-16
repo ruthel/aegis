@@ -279,39 +279,13 @@ class StrategiesMixin:
         else:
             return 'hold'
     
-    def choose_optimal_order_type(self, global_signal, market_metrics, strategy):
-        volatility = market_metrics['volatility']
-        confidence = global_signal['confidence']
-        urgency = global_signal['strength']
-        
-        if (urgency >= 2.0 or volatility >= 5.0 or confidence >= 80 or 
-            (strategy == 'scalping' and confidence >= 70)):
-            return 'market'
-        else:
-            return 'market'
+
     
-    def execute_scalping_with_order_type(self, symbol, amount, current_price, order_type, global_signal):
-        smart_amount = self.risk_manager.calculate_position_size(self, symbol, amount)
-        
-        if (global_signal['action'] in ['BUY', 'STRONG_BUY'] and
-            self.correlation_manager.can_open_position(symbol, self)):
-            
-            trade_amount = smart_amount / current_price
-            result = self.buy_market(symbol, trade_amount)
-            
-            if result:
-                self.trailing_stop.add_position(symbol, current_price)
-                self.correlation_manager.add_position(symbol)
-                self.safety_manager.record_trade(0)
-        
-        self.trailing_stop.update_position(symbol, current_price)
-        self.handle_sell_logic(symbol, current_price, order_type, global_signal)
+
     
-    def execute_dca_with_order_type(self, symbol, amount, current_price, order_type):
-        trade_amount = amount / current_price
-        self.buy_market(symbol, trade_amount)
+
     
-    def handle_sell_logic(self, symbol, current_price, order_type, global_signal):
+    def handle_sell_logic(self, symbol, current_price, global_signal):
         base_currency = symbol.split('/')[0]
         balance = self.balance_manager.get_balance()
         available = balance.get(base_currency, {}).get('free', 0)

@@ -12,7 +12,7 @@ class SafetyManager:
     def load_daily_stats(self):
         """Charge les statistiques du jour"""
         try:
-            with open('daily_stats.json', 'r') as f:
+            with open('data/daily_stats.json', 'r') as f:
                 stats = json.load(f)
                 # Vérifier si c'est un nouveau jour
                 if stats.get('date') != datetime.now().strftime('%Y-%m-%d'):
@@ -33,7 +33,7 @@ class SafetyManager:
     
     def save_daily_stats(self):
         """Sauvegarde les stats"""
-        with open('daily_stats.json', 'w') as f:
+        with open('data/daily_stats.json', 'w') as f:
             json.dump(self.daily_stats, f, indent=2)
     
     def can_trade(self):

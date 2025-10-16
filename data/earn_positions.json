@@ -1,14 +1,14 @@
 {
   "flexible_savings": [
     {
-      "amount": 0.34523411,
+      "amount": 0.34523471,
       "product_id": "USDT001",
-      "apy": 0.02193264,
-      "start_date": "2025-10-16T12:42:38.507201",
+      "apy": 0.02207516,
+      "start_date": "2025-10-16T13:25:11.067501",
       "status": "active"
     }
   ],
   "locked_staking": [],
   "total_earned": 0,
-  "last_update": "2025-10-16T12:42:38.507209"
+  "last_update": "2025-10-16T13:25:11.067510"
 }
