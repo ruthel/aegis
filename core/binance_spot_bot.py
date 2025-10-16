@@ -156,12 +156,20 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         return self.exchange
     
     def connect(self):
+        from config import BINANCE_BASE_URL, CONNECTION_TIMEOUT, READ_TIMEOUT
+        
         self.exchange = ccxt.binance({
             'apiKey': self.api_key,
             'secret': self.api_secret,
             'sandbox': self.testnet,
             'enableRateLimit': True,
+            'timeout': CONNECTION_TIMEOUT * 1000,  # ccxt utilise ms
+            'rateLimit': 100,  # Optimisé pour USA
         })
+        
+        # Configurer l'URL de base si spécifiée
+        if BINANCE_BASE_URL != 'https://api.binance.com':
+            self.exchange.urls['api'] = BINANCE_BASE_URL
     
     def reconnect(self):
         for attempt in range(self.max_retries):

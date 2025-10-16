@@ -1867,3 +1867,6 @@
 2025-10-16 15:59:09,459 - INFO - Websocket connected
 2025-10-16 16:02:43,664 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
 2025-10-16 16:03:27,045 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2025-10-16 16:43:31,152 - ERROR - Handshake status 400 Bad Request -+-+- {'date': 'Thu, 16 Oct 2025 15:43:32 GMT', 'content-type': 'text/plain', 'content-length': '20', 'connection': 'keep-alive'} -+-+- b'Invalid request path' - goodbye
+2025-10-16 16:43:34,587 - ERROR - Handshake status 400 Bad Request -+-+- {'date': 'Thu, 16 Oct 2025 15:43:35 GMT', 'content-type': 'text/plain', 'content-length': '20', 'connection': 'keep-alive'} -+-+- b'Invalid request path' - goodbye
+2025-10-16 16:43:39,872 - ERROR - Handshake status 400 Bad Request -+-+- {'date': 'Thu, 16 Oct 2025 15:43:40 GMT', 'content-type': 'text/plain', 'content-length': '20', 'connection': 'keep-alive'} -+-+- b'Invalid request path' - goodbye
