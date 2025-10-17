@@ -72,26 +72,6 @@ SHOW_PERFORMANCE = os.getenv('SHOW_PERFORMANCE', 'True').lower() == 'true'
 # ===== SYNCHRONISATION =====
 FORCE_BALANCE_REFRESH = os.getenv('FORCE_BALANCE_REFRESH', 'True').lower() == 'true'
 
-# ===== OPTIMISATION LATENCE USA =====
-BINANCE_BASE_URL = os.getenv('BINANCE_BASE_URL', 'https://api.binance.com')
-BINANCE_WS_URL = os.getenv('BINANCE_WS_URL', 'wss://stream.binance.com:9443/ws')
-
-# Optimisations réseau
-CONNECTION_TIMEOUT = int(os.getenv('CONNECTION_TIMEOUT', '5'))
-READ_TIMEOUT = int(os.getenv('READ_TIMEOUT', '10'))
-MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
-REQUEST_POOL_SIZE = int(os.getenv('REQUEST_POOL_SIZE', '20'))
-
-# Cache optimisé
-PRICE_CACHE_TTL = float(os.getenv('PRICE_CACHE_TTL', '1'))
-BALANCE_CACHE_TTL = float(os.getenv('BALANCE_CACHE_TTL', '5'))
-ORDER_BOOK_CACHE_TTL = float(os.getenv('ORDER_BOOK_CACHE_TTL', '0.5'))
-
-# WebSocket optimisé
-WS_PING_INTERVAL = int(os.getenv('WS_PING_INTERVAL', '20'))
-WS_PING_TIMEOUT = int(os.getenv('WS_PING_TIMEOUT', '10'))
-WS_RECONNECT_DELAY = int(os.getenv('WS_RECONNECT_DELAY', '5'))
-
 
 
 # ===== COMPATIBILITÉ (anciens noms) =====

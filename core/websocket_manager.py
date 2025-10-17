@@ -30,9 +30,7 @@ class WebSocketManager:
             # Ajouter les klines 1m pour les indicateurs
             streams.extend([f"{symbol.lower()}@kline_1m" for symbol in self.symbols])
             
-            from config import BINANCE_WS_URL
-            base_ws_url = BINANCE_WS_URL.replace('/ws', '')
-            url = f"{base_ws_url}/{'/'.join(streams)}"
+            url = f"wss://stream.binance.com:9443/ws/{'/'.join(streams)}"
             
             self.ws = websocket.WebSocketApp(
                 url,
@@ -123,9 +121,7 @@ class WebSocketManager:
                 return
             
             # Connexion WebSocket User Data
-            from config import BINANCE_WS_URL
-            base_ws_url = BINANCE_WS_URL.replace('/ws', '')
-            url = f"{base_ws_url}/{self.listen_key}"
+            url = f"wss://stream.binance.com:9443/ws/{self.listen_key}"
             
             self.ws_user = websocket.WebSocketApp(
                 url,

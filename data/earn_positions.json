@@ -1,14 +1,22 @@
 {
   "flexible_savings": [
     {
-      "amount": 0.34523471,
+      "amount": 2.1e-07,
       "product_id": "USDT001",
-      "apy": 0.02207516,
-      "start_date": "2025-10-16T13:25:11.067501",
+      "apy": 0.02247594,
+      "start_date": "2025-10-17T08:49:54.620537",
+      "status": "active"
+    },
+    {
+      "amount": 0.13423,
+      "product_id": "USDT001",
+      "purchase_id": 9936507439,
+      "apy": 0.02247594,
+      "start_date": "2025-10-17T08:49:57.018753",
       "status": "active"
     }
   ],
   "locked_staking": [],
   "total_earned": 0,
-  "last_update": "2025-10-16T13:25:11.067510"
+  "last_update": "2025-10-17T08:49:57.018772"
 }
