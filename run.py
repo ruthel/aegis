@@ -20,7 +20,6 @@ def clear_python_cache():
                 cache_path = os.path.join(root, cache_dir)
                 try:
                     shutil.rmtree(cache_path)
-                    print(f"🧹 Cache supprimé: {cache_path}")
                 except:
                     pass
         
@@ -32,6 +31,7 @@ def clear_python_cache():
                     os.remove(file_path)
                 except:
                     pass
+    print(f"🧹 Cache supprimé")
 
 def clean_bot_states():
     """Nettoie les états du bot"""
@@ -53,9 +53,9 @@ def clean_bot_states():
                 print(f"⚠️ Erreur nettoyage {state_file}: {e}")
     
     if cleaned > 0:
-        print(f"✅ {cleaned} fichier(s) d'état nettoyé(s)")
+        print(f"✅ {cleaned} état(s) nettoyé(s)")
     else:
-        print("ℹ️ Aucun fichier d'état à nettoyer")
+        print("ℹ️ Aucun état à nettoyer")
 
 # Vider le terminal au démarrage
 os.system('cls' if os.name == 'nt' else 'clear')

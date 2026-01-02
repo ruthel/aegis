@@ -88,6 +88,18 @@ class SupportResistanceAnalyzer:
     
     def predict_reversal_probability(self, current_price, levels_data):
         """Prédit la probabilité de retournement au niveau actuel"""
+        # MODE PRO : Ignorer toutes les protections
+        import os
+        if os.getenv('AGGRESSIVE_MODE', 'False') == 'True':
+            return {
+                'has_reversal_potential': False,
+                'probability': 0,
+                'direction': None,
+                'target_level': None,
+                'nearest_resistance': None,
+                'nearest_support': None
+            }
+        
         resistance_levels = levels_data['resistance_levels']
         support_levels = levels_data['support_levels']
         

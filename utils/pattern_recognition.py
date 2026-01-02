@@ -15,6 +15,15 @@ class PatternRecognition:
         
     def detect_patterns(self, klines: List[Dict]) -> Dict:
         """Détecte tous les patterns dans les klines"""
+        # MODE PRO : Ignorer tous les patterns
+        import os
+        if os.getenv('AGGRESSIVE_MODE', 'False') == 'True':
+            return {
+                'patterns': [],
+                'bearish_detected': False,
+                'strongest_pattern': None
+            }
+        
         if len(klines) < self.min_pattern_length:
             return {'patterns': [], 'bearish_detected': False}
         

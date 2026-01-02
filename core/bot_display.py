@@ -32,12 +32,13 @@ class DisplayMixin:
                 except:
                     pass
                 
+                # Affichage prix exact sans arrondi
                 if price >= 10000:
-                    price_str = f"{price/1000:.1f}K"
+                    price_str = f"{price:.2f}"
                 elif price >= 1000:
-                    price_str = f"{price/1000:.2f}K"
+                    price_str = f"{price:.2f}"
                 else:
-                    price_str = f"{price:.0f}"
+                    price_str = f"{price:.2f}"
                 prices.append(f"{crypto} {price_str}{sr_info}")
             except:
                 prices.append(f"{symbol.split('/')[0]} ERR")
@@ -232,12 +233,9 @@ class DisplayMixin:
         print("🛑 Ctrl+C pour arrêter")
     
     def show_tradable_pairs(self, tradable_pairs, usdt_available):
-        """Affiche les paires tradables (silencieux si vide)"""
+        """Affiche les paires tradables (silencieux si répétitif)"""
         if self.paper_trading:
-            # CORRECTION: Utiliser paper_balance pour paper trading
-            if self.paper_balance < 10:
-                return
-            print(f"🔍 Tradable: {[s.split('/')[0] for s in tradable_pairs]} | USDT: {self.paper_balance:.2f}")
+            # Éviter affichage répétitif en paper trading
             return
         
         balance = self.balance_manager.get_balance()

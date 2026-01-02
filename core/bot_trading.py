@@ -1,6 +1,7 @@
 """Module de trading - Gestion des ordres d'achat/vente"""
 from datetime import datetime
 import time
+import os
 
 class TradingMixin:
     """Mixin pour les opérations de trading"""
@@ -14,8 +15,8 @@ class TradingMixin:
                 print(f"❌ Limite quotidienne atteinte: {self.total_trades}/{self.max_daily_trades}")
                 return None
         
-        # VÉRIFICATION 2: Position existante (sauf moyennage)
-        if not allow_averaging:
+        # VÉRIFICATION 2: Position existante (sauf moyennage ou mode PRO)
+        if not allow_averaging and os.getenv('ALLOW_MULTIPLE_POSITIONS', 'False') != 'True':
             existing_positions = [p for p in self.state.get('positions', []) 
                                 if p['symbol'] == symbol and p['side'] == 'buy']
             if existing_positions:

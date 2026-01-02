@@ -50,11 +50,11 @@ class StrategiesMixin:
         
         result = self.buy_market(symbol, trade_amount)
         if result:
-            self.trailing_stop.add_position(symbol, current_price)
+            self.trailing_stop_manager.add_position(symbol, current_price)
             self.correlation_manager.add_position(symbol)
             self.safety_manager.record_trade(0)
         
-        self.trailing_stop.update_position(symbol, current_price)
+        self.trailing_stop_manager.update_position(symbol, current_price)
         
         base_currency = symbol.split('/')[0]
         available = balance.get(base_currency, {}).get('free', 0)
@@ -252,7 +252,8 @@ class StrategiesMixin:
         klines = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
         reversal_check = self.multi_tf_analyzer.detect_reversal_signals(klines, current_price)
         
-        if reversal_check['has_reversal_risk']:
+        # MODE PRO : Ignorer les protections de retournement
+        if os.getenv('AGGRESSIVE_MODE', 'False') != 'True' and reversal_check['has_reversal_risk']:
             risk_factors = ', '.join(reversal_check['risk_factors'])
             # AFFICHAGE AMÉLIORÉ avec détails techniques
             current_price_display = f"{current_price:.2f}"
@@ -277,7 +278,8 @@ class StrategiesMixin:
             return 'hold'
         
         # NOUVEAU: Analyse Support/Résistance pour prédiction retournement
-        if len(klines) >= 50 and hasattr(self, 'sr_analyzer'):
+        if (os.getenv('AGGRESSIVE_MODE', 'False') != 'True' and 
+            len(klines) >= 50 and hasattr(self, 'sr_analyzer')):
             sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
             reversal_pred = self.sr_analyzer.predict_reversal_probability(current_price, sr_levels)
             
@@ -432,7 +434,7 @@ class StrategiesMixin:
                     print(f"🎯 Support détecté à {support_price:.2f} - Entrée ajustée")
         
         # Calculer montant
-        smart_amount = self.risk_manager.calculate_position_size(self, symbol, amount)
+        smart_amount = self.advanced_risk_manager.calculate_position_size(self, symbol, amount)
         trade_amount = smart_amount / pullback_data['entry_price']
         
         # Vérifier encore une fois les fonds (double sécurité)
@@ -512,7 +514,7 @@ class StrategiesMixin:
                 min_profit_needed = self.min_profit_threshold + (2 * self.trading_fee)
                 
                 should_sell = (expected_profit_pct >= min_profit_needed or
-                              self.trailing_stop.should_stop_loss(symbol, current_price))
+                              self.trailing_stop_manager.should_stop_loss(symbol, current_price))
                 
                 if should_sell:
                     multi_tf_analysis = self.get_cached_analysis(symbol, current_price)
@@ -523,7 +525,7 @@ class StrategiesMixin:
                     result = self.sell_limit(symbol, available, limit_price)
                     if result:
                         self.safety_manager.record_trade(0)
-                        self.trailing_stop.remove_position(symbol)
+                        self.trailing_stop_manager.remove_position(symbol)
                         self.correlation_manager.remove_position(symbol)
     
     def analyze_market_conditions(self, symbol, current_price):
@@ -551,7 +553,7 @@ class StrategiesMixin:
         if global_signal['confidence'] < 70:
             return
         
-        smart_amount = self.risk_manager.calculate_position_size(self, symbol, amount)
+        smart_amount = self.advanced_risk_manager.calculate_position_size(self, symbol, amount)
         
         if (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
             self.correlation_manager.can_open_position(symbol, self)):
@@ -559,10 +561,10 @@ class StrategiesMixin:
             trade_amount = smart_amount / current_price
             result = self.buy_market(symbol, trade_amount)
             if result:
-                self.trailing_stop.add_position(symbol, current_price)
+                self.trailing_stop_manager.add_position(symbol, current_price)
                 self.correlation_manager.add_position(symbol)
         
-        self.trailing_stop.update_position(symbol, current_price)
+        self.trailing_stop_manager.update_position(symbol, current_price)
         
         base_currency = symbol.split('/')[0]
         balance = self.balance_manager.get_balance()

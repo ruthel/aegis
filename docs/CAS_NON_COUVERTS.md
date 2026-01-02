@@ -35,13 +35,14 @@
 
 ### Niveau 1 - CRITIQUES (Impact -30% à -80%)
 
-#### 11. **Whale Movement Detector** - 🔴 PRIORITÉ 1
+#### 11. **Whale Movement Detector** - 🔴 PRIORITÉ 1 (API PAYANTE)
 - **Exemple** : Baleine vend 5000 BTC → Crash -15%
 - **Impact** : Ventes massives non détectées (-50%)
-- **🔧 Solution** : `WhaleDetector` avec API Whale Alert gratuite
-  - Surveillance transferts >1000 BTC/ETH
-  - Alerte ventes baleines exchange
-  - Blocage achats si whale dump détecté
+- **❌ Problème** : API Whale Alert payante ($50/mois)
+- **🔧 Alternative** : Surveillance volume anormal + corrélation prix
+  - Détection volume >500% + chute >10%
+  - Analyse corrélation multi-exchanges
+  - Simulation whale movements via patterns
 
 #### 12. **Regulatory Risk Scanner** - 🔴 PRIORITÉ 1
 - **Exemple** : Annonce ban Chine → BTC -20% en 2h
@@ -97,7 +98,7 @@
 
 | Cas | Impact | Difficulté | APIs Gratuites | Dev Time | Priorité |
 |-----|--------|------------|----------------|----------|----------|
-| **Whale Movement** | -50% | Facile | ✅ Whale Alert | 2h | 🔥 P1 |
+| **Whale Movement** | -50% | Facile | ❌ Payant | 2h | 🔴 SKIP |
 | **Regulatory Risk** | -60% | Facile | ✅ RSS SEC | 1h | 🔥 P1 |
 | **Network Congestion** | -40% | Facile | ✅ Etherscan | 1h | 🔥 P2 |
 | **Liquidity Crisis** | -70% | Moyen | ✅ Orderbook | 3h | 🔥 P2 |
