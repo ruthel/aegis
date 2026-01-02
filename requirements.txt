@@ -1,6 +1,7 @@
-ccxt==4.1.64
-python-dotenv==1.0.0
-pandas>=2.2.0
-websocket-client>=1.6.0
-numpy>=1.24.0
+ccxt>=4.2.25
+python-dotenv>=1.0.0
 requests>=2.31.0
+numpy>=1.26.0
+scipy>=1.11.0
+websocket-client>=1.6.4
+python-telegram-bot>=20.7

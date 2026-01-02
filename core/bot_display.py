@@ -9,20 +9,36 @@ class DisplayMixin:
     """Mixin contenant toutes les méthodes d'affichage et monitoring"""
     
     def show_realtime_prices(self, trading_pairs):
-        """Affiche les prix en temps réel (format compact, asynchrone)"""
+        """Affiche les prix en temps réel avec analyse Support/Résistance"""
         prices = []
         for pair in trading_pairs:
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
             try:
                 price = self.get_price(symbol)
                 crypto = symbol.split('/')[0]
+                
+                # Analyse Support/Résistance
+                sr_info = ""
+                try:
+                    klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
+                    if len(klines) >= 50:
+                        sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
+                        reversal_pred = self.sr_analyzer.predict_reversal_probability(price, sr_levels)
+                        
+                        if reversal_pred['has_reversal_potential']:
+                            direction = reversal_pred['direction']
+                            prob = reversal_pred['probability']
+                            sr_info = f" [{direction} {prob:.0f}%]"
+                except:
+                    pass
+                
                 if price >= 10000:
                     price_str = f"{price/1000:.1f}K"
                 elif price >= 1000:
                     price_str = f"{price/1000:.2f}K"
                 else:
                     price_str = f"{price:.0f}"
-                prices.append(f"{crypto} {price_str}")
+                prices.append(f"{crypto} {price_str}{sr_info}")
             except:
                 prices.append(f"{symbol.split('/')[0]} ERR")
         
@@ -30,6 +46,11 @@ class DisplayMixin:
     
     def show_spot_balances(self, trading_pairs):
         """Affiche tous les soldes Spot (free + locked) sur une ligne"""
+        if self.paper_trading:
+            # CORRECTION: Afficher paper_balance au lieu de balance_manager
+            print(f"💳 SPOT: USDT {self.paper_balance:.2f}")
+            return
+        
         balance = self.balance_manager.get_balance()
         balances = []
         
@@ -67,6 +88,33 @@ class DisplayMixin:
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
         print(f"\n📊 {self.daily_pnl:+.2f} | {self.total_trades} trades ({win_rate:.0f}% win)")
         
+        # CORRECTION: Utiliser les positions du state pour paper trading
+        if self.paper_trading:
+            active_positions = [p for p in self.state.get('positions', []) 
+                              if p['side'] == 'buy']
+            
+            if not active_positions:
+                print(f"⏳ Aucune position")
+                return
+            
+            # Afficher positions paper trading
+            for position in active_positions:
+                symbol = position['symbol']
+                crypto = symbol.split('/')[0]
+                amount = position['amount']
+                buy_price = position['price']
+                current_price = self.get_price(symbol)
+                
+                pnl_pct = ((current_price - buy_price) / buy_price) * 100
+                position_value = amount * current_price
+                
+                if pnl_pct >= 0:
+                    print(f"🟢 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
+                else:
+                    print(f"🔴 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
+            return
+        
+        # MODE RÉEL - Utiliser balance_manager
         balance = self.balance_manager.get_balance()
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
         min_profit_needed = self.min_profit_threshold + (2 * self.trading_fee)
@@ -185,6 +233,13 @@ class DisplayMixin:
     
     def show_tradable_pairs(self, tradable_pairs, usdt_available):
         """Affiche les paires tradables (silencieux si vide)"""
+        if self.paper_trading:
+            # CORRECTION: Utiliser paper_balance pour paper trading
+            if self.paper_balance < 10:
+                return
+            print(f"🔍 Tradable: {[s.split('/')[0] for s in tradable_pairs]} | USDT: {self.paper_balance:.2f}")
+            return
+        
         balance = self.balance_manager.get_balance()
         tradable_display = []
         
@@ -221,15 +276,32 @@ class DisplayMixin:
                 print(f"   💡 {pred['reason']} (Vol: {pred['volatility']:.1f}/5, Mom: {pred['momentum']:+.1f}%)")
     
     def show_buy_predictions(self, buy_predictions):
-        """Affiche les prévisions d'achat"""
+        """Affiche les prévisions d'achat avec Support/Résistance"""
         if buy_predictions:
             print("\n🔮 PRÉVISIONS ACHATS:")
             for crypto, prediction in buy_predictions:
+                symbol = f"{crypto}/USDT"
+                
+                # Ajouter info Support/Résistance
+                sr_info = ""
+                try:
+                    klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
+                    if len(klines) >= 50:
+                        current_price = self.get_price(symbol)
+                        sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
+                        reversal_pred = self.sr_analyzer.predict_reversal_probability(current_price, sr_levels)
+                        
+                        if reversal_pred['nearest_support']:
+                            support_price = reversal_pred['nearest_support']['price']
+                            sr_info = f" | Support: {support_price:.2f}"
+                except:
+                    pass
+                
                 if prediction['status'] == 'READY':
                     min_conf = prediction.get('min_confidence', 60)
-                    print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}")
+                    print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}{sr_info}")
                 elif prediction['status'] == 'WAITING':
-                    print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}")
+                    print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}{sr_info}")
     
     def show_strategy_execution(self, symbol, price, change_24h, vol_display):
         """Affiche l'exécution d'une stratégie"""

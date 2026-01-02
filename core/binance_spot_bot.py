@@ -11,11 +11,22 @@ from core.technical_indicators import SignalGenerator
 from core.earn_manager import BinanceEarnManager
 from core.balance_manager import BalanceManager
 from utils.advanced_risk_manager import AdvancedRiskManager, TrailingStopManager, CorrelationManager
+from utils.flash_crash_detector import FlashCrashDetector
+from utils.macro_event_monitor import MacroEventMonitor
+from utils.contagion_detector import ContagionDetector
+from utils.multi_exchange_fallback import MultiExchangeFallback
+from utils.manipulation_detector import ManipulationDetector
+from utils.news_monitor import NewsMonitor
 from utils.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from utils.safety_manager import SafetyManager
 from utils.stuck_position_manager import StuckPositionManager
 from utils.crypto_scorer import CryptoScorer
 from utils.decision_display import DecisionDisplay
+from utils.support_resistance_analyzer import SupportResistanceAnalyzer
+from utils.stablecoin_monitor import StablecoinMonitor
+from utils.pattern_recognition import PatternRecognition
+from utils.slippage_calculator import SlippageCalculator
+from utils.liquidity_checker import LiquidityChecker
 import logging
 
 # Import des mixins
@@ -89,6 +100,14 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.risk_manager = AdvancedRiskManager()
         self.trailing_stop = TrailingStopManager(float(os.getenv('TRAILING_STOP_PERCENT', '3')))
         self.correlation_manager = CorrelationManager()
+        
+        # NOUVEAUX DÉTECTEURS CRITIQUES
+        self.flash_crash_detector = FlashCrashDetector()
+        self.macro_monitor = MacroEventMonitor()
+        self.contagion_detector = ContagionDetector()
+        self.multi_exchange_fallback = MultiExchangeFallback()
+        self.manipulation_detector = ManipulationDetector()
+        self.news_monitor = NewsMonitor()
         self.multi_tf_analyzer = MultiTimeframeAnalyzer()
         self.safety_manager = SafetyManager(
             max_daily_trades=int(os.getenv('MAX_DAILY_TRADES', '50')),
@@ -105,6 +124,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
         )
         self.decision_display = DecisionDisplay()
+        self.sr_analyzer = SupportResistanceAnalyzer()
+        self.stablecoin_monitor = StablecoinMonitor()
+        self.pattern_recognition = PatternRecognition()
+        self.slippage_calculator = SlippageCalculator()
+        self.liquidity_checker = LiquidityChecker()
         
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
@@ -118,8 +142,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Affichage async
         self.display_queue = Queue(maxsize=100)
         
-        if not self.paper_trading:
-            self.connect()
+        # Toujours connecter pour éviter les erreurs, même en paper trading
+        self.connect()
         self.load_state()
         
         # Initialiser l'affichage async
@@ -249,11 +273,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             return False
         if self.paper_trading:
             if cost > self.paper_balance:
-                shortage = cost - self.paper_balance
-                if self.earn_manager.withdraw_from_flexible(shortage):
-                    print(f"💰 Retrait Earn: {shortage:.2f} USDT pour trade")
-                    return True
+                print(f"⚠️ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
                 return False
+            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} USDT")
+            return True
         else:
             balance = self.balance_manager.get_balance()
             if symbol.endswith('/USDT'):
@@ -273,73 +296,79 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if ws_price is not None:
                 return ws_price
         
-        # Fallback API REST direct (WebSocket déconnecté)
+        # TOUJOURS utiliser les vraies données Binance (même en paper trading)
         try:
-            if self.paper_trading:
-                now = time.time()
-                base_prices = {
-                    'BTC': 43000 + (int(now) % 1000),
-                    'ETH': 2500 + (int(now) % 100), 
-                    'SOL': 100 + (int(now) % 50),
-                    'BNB': 300 + (int(now) % 20)
-                }
-                crypto = symbol.split('/')[0]
-                return base_prices.get(crypto, 100)
-            else:
-                ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
-                return ticker['last']
+            ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
+            return ticker['last']
         except Exception as e:
             print(f"❌ Erreur prix {symbol}: {e}")
+            # Fallback seulement en cas d'erreur critique
+            if self.paper_trading:
+                fallback_prices = {'BTC': 50000, 'ETH': 3000, 'SOL': 100, 'BNB': 300}
+                crypto = symbol.split('/')[0]
+                return fallback_prices.get(crypto, 100)
             raise e
     
     def get_ticker(self, symbol):
-        """Récupère ticker avec WebSocket prioritaire et fallback REST API"""
+        """Récupère ticker avec WebSocket prioritaire et fallback REST API - VRAIES DONNÉES"""
         # WebSocket temps réel prioritaire
         if self.websocket.is_connected():
             ws_ticker = self.websocket.get_ticker(symbol)
             if ws_ticker is not None:
                 return ws_ticker
         
-        # Fallback API REST
+        # TOUJOURS utiliser les vraies données Binance (même en paper trading)
         try:
-            if self.paper_trading:
-                current_price = self.get_price(symbol)
-                return {
-                    'last': current_price,
-                    'percentage': 2.5,  # Simulation
-                    'symbol': symbol
-                }
-            else:
-                return self.safe_request(self.exchange.fetch_ticker, symbol)
+            return self.safe_request(self.exchange.fetch_ticker, symbol)
         except Exception as e:
             print(f"❌ Erreur ticker {symbol}: {e}")
-            return {'last': self.get_price(symbol), 'percentage': 0, 'symbol': symbol}
+            # Fallback seulement en cas d'erreur critique
+            current_price = self.get_price(symbol)
+            return {'last': current_price, 'percentage': 0, 'symbol': symbol}
     
-    def get_klines(self, symbol, count=50):
+    def get_klines(self, symbol, count=50, timeframe=None):
+        """Récupère les klines avec timeframe configurable - VRAIES DONNÉES"""
+        # Utiliser le timeframe spécifié ou celui par défaut depuis .env
+        if timeframe is None:
+            timeframe = os.getenv('MAIN_TIMEFRAME', '15m')
+        
         if self.websocket.is_connected():
             klines = self.websocket.get_klines(symbol, count)
             if len(klines) >= count:
                 return klines
+        
+        # TOUJOURS utiliser les vraies données Binance (même en paper trading)
         try:
+            ohlcv = self.safe_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit=count)
+            return [{'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]} for c in ohlcv]
+        except Exception as e:
+            print(f"Erreur récupération klines {symbol}: {e}")
+            # Fallback seulement en cas d'erreur critique
             if self.paper_trading:
                 klines = []
                 base_price = 50000 if 'BTC' in symbol else 3000
+                interval_minutes = self._timeframe_to_minutes(timeframe)
                 for i in range(count):
                     price = base_price + (i * 10)
                     klines.append({
-                        'timestamp': int(time.time() - (count - i) * 60) * 1000,
+                        'timestamp': int(time.time() - (count - i) * interval_minutes * 60) * 1000,
                         'open': price, 'high': price + 50, 'low': price - 50,
                         'close': price + 25, 'volume': 100
                     })
                 return klines
-            else:
-                ohlcv = self.safe_request(self.exchange.fetch_ohlcv, symbol, '1m', limit=count)
-                return [{'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]} for c in ohlcv]
-        except Exception as e:
-            print(f"Erreur récupération klines {symbol}: {e}")
             return []
     
+    def _timeframe_to_minutes(self, timeframe):
+        """Convertit un timeframe en minutes"""
+        timeframe_map = {
+            '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30,
+            '1h': 60, '2h': 120, '4h': 240, '6h': 360, '8h': 480, '12h': 720,
+            '1d': 1440, '3d': 4320, '1w': 10080, '1M': 43200
+        }
+        return timeframe_map.get(timeframe, 15)
+    
     def execute_strategy(self, symbol, strategy_type, amount):
+        print(f"🔄 DEBUG: execute_strategy appelée pour {symbol}, type={strategy_type}")
         try:
             price = self.get_price(symbol)
             balance = self.balance_manager.get_balance()
@@ -356,6 +385,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             crypto_value = crypto_balance * price
             can_sell = crypto_value >= min_cost
             if not can_buy and not can_sell:
+                print(f"❌ {symbol}: Ni achat ni vente possible")
                 return
             # Utiliser get_ticker avec WebSocket prioritaire et fallback REST API
             ticker = self.get_ticker(symbol)
@@ -363,13 +393,31 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             analysis = self.get_cached_analysis(symbol, price)
             vol_display = analysis.get('volatility', 2.0)
             self.show_strategy_execution(symbol, price, change_24h, vol_display)
+            
+            print(f"🎯 {symbol}: Appel de {strategy_type}_strategy")
+            print(f"🚀 NOUVEAU CODE ACTIF - VERSION MISE À JOUR!")
+            print(f"🔍 DEBUG: strategy_type='{strategy_type}', type={type(strategy_type)}")
             if strategy_type == 'intelligent':
-                self.intelligent_strategy(symbol, trade_amount, price)
+                print(f"🔍 {symbol}: Tentative appel intelligent_strategy")
+                if hasattr(self, 'intelligent_strategy'):
+                    print(f"✅ {symbol}: intelligent_strategy existe - APPEL EN COURS...")
+                    try:
+                        result = self.intelligent_strategy(symbol, trade_amount, price)
+                        print(f"✅ {symbol}: intelligent_strategy terminée, résultat: {result}")
+                    except Exception as e:
+                        print(f"❌ {symbol}: ERREUR dans intelligent_strategy: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"❌ {symbol}: intelligent_strategy n'existe pas!")
             elif strategy_type == 'adaptive':
+                print(f"🔄 {symbol}: Appel adaptive_strategy")
                 self.adaptive_strategy(symbol, trade_amount, price)
             elif strategy_type == 'scalping':
+                print(f"🔄 {symbol}: Appel scalping_strategy")
                 self.scalping_strategy(symbol, trade_amount, price)
             elif strategy_type == 'dca':
+                print(f"🔄 {symbol}: Appel dca_strategy")
                 self.dca_strategy(symbol, trade_amount, price)
         except Exception as e:
             print(f"❌ Erreur stratégie {symbol}: {e}")
@@ -489,7 +537,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         self.last_analysis[formatted_symbol] = now
         try:
-            strategy_type = os.getenv('STRATEGY_TYPE', 'scalping')
+            strategy_type = os.getenv('STRATEGY_TYPE', 'intelligent')
             trade_amount = self.get_min_amount(formatted_symbol)['min_cost']
             if strategy_type == 'intelligent':
                 self.realtime_intelligent(formatted_symbol, trade_amount, price)
@@ -532,7 +580,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     
     def run(self):
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
-        strategy_type = os.getenv('STRATEGY_TYPE', 'scalping')
+        strategy_type = os.getenv('STRATEGY_TYPE', 'intelligent')
         check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
 
         balance = self.balance_manager.get_balance()
@@ -559,6 +607,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 self.show_spot_balances(trading_pairs)
                 self.earn_manager.show_earn_performance()
                 self.show_realtime_prices(trading_pairs)
+                self.show_protection_status()  # Afficher statuts protection
                 print()
                 # Prévisions de vente
                 sell_predictions = []
@@ -588,6 +637,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         self.last_funding_check = time.time()
                 else:
                     self.last_funding_check = time.time()
+                
+                # Vérifier exécution ordres limite paper trading
+                self.check_paper_limit_orders()
                 
                 # Vérifier avec le minimum requis
                 min_required = min(self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost'] for p in trading_pairs)
@@ -621,9 +673,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         tradable_pairs.append(symbol)
 
                 self.show_tradable_pairs(tradable_pairs, usdt_available)
-                if tradable_pairs:
-                    for symbol in tradable_pairs:
-                        self.execute_strategy(symbol, strategy_type, 0)  # amount sera calculé dynamiquement
+                # TRADING DÉSACTIVÉ - Géré par WebSocket temps réel
+                # if tradable_pairs:
+                #     for symbol in tradable_pairs:
+                #         self.execute_strategy(symbol, strategy_type, 0)
                 
                 # Vérifier optimisation positions existantes (toujours, pas seulement si fonds insuffisants)
                 optimized_any = False
@@ -648,14 +701,15 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     time.sleep(10)
                     continue
                 
-                if usdt_available >= min_required:
-                    stuck_positions = self.stuck_manager.stuck_positions
-                    best_cryptos = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
-                    self.show_top_cryptos(best_cryptos)
-                    if best_cryptos:
-                        for symbol in best_cryptos:
-                            if symbol not in tradable_pairs:
-                                self.execute_strategy(symbol, strategy_type, 0)  # amount sera calculé dynamiquement
+                # CRYPTO SCORING DÉSACTIVÉ - Géré par WebSocket temps réel
+                # if usdt_available >= min_required:
+                #     stuck_positions = self.stuck_manager.stuck_positions
+                #     best_cryptos = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
+                #     self.show_top_cryptos(best_cryptos)
+                #     if best_cryptos:
+                #         for symbol in best_cryptos:
+                #             if symbol not in tradable_pairs:
+                #                 self.execute_strategy(symbol, strategy_type, 0)  # amount sera calculé dynamiquement
                 if self.notify_trades:
                     current_time = time.time()
                     if current_time - self.last_status_time >= self.status_interval:
@@ -673,3 +727,50 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             print(f"\n⚠️ Erreur bot: {e}")
             self.show_debug_commands()
             raise e
+    
+    def show_protection_status(self):
+        """Affiche le statut de toutes les protections actives"""
+        import time
+        protections = []
+        
+        # 1. Macro Events
+        if hasattr(self, 'macro_monitor') and not self.macro_monitor.can_trade():
+            if hasattr(self.macro_monitor, 'risk_off_start') and self.macro_monitor.risk_off_start:
+                remaining = (self.macro_monitor.risk_off_duration - 
+                           (time.time() - self.macro_monitor.risk_off_start)) / 3600
+                if remaining > 0:
+                    protections.append(f"🚫 RISK-OFF ({remaining:.1f}h)")
+        
+        # 2. Multi-Exchange
+        if hasattr(self, 'multi_exchange_fallback'):
+            exchange_status = self.multi_exchange_fallback.get_status_message()
+            if exchange_status:
+                protections.append(exchange_status)
+        
+        # 3. Protections par symbole
+        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+        for pair in trading_pairs[:2]:  # Max 2 symboles
+            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            crypto = symbol.split('/')[0]
+            
+            # Manipulation
+            if hasattr(self, 'manipulation_detector'):
+                manip_status = self.manipulation_detector.get_manipulation_status(symbol)
+                if manip_status:
+                    protections.append(f"{crypto}: {manip_status}")
+            
+        # 4. Liquidity
+        if hasattr(self, 'liquidity_checker'):
+            liquidity_status = self.liquidity_checker.get_status_message(symbol)
+            if liquidity_status:
+                protections.append(f"{crypto}: {liquidity_status}")
+        
+        # Afficher seulement si protections actives
+        if protections:
+            print(f"🛡️ PROTECTIONS: {' | '.join(protections[:3])}")  # Max 3
+    
+    def show_debug_commands(self):
+        """Affiche les commandes de debug"""
+        print("\n🔧 COMMANDES DEBUG:")
+        print("  bot.force_balance_sync()  # Forcer sync balances")
+        print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")

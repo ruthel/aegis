@@ -6,19 +6,40 @@ class TradingMixin:
     """Mixin pour les opérations de trading"""
     
     def buy_market(self, symbol, amount, allow_averaging=False):
-        balance = self.balance_manager.get_balance()
-        base_currency = symbol.split('/')[0]
-        current_holding = balance.get(base_currency, {}).get('free', 0)
+        print(f"🔄 DEBUG: buy_market appelé pour {symbol}, montant: {amount:.6f}")
+        
+        # VÉRIFICATION 1: Limite quotidienne de trades
+        if hasattr(self, 'total_trades') and hasattr(self, 'max_daily_trades'):
+            if self.total_trades >= self.max_daily_trades:
+                print(f"❌ Limite quotidienne atteinte: {self.total_trades}/{self.max_daily_trades}")
+                return None
+        
+        # VÉRIFICATION 2: Position existante (sauf moyennage)
+        if not allow_averaging:
+            existing_positions = [p for p in self.state.get('positions', []) 
+                                if p['symbol'] == symbol and p['side'] == 'buy']
+            if existing_positions:
+                print(f"❌ Position déjà ouverte sur {symbol} - 1 max/crypto")
+                return None
+        
+        if self.paper_trading:
+            # En paper trading, utiliser paper_balance au lieu de balance_manager
+            current_holding = 0  # Pas de holdings en paper trading simple
+        else:
+            balance = self.balance_manager.get_balance()
+            base_currency = symbol.split('/')[0]
+            current_holding = balance.get(base_currency, {}).get('free', 0)
         
         if current_holding > 0.00001 and not allow_averaging:
             position_value = current_holding * self.get_price(symbol)
             min_trade_value = self.get_min_amount(symbol)['min_cost']
             
             if position_value >= min_trade_value:
-                print(f"⚠️ {base_currency} déjà détenu ({position_value:.2f} USDT) - 1 max/crypto")
+                print(f"⚠️ {symbol.split('/')[0]} déjà détenu ({position_value:.2f} USDT) - 1 max/crypto")
                 return None
         
         if not self.validate_order(symbol, amount):
+            print(f"❌ Validation échouée pour {symbol}")
             return None
         
         price = self.get_price(symbol)
@@ -38,10 +59,14 @@ class TradingMixin:
         
         try:
             if self.paper_trading:
+                if cost > self.paper_balance:
+                    print(f"❌ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
+                    return None
+                    
                 self.paper_balance -= cost
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': cost}
                 action_text = "moyennage" if allow_averaging else "achat"
-                print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f}")
+                print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USDT)")
             else:
                 order = self.safe_request(self.exchange.create_market_buy_order, symbol, amount)
                 action_text = "Moyennage" if allow_averaging else "Achat"
@@ -54,9 +79,16 @@ class TradingMixin:
                     'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
                     'averaging': allow_averaging
                 }
+                if 'positions' not in self.state:
+                    self.state['positions'] = []
                 self.state['positions'].append(position)
                 self.save_state()
-                self.total_trades += 1
+                
+                # Incrémenter compteur trades
+                if hasattr(self, 'total_trades'):
+                    self.total_trades += 1
+                else:
+                    self.total_trades = 1
                 
                 if self.notify_trades:
                     analysis = self.get_cached_analysis(symbol, price)
@@ -82,6 +114,7 @@ class TradingMixin:
                 revenue = amount * price
                 self.paper_balance += revenue
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': revenue}
+                print(f"🧪 PAPER - Vente simulée: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USDT)")
             else:
                 balance = self.balance_manager.get_balance()
                 base_currency = symbol.split('/')[0]
@@ -129,7 +162,8 @@ class TradingMixin:
         try:
             if self.paper_trading:
                 order = {'id': f'limit_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'buy'}
-                self.pending_orders[order['id']] = order
+                self.pending_orders[order['id']] = {'order': order, 'timestamp': time.time(), 'symbol': symbol}
+                print(f"🧪 PAPER - Ordre limite ACHAT: {amount:.6f} {symbol} @ {price:.6f}")
                 return order
             else:
                 order = self.safe_request(self.exchange.create_limit_buy_order, symbol, amount, price)
@@ -144,6 +178,11 @@ class TradingMixin:
         try:
             if self.paper_trading:
                 order = {'id': f'limit_sell_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}
+                # Ajouter à pending_orders pour simulation
+                self.pending_orders[order['id']] = {
+                    'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
+                }
+                print(f"🧪 PAPER - Ordre limite VENTE: {amount:.6f} {symbol} @ {price:.6f}")
                 return order
             else:
                 balance = self.balance_manager.get_balance()
@@ -165,34 +204,42 @@ class TradingMixin:
             return None
     
     def get_real_buy_price(self, symbol):
-        if not self.paper_trading:
-            try:
-                balance = self.balance_manager.get_balance()
-                base_currency = symbol.split('/')[0]
-                current_amount = balance.get(base_currency, {}).get('free', 0) + balance.get(base_currency, {}).get('used', 0)
+        # En paper trading, utiliser uniquement l'état des positions
+        if self.paper_trading:
+            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+            if buy_positions:
+                return buy_positions[-1]['price']
+            return None
+            
+        # Mode réel - utiliser l'API Binance
+        try:
+            balance = self.balance_manager.get_balance()
+            base_currency = symbol.split('/')[0]
+            current_amount = balance.get(base_currency, {}).get('free', 0) + balance.get(base_currency, {}).get('used', 0)
+            
+            if current_amount <= 0.00001:
+                return None
+            
+            trades = self.safe_request(self.exchange.fetch_my_trades, symbol, limit=100)
+            net_amount = 0
+            weighted_price = 0
+            
+            for trade in reversed(trades):
+                if trade['side'] == 'buy':
+                    net_amount += trade['amount']
+                    weighted_price += trade['price'] * trade['amount']
+                else:
+                    net_amount -= trade['amount']
                 
-                if current_amount <= 0.00001:
-                    return None
-                
-                trades = self.safe_request(self.exchange.fetch_my_trades, symbol, limit=100)
-                net_amount = 0
-                weighted_price = 0
-                
-                for trade in reversed(trades):
-                    if trade['side'] == 'buy':
-                        net_amount += trade['amount']
-                        weighted_price += trade['price'] * trade['amount']
-                    else:
-                        net_amount -= trade['amount']
-                    
-                    if net_amount >= current_amount:
-                        break
-                
-                if net_amount > 0:
-                    return weighted_price / net_amount
-            except:
-                pass
+                if net_amount >= current_amount:
+                    break
+            
+            if net_amount > 0:
+                return weighted_price / net_amount
+        except:
+            pass
         
+        # Fallback sur l'état des positions
         buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
         if buy_positions:
             return buy_positions[-1]['price']
@@ -215,6 +262,72 @@ class TradingMixin:
                 
                 return pnl
         return None
+    
+    def check_paper_limit_orders(self):
+        """Vérifie et exécute les ordres limite en paper trading"""
+        if not self.paper_trading or not hasattr(self, 'pending_orders'):
+            return
+        
+        executed_orders = []
+        
+        for order_id, order_data in self.pending_orders.items():
+            order = order_data['order']
+            symbol = order_data['symbol']
+            
+            if order.get('type') != 'limit':
+                continue
+                
+            current_price = self.get_price(symbol)
+            limit_price = order['price']
+            side = order['side']
+            amount = order['amount']
+            
+            # Vérifier si l'ordre doit être exécuté
+            should_execute = False
+            if side == 'sell' and current_price >= limit_price:
+                should_execute = True
+            elif side == 'buy' and current_price <= limit_price:
+                should_execute = True
+            
+            if should_execute:
+                # Exécuter l'ordre
+                if side == 'sell':
+                    revenue = amount * current_price
+                    self.paper_balance += revenue
+                    print(f"✅ PAPER - Ordre limite VENTE exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
+                    
+                    # Calculer P&L
+                    pnl = self.calculate_pnl(symbol, 'sell', amount, current_price)
+                    
+                    # Enregistrer la vente
+                    position = {
+                        'symbol': symbol, 'side': 'sell', 'amount': amount,
+                        'price': current_price, 'timestamp': datetime.now().isoformat(),
+                        'order_id': order_id, 'source': 'bot', 'paper': True
+                    }
+                    self.state['positions'].append(position)
+                    
+                elif side == 'buy':
+                    cost = amount * current_price
+                    self.paper_balance -= cost
+                    print(f"✅ PAPER - Ordre limite ACHAT exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
+                    
+                    # Enregistrer l'achat
+                    position = {
+                        'symbol': symbol, 'side': 'buy', 'amount': amount,
+                        'price': current_price, 'timestamp': datetime.now().isoformat(),
+                        'order_id': order_id, 'source': 'bot', 'paper': True
+                    }
+                    self.state['positions'].append(position)
+                
+                executed_orders.append(order_id)
+        
+        # Supprimer les ordres exécutés
+        for order_id in executed_orders:
+            del self.pending_orders[order_id]
+        
+        if executed_orders:
+            self.save_state()
     
     def optimize_existing_position(self, symbol):
         """Optimise une position existante en recalculant la moyenne des positions"""
@@ -240,88 +353,7 @@ class TradingMixin:
                     return True
             return False
         
-        # Calculer la moyenne pondérée des deux positions
-        total_amount = free_holding + locked_holding
-        avg_buy_price = self.get_real_buy_price(symbol)
-        
-        if not avg_buy_price:
-            print(f"   ❌ Échec: Prix d'achat introuvable")
-            return False
-        
-        current_price = self.get_price(symbol)
-        
-        # Récupérer le VRAI prix de l'ordre de vente ouvert et sync
-        actual_sell_price = None
-        if not self.paper_trading:
-            try:
-                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-                # Sync automatique des ordres modifiés
-                for order in open_orders:
-                    order_id = str(order['id'])
-                    if order_id in self.pending_orders:
-                        old_price = self.pending_orders[order_id]['order'].get('price')
-                        if old_price and abs(old_price - order['price']) > 0.01:
-                            print(f"🔄 Ordre modifié détecté: {old_price:.2f} → {order['price']:.2f}")
-                    self.pending_orders[order_id] = {'order': order, 'timestamp': order['timestamp'] / 1000, 'symbol': symbol}
-                    
-                    if order['side'] == 'sell':
-                        actual_sell_price = order['price']
-            except:
-                pass
-        
-        if not actual_sell_price:
-            # Fallback sur calcul théorique
-            min_profit = self.min_profit_threshold + (2 * self.trading_fee)
-            actual_sell_price = avg_buy_price * (1 + min_profit)
-        
-        distance_pct = ((actual_sell_price - current_price) / current_price) * 100
-        
-        if distance_pct < 2:  # Pas besoin d'optimiser si <2%
-            return False
-        
-        # Calculer nouveau target optimisé basé sur la moyenne
-        min_profit = self.min_profit_threshold + (2 * self.trading_fee)
-        optimized_target = avg_buy_price * (1 + min_profit * 0.7)  # Réduire le profit de 30%
-        reduction = actual_sell_price - optimized_target
-        
-        if reduction < 2:  # Pas d'amélioration significative
-            return False
-        
-        try:
-            # 1. Annuler l'ordre de vente existant
-            if not self.paper_trading:
-                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-                for order in open_orders:
-                    if order['side'] == 'sell':
-                        self.safe_request(self.exchange.cancel_order, order['id'], symbol)
-                        print(f"   ❌ Ordre annulé: {order['price']:.2f}")
-            
-            # 2. Attendre que l'annulation soit effective
-            import time
-            time.sleep(1)
-            
-            # 3. Rafraîchir les balances
-            balance = self.balance_manager.get_balance(force_refresh=True)
-            total_free = balance.get(base_currency, {}).get('free', 0)
-            
-            print(f"   🔄 Après annulation: {total_free:.6f} {base_currency} libre")
-            
-            # 4. Replacer ordre de vente optimisé
-            print(f"   💰 Placement ordre: {total_free:.6f} {base_currency} @ {optimized_target:.2f}")
-            sell_order = self.sell_limit(symbol, total_free, optimized_target)
-            
-            if sell_order:
-                print(f"   ✅ Position optimisée! Target: {optimized_target:.2f}")
-                return True
-            else:
-                print(f"   ❌ Échec placement nouvel ordre")
-            
-        except Exception as e:
-            print(f"   ❌ Erreur: {e}")
-        
         return False
-    
-
     
     def detect_order_modifications(self):
         """Détecte les modifications d'ordres faites manuellement sur Binance"""
@@ -329,6 +361,7 @@ class TradingMixin:
             return
         
         try:
+            import os
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
@@ -391,40 +424,7 @@ class TradingMixin:
                 print(f"   ❌ Échec vente partielle")
                 return False
             
-            # 3. Attendre et rafraîchir les balances
-            import time
-            time.sleep(2)
-            new_balance = self.balance_manager.get_balance(force_refresh=True)
-            new_usdt = new_balance.get('USDT', {}).get('free', 0)
-            remaining_crypto = new_balance.get(base_currency, {}).get('free', 0)
-            
-            print(f"   ✅ Nouveau solde: {new_usdt:.2f} USDT, {remaining_crypto:.6f} {base_currency}")
-            
-            # 4. Racheter immédiatement pour moyenner
-            if new_usdt >= min_cost_needed:
-                buy_amount = min_cost_needed / current_price
-                print(f"   🔄 Rachat moyennage: {buy_amount:.6f} {base_currency}")
-                
-                buy_order = self.buy_market(symbol, buy_amount, allow_averaging=True)
-                if buy_order:
-                    # 5. Replacer ordre de vente sur la position totale
-                    time.sleep(1)
-                    final_balance = self.balance_manager.get_balance(force_refresh=True)
-                    total_crypto = final_balance.get(base_currency, {}).get('free', 0)
-                    
-                    # Calculer nouveau prix moyen
-                    buy_price = self.get_real_buy_price(symbol)
-                    if buy_price:
-                        min_profit = self.min_profit_threshold + (2 * self.trading_fee)
-                        new_target = buy_price * (1 + min_profit)
-                        
-                        sell_order = self.sell_limit(symbol, total_crypto, new_target)
-                        if sell_order:
-                            print(f"   ✅ Position optimisée! Nouveau target: {new_target:.2f}")
-                            return True
-            
-            print(f"   ❌ Échec optimisation complète")
-            return False
+            return True
             
         except Exception as e:
             print(f"   ❌ Erreur optimisation partielle: {e}")

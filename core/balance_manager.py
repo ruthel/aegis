@@ -14,7 +14,7 @@ class BalanceManager:
     def get_balance(self, force_refresh=False):
         """Récupère le solde SPOT temps réel via WebSocket"""
         if self.bot.paper_trading:
-            return {'USDT': {'free': self.bot.paper_balance}}
+            return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
         
         # WebSocket User Data Stream pour balances temps réel
         if hasattr(self.bot, 'websocket') and self.bot.websocket.is_connected():
@@ -23,10 +23,17 @@ class BalanceManager:
                 return ws_balance
         
         # Fallback API REST direct (WebSocket déconnecté)
-        return self.bot.safe_request(self.bot.exchange.fetch_balance)
+        if hasattr(self.bot, 'exchange') and self.bot.exchange:
+            return self.bot.safe_request(self.bot.exchange.fetch_balance)
+        else:
+            # Fallback paper trading si pas d'exchange
+            return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
     
     def get_funding_balance(self):
         """Récupère le solde du portefeuille de financement"""
+        if self.bot.paper_trading:
+            return {}  # Pas de funding en paper trading
+            
         try:
             # Essayer avec les paramètres de type
             funding_balance = self.bot.exchange.fetch_balance(params={'type': 'funding'})
@@ -109,6 +116,9 @@ class BalanceManager:
     
     def auto_transfer_funding_to_spot(self):
         """Transfère automatiquement et silencieusement les fonds du Funding vers Spot"""
+        if self.bot.paper_trading:
+            return  # Pas de transfert en paper trading
+            
         try:
             funding_balance = self.get_funding_balance()
             for asset in ['USDT', 'BTC', 'ETH', 'BNB', 'SOL']:

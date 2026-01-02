@@ -19,7 +19,7 @@ class MultiTimeframeAnalyzer:
         try:
             # En réalité, on utiliserait bot.exchange.fetch_ohlcv avec le timeframe
             # Pour la simulation, on adapte les données 1m
-            base_klines = bot.get_klines(symbol, limit * self.get_timeframe_multiplier(timeframe))
+            base_klines = bot.get_klines(symbol, limit * self.get_timeframe_multiplier(timeframe), timeframe)
             
             if not base_klines:
                 return []
@@ -40,11 +40,11 @@ class MultiTimeframeAnalyzer:
         return multipliers.get(timeframe, 1)
     
     def get_adaptive_timeframes(self, volatility):
-        """Sélectionne les timeframes optimaux selon la volatilité"""
-        if volatility >= 4.0:
+        """Sélectionne les timeframes optimaux selon la volatilité - SEUILS AJUSTÉS 15m"""
+        if volatility >= 3.0:  # Réduit de 4.0 → 3.0
             # Haute volatilité: timeframes courts pour réactivité
             return ['15m', '5m', '1m'], {'15m': 5, '5m': 3, '1m': 2}
-        elif volatility >= 2.5:
+        elif volatility >= 1.8:  # Réduit de 2.5 → 1.8
             # Volatilité moyenne: équilibre standard
             return ['1h', '15m', '5m'], {'1h': 5, '15m': 3, '5m': 2}
         else:
@@ -76,11 +76,12 @@ class MultiTimeframeAnalyzer:
         return converted
     
     def analyze_timeframe(self, klines, current_price):
-        """Analyse un timeframe spécifique"""
+        """Analyse un timeframe spécifique avec filtres avancés"""
         if len(klines) < 30:
             return {'trend': 'unknown', 'strength': 0, 'signals': []}
         
         closes = [k['close'] for k in klines]
+        volumes = [k['volume'] for k in klines]
         
         # Calculer les indicateurs
         rsi = self.indicators.calculate_rsi(closes)
@@ -89,39 +90,43 @@ class MultiTimeframeAnalyzer:
         ema_20 = self.indicators.calculate_ema(closes, 20)
         ema_50 = self.indicators.calculate_ema(closes, 50)
         
+        # NOUVEAUX FILTRES PHASE 1
+        volume_confirmation = self.check_volume_confirmation(volumes)
+        is_trending = self.is_trending_market(klines)
+        
         # Analyser la tendance
         trend = self.determine_trend(closes, ema_20, ema_50)
         
-        # Analyser les signaux
+        # Analyser les signaux avec filtres
         signals = []
         strength = 0
         
-        # Signal RSI
+        # Signal RSI avec confirmation volume
         if rsi is not None:
-            if rsi < 30:
+            if rsi < 35:
                 signals.append("RSI survente")
-                strength += 1
-            elif rsi > 70:
+                strength += 1.5 if volume_confirmation else 0.5
+            elif rsi > 65:
                 signals.append("RSI surachat")
-                strength -= 1
+                strength -= 1.5 if volume_confirmation else 0.5
         
-        # Signal MACD
+        # Signal MACD avec confirmation volume
         if macd is not None and signal is not None:
             if macd > signal and histogram > 0:
                 signals.append("MACD haussier")
-                strength += 1
+                strength += 1.5 if volume_confirmation else 1
             elif macd < signal and histogram < 0:
                 signals.append("MACD baissier")
-                strength -= 1
+                strength -= 1.5 if volume_confirmation else 1
         
         # Signal Bollinger Bands
         if lower_bb is not None and upper_bb is not None:
             if current_price <= lower_bb:
                 signals.append("BB support")
-                strength += 1
+                strength += 1.5 if volume_confirmation else 1
             elif current_price >= upper_bb:
                 signals.append("BB résistance")
-                strength -= 1
+                strength -= 1.5 if volume_confirmation else 1
         
         # Signal EMA
         if ema_20 is not None and ema_50 is not None:
@@ -132,10 +137,17 @@ class MultiTimeframeAnalyzer:
                 signals.append("EMA baissier")
                 strength -= 0.5
         
+        # Réduire force si marché non-tendanciel
+        if not is_trending:
+            strength *= 0.7
+            signals.append("Marché latéral")
+        
         return {
             'trend': trend,
             'strength': strength,
             'signals': signals,
+            'volume_confirmation': volume_confirmation,
+            'is_trending': is_trending,
             'indicators': {
                 'rsi': rsi,
                 'macd': macd,
@@ -181,7 +193,7 @@ class MultiTimeframeAnalyzer:
                 return VolatilityCalculator.calculate_from_websocket(bot.websocket, symbol)
             
             # Fallback API REST
-            klines = bot.get_klines(symbol, 60)
+            klines = bot.get_klines(symbol, 60, os.getenv('MAIN_TIMEFRAME', '15m'))
             return VolatilityCalculator.calculate(klines, symbol)
         except Exception as e:
             return 2.0
@@ -200,7 +212,7 @@ class MultiTimeframeAnalyzer:
         
         timeframe_analysis = {}
         for tf in active_timeframes:
-            klines = self.get_klines_for_timeframe(bot, symbol, tf)
+            klines = self.get_klines_for_timeframe(bot, symbol, tf, 50)
             analysis = self.analyze_timeframe(klines, current_price)
             timeframe_analysis[tf] = analysis
         
@@ -311,3 +323,197 @@ class MultiTimeframeAnalyzer:
         trend_desc = {"bullish": "haussière", "bearish": "baissière", "neutral": "neutre", "unknown": "indéterminée"}.get(trend, "neutre")
         
         return f"{action} - Tendance {trend_desc}, force {strength_desc} (conf: {confidence}%, vol: {volatility:.1f}/5)"
+    
+    def check_volume_confirmation(self, volumes):
+        """Vérifie si le volume confirme le signal"""
+        if len(volumes) < 10:
+            return False
+        
+        current_volume = volumes[-1]
+        avg_volume = sum(volumes[-10:]) / 10
+        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+        
+        return volume_ratio >= float(os.getenv('MIN_VOLUME_RATIO', '1.2'))
+    
+    def calculate_adx(self, klines, period=14):
+        """Calcule l'ADX pour détecter les marchés tendanciels"""
+        if len(klines) < period + 1:
+            return None
+        
+        highs = [k['high'] for k in klines]
+        lows = [k['low'] for k in klines]
+        closes = [k['close'] for k in klines]
+        
+        dm_plus = []
+        dm_minus = []
+        tr_values = []
+        
+        for i in range(1, len(klines)):
+            high_diff = highs[i] - highs[i-1]
+            low_diff = lows[i-1] - lows[i]
+            
+            dm_plus.append(high_diff if high_diff > low_diff and high_diff > 0 else 0)
+            dm_minus.append(low_diff if low_diff > high_diff and low_diff > 0 else 0)
+            
+            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+            tr_values.append(tr)
+        
+        if len(tr_values) < period:
+            return None
+        
+        avg_dm_plus = sum(dm_plus[-period:]) / period
+        avg_dm_minus = sum(dm_minus[-period:]) / period
+        avg_tr = sum(tr_values[-period:]) / period
+        
+        if avg_tr == 0:
+            return 0
+        
+        di_plus = (avg_dm_plus / avg_tr) * 100
+        di_minus = (avg_dm_minus / avg_tr) * 100
+        
+        dx = abs(di_plus - di_minus) / (di_plus + di_minus) * 100 if (di_plus + di_minus) > 0 else 0
+        return dx
+    
+    def is_trending_market(self, klines):
+        """Détermine si le marché est tendanciel (ADX > 25)"""
+        adx = self.calculate_adx(klines)
+        if adx is None:
+            return True
+        
+        threshold = float(os.getenv('ADX_TRENDING_THRESHOLD', '25'))
+        return adx > threshold
+    
+    def get_btc_correlation_filter(self, bot, symbol):
+        """Filtre basé sur la corrélation avec BTC"""
+        if symbol == 'BTC/USDT' or not os.getenv('BTC_CORRELATION_FILTER', 'False') == 'True':
+            return True
+        
+        try:
+            btc_klines = bot.get_klines('BTC/USDT', 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+            symbol_klines = bot.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+            
+            if len(btc_klines) < 10 or len(symbol_klines) < 10:
+                return True
+            
+            btc_momentum = (btc_klines[-1]['close'] - btc_klines[-5]['close']) / btc_klines[-5]['close']
+            
+            # Si BTC baisse fortement (-2%+), éviter les achats altcoins
+            if btc_momentum < -0.02:
+                return False
+            
+            return True
+        except:
+            return True
+    
+    def detect_reversal_signals(self, klines, current_price):
+        """Détecte les signaux de retournement imminent"""
+        if len(klines) < 20:
+            return {'has_reversal_risk': False, 'risk_factors': []}
+        
+        risk_factors = []
+        
+        # 1. Divergence RSI/Prix
+        if self.check_rsi_divergence(klines):
+            risk_factors.append('RSI_DIVERGENCE')
+        
+        # 2. Volume décroissant sur mouvement
+        if self.check_volume_weakness(klines):
+            risk_factors.append('WEAK_VOLUME')
+        
+        # 3. Approche niveau clé
+        if self.check_key_levels(current_price, klines):
+            risk_factors.append('NEAR_KEY_LEVEL')
+        
+        # 4. Momentum décroissant
+        if self.check_momentum_weakness(klines):
+            risk_factors.append('WEAK_MOMENTUM')
+        
+        has_risk = len(risk_factors) >= 2  # Au moins 2 facteurs de risque
+        
+        return {
+            'has_reversal_risk': has_risk,
+            'risk_factors': risk_factors,
+            'risk_count': len(risk_factors)
+        }
+    
+    def check_rsi_divergence(self, klines):
+        """Détecte divergence entre RSI et prix"""
+        if len(klines) < 14:
+            return False
+        
+        closes = [k['close'] for k in klines]
+        rsi_values = []
+        
+        # Calculer RSI pour les 10 dernières périodes
+        for i in range(14, len(closes)):
+            rsi = self.indicators.calculate_rsi(closes[:i+1])
+            if rsi:
+                rsi_values.append(rsi)
+        
+        if len(rsi_values) < 5:
+            return False
+        
+        # Comparer tendances prix vs RSI sur 5 périodes
+        price_trend = closes[-1] > closes[-5]
+        rsi_trend = rsi_values[-1] > rsi_values[-5]
+        
+        # Divergence = tendances opposées
+        return price_trend != rsi_trend
+    
+    def check_volume_weakness(self, klines):
+        """Détecte volume décroissant sur mouvement"""
+        if len(klines) < 10:
+            return False
+        
+        volumes = [k['volume'] for k in klines]
+        closes = [k['close'] for k in klines]
+        
+        # Volume moyen récent vs historique
+        recent_volume = sum(volumes[-3:]) / 3
+        avg_volume = sum(volumes[-10:]) / 10
+        
+        # Prix en mouvement mais volume faible
+        price_movement = abs(closes[-1] - closes[-3]) / closes[-3]
+        volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
+        
+        return price_movement > 0.01 and volume_ratio < 0.8
+    
+    def check_key_levels(self, current_price, klines):
+        """Vérifie proximité niveaux support/résistance"""
+        if len(klines) < 20:
+            return False
+        
+        highs = [k['high'] for k in klines]
+        lows = [k['low'] for k in klines]
+        
+        # Résistances récentes (3 plus hauts)
+        recent_highs = sorted(highs[-20:], reverse=True)[:3]
+        # Supports récents (3 plus bas)
+        recent_lows = sorted(lows[-20:])[:3]
+        
+        # Vérifier proximité (1% de distance)
+        threshold = current_price * 0.01
+        
+        for level in recent_highs + recent_lows:
+            if abs(current_price - level) < threshold:
+                return True
+        
+        return False
+    
+    def check_momentum_weakness(self, klines):
+        """Détecte affaiblissement du momentum"""
+        if len(klines) < 10:
+            return False
+        
+        closes = [k['close'] for k in klines]
+        
+        # Momentum récent vs précédent
+        recent_momentum = (closes[-1] - closes[-3]) / closes[-3]
+        previous_momentum = (closes[-3] - closes[-6]) / closes[-6]
+        
+        # Momentum s'affaiblit si récent < 50% du précédent
+        if abs(previous_momentum) > 0.005:  # Éviter division par zéro
+            momentum_ratio = abs(recent_momentum) / abs(previous_momentum)
+            return momentum_ratio < 0.5
+        
+        return False

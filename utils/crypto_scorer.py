@@ -72,7 +72,7 @@ class CryptoScorer:
     def score_crypto(self, bot, symbol, stuck_positions, websocket_manager=None, volatility=None):
         """Calcule le score total d'une crypto (0-100)"""
         try:
-            klines = bot.get_klines(symbol, 20)
+            klines = bot.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
             current_price = bot.get_price(symbol)
             
             if not klines or len(klines) < 10:
@@ -125,7 +125,7 @@ class CryptoScorer:
                 continue
             
             # Récupérer données (cache ou parallèle)
-            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 10)
+            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 10, os.getenv('MAIN_TIMEFRAME', '15m'))
             price = prices_cache.get(symbol) or bot.get_price(symbol)
             
             if not klines or len(klines) < 10:
@@ -174,7 +174,7 @@ class CryptoScorer:
     
     def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None, websocket_manager=None):
         """Détails du score pour debug"""
-        klines = bot.get_klines(symbol, 20)
+        klines = bot.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
         current_price = bot.get_price(symbol)
         
         if not klines or len(klines) < 10:

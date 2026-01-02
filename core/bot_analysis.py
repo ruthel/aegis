@@ -5,6 +5,7 @@ from utils.volatility_calculator import VolatilityCalculator
 from utils.market_calculator import MarketCalculator
 from utils.ema_analyzer import BinanceEMAAnalyzer
 import time
+import os
 
 class AnalysisMixin:
     """Mixin contenant toutes les méthodes d'analyse et prévisions"""
@@ -17,17 +18,27 @@ class AnalysisMixin:
         if not hasattr(self, 'ema_analyzer'):
             self.ema_analyzer = BinanceEMAAnalyzer()
         
-        klines = self.get_klines(symbol, 100)
+        klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
         ema_analysis = self.ema_analyzer.analyze(klines, current_price)
         
         if ema_analysis:
             analysis['ema_binance'] = ema_analysis
         
+        # NOUVEAU: Analyse Support/Résistance avancée
+        if len(klines) >= 50:
+            sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
+            reversal_prediction = self.sr_analyzer.predict_reversal_probability(current_price, sr_levels)
+            
+            analysis['support_resistance'] = {
+                'levels': sr_levels,
+                'reversal_prediction': reversal_prediction
+            }
+        
         return analysis
     
     def analyze_market_conditions(self, symbol, current_price):
         """Analyse les conditions de marché pour optimiser les ordres"""
-        klines = self.get_klines(symbol, 20)
+        klines = self.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
         analysis = self.get_cached_analysis(symbol, current_price)
         volatility = analysis.get('volatility', 2.0)
         spread = 0.01 if volatility > 5 else 0.005
@@ -74,7 +85,7 @@ class AnalysisMixin:
             current_price = self.get_price(symbol)
             distance_pct = ((target_price - current_price) / current_price) * 100
             
-            klines = self.get_klines(symbol, 30)
+            klines = self.get_klines(symbol, 30, os.getenv('MAIN_TIMEFRAME', '15m'))
             if len(klines) < 10:
                 return None
             
@@ -139,7 +150,6 @@ class AnalysisMixin:
     def predict_next_buy_opportunity(self, symbol):
         """Prédit quand le prochain achat sera possible"""
         try:
-            import os
             current_price = self.get_price(symbol)
             balance = self.balance_manager.get_balance()
             usdt_available = balance.get('USDT', {}).get('free', 0)
@@ -186,49 +196,89 @@ class AnalysisMixin:
                     'reason': f"Signal {signal['action']}"
                 }
             
+            # AMÉLIORATION: Prédiction précise avec données 1m temps réel
             confidence_gap = max(0, min_conf - signal['confidence'])
-            klines = self.get_klines(symbol, 20)
             
-            if len(klines) >= 10:
-                prices = [k['close'] for k in klines[-10:]]
-                analysis = self.get_cached_analysis(symbol, current_price)
-                volatility = analysis.get('volatility', 2.0)
+            # 1. VITESSE TEMPS RÉEL (1m au lieu de 15m)
+            klines_1m = self.get_klines(symbol, 10, '1m')
+            klines_15m = self.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+            
+            if len(klines_1m) >= 5 and len(klines_15m) >= 10:
+                # Vitesse réelle sur 1m (plus précise)
+                recent_changes = []
+                for i in range(1, len(klines_1m)):
+                    change_pct = abs(klines_1m[i]['close'] - klines_1m[i-1]['close']) / klines_1m[i-1]['close'] * 100
+                    recent_changes.append(change_pct)
                 
-                recent_prices = prices[-5:]
-                price_momentum = (recent_prices[-1] - recent_prices[0]) / recent_prices[0] * 100
+                real_speed = sum(recent_changes) / len(recent_changes) if recent_changes else 0.1
                 
-                if abs(price_momentum) > 2 and volatility > 5:
-                    speed_factor = 0.5
-                elif abs(price_momentum) > 1 or volatility > 3:
-                    speed_factor = 0.75
-                elif volatility > 1.5:
-                    speed_factor = 1.0
-                else:
-                    speed_factor = 1.5
+                # 2. FACTEURS TEMPS RÉEL
+                # Volume instantané vs moyenne
+                current_vol = klines_1m[-1]['volume']
+                avg_vol = sum(k['volume'] for k in klines_1m[:-1]) / (len(klines_1m) - 1) if len(klines_1m) > 1 else 1
+                vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
                 
+                volume_factor = 0.6 if vol_ratio > 2 else 0.8 if vol_ratio > 1.5 else 1.4 if vol_ratio < 0.5 else 1.0
+                
+                # Momentum 1m
+                prices_1m = [k['close'] for k in klines_1m[-5:]]
+                momentum_1m = (prices_1m[-1] - prices_1m[0]) / prices_1m[0] * 100
+                momentum_factor = 0.7 if abs(momentum_1m) > 1 else 0.85 if abs(momentum_1m) > 0.5 else 1.2
+                
+                # 3. SUPPORT/RÉSISTANCE pour cible précise
+                support_factor = 1.0
+                if hasattr(self, 'sr_analyzer') and len(klines_15m) >= 50:
+                    try:
+                        sr_levels = self.sr_analyzer.find_support_resistance_levels(klines_15m)
+                        for level in sr_levels:
+                            distance = abs(level['price'] - current_price) / current_price * 100
+                            if distance < 0.3:  # Très proche d'un niveau
+                                support_factor = 0.8 if level['strength'] > 3 else 1.1
+                                break
+                    except:
+                        pass
+                
+                # 4. CALCUL PRÉCIS
                 if confidence_gap < 5:
-                    base_time = 5
+                    base_time = max(2, confidence_gap)
                 elif confidence_gap < 10:
-                    base_time = 10
+                    base_time = confidence_gap
                 elif confidence_gap < 15:
-                    base_time = 20
-                elif confidence_gap < 25:
-                    base_time = 40
+                    base_time = confidence_gap * 1.2
                 else:
-                    base_time = 60
+                    base_time = min(60, confidence_gap * 2)
                 
-                estimated_min = int(base_time * speed_factor)
-                estimated_max = int(base_time * speed_factor * 1.5)
+                # Distance au target avec S/R
+                if signal['action'] == 'HOLD':
+                    target_distance = 2  # 2% de baisse attendue
+                else:
+                    target_distance = confidence_gap / 10  # Distance proportionnelle
                 
-                if signal['action'] in ['BUY', 'STRONG_BUY']:
-                    if price_momentum < -1:
-                        estimated_min = max(2, int(estimated_min * 0.7))
-                        estimated_max = int(estimated_max * 0.8)
-                    elif price_momentum > 2:
-                        estimated_min = int(estimated_min * 1.3)
-                        estimated_max = int(estimated_max * 1.5)
+                # Temps basé sur vitesse réelle
+                if real_speed > 0:
+                    time_from_speed = target_distance / real_speed
+                else:
+                    time_from_speed = base_time
                 
-                time_estimate = f"{estimated_min}-{estimated_max}min"
+                # Combinaison facteurs
+                final_time = (time_from_speed + base_time) / 2 * momentum_factor * volume_factor * support_factor
+                final_time = max(1, min(final_time, 120))  # 1min à 2h max
+                
+                # 5. FORMATAGE INTELLIGENT
+                if final_time < 2:
+                    time_estimate = f"{int(final_time)}min"
+                elif final_time < 5:
+                    margin = max(1, int(final_time * 0.3))
+                    time_estimate = f"{int(final_time-margin)}-{int(final_time+margin)}min"
+                elif final_time < 15:
+                    margin = max(1, int(final_time * 0.4))
+                    time_estimate = f"{int(final_time-margin)}-{int(final_time+margin)}min"
+                elif final_time < 60:
+                    margin = max(2, int(final_time * 0.5))
+                    time_estimate = f"{int(final_time-margin)}-{int(final_time+margin)}min"
+                else:
+                    hours = final_time / 60
+                    time_estimate = f"{hours:.1f}h"
             else:
                 time_estimate = "Indéterminé"
             

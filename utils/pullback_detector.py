@@ -1,12 +1,14 @@
-"""Détecteur de Pullback pour Scalping - Votre stratégie"""
+"""Détecteur de Pullback pour Scalping - Paramètres corrigés"""
 import time
+import os
 
 class PullbackDetector:
     def __init__(self):
-        self.pullback_min = -0.005  # -0.5%
-        self.pullback_max = -0.001  # -0.1%
-        self.profit_target = 0.003   # +0.3%
-        self.timeout = 300           # 5 minutes
+                # Seuils pullback ajustés pour 15m
+        self.pullback_shallow = float(os.getenv('PULLBACK_SHALLOW', '-1.0')) / 100  # -1.0%
+        self.pullback_deep = float(os.getenv('PULLBACK_DEEP', '-3.0')) / 100        # -3.0%
+        self.profit_target = float(os.getenv('SCALPING_PROFIT_TARGET', '0.8')) / 100  # 0.8%
+        self.timeout = int(os.getenv('SCALPING_TIMEOUT', '300'))                     # 5 minutes
         self.pending_orders = {}
     
     def detect_pullback(self, bot, symbol, current_price, ema_analysis):
@@ -16,20 +18,23 @@ class PullbackDetector:
         if ema_analysis['case'] != 3:
             return None
         
-        # Récupérer données récentes
-        klines = bot.get_klines(symbol, 20)
+        # Récupérer données récentes avec timeframe pullback
+        pullback_timeframe = os.getenv('PULLBACK_TIMEFRAME', '5m')
+        recent_high_periods = int(os.getenv('RECENT_HIGH_PERIODS', '20'))
+        
+        klines = bot.get_klines(symbol, recent_high_periods, pullback_timeframe)
         if len(klines) < 10:
             return None
         
         closes = [k['close'] for k in klines]
         volumes = [k['volume'] for k in klines]
         
-        # Calculer le pullback depuis le récent high
+        # Calculer le pullback depuis le récent high (sur timeframe pullback)
         recent_high = max(closes[-10:])
         pullback_pct = (current_price - recent_high) / recent_high
         
-        # Vérifier si pullback dans la fourchette
-        if not (self.pullback_min <= pullback_pct <= self.pullback_max):
+        # Vérifier si pullback dans la fourchette (entre shallow et deep)
+        if not (self.pullback_deep <= pullback_pct <= self.pullback_shallow):
             return None
         
         # Vérifier volume (doit être faible = pas de panique)

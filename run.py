@@ -5,7 +5,66 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 """
 import sys
 import os
+import shutil
 from dotenv import load_dotenv
+
+def clear_python_cache():
+    """Vider les caches Python au démarrage"""
+    cache_dirs = ['__pycache__', '.pytest_cache']
+    cache_files = ['.pyc', '.pyo', '.pyd']
+    
+    for root, dirs, files in os.walk('.'):
+        # Supprimer dossiers cache
+        for cache_dir in cache_dirs:
+            if cache_dir in dirs:
+                cache_path = os.path.join(root, cache_dir)
+                try:
+                    shutil.rmtree(cache_path)
+                    print(f"🧹 Cache supprimé: {cache_path}")
+                except:
+                    pass
+        
+        # Supprimer fichiers cache
+        for file in files:
+            if any(file.endswith(ext) for ext in cache_files):
+                file_path = os.path.join(root, file)
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+
+def clean_bot_states():
+    """Nettoie les états du bot"""
+    state_files = [
+        'data/bot_state.json',
+        'data/cache.json', 
+        'data/temp_state.json',
+        'data/positions.json'
+    ]
+    
+    cleaned = 0
+    for state_file in state_files:
+        if os.path.exists(state_file):
+            try:
+                os.remove(state_file)
+                print(f"🧹 État nettoyé: {state_file}")
+                cleaned += 1
+            except Exception as e:
+                print(f"⚠️ Erreur nettoyage {state_file}: {e}")
+    
+    if cleaned > 0:
+        print(f"✅ {cleaned} fichier(s) d'état nettoyé(s)")
+    else:
+        print("ℹ️ Aucun fichier d'état à nettoyer")
+
+# Vider le terminal au démarrage
+os.system('cls' if os.name == 'nt' else 'clear')
+
+# Vider les caches Python
+clear_python_cache()
+
+# Nettoyer les états du bot
+clean_bot_states()
 
 # Charger les variables d'environnement
 load_dotenv()
