@@ -7,12 +7,16 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python run.py
     envVars:
+      - key: PORT
+        value: "10000"
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
+      - key: TESTNET
+        value: "True"
       - key: PAPER_TRADING
-        value: "False"
+        value: "True"
       - key: TRADE_AMOUNT
         value: "5"
       - key: MAX_DAILY_LOSS
