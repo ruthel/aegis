@@ -92,7 +92,7 @@ class PatternRecognition:
                     'neckline': neckline,
                     'head_price': head,
                     'expected_drop_pct': ((closes[-1] - target_price) / closes[-1]) * 100,
-                    'description': f"H&S: Head {head:.0f}, Target {target_price:.0f} ({((closes[-1] - target_price) / closes[-1]) * 100:.1f}%)"
+                    'description': f"H&S {head:.0f} (target {target_price:.0f}, -{((closes[-1] - target_price) / closes[-1]) * 100:.1f}%)"
                 }
         except Exception as e:
             self.logger.error(f"Erreur détection H&S: {e}")
@@ -113,7 +113,7 @@ class PatternRecognition:
                         'type': 'DOUBLE_TOP',
                         'confidence': 80,
                         'bullish': False,
-                        'description': f"Double Top: {max(peak1, peak2):.0f}"
+                        'description': f"Double Top {max(peak1, peak2):.0f} (résistance forte)"
                     }
             
             # Double Bottom
@@ -127,7 +127,7 @@ class PatternRecognition:
                         'type': 'DOUBLE_BOTTOM',
                         'confidence': 85,
                         'bullish': True,
-                        'description': f"Double Bottom: {min(valley1, valley2):.0f}"
+                        'description': f"Double Bottom {min(valley1, valley2):.0f} (support fort)"
                     }
         except Exception as e:
             self.logger.error(f"Erreur détection Double Top/Bottom: {e}")

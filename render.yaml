@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: tetanis-bot
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    envVars:
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      - key: PAPER_TRADING
+        value: "False"
+      - key: TRADE_AMOUNT
+        value: "5"
+      - key: MAX_DAILY_LOSS
+        value: "50"
+      - key: TRADING_PAIRS
+        value: "BTCUSDT,ETHUSDT"
+      - key: CHECK_INTERVAL
+        value: "60"
+      - key: REALTIME_TRADING
+        value: "True"
+      - key: NOTIFY_TRADES
+        value: "False"

@@ -138,7 +138,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.sr_analyzer = SupportResistanceAnalyzer()
         self.stablecoin_monitor = StablecoinMonitor()
         self.pattern_recognition = PatternRecognition()
-        self.pattern_recognizer = self.pattern_recognition  # Alias pour cohérence
         self.slippage_calculator = SlippageCalculator()
         self.liquidity_checker = LiquidityChecker()
         self.volatility_calculator = VolatilityCalculator()
@@ -233,10 +232,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             handler.addFilter(connection_filter)
             
         self.logger = logging.getLogger(__name__)
-    
-    @property
-    def client(self):
-        return self.exchange
     
     def connect(self):
         self.exchange = ccxt.binance({
@@ -430,61 +425,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         }
         return timeframe_map.get(timeframe, 15)
     
-    def execute_strategy(self, symbol, strategy_type, amount):
-        print(f"🔄 DEBUG: execute_strategy appelée pour {symbol}, type={strategy_type}")
-        try:
-            price = self.get_price(symbol)
-            balance = self.balance_manager.get_balance()
-            usdt_balance = balance.get('USDT', {}).get('free', 0)
-            base_currency = symbol.split('/')[0]
-            crypto_balance = balance.get(base_currency, {}).get('free', 0)
-            min_limits = self.get_min_amount(symbol)
-            min_cost = min_limits['min_cost']
-            
-            # Utiliser le minimum de la paire au lieu du TRADE_AMOUNT statique
-            trade_amount = min_cost
-            
-            can_buy = usdt_balance >= min_cost
-            crypto_value = crypto_balance * price
-            can_sell = crypto_value >= min_cost
-            if not can_buy and not can_sell:
-                print(f"❌ {symbol}: Ni achat ni vente possible")
-                return
-            # Utiliser get_ticker avec WebSocket prioritaire et fallback REST API
-            ticker = self.get_ticker(symbol)
-            change_24h = ticker.get('percentage', 0)
-            analysis = self.get_cached_analysis(symbol, price)
-            vol_display = analysis.get('volatility', 2.0)
-            self.show_strategy_execution(symbol, price, change_24h, vol_display)
-            
-            print(f"🎯 {symbol}: Appel de {strategy_type}_strategy")
-            print(f"🚀 NOUVEAU CODE ACTIF - VERSION MISE À JOUR!")
-            print(f"🔍 DEBUG: strategy_type='{strategy_type}', type={type(strategy_type)}")
-            if strategy_type == 'intelligent':
-                print(f"🔍 {symbol}: Tentative appel intelligent_strategy")
-                if hasattr(self, 'intelligent_strategy'):
-                    print(f"✅ {symbol}: intelligent_strategy existe - APPEL EN COURS...")
-                    try:
-                        result = self.intelligent_strategy(symbol, trade_amount, price)
-                        print(f"✅ {symbol}: intelligent_strategy terminée, résultat: {result}")
-                    except Exception as e:
-                        print(f"❌ {symbol}: ERREUR dans intelligent_strategy: {e}")
-                        import traceback
-                        traceback.print_exc()
-                else:
-                    print(f"❌ {symbol}: intelligent_strategy n'existe pas!")
-            elif strategy_type == 'adaptive':
-                print(f"🔄 {symbol}: Appel adaptive_strategy")
-                self.adaptive_strategy(symbol, trade_amount, price)
-            elif strategy_type == 'scalping':
-                print(f"🔄 {symbol}: Appel scalping_strategy")
-                self.scalping_strategy(symbol, trade_amount, price)
-            elif strategy_type == 'dca':
-                print(f"🔄 {symbol}: Appel dca_strategy")
-                self.dca_strategy(symbol, trade_amount, price)
-        except Exception as e:
-            print(f"❌ Erreur stratégie {symbol}: {e}")
-    
     def on_balance_update(self, data):
         """Délègue au gestionnaire de balance centralisé"""
         try:
@@ -492,45 +432,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             self.balance_manager.force_balance_sync()
         except Exception as e:
             print(f"⚠️ Erreur sync: {e}")
-    
-    def force_balance_sync(self):
-        """Force la synchronisation des balances"""
-        return self.balance_manager.force_balance_sync()
-    
-    def test_api_connection(self):
-        """Test la connexion API et affiche les infos de compte"""
-        try:
-            print("🔍 Test connexion API...")
-            
-            # Test 1: Info compte
-            account = self.safe_request(self.exchange.fetch_account)
-            print(f"✅ Compte connecté: {account.get('info', {}).get('accountType', 'N/A')}")
-            
-            # Test 2: Balance SPOT
-            balance = self.safe_request(self.exchange.fetch_balance)
-            usdt_spot = balance.get('USDT', {}).get('free', 0)
-            print(f"💰 Balance SPOT USDT: {usdt_spot:.2f}")
-            
-            # Test 3: Balance FUNDING (financement)
-            try:
-                funding_balance = self.balance_manager.get_funding_balance()
-                usdt_funding = funding_balance.get('USDT', {}).get('free', 0)
-                print(f"🏦 Balance FUNDING USDT: {usdt_funding:.2f}")
-                
-                if usdt_funding > 0.01 and usdt_spot < 1:
-                    print(f"⚠️ Fonds détectés en FUNDING ! Transfert recommandé")
-            except:
-                print("⚠️ Impossible de vérifier le portefeuille de financement")
-            
-            # Test 4: Permissions
-            permissions = account.get('info', {}).get('permissions', [])
-            print(f"🔑 Permissions: {', '.join(permissions)}")
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Erreur test API: {e}")
-            return False
     
     def track_cumulative_trend(self, symbol, current_price):
         """Détecte les tendances cumulatives (ex: 6x -0.1% = -0.6%)"""
@@ -602,15 +503,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         try:
             trade_amount = self.get_min_amount(formatted_symbol)['min_cost']
             
-            # Utiliser la stratégie unifiée
-            self.unified_strategy(formatted_symbol, trade_amount, price)
+            # Utiliser la stratégie intelligente
+            self.intelligent_strategy(formatted_symbol, trade_amount, price)
             
         except Exception as e:
             print(f"❌ Erreur signal temps réel {symbol}: {e}")
-    
-    def ensure_trading_balance(self, trade_amount):
-        """S'assure qu'il y a assez de fonds pour trader"""
-        return self.balance_manager.ensure_trading_balance(trade_amount)
     
     def check_and_recover_stuck_positions(self):
         balance = self.balance_manager.get_balance()
@@ -638,7 +535,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     
     def run(self):
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
-        strategy_type = os.getenv('STRATEGY_TYPE', 'intelligent')
         check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
 
         balance = self.balance_manager.get_balance()
@@ -654,7 +550,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if position_value >= self.get_min_amount(symbol)['min_cost']:
                     active_positions += 1
         
-        self.show_header(trading_pairs, strategy_type, 0, active_positions)
+        self.show_header(trading_pairs, "intelligent", 0, active_positions)
 
         if self.notify_trades:
             mode = "PAPER" if self.paper_trading else "LIVE"
@@ -705,7 +601,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 
                 # Vérifier avec le minimum requis
                 min_required = min(self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost'] for p in trading_pairs)
-                self.ensure_trading_balance(min_required)
+                self.balance_manager.ensure_trading_balance(min_required)
                 self.earn_manager.tirelire_auto_manage()
                 self.sync_positions_from_exchange()
                 self.detect_order_modifications()
@@ -774,7 +670,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             self.save_state()
         except Exception as e:
             print(f"\n⚠️ Erreur bot: {e}")
-            self.show_debug_commands()
+            print("\n🔧 DEBUG: bot.balance_manager.force_balance_sync() | bot.exchange.fetch_balance()")
             raise e
     
     def show_protection_status(self):
@@ -821,9 +717,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     def show_debug_commands(self):
         """Affiche les commandes de debug"""
         print("\n🔧 COMMANDES DEBUG:")
-        print("  bot.force_balance_sync()  # Forcer sync balances")
+        print("  bot.balance_manager.force_balance_sync()  # Forcer sync balances")
         print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
         print("  bot.dynamic_levels.display_levels('BTC/USDT')  # Niveaux dynamiques")
+        print("  bot.exchange.fetch_balance()  # Test API direct")
     
     def show_dynamic_levels(self, trading_pairs):
         """Affiche les niveaux dynamiques pour les cryptos principales"""
@@ -839,12 +736,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
         except Exception as e:
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
-    
-    def unified_strategy(self, symbol, amount, current_price):
-        """Stratégie unifiée - MODE INTELLIGENT UNIQUEMENT"""
-        return self.intelligent_strategy(symbol, amount, current_price)
-    
-
     
     def intelligent_strategy(self, symbol, amount, current_price):
         """Stratégie intelligente - Niveaux dynamiques + Filtres SMC + Timing + Position Sizing"""
@@ -901,7 +792,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         try:
             klines = self.get_klines(symbol, 50, '1h')
             if len(klines) >= 20:
-                pattern_result = self.pattern_recognizer.detect_patterns(klines)
+                pattern_result = self.pattern_recognition.detect_patterns(klines)
                 
                 # Patterns haussiers détectés
                 if pattern_result['bullish_patterns']:
@@ -913,7 +804,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if pattern_result['bearish_detected']:
                     crypto = symbol.split('/')[0]
                     bearish_pattern = next(p for p in pattern_result['patterns'] if p.get('bullish') == False)
-                    print(f"❌ {crypto}: Pattern baissier {bearish_pattern['type']} détecté")
+                    print()
+                    print(f"❌ {crypto}: Pattern baissier {bearish_pattern['description']} détecté")
                     return False, None
         except Exception as e:
             print(f"⚠️ Erreur pattern recognition {symbol}: {e}")
