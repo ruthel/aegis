@@ -6,25 +6,7 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 import sys
 import os
 import shutil
-import threading
-import time
 from dotenv import load_dotenv
-from flask import Flask, jsonify
-
-# Serveur web pour Render
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return jsonify({
-        'status': 'running',
-        'bot': 'TETANIS v2',
-        'timestamp': time.time()
-    })
-
-@app.route('/health')
-def health():
-    return jsonify({'status': 'healthy'})
 
 def clear_python_cache():
     """Vider les caches Python au démarrage"""
@@ -85,26 +67,6 @@ def clean_bot_states():
     else:
         print("ℹ️ Aucun état paper à nettoyer")
 
-def run_bot():
-    """Fonction pour exécuter le bot en arrière-plan"""
-    try:
-        from core.binance_spot_bot import BinanceSpotBot
-        
-        # Récupération configuration
-        api_key = os.getenv('BINANCE_API_KEY')
-        api_secret = os.getenv('BINANCE_API_SECRET')
-        testnet = os.getenv('TESTNET', 'True').lower() == 'true'
-        
-        # Démarrage du bot
-        bot = BinanceSpotBot(api_key, api_secret, testnet)
-        bot.run()
-        
-    except ImportError as e:
-        print(f"❌ Erreur import: {e}")
-        print("📝 Vérifiez que tous les modules sont installés: pip install -r requirements.txt")
-    except Exception as e:
-        print(f"❌ Erreur bot: {e}")
-
 # Vider le terminal au démarrage
 os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -112,25 +74,48 @@ os.system('cls' if os.name == 'nt' else 'clear')
 clear_python_cache()
 
 # Charger les variables d'environnement
-load_dotenv()
-
 def main():
     """Point d'entrée principal"""
     print("🚀 Démarrage du bot TETANIS...")
     
-    # Démarrer le bot en arrière-plan
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Forcer le rechargement de la configuration
+    load_dotenv(override=True)
     
-    # Démarrer le serveur web pour Render
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Serveur web démarré sur port {port}")
+    # Vérification mode
+    testnet = os.getenv('TESTNET', 'False').lower() == 'true'
+    if testnet:
+        print("⚠️ MODE TESTNET DÉTECTÉ")
+    else:
+        print("💰 MODE MAINNET ACTIVÉ")
     
+    # Vérification configuration
+    
+    # Import du bot (après vérification config)
     try:
-        app.run(host='0.0.0.0', port=port, debug=False)
+        from core.binance_spot_bot import BinanceSpotBot
+    except ImportError as e:
+        print(f"❌ Erreur import: {e}")
+        print("📝 Vérifiez que tous les modules sont installés: pip install -r requirements.txt")
+        sys.exit(1)
+    
+    # Récupération configuration
+    api_key = os.getenv('BINANCE_API_KEY')
+    api_secret = os.getenv('BINANCE_API_SECRET')
+    testnet = os.getenv('TESTNET', 'False').lower() == 'true'
+    
+    print(f"🔑 API Key: {api_key[:10]}...")
+    print(f"🌍 Mode: {'TESTNET' if testnet else 'MAINNET'}")
+    
+    # Démarrage du bot
+    try:
+        bot = BinanceSpotBot(api_key, api_secret, testnet)
+        bot.run()
     except KeyboardInterrupt:
         print("\n🛑 Arrêt du bot...")
         sys.exit(0)
+    except Exception as e:
+        print(f"❌ Erreur: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
