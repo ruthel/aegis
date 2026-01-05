@@ -7,7 +7,6 @@ class TradingMixin:
     """Mixin pour les opérations de trading"""
     
     def buy_market(self, symbol, amount, allow_averaging=False):
-        print(f"🔄 DEBUG: buy_market appelé pour {symbol}, montant: {amount:.6f}")
         
         # VÉRIFICATION 1: Limite quotidienne de trades
         if hasattr(self, 'total_trades') and hasattr(self, 'max_daily_trades'):

@@ -2146,3 +2146,136 @@
 2026-01-02 17:00:38,264 - INFO - Websocket connected
 2026-01-02 17:02:09,067 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
 2026-01-02 17:02:13,514 - INFO - Websocket connected
+2026-01-02 17:04:00,563 - INFO - Websocket connected
+2026-01-02 17:05:36,380 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-02 17:05:40,051 - INFO - Websocket connected
+2026-01-05 08:31:17,379 - INFO - Websocket connected
+2026-01-05 08:35:07,099 - ERROR - [WinError 10053] Une connexion établie a été abandonnée par un logiciel de votre ordinateur hôte - goodbye
+2026-01-05 08:35:10,586 - INFO - Websocket connected
+2026-01-05 08:37:58,022 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:38:01,279 - INFO - Websocket connected
+2026-01-05 08:40:24,701 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:40:28,318 - INFO - Websocket connected
+2026-01-05 08:44:23,869 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:44:27,170 - INFO - Websocket connected
+2026-01-05 08:48:01,277 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:48:04,450 - INFO - Websocket connected
+2026-01-05 08:50:20,627 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:50:23,801 - INFO - Websocket connected
+2026-01-05 08:53:38,065 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:53:41,637 - INFO - Websocket connected
+2026-01-05 08:57:27,276 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:57:30,826 - INFO - Websocket connected
+2026-01-05 08:59:39,584 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 08:59:43,162 - INFO - Websocket connected
+2026-01-05 09:04:21,549 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:04:24,704 - INFO - Websocket connected
+2026-01-05 09:07:22,551 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:07:25,765 - INFO - Websocket connected
+2026-01-05 09:12:09,855 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:12:13,364 - INFO - Websocket connected
+2026-01-05 09:15:29,597 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:15:33,130 - INFO - Websocket connected
+2026-01-05 09:18:51,847 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:18:55,279 - INFO - Websocket connected
+2026-01-05 09:22:59,841 - ERROR - [WinError 10053] Une connexion établie a été abandonnée par un logiciel de votre ordinateur hôte - goodbye
+2026-01-05 09:23:03,397 - INFO - Websocket connected
+2026-01-05 09:27:20,838 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:27:24,290 - INFO - Websocket connected
+2026-01-05 09:31:05,028 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:31:08,791 - INFO - Websocket connected
+2026-01-05 09:34:24,235 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:34:27,710 - INFO - Websocket connected
+2026-01-05 09:38:28,497 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:38:31,848 - INFO - Websocket connected
+2026-01-05 09:41:24,299 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:41:27,939 - INFO - Websocket connected
+2026-01-05 09:45:17,807 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:45:21,387 - INFO - Websocket connected
+2026-01-05 09:48:21,685 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:48:24,831 - INFO - Websocket connected
+2026-01-05 09:51:18,515 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:51:22,096 - INFO - Websocket connected
+2026-01-05 09:53:45,126 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:53:48,303 - INFO - Websocket connected
+2026-01-05 09:58:15,453 - ERROR - [WinError 10054] Une connexion existante a dû être fermée par l’hôte distant - goodbye
+2026-01-05 09:58:18,941 - INFO - Websocket connected
+2026-01-05 10:01:23,213 - INFO - Websocket connected
+2026-01-05 10:06:20,348 - INFO - Websocket connected
+2026-01-05 10:09:07,504 - INFO - Websocket connected
+2026-01-05 10:12:12,912 - INFO - Websocket connected
+2026-01-05 10:16:36,232 - INFO - Websocket connected
+2026-01-05 10:21:11,952 - INFO - Websocket connected
+2026-01-05 10:24:01,634 - INFO - Websocket connected
+2026-01-05 10:26:35,440 - INFO - Websocket connected
+2026-01-05 10:30:49,136 - INFO - Websocket connected
+2026-01-05 10:33:12,671 - INFO - Websocket connected
+2026-01-05 10:47:29,351 - ERROR - fin=1 opcode=8 data=b'\x03\xf0Pong timeout' - goodbye
+2026-01-05 10:47:32,826 - INFO - Websocket connected
+2026-01-05 10:50:29,411 - INFO - Websocket connected
+2026-01-05 10:52:30,400 - ERROR - fin=1 opcode=8 data=b'\x03\xf0Pong timeout' - goodbye
+2026-01-05 10:52:34,023 - INFO - Websocket connected
+2026-01-05 10:53:20,966 - INFO - Websocket connected
+2026-01-05 10:55:55,315 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 10:56:00,181 - INFO - Websocket connected
+2026-01-05 10:57:56,713 - ERROR - [WinError 10060] Une tentative de connexion a échoué car le parti connecté n’a pas répondu convenablement au-delà d’une certaine durée ou une connexion établie a échoué car l’hôte de connexion n’a pas répondu - goodbye
+2026-01-05 10:58:35,262 - INFO - Websocket connected
+2026-01-05 10:59:41,157 - INFO - Websocket connected
+2026-01-05 11:09:42,399 - ERROR - fin=1 opcode=8 data=b'\x03\xf0Pong timeout' - goodbye
+2026-01-05 11:09:45,873 - INFO - Websocket connected
+2026-01-05 11:17:02,741 - INFO - Websocket connected
+2026-01-05 11:31:45,103 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 11:31:48,969 - INFO - Websocket connected
+2026-01-05 11:38:57,613 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 11:39:01,291 - INFO - Websocket connected
+2026-01-05 11:45:17,847 - INFO - Websocket connected
+2026-01-05 11:59:15,434 - ERROR - fin=1 opcode=8 data=b'\x03\xf0Pong timeout' - goodbye
+2026-01-05 11:59:18,944 - INFO - Websocket connected
+2026-01-05 12:10:24,078 - ERROR - fin=1 opcode=8 data=b'\x03\xf0Pong timeout' - goodbye
+2026-01-05 12:10:27,916 - INFO - Websocket connected
+2026-01-05 12:24:39,502 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:24:42,980 - INFO - Websocket connected
+2026-01-05 12:33:50,820 - INFO - Websocket connected
+2026-01-05 12:36:09,963 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:36:13,474 - INFO - Websocket connected
+2026-01-05 12:38:53,372 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:38:56,869 - INFO - Websocket connected
+2026-01-05 12:39:47,696 - INFO - Websocket connected
+2026-01-05 12:44:05,351 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:44:09,030 - INFO - Websocket connected
+2026-01-05 12:47:47,607 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:47:51,055 - INFO - Websocket connected
+2026-01-05 12:50:44,209 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:50:47,706 - INFO - Websocket connected
+2026-01-05 12:52:31,839 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:52:35,323 - INFO - Websocket connected
+2026-01-05 12:54:30,685 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:54:33,883 - INFO - Websocket connected
+2026-01-05 12:56:11,396 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 12:56:14,873 - INFO - Websocket connected
+2026-01-05 12:56:29,794 - INFO - Websocket connected
+2026-01-05 12:57:34,460 - INFO - Websocket connected
+2026-01-05 12:59:35,740 - INFO - Websocket connected
+2026-01-05 13:01:43,149 - INFO - Websocket connected
+2026-01-05 13:06:48,261 - INFO - Websocket connected
+2026-01-05 13:09:16,030 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 13:09:19,390 - INFO - Websocket connected
+2026-01-05 13:09:34,337 - INFO - Websocket connected
+2026-01-05 13:11:13,684 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 13:11:17,367 - INFO - Websocket connected
+2026-01-05 13:11:51,403 - INFO - Websocket connected
+2026-01-05 13:14:05,631 - INFO - Connexion WebSocket fermée par le serveur - Reconnexion automatique...
+2026-01-05 13:14:09,208 - INFO - Websocket connected
+2026-01-05 13:15:01,474 - INFO - Websocket connected
+2026-01-05 13:17:44,513 - INFO - Websocket connected
+2026-01-05 13:20:10,480 - INFO - Websocket connected
+2026-01-05 13:24:49,126 - INFO - WebSocket reconnexion...
+2026-01-05 13:24:52,718 - INFO - Websocket connected
+2026-01-05 13:26:22,094 - INFO - WebSocket reconnexion...
+2026-01-05 13:26:25,666 - INFO - Websocket connected
+2026-01-05 13:27:53,993 - INFO - WebSocket reconnexion...
+2026-01-05 13:27:57,547 - INFO - Websocket connected
+2026-01-05 13:29:40,087 - INFO - WebSocket reconnexion...
+2026-01-05 13:29:43,603 - INFO - Websocket connected
+2026-01-05 13:32:05,283 - INFO - WebSocket reconnexion...
+2026-01-05 13:32:08,909 - INFO - Websocket connected

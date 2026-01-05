@@ -9,6 +9,7 @@ from core.websocket_manager import WebSocketManager
 from core.notification_manager import NotificationManager
 from core.technical_indicators import SignalGenerator
 from core.earn_manager import BinanceEarnManager
+from core.double_investment_manager import DoubleInvestmentManager
 from core.balance_manager import BalanceManager
 from utils.advanced_risk_manager import AdvancedRiskManager, TrailingStopManager, CorrelationManager
 from utils.flash_crash_detector import FlashCrashDetector
@@ -29,6 +30,10 @@ from utils.slippage_calculator import SlippageCalculator
 from utils.liquidity_checker import LiquidityChecker
 from utils.volatility_calculator import VolatilityCalculator
 from utils.market_calculator import MarketCalculator
+from utils.timing_optimizer import TimingOptimizer
+from utils.position_sizing_calculator import PositionSizingCalculator
+from utils.dynamic_levels_manager import DynamicLevelsManager
+from utils.capital_manager import CapitalManager
 import logging
 
 # Import des mixins
@@ -49,11 +54,14 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Affichage simplifié
         self.max_retries = 3
         self.retry_delay = 5
-        self.state_file = 'data/bot_state.json'
         self.min_amounts = {}
         
-        # Configuration
+        # Configuration des fichiers selon le mode
         self.paper_trading = os.getenv('PAPER_TRADING', 'True') == 'True'
+        if self.paper_trading:
+            self.state_file = 'data/paper_bot_state.json'
+        else:
+            self.state_file = 'data/bot_state.json'
         self.paper_balance = float(os.getenv('PAPER_BALANCE', '1000'))
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSS', '100'))
         self.stop_loss_percent = float(os.getenv('STOP_LOSS_PERCENT', '5'))
@@ -117,6 +125,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             emergency_stop_loss=float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
         )
         self.earn_manager = BinanceEarnManager(self)
+        self.double_investment_manager = DoubleInvestmentManager(self)
         self.stuck_manager = StuckPositionManager(
             max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
             stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
@@ -129,15 +138,26 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.sr_analyzer = SupportResistanceAnalyzer()
         self.stablecoin_monitor = StablecoinMonitor()
         self.pattern_recognition = PatternRecognition()
+        self.pattern_recognizer = self.pattern_recognition  # Alias pour cohérence
         self.slippage_calculator = SlippageCalculator()
         self.liquidity_checker = LiquidityChecker()
         self.volatility_calculator = VolatilityCalculator()
         self.market_calculator = MarketCalculator()
         
+        # PHASE 1 - Gestionnaire de niveaux dynamiques
+        self.dynamic_levels = DynamicLevelsManager(self)
+        
+        # PHASE 2 - Optimiseurs QUAND et COMBIEN
+        self.timing_optimizer = TimingOptimizer(self)
+        self.position_sizer = PositionSizingCalculator(self)
+        
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
         # Gestionnaire de balance centralisé
         self.balance_manager = BalanceManager(self)
+        
+        # Gestionnaire de capital automatique
+        self.capital_manager = CapitalManager(self)
         
         os.makedirs('data', exist_ok=True)
         
@@ -163,11 +183,40 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             except Exception as e:
                 print(f"⚠️ Erreur sync initiale: {e}")
         
-        # Initialiser le mode PRO si activé
-        if os.getenv('USE_SIMPLE_STRATEGY', 'False') == 'True':
-            self.init_pro_mode()
+        # Ajustement automatique selon le capital
+        self.capital_manager.auto_adjust_bot()
+        print()  # Ligne vide après l'analyse du capital
+        
+        # Gestion automatique Double Investment
+        if hasattr(self, 'double_investment_manager'):
+            # Test d'intégration
+            if self.double_investment_manager.test_integration():
+                self.double_investment_manager.auto_manage_positions()
+    
+    def manage_double_investment_cycle(self):
+        """Gère le cycle Double Investment (appelé périodiquement)"""
+        try:
+            if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
+                # Vérifier les expirations
+                self.double_investment_manager.check_expirations()
+                
+                # Gérer les nouvelles positions si nécessaire
+                self.double_investment_manager.auto_manage_positions()
+                
+        except Exception as e:
+            print(f"⚠️ Erreur cycle Double Investment: {e}")
     
     def setup_logging(self):
+        import logging
+        
+        class ConnectionErrorFilter(logging.Filter):
+            def filter(self, record):
+                msg = str(record.getMessage())
+                if "WinError 10054" in msg or "connexion existante a dû être fermée" in msg:
+                    record.msg = "WebSocket reconnexion..."
+                    record.levelname = "INFO"
+                return True
+        
         log_level = os.getenv('LOG_LEVEL', 'INFO')
         logging.basicConfig(
             level=getattr(logging, log_level),
@@ -177,6 +226,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 logging.FileHandler('bot.log') if self.save_logs else logging.NullHandler()
             ]
         )
+        
+        # Ajouter le filtre personnalisé
+        connection_filter = ConnectionErrorFilter()
+        for handler in logging.getLogger().handlers:
+            handler.addFilter(connection_filter)
+            
         self.logger = logging.getLogger(__name__)
     
     @property
@@ -201,7 +256,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
                 else:
-                    print(f"❌ Échec reconnexion: {e}")
+                    print(f"❌ Reconnexion échouée")
         return False
     
     def safe_request(self, func, *args, **kwargs):
@@ -545,18 +600,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         self.last_analysis[formatted_symbol] = now
         try:
-            strategy_type = os.getenv('STRATEGY_TYPE', 'intelligent')
             trade_amount = self.get_min_amount(formatted_symbol)['min_cost']
             
-            # MODE PRO : Utiliser directement la stratégie PRO
-            if hasattr(self, 'intelligent_strategy_pro') and os.getenv('USE_SIMPLE_STRATEGY', 'False') == 'True':
-                self.intelligent_strategy_pro(formatted_symbol, trade_amount, price)
-            elif strategy_type == 'intelligent':
-                self.realtime_intelligent(formatted_symbol, trade_amount, price)
-            elif strategy_type == 'adaptive':
-                self.realtime_adaptive(formatted_symbol, trade_amount, price)
-            elif strategy_type == 'scalping':
-                self.realtime_scalping(formatted_symbol, trade_amount, price)
+            # Utiliser la stratégie unifiée
+            self.unified_strategy(formatted_symbol, trade_amount, price)
+            
         except Exception as e:
             print(f"❌ Erreur signal temps réel {symbol}: {e}")
     
@@ -618,6 +666,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 self.earn_manager.show_earn_performance()
                 self.show_realtime_prices(trading_pairs)
                 self.show_protection_status()  # Afficher statuts protection
+                
+                # Afficher niveaux dynamiques
+                self.show_dynamic_levels(trading_pairs[:2])  # Top 2 cryptos
+                
                 print()
                 # Prévisions de vente
                 sell_predictions = []
@@ -771,228 +823,262 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         print("\n🔧 COMMANDES DEBUG:")
         print("  bot.force_balance_sync()  # Forcer sync balances")
         print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
+        print("  bot.dynamic_levels.display_levels('BTC/USDT')  # Niveaux dynamiques")
     
-    def init_pro_mode(self):
-        """Initialise le mode PRO avec niveaux fixes et scaling"""
+    def show_dynamic_levels(self, trading_pairs):
+        """Affiche les niveaux dynamiques pour les cryptos principales"""
         try:
-            from utils.fixed_levels_manager import FixedLevelsManager
-            from utils.multi_position_manager import MultiPositionManager
-            
-            self.fixed_levels = FixedLevelsManager()
-            self.multi_position = MultiPositionManager()
-            
-            # Sauvegarder méthode originale
-            if hasattr(self, 'intelligent_strategy'):
-                self.intelligent_strategy_original = self.intelligent_strategy
-            
-            # Remplacer par version pro
-            self.intelligent_strategy = self.intelligent_strategy_pro
-            
-            print("🚀 MODE PRO ACTIVÉ - Niveaux fixes + Scaling")
-            print(f"   🎯 Niveaux BTC: {os.getenv('BTC_LEVELS', 'Non défini')}")
-            print(f"   🎯 Niveaux SOL: {os.getenv('SOL_LEVELS', 'Non défini')}")
-            print(f"   📊 Max positions: {os.getenv('MAX_POSITIONS_PER_CRYPTO', '4')}")
-            print(f"   ⚡ Mode agressif: {os.getenv('AGGRESSIVE_MODE', 'False')}")
-            
+            for pair in trading_pairs:
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                current_price = self.get_price(symbol)
+                entry_opportunities = self.dynamic_levels.get_entry_levels(symbol, current_price)
+                
+                if entry_opportunities:
+                    crypto = symbol.split('/')[0]
+                    best_entry = entry_opportunities[0]
+                    print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
         except Exception as e:
-            print(f"⚠️ Erreur initialisation mode PRO: {e}")
+            print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
-    def init_pro_methods(self):
-        """Initialise les méthodes pro"""
-        if not hasattr(self, 'fixed_levels'):
+    def unified_strategy(self, symbol, amount, current_price):
+        """Stratégie unifiée - MODE INTELLIGENT UNIQUEMENT"""
+        return self.intelligent_strategy(symbol, amount, current_price)
+    
+
+    
+    def intelligent_strategy(self, symbol, amount, current_price):
+        """Stratégie intelligente - Niveaux dynamiques + Filtres SMC + Timing + Position Sizing"""
+        # 1. Vérifier position existante
+        if not self.can_open_position(symbol):
             return
-            
-        # Sauvegarder méthode originale
-        if hasattr(self, 'intelligent_strategy'):
-            self.intelligent_strategy_original = self.intelligent_strategy
         
-        # Remplacer par version pro
-        self.intelligent_strategy = self.intelligent_strategy_pro
+        # 2. Filtre HTF adaptatif (inclut déjà discount zone et stop hunt)
+        if not self.check_htf_bias(symbol):
+            return
+        
+        # 3. Vérifier niveaux dynamiques
+        should_buy, reason = self.get_entry_signal(symbol, current_price)
+        if not should_buy:
+            return
+        
+        # 4. Optimiser le timing (QUAND)
+        signal_strength = self.get_signal_strength(symbol, current_price)
+        timing_data = self.timing_optimizer.get_optimal_timing(symbol, signal_strength)
+        
+        if timing_data['action'] not in ['BUY_NOW', 'BUY_READY']:
+            crypto = symbol.split('/')[0]
+            print()
+            print(f"⏳ {crypto}: Timing non optimal ({timing_data['score']:.2f}) - {timing_data['action']}")
+            return
+        
+        # 5. Calculer position sizing optimal (COMBIEN)
+        account_balance = self.get_account_balance()
+        position_data = self.position_sizer.calculate_position_size(symbol, signal_strength, account_balance)
+        
+        # 6. Exécuter achat avec données optimisées
+        self.execute_optimized_buy(symbol, position_data, current_price, reason, timing_data)
     
-    def can_open_new_position_pro(self, symbol):
-        """Vérifie si on peut ouvrir une nouvelle position (mode pro)"""
-        import os  # Import local
-        if not os.getenv('ALLOW_MULTIPLE_POSITIONS', 'False') == 'True':
-            # Mode classique : 1 position max
-            existing_positions = [p for p in self.state.get('positions', []) 
-                                if p['symbol'] == symbol and p['side'] == 'buy']
-            return len(existing_positions) == 0
-        
-        # Mode scaling : plusieurs positions autorisées
+    def can_open_position(self, symbol):
+        """Vérifie si on peut ouvrir une position"""
         max_positions = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '4'))
         existing_positions = [p for p in self.state.get('positions', []) 
                             if p['symbol'] == symbol and p['side'] == 'buy']
-        
         return len(existing_positions) < max_positions
     
-    def get_fixed_level_buy_signal(self, symbol, current_price):
-        """Vérifie les niveaux fixes pour signal d'achat"""
-        import os  # Import local
-        if not hasattr(self, 'fixed_levels'):
-            return False, None
-            
-        # Charger niveaux depuis .env
-        crypto = symbol.split('/')[0]
-        levels_key = f"{crypto}_LEVELS"
-        levels_str = os.getenv(levels_key, '')
+
+
+
+
+    def get_entry_signal(self, symbol, current_price):
+        """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""
+        # 1. Niveaux dynamiques professionnels (priorité)
+        entry_opportunities = self.dynamic_levels.get_entry_levels(symbol, current_price)
+        if entry_opportunities:
+            best_entry = entry_opportunities[0]
+            return True, f"Niveau dynamique: {best_entry['type']} ({best_entry['distance']:.1f}%)"
         
-        if not levels_str:
-            return False, None
-            
-        levels = [float(level) for level in levels_str.split(',')]
-        
-        # Vérifier si prix proche d'un niveau (±1.5%)
-        for level in levels:
-            distance_pct = abs(current_price - level) / level * 100
-            if distance_pct <= 1.5 and current_price <= level * 1.015:  # Tolérance 1.5%
-                return True, level
+        # 2. Pattern Recognition (nouveau)
+        try:
+            klines = self.get_klines(symbol, 50, '1h')
+            if len(klines) >= 20:
+                pattern_result = self.pattern_recognizer.detect_patterns(klines)
                 
+                # Patterns haussiers détectés
+                if pattern_result['bullish_patterns']:
+                    strongest = max(pattern_result['bullish_patterns'], key=lambda x: x['confidence'])
+                    if strongest['confidence'] > 75:
+                        return True, f"Pattern: {strongest['description']} ({strongest['confidence']:.0f}%)"
+                
+                # Bloquer si patterns baissiers forts
+                if pattern_result['bearish_detected']:
+                    crypto = symbol.split('/')[0]
+                    bearish_pattern = next(p for p in pattern_result['patterns'] if p.get('bullish') == False)
+                    print(f"❌ {crypto}: Pattern baissier {bearish_pattern['type']} détecté")
+                    return False, None
+        except Exception as e:
+            print(f"⚠️ Erreur pattern recognition {symbol}: {e}")
+        
+        # 3. Signaux techniques (fallback)
+        try:
+            analysis = self.get_cached_analysis(symbol, current_price)
+            global_signal = analysis['global_signal']
+            min_confidence = int(os.getenv('MIN_CONFIDENCE', '30'))
+            
+            if (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
+                global_signal['confidence'] >= min_confidence):
+                return True, f"Signal technique {global_signal['confidence']:.0f}%"
+        except:
+            pass
+        
         return False, None
     
-    def calculate_scaled_amount_pro(self, symbol, base_amount, current_price):
-        """Calcule le montant selon le scaling pro"""
-        import os  # Import local
-        if not os.getenv('POSITION_SIZE_SCALING', 'False') == 'True':
-            return base_amount
+
+    def calculate_ema(self, prices, period):
+        """Calcule l'EMA"""
+        if len(prices) < period:
+            return prices[-1] if prices else 0
+        
+        multiplier = 2 / (period + 1)
+        ema = prices[0]
+        
+        for price in prices[1:]:
+            ema = (price * multiplier) + (ema * (1 - multiplier))
+        
+        return ema
+    
+    def check_htf_bias(self, symbol):
+        """Filtre HTF adaptatif - Détection automatique du régime de marché"""
+        try:
+            market_type = self.detect_market_regime(symbol)
+            crypto = symbol.split('/')[0]
             
-        # Compter positions existantes
+            if market_type == 'BULL':
+                return self.check_bullish_htf_bias(symbol)
+            elif market_type == 'BEAR':
+                return self.check_bearish_htf_bias(symbol)
+            else:  # SIDEWAYS
+                return True  # Marché latéral = autoriser
+                
+        except Exception as e:
+            print(f"⚠️ Erreur filtre HTF {symbol}: {e}")
+            return True
+    
+    def detect_market_regime(self, symbol):
+        """Détecte automatiquement le régime de marché"""
+        daily_klines = self.get_klines(symbol, 50, '1d')
+        if len(daily_klines) < 50:
+            return 'SIDEWAYS'
+        
+        closes = [k['close'] for k in daily_klines]
+        ema_20 = self.calculate_ema(closes, 20)
+        ema_50 = self.calculate_ema(closes, 50)
+        current_price = closes[-1]
+        
+        if current_price > ema_20 > ema_50:
+            return 'BULL'
+        elif current_price < ema_20 < ema_50:
+            return 'BEAR'
+        else:
+            return 'SIDEWAYS'
+    
+    def check_bullish_htf_bias(self, symbol):
+        """Filtre HTF strict pour marché haussier"""
+        daily_klines = self.get_klines(symbol, 50, '1d')
+        closes = [k['close'] for k in daily_klines]
+        ema_50 = self.calculate_ema(closes, 50)
+        ema_200 = self.calculate_ema(closes, 200)
+        current_price = closes[-1]
+        
+        return current_price > ema_50 > ema_200
+    
+    def check_bearish_htf_bias(self, symbol):
+        """Filtre HTF avec exceptions pour marché baissier"""
+        crypto = symbol.split('/')[0]
+        
+        # Exception 1: Support fort
+        if self.is_near_strong_support(symbol):
+            print(f"✅ {crypto}: Support fort détecté - Achat autorisé")
+            return True
+        
+        # Exception 2: RSI oversold extrême
+        if self.is_extreme_oversold(symbol):
+            print(f"✅ {crypto}: RSI oversold - Achat autorisé")
+            return True
+        
+        print(f"❌ {crypto}: Marché baissier sans exception - Skip")
+        return False
+    
+    def is_near_strong_support(self, symbol):
+        """Vérifie proximité support fort"""
+        try:
+            klines = self.get_klines(symbol, 100, '4h')
+            levels_data = self.sr_analyzer.find_support_resistance_levels(klines)
+            current_price = self.get_price(symbol)
+            
+            for support in levels_data['support_levels'][:2]:
+                distance_pct = abs(current_price - support['price']) / current_price
+                if distance_pct <= 0.02 and support['strength'] >= 3:
+                    return True
+            return False
+        except:
+            return False
+    
+    def is_extreme_oversold(self, symbol):
+        """Vérifie RSI oversold extrême"""
+        try:
+            klines = self.get_klines(symbol, 30, '4h')
+            if len(klines) < 14:
+                return False
+            
+            closes = [k['close'] for k in klines]
+            rsi = self.signal_generator.technical_indicators.calculate_rsi(closes)
+            return rsi is not None and rsi < 25
+        except:
+            return False
+    
+
+    def get_signal_strength(self, symbol, current_price):
+        """Calcule la force du signal (0-100)"""
+        try:
+            analysis = self.get_cached_analysis(symbol, current_price)
+            return analysis.get('global_signal', {}).get('confidence', 50)
+        except:
+            return 50
+    
+    def get_account_balance(self):
+        """Récupère le solde total du compte"""
+        try:
+            balance = self.balance_manager.get_balance()
+            usdt_balance = balance.get('USDT', {}).get('free', 0)
+            
+            if self.paper_trading:
+                return self.paper_balance
+            
+            return usdt_balance
+        except:
+            return 100  # Fallback
+    
+    def execute_optimized_buy(self, symbol, position_data, current_price, reason, timing_data):
+        """Exécute l'achat avec données optimisées"""
+        crypto = symbol.split('/')[0]
         existing_positions = [p for p in self.state.get('positions', []) 
                             if p['symbol'] == symbol and p['side'] == 'buy']
         position_count = len(existing_positions)
         
-        # Multipliers progressifs : 1x, 1.5x, 2x, 3x
-        multipliers = [1.0, 1.5, 2.0, 3.0]
-        multiplier = multipliers[min(position_count, len(multipliers)-1)]
+        # Affichage amélioré
+        print(f"🚀 ACHAT OPTIMISÉ {crypto}: {position_data['position_size_usdt']:.1f} USDT (Position #{position_count + 1})")
+        print(f"   💡 Raison: {reason}")
+        print(f"   ⏰ Timing: {timing_data['score']:.2f} ({timing_data['action']})")
+        print(f"   💰 Prix: {current_price:.2f} | Stop: {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%)")
+        print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
         
-        return base_amount * multiplier
-    
-    def should_scale_in_pro(self, symbol, current_price):
-        """Détermine si on doit ajouter une position (scale in)"""
-        import os  # Import local
-        if not os.getenv('POSITION_SCALING', 'False') == 'True':
-            return False, None
-            
-        # Récupérer dernière position
-        buy_positions = [p for p in self.state.get('positions', []) 
-                        if p['symbol'] == symbol and p['side'] == 'buy']
+        # Exécuter
+        result = self.buy_market(symbol, position_data['position_size_crypto'])
         
-        if not buy_positions:
-            return True, None  # Première position
-            
-        # Trier par timestamp et prendre le plus récent
-        buy_positions.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        last_buy_price = buy_positions[0].get('price')
-        
-        if not last_buy_price:
-            return False, None
-            
-        # Calculer la baisse depuis le dernier achat
-        price_drop_pct = (last_buy_price - current_price) / last_buy_price * 100
-        
-        # Seuils de scaling : -2%, -4%, -6%
-        scale_thresholds = [2.0, 4.0, 6.0]
-        position_count = len(buy_positions)
-        
-        if position_count < len(scale_thresholds):
-            required_drop = scale_thresholds[position_count]
-            return price_drop_pct >= required_drop, last_buy_price
-            
-        return False, None
-    
-    def intelligent_strategy_pro(self, symbol, amount, current_price):
-        """Version pro de intelligent_strategy avec niveaux fixes et scaling"""
-        import os  # Import local pour éviter les erreurs
-        
-        # 1. Vérifier si on peut ouvrir une nouvelle position
-        if not self.can_open_new_position_pro(symbol):
-            return
-        
-        # 2. Mode agressif : ignorer la plupart des protections
-        if os.getenv('AGGRESSIVE_MODE', 'False') == 'True':
-            # Ignorer marché latéral et patterns
-            pass
+        if result:
+            print(f"✅ Achat exécuté avec succès")
+            # Ajouter trailing stop avec prix optimisé
+            if hasattr(self, 'trailing_stop_manager'):
+                self.trailing_stop_manager.add_position(symbol, current_price)
         else:
-            # Mode conservateur : vérifications normales
-            if not self.safety_manager.can_trade():
-                return
-        
-        # 3. Vérifier niveaux fixes
-        should_buy_level, level = self.get_fixed_level_buy_signal(symbol, current_price)
-        buy_reason = None
-        
-        if should_buy_level:
-            buy_reason = f"Niveau fixe: {level}"
-        else:
-            # 4. Vérifier scaling
-            should_scale, last_price = self.should_scale_in_pro(symbol, current_price)
-            if should_scale and last_price:
-                buy_reason = f"Scaling depuis {last_price:.2f}"
-            elif should_scale:
-                buy_reason = "Première position"
-        
-        # 5. Signal technique simple (confidence réduite)
-        if not buy_reason:
-            min_confidence = int(os.getenv('MIN_CONFIDENCE', '50'))
-            analysis = self.get_cached_analysis(symbol, current_price)
-            global_signal = analysis['global_signal']
-            
-            if (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
-                global_signal['confidence'] >= min_confidence):
-                buy_reason = f"Signal technique {global_signal['confidence']:.0f}%"
-        
-        # 6. Exécuter achat si conditions remplies
-        if buy_reason:
-            # Calculer montant selon scaling
-            base_amount = float(os.getenv('TRADE_AMOUNT', '5'))
-            scaled_amount = self.calculate_scaled_amount_pro(symbol, base_amount, current_price)
-            
-            # Vérifier fonds disponibles
-            balance = self.balance_manager.get_balance()
-            usdt_available = balance.get('USDT', {}).get('free', 0)
-            
-            if self.paper_trading:
-                usdt_available = self.paper_balance
-            
-            # Limiter au disponible
-            final_amount = min(scaled_amount, usdt_available * 0.8)  # 80% max du disponible
-            # Minimum spécial pour BTC (réduit à 15 USDT)
-            if symbol == 'BTC/USDT':
-                final_amount = max(final_amount, 15.0)  # 15 USDT minimum pour BTC
-            else:
-                final_amount = max(final_amount, self.get_min_amount(symbol)['min_cost'])
-            
-            trade_amount = final_amount / current_price
-            
-            # Vérifier que la quantité respecte les limites
-            min_limits = self.get_min_amount(symbol)
-            if trade_amount < min_limits['min_amount']:
-                trade_amount = min_limits['min_amount']
-                final_amount = trade_amount * current_price
-                print(f"   ⚠️ Ajustement quantité: {trade_amount:.6f} {crypto}")
-            
-            # Affichage pro
-            crypto = symbol.split('/')[0]
-            existing_positions = [p for p in self.state.get('positions', []) 
-                                if p['symbol'] == symbol and p['side'] == 'buy']
-            position_count = len(existing_positions)
-            
-            print(f"🚀 ACHAT PRO {crypto}: {final_amount:.1f} USDT (Position #{position_count + 1})")
-            print(f"   💡 Raison: {buy_reason}")
-            print(f"   💰 Prix: {current_price:.2f}")
-            print(f"   📊 Quantité: {trade_amount:.6f} {crypto}")
-            
-            # Exécuter l'achat
-            result = self.buy_market(symbol, trade_amount)
-            
-            if result:
-                print(f"✅ Achat PRO exécuté avec succès")
-                # Ajouter trailing stop
-                if hasattr(self, 'trailing_stop_manager'):
-                    self.trailing_stop_manager.add_position(symbol, current_price)
-            else:
-                print(f"❌ Échec de l'achat PRO")
-        else:
-            # Mode debug : afficher pourquoi pas d'achat
-            if os.getenv('DEBUG_PRO', 'False') == 'True':
-                crypto = symbol.split('/')[0]
-                print(f"⏸️ {crypto}: Aucune condition d'achat remplie")
+            print(f"❌ Échec de l'achat")

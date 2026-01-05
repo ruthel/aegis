@@ -1,0 +1,27 @@
+# Configuration Pattern Recognition
+# Ajouter ces variables à votre .env pour contrôler les patterns
+
+# Activer/Désactiver Pattern Recognition
+ENABLE_PATTERN_RECOGNITION=True
+
+# Seuils de confiance minimum
+PATTERN_MIN_CONFIDENCE_BULLISH=75
+PATTERN_MIN_CONFIDENCE_BEARISH=70
+
+# Patterns à activer (True/False)
+ENABLE_HEAD_SHOULDERS=True
+ENABLE_DOUBLE_TOP_BOTTOM=True
+ENABLE_TRIANGLES=True
+ENABLE_FLAGS_PENNANTS=True
+ENABLE_CANDLESTICK_PATTERNS=True
+ENABLE_CUP_HANDLE=True
+ENABLE_WEDGES=True
+
+# Timeframes pour pattern detection
+PATTERN_TIMEFRAME_PRIMARY=1h
+PATTERN_TIMEFRAME_SECONDARY=4h
+PATTERN_LOOKBACK_PERIODS=50
+
+# Filtres avancés
+PATTERN_VOLUME_CONFIRMATION=True
+PATTERN_HTF_FILTER=True

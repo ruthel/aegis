@@ -89,6 +89,12 @@ class DisplayMixin:
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
         print(f"\n📊 {self.daily_pnl:+.2f} | {self.total_trades} trades ({win_rate:.0f}% win)")
         
+        # Afficher résumé Double Investment si activé
+        if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
+            dual_summary = self.double_investment_manager.get_positions_summary()
+            if dual_summary != "Aucune position Double Investment":
+                print(f"💎 {dual_summary}")
+        
         # CORRECTION: Utiliser les positions du state pour paper trading
         if self.paper_trading:
             active_positions = [p for p in self.state.get('positions', []) 
@@ -228,8 +234,14 @@ class DisplayMixin:
         cryptos = ', '.join([p.replace('USDT', '') for p in trading_pairs])
         earn_status = "Earn ON" if os.getenv('TIRELIRE_MODE', 'False') == 'True' else "Earn OFF"
         
-        print(f"🤖 Bot {strategy_type.upper()} | {mode} {realtime} | {active_positions} positions")
-        print(f"📊 {cryptos} | Min dynamique/paire | Seuil 70% | {earn_status}")
+        # Ajouter statut Double Investment
+        dual_status = "DualInv OFF"
+        if hasattr(self, 'double_investment_manager'):
+            if self.double_investment_manager.enabled:
+                dual_status = f"DualInv ON ({len(self.double_investment_manager.positions)})"
+        
+        print(f"🤖 TETANIS | {mode} {realtime} | {active_positions} positions")
+        print(f"📊 {cryptos} | Min dynamique/paire | Seuil 70% | {earn_status} | {dual_status}")
         print("🛑 Ctrl+C pour arrêter")
     
     def show_tradable_pairs(self, tradable_pairs, usdt_available):

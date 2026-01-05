@@ -34,13 +34,23 @@ def clear_python_cache():
     print(f"🧹 Cache supprimé")
 
 def clean_bot_states():
-    """Nettoie les états du bot"""
-    state_files = [
-        'data/bot_state.json',
-        'data/cache.json', 
-        'data/temp_state.json',
-        'data/positions.json'
-    ]
+    """Nettoie les états du bot selon le mode (paper/live)"""
+    # Vérifier le mode paper trading
+    paper_trading = os.getenv('PAPER_TRADING', 'False').lower() == 'true'
+    
+    if paper_trading:
+        # En paper trading, nettoyer seulement les fichiers paper
+        state_files = [
+            'data/paper_bot_state.json',
+            'data/paper_cache.json', 
+            'data/paper_temp_state.json',
+            'data/paper_positions.json'
+        ]
+        print("🧹 Mode PAPER - Nettoyage fichiers paper trading")
+    else:
+        # En trading réel, ne PAS nettoyer les fichiers (préserver l'état)
+        print("💰 Mode LIVE - Conservation des états existants")
+        return
     
     cleaned = 0
     for state_file in state_files:
@@ -53,9 +63,9 @@ def clean_bot_states():
                 print(f"⚠️ Erreur nettoyage {state_file}: {e}")
     
     if cleaned > 0:
-        print(f"✅ {cleaned} état(s) nettoyé(s)")
+        print(f"✅ {cleaned} état(s) paper nettoyé(s)")
     else:
-        print("ℹ️ Aucun état à nettoyer")
+        print("ℹ️ Aucun état paper à nettoyer")
 
 # Vider le terminal au démarrage
 os.system('cls' if os.name == 'nt' else 'clear')
@@ -63,15 +73,12 @@ os.system('cls' if os.name == 'nt' else 'clear')
 # Vider les caches Python
 clear_python_cache()
 
-# Nettoyer les états du bot
-clean_bot_states()
-
 # Charger les variables d'environnement
 load_dotenv()
 
 def main():
     """Point d'entrée principal"""
-    print("🚀 Démarrage du bot de trading Binance...")
+    print("🚀 Démarrage du bot TETANIS...")
     
     # Vérification configuration
     

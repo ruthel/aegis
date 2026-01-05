@@ -68,6 +68,7 @@ class BinanceEarnManager:
     def refresh_available_products(self):
         """Actualise la liste des produits disponibles"""
         if self.earn_api is None:
+            print()
             print("🎯 Flexible USDT: 3.5% APY (simulé)")
             print("🔒 Locked USDT 30j: 8.0% APY (simulé)")
             return
@@ -399,21 +400,26 @@ class BinanceEarnManager:
             if self.allocate_to_flexible_savings(available_balance):
                 self.save_earn_positions()
                 print(f"🐷 {available_balance:.2f} USDT → Earn ✅")
+                print()  # Ligne vide après succès
             else:
                 print(f"🐷 {available_balance:.2f} USDT → Earn ❌ (vérifiez API Earn)")
+                print()  # Ligne vide après erreur
         
         # Règle 2: Si Earn >= 5 USDT → Retirer vers Spot
         elif earn_balance >= self.earn_withdraw_threshold:
             if self.withdraw_from_flexible(earn_balance):
                 self.save_earn_positions()
                 print(f"🐷 {earn_balance:.2f} → Spot ✅")
+                print()  # Ligne vide après succès
                 if self.bot.notify_trades:
                     self.bot.notifier.notify(f"🐷 Tirelire: {earn_balance:.2f} USDT → Spot")
             else:
                 print(f"🐷 {earn_balance:.2f} → Spot ❌ Erreur retrait")
+                print()  # Ligne vide après erreur
         
         else:
             print(f"🐷 OK (Spot {available_balance:.2f} | Earn {earn_balance:.2f})")
+            print()  # Ligne vide après le statut tirelire
     
     def get_earn_summary(self):
         """Résumé des positions Earn"""
