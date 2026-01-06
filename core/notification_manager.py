@@ -221,7 +221,7 @@ class NotificationManager:
                 msg += f"├─ Positions: {total_positions}\n"
                 
                 # Calculer montants investis
-                real_invested = sum(float(p.get('amount', 0)) for p in real_positions)
+                real_invested = sum(float(p.get('subscriptionAmount', 0)) for p in real_positions)
                 sim_invested = sum(p.get('amount', 0) for p in simulated_positions if p.get('status', 'active') == 'active')
                 total_invested = real_invested + sim_invested
                 
@@ -240,10 +240,10 @@ class NotificationManager:
                 total_puts = len(real_puts) + len(sim_puts)
                 
                 if total_calls > 0:
-                    calls_amount = sum(float(p.get('amount', 0)) for p in real_calls) + sum(p.get('amount', 0) for p in sim_calls)
+                    calls_amount = sum(float(p.get('subscriptionAmount', 0)) for p in real_calls) + sum(p.get('amount', 0) for p in sim_calls)
                     msg += f"├─ Calls: {total_calls} ({calls_amount:.1f} USDT)\n"
                 if total_puts > 0:
-                    puts_amount = sum(float(p.get('amount', 0)) for p in real_puts) + sum(p.get('amount', 0) for p in sim_puts)
+                    puts_amount = sum(float(p.get('subscriptionAmount', 0)) for p in real_puts) + sum(p.get('amount', 0) for p in sim_puts)
                     msg += f"├─ Puts: {total_puts} ({puts_amount:.1f} USDT)\n"
                 
                 # Détail des positions actives
