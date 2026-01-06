@@ -222,14 +222,60 @@ binance-bot-v2/
 3. **Surveillance** : Monitorer les premiers trades
 4. **Limites strictes** : Configurez MAX_DAILY_LOSS
 
-### Détection Clés d'Exemple
-Le bot refuse de démarrer avec des clés par défaut :
-```
-❌ ERREUR: Clés API d'exemple détectées !
-Modifiez .env avec vos vraies clés Binance.
+### 🔐 **Sécurité IP Statique**
+```bash
+# Configuration Binance API
+1. Binance → API Management → Edit API
+2. IP Access Restriction → Restrict access to trusted IPs only
+3. Ajouter votre IP AWS Elastic : xxx.xxx.xxx.xxx
+4. Permissions requises :
+   ✅ Enable Reading
+   ✅ Enable Spot & Margin Trading
+   ✅ Enable Futures (si utilisé)
 ```
 
-## 📊 Monitoring & Notifications
+### 📊 **Monitoring & Alertes**
+```bash
+# CloudWatch Alarms
+- CPU > 80% pendant 5min
+- RAM > 90% pendant 5min
+- Network errors > 10/min
+- Disk space < 2GB
+
+# Notifications SNS
+- Email/SMS si bot arrêté
+- Alertes trading importantes
+```
+
+## 🌐 **Déploiement Multi-Plateforme**
+
+### 🔥 **Option 1 : AWS Free Tier (Recommandé)**
+```bash
+# Avantages : IP statique gratuite + latence optimale EU
+Région : Frankfurt (eu-central-1)
+Latence : 15-30ms vers Binance
+Coût : Gratuit 12 mois
+```
+
+### 🚀 **Option 2 : Render (Simple)**
+```yaml
+# render.yaml
+services:
+  - type: web
+    name: binance-bot-v2
+    env: python
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    plan: starter  # Gratuit avec limitations
+```
+
+### 💻 **Option 3 : Local + VPN**
+```bash
+# Pour tests et développement
+python run.py  # Démarrage direct
+# + VPN Europe pour latence optimale
+```
 
 ### Telegram (Optionnel)
 ```env
@@ -243,25 +289,78 @@ TELEGRAM_STATUS_INTERVAL=300     # Status toutes les 5min
 - **État bot** : `data/bot_state.json`
 - **Historique** : Binance → Orders → Trade History
 
-## 🖥️ Hébergement VPS Recommandé
+## 🖥️ Hébergement Cloud Recommandé
 
-### Spécifications
-- **CPU** : 2 vCores
-- **RAM** : 1-2 GB
-- **Stockage** : 20 GB SSD
-- **Localisation** : Singapour/Tokyo (latence 10-50ms)
-- **Coût** : $6-12/mois (Vultr, DigitalOcean, Linode)
+### 🏆 **AWS Free Tier Europe (Recommandé)**
+- **Région** : Frankfurt (eu-central-1)
+- **Instance** : t2.micro (1 vCPU, 1GB RAM)
+- **IP statique** : Elastic IP gratuite
+- **Stockage** : 30GB EBS gratuit
+- **Latence** : 15-30ms vers Binance
+- **Coût** : Gratuit 12 mois
+- **Avantages** : Fiabilité AWS + IP fixe EU
 
-### Installation VPS
+### Installation AWS EC2
 ```bash
-ssh root@votre_ip
-apt update && apt install python3.11 python3-pip git -y
+# Connexion SSH
+ssh -i votre-cle.pem ec2-user@votre-ip-elastique
+
+# Installation
+sudo yum update -y
+sudo yum install python3 python3-pip git -y
 git clone https://github.com/votre-repo/binance-bot-v2.git
 cd binance-bot-v2
 pip3 install -r requirements.txt
 cp .env.example .env
-# Modifier .env avec vos clés
-python run.py
+
+# Configuration clés API
+nano .env  # Ajouter vos clés Binance
+
+# Démarrage
+python3 run.py
+```
+
+### 🔧 **Configuration AWS Sécurisée**
+```bash
+# Security Group (Firewall)
+- SSH (22) : Votre IP uniquement
+- HTTPS (443) : 0.0.0.0/0 (optionnel)
+- Pas d'autres ports ouverts
+
+# Elastic IP
+- Associer une IP statique
+- Ajouter cette IP dans Binance API restrictions
+
+# Monitoring CloudWatch
+- CPU, RAM, Network
+- Alertes si bot plante
+```
+
+### 🌍 **Alternatives Cloud Europe**
+- **Oracle Cloud** : Gratuit à vie (Frankfurt/Amsterdam)
+- **Google Cloud** : 300$ crédits (Belgique/Pays-Bas)
+- **Azure** : 200$ crédits (Allemagne/Pays-Bas)
+- **Hetzner** : €3/mois (Allemagne) - Payant mais excellent
+
+### 📊 **Comparaison Latence Europe**
+| Provider | Région | Latence Binance | IP Statique | Coût |
+|----------|--------|-----------------|-------------|------|
+| AWS | Frankfurt | 15-30ms | ✅ Gratuite | Gratuit 12m |
+| Oracle | Frankfurt | 20-35ms | ✅ Gratuite | Gratuit à vie |
+| Hetzner | Nuremberg | 10-25ms | ✅ Incluse | €3/mois |
+| GCP | Belgique | 25-40ms | ✅ Gratuite | 300$ crédits |
+
+### ⚡ **Optimisations AWS**
+```bash
+# Auto-restart si crash
+sudo crontab -e
+@reboot cd /home/ec2-user/binance-bot-v2 && python3 run.py
+
+# Logs persistants
+nohup python3 run.py > bot.log 2>&1 &
+
+# Monitoring
+tail -f bot.log
 ```
 
 ## 📈 Mentalité Trading Professionnel
@@ -495,8 +594,9 @@ python -m cProfile -o profile.stats run.py
 
 ---
 
-**Version** : 2.0 Professional TETANIS  
-**Latence** : 10-20ms (optimisé)  
+**Version** : 2.1 Professional TETANIS  
+**Déploiement** : AWS EU + Render + Local  
+**Latence** : 10-30ms (optimisé Europe)  
 **Architecture** : Modulaire (Mixins)  
 **Revenus** : Trading + Binance Earn  
-**Sécurité** : Niveau professionnel
+**Sécurité** : IP statique + CloudWatch

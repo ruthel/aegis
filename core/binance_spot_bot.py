@@ -78,6 +78,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.daily_pnl = 0
         self.total_trades = 0
         self.winning_trades = 0
+        self.emergency_stop = False
         
         self.setup_logging()
         
@@ -629,6 +630,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 
                 # Vérifier exécution ordres limite paper trading
                 self.check_paper_limit_orders()
+                
+                # Vérifier commandes Telegram
+                if self.notify_trades:
+                    self.notifier.check_telegram_commands()
                 
                 # Vérifier avec le minimum requis
                 min_required = min(self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost'] for p in trading_pairs)

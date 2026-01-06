@@ -3,6 +3,7 @@ import os
 import time
 import threading
 from datetime import datetime, timedelta
+from config import BOT_NAME
 
 class NotificationManager:
     def __init__(self):
@@ -128,7 +129,7 @@ class NotificationManager:
         
         win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
         
-        msg = f"📊 RÉSUMÉ JOURNALIER\n"
+        msg = f"📊 {BOT_NAME} | RÉSUMÉ JOURNALIER\n"
         msg += f"{datetime.now().strftime('%d %b %Y')}\n\n"
         msg += f"💰 Capital\n"
         msg += f"├─ Début: {start_balance:.2f} USDT\n"
@@ -191,7 +192,7 @@ class NotificationManager:
         # Stats
         win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
         
-        msg = f"📊 STATUS {datetime.now().strftime('%H:%M')}\n\n"
+        msg = f"🤖 {BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}\n\n"
         msg += f"💼 Portfolio\n"
         for i, item in enumerate(portfolio_items):
             prefix = "├─" if i < len(portfolio_items) - 1 else "└─"
@@ -245,10 +246,29 @@ class NotificationManager:
                     puts_amount = sum(float(p.get('amount', 0)) for p in real_puts) + sum(p.get('amount', 0) for p in sim_puts)
                     msg += f"├─ Puts: {total_puts} ({puts_amount:.1f} USDT)\n"
                 
-                # Revenus estimés (seulement simulées car API ne donne pas les primes)
-                total_earnings = sum(p.get('premium_expected', 0) for p in simulated_positions if p.get('status', 'active') == 'active')
-                if total_earnings > 0:
-                    msg += f"└─ Revenus estimés: +{total_earnings:.2f} USDT\n\n"
+                # Détail des positions actives
+                position_details = []
+                
+                # Positions réelles
+                for p in real_positions:
+                    crypto = p.get('asset', 'N/A')
+                    ptype = p.get('productType', 'N/A')
+                    amount = float(p.get('amount', 0))
+                    position_details.append(f"{ptype} {crypto} {amount:.1f}")
+                
+                # Positions simulées
+                for p in simulated_positions:
+                    if p.get('status', 'active') == 'active':
+                        crypto = p.get('symbol', 'N/A').replace('USDT', '')
+                        ptype = 'CALL' if p.get('type') == 'covered_call' else 'PUT'
+                        amount = p.get('amount', 0)
+                        position_details.append(f"{ptype} {crypto} {amount:.1f}")
+                
+                if position_details:
+                    for i, detail in enumerate(position_details):
+                        prefix = "├─" if i < len(position_details) - 1 else "└─"
+                        msg += f"{prefix} {detail}\n"
+                    msg += "\n"
                 else:
                     msg += f"└─ Positions actives\n\n"
             else:

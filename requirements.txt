@@ -5,4 +5,3 @@ numpy>=1.26.0
 scipy>=1.11.0
 websocket-client>=1.6.4
 python-telegram-bot>=20.7
-flask>=3.0.0

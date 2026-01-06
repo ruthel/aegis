@@ -1,0 +1,14 @@
+[Unit]
+Description=Binance Trading Bot
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/binance-bot-v2
+ExecStart=/home/ubuntu/binance-bot-v2/venv/bin/python run.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
