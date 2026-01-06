@@ -398,6 +398,9 @@ class DoubleInvestmentManager:
                 self.cached_positions = active_positions
                 self.last_api_call = now
                 
+                # DEBUG: Afficher retour API brut
+                print(f"🔍 DEBUG API Response: {data}")
+                
                 # Afficher seulement si changement
                 if len(active_positions) != len(getattr(self, '_last_displayed_count', -1)):
                     if active_positions:
