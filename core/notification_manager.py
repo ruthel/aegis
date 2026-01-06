@@ -104,6 +104,32 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
+    def notify_cumulative_trend(self, symbol, direction, count, total_change_pct):
+        """Notification tendance cumulative détectée"""
+        crypto = symbol.split('/')[0]
+        direction_text = "📉 Baisse" if direction < 0 else "📈 Hausse"
+        direction_emoji = "📉" if direction < 0 else "📈"
+        
+        msg = f"{direction_emoji} TENDANCE CUMULATIVE\n\n"
+        msg += f"🪙 Crypto: {crypto}\n"
+        msg += f"📊 Pattern: {count}x {direction_text.split()[1].lower()}\n"
+        msg += f"📈 Cumul: {total_change_pct:.2f}%\n\n"
+        msg += f"⚡ Analyse forcée en cours...\n\n"
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
+    def notify_dynamic_level(self, symbol, level_type, price, distance_pct):
+        """Notification niveau dynamique détecté"""
+        crypto = symbol.split('/')[0]
+        
+        msg = f"🎯 NIVEAU DYNAMIQUE\n\n"
+        msg += f"🪙 Crypto: {crypto}\n"
+        msg += f"📊 Type: {level_type}\n"
+        msg += f"💰 Prix: {price:.2f} USDT\n"
+        msg += f"📏 Distance: {distance_pct:.1f}%\n\n"
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        self.notify(msg, "")
+    
     def notify_daily_summary(self):
         """Résumé journalier automatique"""
         if not self.bot_ref:
@@ -260,10 +286,6 @@ class NotificationManager:
                     
                     # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
                     potential_gain_usdt = amount * apr * (duration / 365)
-                    
-                    # DEBUG: Afficher les valeurs pour diagnostic
-                    print(f"DEBUG: amount={amount}, apr={apr}, duration={duration}")
-                    print(f"DEBUG: calcul = {amount} * {apr} * ({duration}/365) = {potential_gain_usdt}")
                     
                     # Calculer jours restants
                     settle_date = p.get('settleDate', 0)

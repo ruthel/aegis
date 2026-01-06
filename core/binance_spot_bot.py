@@ -509,6 +509,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if total_change_pct >= 0.3:  # Cumul ≥ 0.3%
                 direction_text = "baisse" if tracker['direction'] < 0 else "hausse"
                 print(f"📊 {symbol}: Tendance cumulative détectée! {tracker['count']}x {direction_text} = {total_change_pct:.2f}%")
+                
+                # Envoyer notification Telegram
+                if self.notify_trades and hasattr(self, 'notifier'):
+                    self.notifier.notify_cumulative_trend(symbol, tracker['direction'], tracker['count'], total_change_pct)
+                
                 # Reset après alerte
                 tracker['count'] = 0
                 tracker['start_price'] = current_price
@@ -763,6 +768,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     crypto = symbol.split('/')[0]
                     best_entry = entry_opportunities[0]
                     print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
+                    
+                    # Envoyer notification si niveau très proche (< 2%)
+                    if abs(best_entry['distance']) < 2.0 and self.notify_trades and hasattr(self, 'notifier'):
+                        self.notifier.notify_dynamic_level(symbol, best_entry['type'], best_entry['price'], best_entry['distance'])
         except Exception as e:
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
