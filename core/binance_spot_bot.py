@@ -197,6 +197,13 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             # Test d'intégration
             if self.double_investment_manager.test_integration():
                 self.double_investment_manager.auto_manage_positions()
+        
+        # Notification de démarrage
+        if self.notify_trades and hasattr(self, 'notifier'):
+            mode = "PAPER" if self.paper_trading else "LIVE"
+            self.notifier.notify(f"🤖 Bot démarré - {mode}")
+            # Envoyer status initial
+            self.notifier.send_status_update()
     
     def manage_double_investment_cycle(self):
         """Gère le cycle Double Investment (appelé périodiquement)"""
@@ -581,9 +588,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         self.show_header(trading_pairs, "intelligent", 0, active_positions)
 
-        if self.notify_trades:
-            mode = "PAPER" if self.paper_trading else "LIVE"
-            self.notifier.notify(f"🤖 Bot démarré - {mode}")
         try:
             while True:
                 self.show_performance()
