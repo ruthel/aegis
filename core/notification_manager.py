@@ -258,8 +258,12 @@ class NotificationManager:
                     apr = float(p.get('apr', 0))
                     duration = p.get('duration', 0)
                     
-                    # CORRECTION: APR est déjà en pourcentage dans l'API
-                    potential_gain_usdt = amount * (apr / 100) * (duration / 365)
+                    # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
+                    potential_gain_usdt = amount * apr * (duration / 365)
+                    
+                    # DEBUG: Afficher les valeurs pour diagnostic
+                    print(f"DEBUG: amount={amount}, apr={apr}, duration={duration}")
+                    print(f"DEBUG: calcul = {amount} * {apr} * ({duration}/365) = {potential_gain_usdt}")
                     
                     # Calculer jours restants
                     settle_date = p.get('settleDate', 0)

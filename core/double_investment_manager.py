@@ -411,9 +411,8 @@ class DoubleInvestmentManager:
                             apr = float(pos.get('apr', 0))
                             duration = pos.get('duration', 0)
                             
-                            # CORRECTION: APR est déjà en pourcentage dans l'API (1.0589 = 105.89%)
-                            # Pas besoin de diviser par 100
-                            potential_gain_usdt = amount * (apr / 100) * (duration / 365)
+                            # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
+                            potential_gain_usdt = amount * apr * (duration / 365)
                             
                             # Calculer jours restants
                             settle_date = pos.get('settleDate', 0)
@@ -466,8 +465,8 @@ class DoubleInvestmentManager:
                 apr = float(pos.get('apr', 0))
                 duration = pos.get('duration', 0)
                 
-                # CORRECTION: APR est déjà en pourcentage dans l'API
-                potential_gain_usdt = amount * (apr / 100) * (duration / 365)
+                # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
+                potential_gain_usdt = amount * apr * (duration / 365)
                 
                 # Calculer jours restants
                 settle_date = pos.get('settleDate', 0)
