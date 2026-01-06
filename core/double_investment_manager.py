@@ -414,11 +414,23 @@ class DoubleInvestmentManager:
                             apr = float(pos.get('apr', 0))
                             duration = pos.get('duration', 0)
                             
-                            # CORRECTION: subscriptionAmount est TOUJOURS en USDT selon Binance
-                            # Le gain est donc toujours calculé sur le montant USDT
+                            # CORRECTION: APR est déjà en pourcentage dans l'API (1.0589 = 105.89%)
+                            # Pas besoin de diviser par 100
                             potential_gain_usdt = amount * (apr / 100) * (duration / 365)
                             
-                            print(f"   {option_type} {exercised_coin}: {amount:.2f} USDT @ {strike:.2f} (+{potential_gain_usdt:.3f} USDT)")
+                            # Calculer jours restants
+                            settle_date = pos.get('settleDate', 0)
+                            if settle_date:
+                                settle_datetime = datetime.fromtimestamp(settle_date / 1000)
+                                days_left = (settle_datetime - datetime.now()).days
+                                if days_left > 0:
+                                    time_display = f"[{days_left}j]"
+                                else:
+                                    time_display = "[Expiré]"
+                            else:
+                                time_display = f"[{duration}j]"
+                            
+                            print(f"   {option_type} {exercised_coin}: {amount:.2f} USDT @ {strike:.2f} (+{potential_gain_usdt:.3f} USDT) {time_display}")
                     else:
                         print(f"💎 Aucune position Dual Investment active")
                     self._last_displayed_count = len(active_positions)
@@ -457,10 +469,22 @@ class DoubleInvestmentManager:
                 apr = float(pos.get('apr', 0))
                 duration = pos.get('duration', 0)
                 
-                # CORRECTION: subscriptionAmount est TOUJOURS en USDT selon Binance
-                # Le gain est donc toujours calculé sur le montant USDT
+                # CORRECTION: APR est déjà en pourcentage dans l'API
                 potential_gain_usdt = amount * (apr / 100) * (duration / 365)
-                gain_display = f"+{potential_gain_usdt:.3f} USDT"
+                
+                # Calculer jours restants
+                settle_date = pos.get('settleDate', 0)
+                if settle_date:
+                    settle_datetime = datetime.fromtimestamp(settle_date / 1000)
+                    days_left = (settle_datetime - datetime.now()).days
+                    if days_left > 0:
+                        time_display = f"[{days_left}j]"
+                    else:
+                        time_display = "[Expiré]"
+                else:
+                    time_display = f"[{duration}j]"
+                
+                gain_display = f"+{potential_gain_usdt:.3f} USDT {time_display}"
                 
                 if option_type == 'CALL':
                     summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} USDT ({gain_display})")

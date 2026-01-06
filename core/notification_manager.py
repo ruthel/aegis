@@ -258,10 +258,22 @@ class NotificationManager:
                     apr = float(p.get('apr', 0))
                     duration = p.get('duration', 0)
                     
-                    # CORRECTION: subscriptionAmount est TOUJOURS en USDT selon Binance
-                    # Le gain est donc toujours calculé sur le montant USDT
+                    # CORRECTION: APR est déjà en pourcentage dans l'API
                     potential_gain_usdt = amount * (apr / 100) * (duration / 365)
-                    gain_display = f"+{potential_gain_usdt:.3f} USDT"
+                    
+                    # Calculer jours restants
+                    settle_date = p.get('settleDate', 0)
+                    if settle_date:
+                        settle_datetime = datetime.fromtimestamp(settle_date / 1000)
+                        days_left = (settle_datetime - datetime.now()).days
+                        if days_left > 0:
+                            time_display = f"[{days_left}j]"
+                        else:
+                            time_display = "[Expiré]"
+                    else:
+                        time_display = f"[{duration}j]"
+                    
+                    gain_display = f"+{potential_gain_usdt:.3f} USDT {time_display}"
                     
                     if option_type == 'CALL':
                         position_details.append(f"📞 Call {exercised_coin} {amount:.2f} USDT ({gain_display})")
