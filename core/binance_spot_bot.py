@@ -98,6 +98,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         # Détection tendance cumulative
         self.cumulative_tracker = {}  # {symbol: {'direction': 1/-1, 'count': 0, 'start_price': 0}}
+        self.last_dynamic_notifications = {}  # Éviter notifications consécutives identiques
         
         # Ordres
         self.pending_orders = {}
@@ -769,9 +770,15 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     best_entry = entry_opportunities[0]
                     print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
                     
-                    # Envoyer notification si niveau très proche (< 2%)
+                    # Envoyer notification si niveau très proche (< 2%) et pas déjà envoyée
                     if abs(best_entry['distance']) < 2.0 and self.notify_trades and hasattr(self, 'notifier'):
-                        self.notifier.notify_dynamic_level(symbol, best_entry['type'], best_entry['price'], best_entry['distance'])
+                        notification_key = f"{symbol}_{best_entry['type']}_{best_entry['price']:.2f}"
+                        last_notification = self.last_dynamic_notifications.get(notification_key)
+                        
+                        # Envoyer seulement si pas de notification identique récente (5 min)
+                        if not last_notification or (time.time() - last_notification) > 300:
+                            self.notifier.notify_dynamic_level(symbol, best_entry['type'], best_entry['price'], best_entry['distance'])
+                            self.last_dynamic_notifications[notification_key] = time.time()
         except Exception as e:
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
