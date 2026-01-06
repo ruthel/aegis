@@ -137,10 +137,11 @@ def run_bot():
         bot_status = {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    # Démarrer le bot en thread séparé
+    # Toujours démarrer le bot en arrière-plan
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     
-    # Démarrer Flask sur port 10000
+    # Démarrer Flask
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    host = '0.0.0.0' if os.environ.get('PORT') else '127.0.0.1'
+    app.run(host=host, port=port, debug=False)
