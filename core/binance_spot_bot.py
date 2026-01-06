@@ -78,7 +78,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.daily_pnl = 0
         self.total_trades = 0
         self.winning_trades = 0
-        self.emergency_stop = False
         
         self.setup_logging()
         
@@ -86,8 +85,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         if self.notify_trades:
             self.notifier = NotificationManager()
             self.notifier.set_bot(self)
-            self.status_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
-            self.last_status_time = 0
         
         # WebSocket
         self.websocket = WebSocketManager()
@@ -631,10 +628,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # Vérifier exécution ordres limite paper trading
                 self.check_paper_limit_orders()
                 
-                # Vérifier commandes Telegram
-                if self.notify_trades:
-                    self.notifier.check_telegram_commands()
-                
                 # Vérifier avec le minimum requis
                 min_required = min(self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost'] for p in trading_pairs)
                 self.balance_manager.ensure_trading_balance(min_required)
@@ -691,16 +684,13 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     time.sleep(10)
                     continue
                 
-                if self.notify_trades:
-                    current_time = time.time()
-                    if current_time - self.last_status_time >= self.status_interval:
-                        self.notifier.send_status_update()
-                        self.last_status_time = current_time
+                # Plus besoin de vérifier manuellement - timer automatique
                 time.sleep(check_interval)
         except KeyboardInterrupt:
             print("\n🛑 Arrêt du bot...")
             if self.notify_trades:
                 self.notifier.notify("🛑 Bot arrêté")
+                self.notifier.stop_hourly_notifications()
             if hasattr(self, 'websocket'):
                 self.websocket.stop()
             self.save_state()
