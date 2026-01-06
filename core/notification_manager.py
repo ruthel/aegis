@@ -258,26 +258,17 @@ class NotificationManager:
                     apr = float(p.get('apr', 0))
                     duration = p.get('duration', 0)
                     
-                    # CORRECTION: Convertir le gain selon la devise d'investissement
-                    potential_gain_invest_coin = amount * (apr / 100) * (duration / 365)
-                    
-                    # Si investi en crypto (pas USDT), convertir le gain en USDT
-                    if invest_coin != 'USDT':
-                        try:
-                            crypto_price = bot.get_price(f"{invest_coin}/USDT")
-                            potential_gain_usdt = potential_gain_invest_coin * crypto_price
-                            gain_display = f"+{potential_gain_invest_coin:.6f} {invest_coin} = {potential_gain_usdt:.3f} USDT"
-                        except:
-                            gain_display = f"+{potential_gain_invest_coin:.6f} {invest_coin}"
-                    else:
-                        gain_display = f"+{potential_gain_invest_coin:.3f} USDT"
+                    # CORRECTION: subscriptionAmount est TOUJOURS en USDT selon Binance
+                    # Le gain est donc toujours calculé sur le montant USDT
+                    potential_gain_usdt = amount * (apr / 100) * (duration / 365)
+                    gain_display = f"+{potential_gain_usdt:.3f} USDT"
                     
                     if option_type == 'CALL':
-                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} USDT ({gain_display})")
                     elif option_type == 'PUT':
-                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} USDT ({gain_display})")
                     else:
-                        position_details.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                        position_details.append(f"💎 {exercised_coin} {amount:.2f} USDT ({gain_display})")
                 
                 # Positions simulées
                 for p in simulated_positions:
