@@ -258,15 +258,16 @@ class NotificationManager:
                     apr = float(p.get('apr', 0))
                     duration = p.get('duration', 0)
                     
-                    # Calculer gain potentiel
-                    potential_gain = amount * (apr / 100) * (duration / 365)
+                    # CORRECTION: Le gain est calculé sur le montant investi (déjà en USDT)
+                    # subscriptionAmount est toujours en USDT selon l'API Binance
+                    potential_gain_usdt = amount * (apr / 100) * (duration / 365)
                     
                     if option_type == 'CALL':
-                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} USDT (+{potential_gain_usdt:.3f} USDT)")
                     elif option_type == 'PUT':
-                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} USDT (+{potential_gain_usdt:.3f} USDT)")
                     else:
-                        position_details.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                        position_details.append(f"💎 {exercised_coin} {amount:.2f} USDT (+{potential_gain_usdt:.3f} USDT)")
                 
                 # Positions simulées
                 for p in simulated_positions:

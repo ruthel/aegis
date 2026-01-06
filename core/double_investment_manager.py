@@ -411,10 +411,11 @@ class DoubleInvestmentManager:
                             apr = float(pos.get('apr', 0))
                             duration = pos.get('duration', 0)
                             
-                            # Calculer gain potentiel
-                            potential_gain = amount * (apr / 100) * (duration / 365)
+                            # CORRECTION: Le gain est calculé sur le montant investi (déjà en USDT)
+                            # subscriptionAmount est toujours en USDT selon l'API Binance
+                            potential_gain_usdt = amount * (apr / 100) * (duration / 365)
                             
-                            print(f"   {option_type} {exercised_coin}: {amount:.2f} {invest_coin} @ {strike:.2f} (+{potential_gain:.3f} USDT)")
+                            print(f"   {option_type} {exercised_coin}: {amount:.2f} USDT @ {strike:.2f} (+{potential_gain_usdt:.3f} USDT)")
                     else:
                         print(f"💎 Aucune position Dual Investment active")
                     self._last_displayed_count = len(active_positions)
@@ -453,15 +454,16 @@ class DoubleInvestmentManager:
                 apr = float(pos.get('apr', 0))
                 duration = pos.get('duration', 0)
                 
-                # Calculer gain potentiel
-                potential_gain = amount * (apr / 100) * (duration / 365)
+                # CORRECTION: Le gain est calculé sur le montant investi (déjà en USDT)
+                # subscriptionAmount est toujours en USDT selon l'API Binance
+                potential_gain_usdt = amount * (apr / 100) * (duration / 365)
                 
                 if option_type == 'CALL':
-                    summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                    summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} USDT (+{potential_gain_usdt:.3f} USDT)")
                 elif option_type == 'PUT':
-                    summary_parts.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                    summary_parts.append(f"📉 PUT {exercised_coin} {amount:.2f} USDT (+{potential_gain_usdt:.3f} USDT)")
                 else:
-                    summary_parts.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                    summary_parts.append(f"💎 {exercised_coin} {amount:.2f} USDT (+{potential_gain_usdt:.3f} USDT)")
         
         # Positions simulées (pour développement)
         for pos in self.positions:
