@@ -8,7 +8,9 @@ class BinanceEarnAPI:
     def __init__(self, api_key, api_secret, testnet=False):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = "https://api.binance.com" if not testnet else "https://testnet.binance.vision"
+        self.testnet = testnet
+        # Earn APIs only work on mainnet - force mainnet URL
+        self.base_url = "https://api.binance.com"
         
     def _generate_signature(self, params):
         """Génère la signature pour l'API Binance"""
@@ -21,6 +23,10 @@ class BinanceEarnAPI:
     
     def _make_request(self, method, endpoint, params=None, signed=True):
         """Effectue une requête à l'API Binance"""
+        # Skip Earn API calls if on testnet (not supported)
+        if self.testnet:
+            return None
+            
         if params is None:
             params = {}
         
@@ -44,12 +50,7 @@ class BinanceEarnAPI:
             return response.json()
         
         except requests.exceptions.RequestException as e:
-            print(f"❌ Erreur API Binance Earn: {e}")
-            try:
-                error_detail = response.json() if response else None
-                print(f"📝 Détails erreur: {error_detail}")
-            except:
-                print(f"📝 Réponse brute: {response.text if response else 'None'}")
+            # Silencieux pour les erreurs 400 (permissions insuffisantes)
             return None
     
     def get_flexible_products(self):

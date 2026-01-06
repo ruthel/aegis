@@ -11,33 +11,64 @@ class BalanceManager:
     def __init__(self, bot):
         self.bot = bot
         
+    def _get_allowed_assets(self):
+        """Récupère la liste des cryptos autorisées depuis TRADING_PAIRS"""
+        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT').split(',')
+        allowed_assets = set(['USDT'])  # USDT toujours autorisé
+        
+        for pair in trading_pairs:
+            if '/' in pair:
+                base = pair.split('/')[0]
+            else:
+                base = pair.replace('USDT', '')
+            allowed_assets.add(base)
+        
+        return allowed_assets
+    
     def get_balance(self, force_refresh=False):
-        """Récupère le solde SPOT temps réel via WebSocket"""
+        """Récupère le solde SPOT temps réel via WebSocket (limité aux TRADING_PAIRS)"""
         if self.bot.paper_trading:
             return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
+        
+        allowed_assets = self._get_allowed_assets()
         
         # WebSocket User Data Stream pour balances temps réel
         if hasattr(self.bot, 'websocket') and self.bot.websocket.is_connected():
             ws_balance = self.bot.websocket.get_balance()
             if ws_balance is not None:
-                return ws_balance
+                # Filtrer seulement les cryptos autorisées
+                filtered_balance = {asset: data for asset, data in ws_balance.items() if asset in allowed_assets}
+                return filtered_balance
         
         # Fallback API REST direct (WebSocket déconnecté)
         if hasattr(self.bot, 'exchange') and self.bot.exchange:
-            return self.bot.safe_request(self.bot.exchange.fetch_balance)
+            full_balance = self.bot.safe_request(self.bot.exchange.fetch_balance)
+            # Filtrer seulement les cryptos autorisées
+            filtered_balance = {asset: data for asset, data in full_balance.items() if asset in allowed_assets}
+            return filtered_balance
         else:
             # Fallback paper trading si pas d'exchange
             return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
     
     def get_funding_balance(self):
-        """Récupère le solde du portefeuille de financement"""
+        """Récupère le solde du portefeuille de financement (limité aux TRADING_PAIRS)"""
         if self.bot.paper_trading:
             return {}  # Pas de funding en paper trading
+        
+        allowed_assets = self._get_allowed_assets()
+        dust_threshold = 0.01  # Ignorer valeurs < 0.01 USDT
             
         try:
             # Essayer avec les paramètres de type
             funding_balance = self.bot.exchange.fetch_balance(params={'type': 'funding'})
-            return funding_balance
+            # Filtrer seulement les cryptos autorisées ET non-dust
+            filtered_balance = {}
+            for asset, data in funding_balance.items():
+                if (asset in allowed_assets and 
+                    isinstance(data, dict) and 
+                    data.get('total', 0) > dust_threshold):
+                    filtered_balance[asset] = data
+            return filtered_balance
         except:
             try:
                 # Essayer sans paramètres spéciaux
@@ -48,35 +79,43 @@ class BalanceManager:
                     # Chercher les balances avec type funding
                     funding_balance = {}
                     for balance in info['balances']:
-                        if float(balance.get('free', 0)) > 0:
-                            asset = balance['asset']
+                        asset = balance['asset']
+                        free = float(balance.get('free', 0))
+                        locked = float(balance.get('locked', 0))
+                        total = free + locked
+                        
+                        # Filtrer: crypto autorisée ET valeur > seuil dust
+                        if (asset in allowed_assets and total > dust_threshold):
                             funding_balance[asset] = {
-                                'free': float(balance['free']),
-                                'used': float(balance.get('locked', 0)),
-                                'total': float(balance['free']) + float(balance.get('locked', 0))
+                                'free': free,
+                                'used': locked,
+                                'total': total
                             }
                     return funding_balance
                 return {}
             except Exception as e:
-                print(f"⚠️ Impossible d'accéder au portefeuille de financement: {e}")
+                # Silencieux si erreur d'accès
                 return {}
     
     def get_all_balances(self):
-        """Récupère tous les soldes (Spot + Funding + Earn)"""
+        """Récupère tous les soldes (Spot + Funding + Earn) limités aux TRADING_PAIRS"""
+        allowed_assets = self._get_allowed_assets()
+        
         balances = {
             'spot': self.get_balance(),
             'funding': self.get_funding_balance(),
             'earn': {}
         }
         
-        # Ajouter les balances Earn si disponibles
+        # Ajouter les balances Earn si disponibles (seulement cryptos autorisées)
         if hasattr(self.bot, 'earn_manager'):
             try:
                 earn_positions = self.bot.earn_manager.get_earn_positions()
                 for pos in earn_positions:
                     asset = pos.get('asset', 'UNKNOWN')
                     amount = float(pos.get('amount', 0))
-                    if amount > 0:
+                    # Filtrer seulement les cryptos autorisées
+                    if amount > 0 and asset in allowed_assets:
                         balances['earn'][asset] = {
                             'free': amount,
                             'used': 0,
@@ -112,20 +151,44 @@ class BalanceManager:
             return False
                 
         except Exception as e:
+            # Notification silencieuse pour erreurs de permissions
+            if "permissions" in str(e).lower() or "api-key" in str(e).lower():
+                if hasattr(self.bot, 'notifier') and self.bot.notifier:
+                    self.bot.notifier.notify_silent_error("Transfert Funding→Spot", str(e))
             return False
     
     def auto_transfer_funding_to_spot(self):
-        """Transfère automatiquement et silencieusement les fonds du Funding vers Spot"""
+        """Transfère automatiquement et silencieusement les fonds du Funding vers Spot (limité aux TRADING_PAIRS)"""
         if self.bot.paper_trading:
             return  # Pas de transfert en paper trading
+        
+        allowed_assets = self._get_allowed_assets()
+        min_transfer_threshold = 1.0  # Minimum 1 USDT pour transférer
             
         try:
             funding_balance = self.get_funding_balance()
-            for asset in ['USDT', 'BTC', 'ETH', 'BNB', 'SOL']:
+            if not funding_balance:
+                return  # Pas de fonds en funding
+            
+            transferred_any = False
+            
+            for asset in allowed_assets:
                 available = funding_balance.get(asset, {}).get('free', 0)
-                if available > 0.01:
-                    self.transfer_from_funding_to_spot(asset, available)
-        except:
+                
+                # Seuil plus élevé pour éviter les micro-transferts
+                if available >= min_transfer_threshold:
+                    try:
+                        if self.transfer_from_funding_to_spot(asset, available):
+                            transferred_any = True
+                    except Exception as transfer_error:
+                        # Silencieux - continuer avec les autres assets
+                        continue
+            
+            if transferred_any:
+                print(f"✅ Transferts Funding → Spot terminés")
+                
+        except Exception as e:
+            # Silencieux - pas d'affichage d'erreur
             pass
     
     def ensure_trading_balance(self, trade_amount):

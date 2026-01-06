@@ -142,10 +142,12 @@ class WebSocketManager:
             print(f"❌ Erreur User Data Stream: {e}")
     
     def on_user_error(self, ws, error):
-        print(f"❌ Erreur User Data Stream: {error}")
+        # Silencieux - erreurs de connexion normales
+        pass
     
     def on_user_close(self, ws, close_status_code, close_msg):
-        print(f"⚠️ User Data Stream fermé: {close_status_code} - {close_msg}")
+        # Silencieux - fermetures de connexion normales
+        pass
     
     def on_user_message(self, ws, message):
         """Traite les messages User Data (solde, ordres, etc.)"""

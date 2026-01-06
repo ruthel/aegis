@@ -34,6 +34,8 @@ from utils.timing_optimizer import TimingOptimizer
 from utils.position_sizing_calculator import PositionSizingCalculator
 from utils.dynamic_levels_manager import DynamicLevelsManager
 from utils.capital_manager import CapitalManager
+from utils.crypto_detector import CryptoDetector
+from utils.dust_manager import DustManager
 import logging
 
 # Import des mixins
@@ -46,7 +48,7 @@ from core.bot_display import DisplayMixin
 class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     """Bot de trading Binance Spot avec stratégies avancées"""
     
-    def __init__(self, api_key, api_secret, testnet=True):
+    def __init__(self, api_key, api_secret, testnet=False):
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
@@ -158,6 +160,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Gestionnaire de capital automatique
         self.capital_manager = CapitalManager(self)
         
+        # Détecteur de cryptos automatique
+        self.crypto_detector = CryptoDetector(self)
+        
+        # Gestionnaire de dust (valeurs très petites)
+        self.dust_manager = DustManager(self)
+        
         os.makedirs('data', exist_ok=True)
         
         # Affichage async
@@ -211,9 +219,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         class ConnectionErrorFilter(logging.Filter):
             def filter(self, record):
                 msg = str(record.getMessage())
-                if "WinError 10054" in msg or "connexion existante a dû être fermée" in msg:
-                    record.msg = "WebSocket reconnexion..."
-                    record.levelname = "INFO"
+                # Filtrer tous les messages de connexion WebSocket
+                if any(keyword in msg.lower() for keyword in [
+                    "winerror 10054", "connexion existante", "websocket", 
+                    "user data stream", "reconnexion", "connection reset"
+                ]):
+                    return False  # Supprimer complètement ces messages
                 return True
         
         log_level = os.getenv('LOG_LEVEL', 'INFO')
@@ -251,7 +262,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
                 else:
-                    print(f"❌ Reconnexion échouée")
+                    print(f"❌ Reconnexion échouée après {self.max_retries} tentatives")
         return False
     
     def safe_request(self, func, *args, **kwargs):
@@ -303,11 +314,20 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             try:
                 if not self.paper_trading:
                     self.safe_request(self.exchange.load_markets)
-                    market = self.exchange.markets[symbol]
-                    self.min_amounts[symbol] = {
-                        'min_amount': market['limits']['amount']['min'],
-                        'min_cost': market['limits']['cost']['min']
-                    }
+                    if hasattr(self.exchange, 'markets') and self.exchange.markets:
+                        market = self.exchange.markets.get(symbol)
+                        if market and market.get('limits'):
+                            limits = market['limits']
+                            amount_limits = limits.get('amount', {})
+                            cost_limits = limits.get('cost', {})
+                            self.min_amounts[symbol] = {
+                                'min_amount': amount_limits.get('min', 0.001),
+                                'min_cost': cost_limits.get('min', 1.0)
+                            }
+                        else:
+                            raise Exception("Market data unavailable")
+                    else:
+                        raise Exception("Markets not loaded")
                 else:
                     min_costs = {'BTC/USDT': 15, 'ETH/USDT': 10, 'SOL/USDT': 8, 'BNB/USDT': 12}
                     min_amounts = {'BTC/USDT': 0.00015, 'ETH/USDT': 0.003, 'SOL/USDT': 0.04, 'BNB/USDT': 0.01}
@@ -316,8 +336,19 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         'min_cost': min_costs.get(symbol, 10)
                     }
             except Exception as e:
-                print(f"⚠️ Impossible de récupérer les limites pour {symbol}: {e}")
-                self.min_amounts[symbol] = {'min_amount': 0.001, 'min_cost': 10}
+                # Fallback avec minimums sécurisés
+                fallback_minimums = {
+                    'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 1.0},
+                    'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 1.0},
+                    'SOL/USDT': {'min_amount': 0.01, 'min_cost': 1.0},
+                    'BNB/USDT': {'min_amount': 0.001, 'min_cost': 1.0},
+                    'ADA/USDT': {'min_amount': 1.0, 'min_cost': 1.0},
+                    'DOT/USDT': {'min_amount': 0.1, 'min_cost': 1.0},
+                    'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 1.0},
+                    'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 1.0}
+                }
+                self.min_amounts[symbol] = fallback_minimums.get(symbol, {'min_amount': 0.001, 'min_cost': 1.0})
+        return self.min_amounts[symbol]
         return self.min_amounts[symbol]
     
     def validate_order(self, symbol, amount, price=None):
@@ -670,7 +701,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             self.save_state()
         except Exception as e:
             print(f"\n⚠️ Erreur bot: {e}")
-            print("\n🔧 DEBUG: bot.balance_manager.force_balance_sync() | bot.exchange.fetch_balance()")
             raise e
     
     def show_protection_status(self):

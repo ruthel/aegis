@@ -92,8 +92,10 @@ class DisplayMixin:
         # Afficher résumé Double Investment si activé
         if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
             dual_summary = self.double_investment_manager.get_positions_summary()
-            if dual_summary != "Aucune position Double Investment":
-                print(f"💎 {dual_summary}")
+            if dual_summary != "Aucune position":
+                print(f"💎 Double Investment: {dual_summary}")
+            else:
+                print(f"💎 Double Investment: Aucune position")
         
         # CORRECTION: Utiliser les positions du state pour paper trading
         if self.paper_trading:
@@ -238,7 +240,10 @@ class DisplayMixin:
         dual_status = "DualInv OFF"
         if hasattr(self, 'double_investment_manager'):
             if self.double_investment_manager.enabled:
-                dual_status = f"DualInv ON ({len(self.double_investment_manager.positions)})"
+                # Compter positions réelles + simulées
+                real_positions = self.double_investment_manager.get_dual_investment_positions_from_api()
+                total_positions = len(real_positions) + len(self.double_investment_manager.positions)
+                dual_status = f"DualInv ON ({total_positions})"
         
         print(f"🤖 TETANIS | {mode} {realtime} | {active_positions} positions")
         print(f"📊 {cryptos} | Min dynamique/paire | Seuil 70% | {earn_status} | {dual_status}")

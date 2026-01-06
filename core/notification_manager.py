@@ -78,6 +78,11 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
+    def notify_silent_error(self, error_type, details):
+        """Notification silencieuse pour erreurs non-critiques (logs seulement)"""
+        # Log seulement, pas de notification Telegram
+        print(f"⚠️ Erreur {error_type}: {details}")
+    
     def notify_error(self, error_type, details):
         """Notification erreur critique"""
         msg = f"⚠️ ALERTE CRITIQUE\n\n"
@@ -201,6 +206,53 @@ class NotificationManager:
             msg += f"└─ Meilleur: N/A\n\n"
         else:
             msg += f"└─ Aucun trade\n\n"
+        
+        # Double Investment Stats (réelles + simulées)
+        if hasattr(bot, 'double_investment_manager'):
+            # Récupérer positions réelles de l'API
+            real_positions = bot.double_investment_manager.get_dual_investment_positions_from_api()
+            simulated_positions = bot.double_investment_manager.positions
+            
+            total_positions = len(real_positions) + len(simulated_positions)
+            
+            if total_positions > 0:
+                msg += f"💎 Double Investment\n"
+                msg += f"├─ Positions: {total_positions}\n"
+                
+                # Calculer montants investis
+                real_invested = sum(float(p.get('amount', 0)) for p in real_positions)
+                sim_invested = sum(p.get('amount', 0) for p in simulated_positions if p.get('status', 'active') == 'active')
+                total_invested = real_invested + sim_invested
+                
+                if total_invested > 0:
+                    msg += f"├─ Investi: {total_invested:.2f} USDT\n"
+                
+                # Détail par type (réelles)
+                real_calls = [p for p in real_positions if p.get('productType') == 'CALL']
+                real_puts = [p for p in real_positions if p.get('productType') == 'PUT']
+                
+                # Détail par type (simulées)
+                sim_calls = [p for p in simulated_positions if p.get('type') == 'covered_call' and p.get('status', 'active') == 'active']
+                sim_puts = [p for p in simulated_positions if p.get('type') == 'cash_secured_put' and p.get('status', 'active') == 'active']
+                
+                total_calls = len(real_calls) + len(sim_calls)
+                total_puts = len(real_puts) + len(sim_puts)
+                
+                if total_calls > 0:
+                    calls_amount = sum(float(p.get('amount', 0)) for p in real_calls) + sum(p.get('amount', 0) for p in sim_calls)
+                    msg += f"├─ Calls: {total_calls} ({calls_amount:.1f} USDT)\n"
+                if total_puts > 0:
+                    puts_amount = sum(float(p.get('amount', 0)) for p in real_puts) + sum(p.get('amount', 0) for p in sim_puts)
+                    msg += f"├─ Puts: {total_puts} ({puts_amount:.1f} USDT)\n"
+                
+                # Revenus estimés (seulement simulées car API ne donne pas les primes)
+                total_earnings = sum(p.get('premium_expected', 0) for p in simulated_positions if p.get('status', 'active') == 'active')
+                if total_earnings > 0:
+                    msg += f"└─ Revenus estimés: +{total_earnings:.2f} USDT\n\n"
+                else:
+                    msg += f"└─ Positions actives\n\n"
+            else:
+                msg += f"💎 Double Investment: Aucune position\n\n"
         
         # Opportunités
         msg += f"🔮 Opportunités\n"

@@ -95,6 +95,13 @@ class CapitalManager:
     
     def _get_binance_min_amounts(self):
         """Récupère les montants minimums de l'API Binance"""
+        # En paper trading, utiliser des valeurs par défaut
+        if self.bot.paper_trading:
+            return {
+                'min_trade': 1.0,
+                'dual_min': 10.0
+            }
+        
         try:
             # Cache pendant 1 heure
             now = datetime.now()
@@ -103,7 +110,7 @@ class CapitalManager:
                 self.min_amounts_cache):
                 return self.min_amounts_cache
             
-            # Récupérer les infos d'échange
+            # Récupérer les infos d'échange (mode live seulement)
             if hasattr(self.bot, 'exchange') and self.bot.exchange:
                 markets = self.bot.exchange.load_markets()
                 
@@ -129,7 +136,9 @@ class CapitalManager:
                 return min_amounts
                 
         except Exception as e:
-            print(f"⚠️ Erreur récupération minimums Binance: {e}")
+            # En cas d'erreur, ne pas afficher en paper trading
+            if not self.bot.paper_trading:
+                print(f"⚠️ Erreur récupération minimums Binance: {e}")
         
         # Valeurs par défaut sécurisées
         return {
@@ -198,24 +207,57 @@ class CapitalManager:
     def auto_adjust_bot(self):
         """Ajuste automatiquement le bot selon le capital actuel"""
         try:
-            # Récupérer le capital total
-            if hasattr(self.bot, 'balance_manager'):
-                balance_info = self.bot.balance_manager.get_total_balance_usdt()
-                total_balance = balance_info['total']
+            # Vérifier le mode réel du bot
+            is_paper = getattr(self.bot, 'paper_trading', True)
+            
+            # Récupérer le capital total selon le mode
+            if is_paper:
+                # En paper trading, utiliser paper_balance
+                total_balance = getattr(self.bot, 'paper_balance', 1000)
             else:
-                # Fallback
-                balance = self.bot.get_balance()
-                total_balance = balance.get('USDT', {}).get('free', 0)
+                # En mode live, utiliser balance_manager
+                if hasattr(self.bot, 'balance_manager'):
+                    try:
+                        balance_info = self.bot.balance_manager.get_total_balance_usdt()
+                        total_balance = balance_info['total']
+                    except:
+                        # Fallback sur balance simple
+                        balance = self.bot.balance_manager.get_balance()
+                        total_balance = balance.get('USDT', {}).get('free', 0)
+                else:
+                    # Fallback direct
+                    try:
+                        balance = self.bot.exchange.fetch_balance()
+                        total_balance = balance.get('USDT', {}).get('free', 0)
+                    except:
+                        total_balance = 0
             
             # Obtenir et appliquer la configuration
             config = self.get_adaptive_config(total_balance)
             self.apply_config(config)
             
-            # Afficher l'analyse
-            self.show_capital_analysis(total_balance)
+            # Afficher l'analyse (seulement si pas en mode test)
+            if not os.getenv('TESTING_MODE', 'False') == 'True':
+                mode_text = "PAPER" if is_paper else "LIVE"
+                self.show_capital_analysis_with_mode(total_balance, mode_text)
             
             return config
             
         except Exception as e:
-            print(f"⚠️ Erreur ajustement automatique: {e}")
+            # En paper trading, ne pas afficher les erreurs de récupération de balance
+            if not getattr(self.bot, 'paper_trading', True):
+                print(f"⚠️ Erreur ajustement automatique: {e}")
             return None
+    
+    def show_capital_analysis_with_mode(self, total_balance, mode_text):
+        """Affiche l'analyse du capital avec indication du mode"""
+        status = self.get_capital_status(total_balance)
+        config = self.get_adaptive_config(total_balance)
+        
+        # Affichage compact en une ligne avec mode
+        dual_status = f"{config.get('dual_allocation', 0)*100:.0f}%" if config.get('dual_allocation', 0) > 0 else "OFF"
+        aggressive = "AGR" if config['aggressive_mode'] else "CON"
+        
+        print(f"💰 Capital: {total_balance:.0f} USDT ({status}) [{mode_text}] | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Dual: {dual_status} | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
+        
+        return config

@@ -13,9 +13,22 @@ class DoubleInvestmentManager:
     def __init__(self, bot):
         self.bot = bot
         self.positions = []
-        self.enabled = False
+        self.enabled = True  # Toujours activé pour récupérer les positions
         self.min_amount = 10  # Minimum Binance
+        self.cached_positions = []  # Cache des positions
+        self.last_api_call = 0  # Timestamp dernier appel
+        self.cache_duration = 60  # Cache 60 secondes
         
+    def is_creation_enabled(self):
+        """Vérifie si la création de nouvelles positions est activée"""
+        # En paper trading, pas de création
+        if self.bot.paper_trading:
+            return False
+        
+        # Vérifier variable d'environnement
+        import os
+        return os.getenv('DUAL_INVESTMENT_CREATE', 'False') == 'True'
+    
     def is_enabled_for_capital(self, total_balance):
         """Vérifie si Double Investment est activé selon le capital"""
         return total_balance >= 20  # Activé à partir de 20 USDT
@@ -34,7 +47,11 @@ class DoubleInvestmentManager:
     def auto_manage_positions(self):
         """Gestion automatique des positions Double Investment"""
         try:
-            if not self.enabled:
+            # Toujours récupérer les positions existantes
+            real_positions = self.get_dual_investment_positions_from_api()
+            
+            # Si pas activé pour créer de nouvelles positions, arrêter ici
+            if not self.is_creation_enabled():
                 return
             
             # Vérifier que le bot a les méthodes nécessaires
@@ -329,25 +346,139 @@ class DoubleInvestmentManager:
         except Exception as e:
             print(f"⚠️ Erreur traitement expiration: {e}")
     
+    def get_dual_investment_positions_from_api(self):
+        """Récupère les positions réelles de Dual Investment via l'API Binance avec cache"""
+        try:
+            if self.bot.paper_trading:
+                return []
+            
+            # Vérifier cache
+            import time
+            now = time.time()
+            if now - self.last_api_call < self.cache_duration:
+                return self.cached_positions
+            
+            # Endpoint pour récupérer les positions Dual Investment
+            endpoint = "/sapi/v1/dci/product/positions"
+            
+            # Utiliser l'API directement via requests
+            import requests
+            import hmac
+            import hashlib
+            from urllib.parse import urlencode
+            
+            params = {
+                'timestamp': int(time.time() * 1000)
+            }
+            
+            # Générer signature
+            query_string = urlencode(params)
+            signature = hmac.new(
+                self.bot.api_secret.encode('utf-8'),
+                query_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            params['signature'] = signature
+            
+            headers = {
+                'X-MBX-APIKEY': self.bot.api_key
+            }
+            
+            url = f"https://api.binance.com{endpoint}"
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                positions = data.get('list', [])
+                
+                # Filtrer seulement les positions actives
+                active_positions = [pos for pos in positions if pos.get('purchaseStatus') == 'PURCHASE_SUCCESS']
+                
+                # Mettre à jour cache
+                self.cached_positions = active_positions
+                self.last_api_call = now
+                
+                # Afficher seulement si changement
+                if len(active_positions) != len(getattr(self, '_last_displayed_count', -1)):
+                    if active_positions:
+                        print(f"💎 {len(active_positions)} positions Dual Investment actives:")
+                        for pos in active_positions:
+                            invest_coin = pos.get('investCoin', 'UNKNOWN')
+                            exercised_coin = pos.get('exercisedCoin', 'UNKNOWN')
+                            option_type = pos.get('optionType', 'UNKNOWN')
+                            amount = float(pos.get('subscriptionAmount', 0))
+                            strike = float(pos.get('strikePrice', 0))
+                            apr = float(pos.get('apr', 0))
+                            duration = pos.get('duration', 0)
+                            
+                            # Calculer gain potentiel
+                            potential_gain = amount * (apr / 100) * (duration / 365)
+                            
+                            print(f"   {option_type} {exercised_coin}: {amount:.2f} {invest_coin} @ {strike:.2f} (+{potential_gain:.3f} USDT)")
+                    else:
+                        print(f"💎 Aucune position Dual Investment active")
+                    self._last_displayed_count = len(active_positions)
+                
+                return active_positions
+            else:
+                # Erreur de permissions - utiliser cache si disponible
+                if "permissions" in response.text.lower():
+                    return self.cached_positions
+                return []
+                
+        except Exception as e:
+            # Retourner cache en cas d'erreur
+            return self.cached_positions
+    
     def get_positions_summary(self):
-        """Retourne un résumé des positions Double Investment"""
-        if not self.positions:
-            return "Aucune position Double Investment"
+        """Retourne un résumé des positions Double Investment (réelles + simulées)"""
+        # Récupérer positions réelles de l'API
+        real_positions = self.get_dual_investment_positions_from_api()
         
-        summary = f"📊 {len(self.positions)} positions Double Investment:\n"
+        # Combiner positions réelles et simulées
+        total_positions = len(real_positions) + len(self.positions)
         
+        if total_positions == 0:
+            return "Aucune position"
+        
+        summary_parts = []
+        
+        # Positions réelles de l'API
+        if real_positions:
+            for pos in real_positions:
+                invest_coin = pos.get('investCoin', 'UNKNOWN')
+                exercised_coin = pos.get('exercisedCoin', 'UNKNOWN')
+                option_type = pos.get('optionType', 'UNKNOWN')
+                amount = float(pos.get('subscriptionAmount', 0))
+                apr = float(pos.get('apr', 0))
+                duration = pos.get('duration', 0)
+                
+                # Calculer gain potentiel
+                potential_gain = amount * (apr / 100) * (duration / 365)
+                
+                if option_type == 'CALL':
+                    summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                elif option_type == 'PUT':
+                    summary_parts.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                else:
+                    summary_parts.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+        
+        # Positions simulées (pour développement)
         for pos in self.positions:
             pos_type = pos['type']
             symbol = pos['symbol']
             
             if pos_type == 'covered_call':
-                summary += f"   📞 Call {symbol} @ {pos['strike_price']:.2f}\n"
+                summary_parts.append(f"📞 Call {symbol} @ {pos['strike_price']:.2f}")
             elif pos_type == 'cash_secured_put':
-                summary += f"   📉 PUT {symbol} @ {pos['strike_price']:.2f}\n"
+                summary_parts.append(f"📉 PUT {symbol} @ {pos['strike_price']:.2f}")
             elif pos_type == 'volatility_strangle':
-                summary += f"   ⚡ Strangle {symbol}\n"
+                summary_parts.append(f"⚡ Strangle {symbol}")
         
-        return summary.strip()
+        if summary_parts:
+            return "\n".join([f"   {part}" for part in summary_parts])
+        else:
+            return "Aucune position"
     
     def enable(self):
         """Active le Double Investment"""
@@ -361,6 +492,9 @@ class DoubleInvestmentManager:
     def test_integration(self):
         """Test d'intégration avec le bot"""
         try:
+            # Toujours activé pour récupérer les positions
+            self.enabled = True
+            
             # Vérifier méthodes bot
             required_methods = ['get_price', 'balance_manager']
             missing_methods = []

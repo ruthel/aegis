@@ -81,15 +81,6 @@ def main():
     # Forcer le rechargement de la configuration
     load_dotenv(override=True)
     
-    # Vérification mode
-    testnet = os.getenv('TESTNET', 'False').lower() == 'true'
-    if testnet:
-        print("⚠️ MODE TESTNET DÉTECTÉ")
-    else:
-        print("💰 MODE MAINNET ACTIVÉ")
-    
-    # Vérification configuration
-    
     # Import du bot (après vérification config)
     try:
         from core.binance_spot_bot import BinanceSpotBot
@@ -102,9 +93,6 @@ def main():
     api_key = os.getenv('BINANCE_API_KEY')
     api_secret = os.getenv('BINANCE_API_SECRET')
     testnet = os.getenv('TESTNET', 'False').lower() == 'true'
-    
-    print(f"🔑 API Key: {api_key[:10]}...")
-    print(f"🌍 Mode: {'TESTNET' if testnet else 'MAINNET'}")
     
     # Démarrage du bot
     try:

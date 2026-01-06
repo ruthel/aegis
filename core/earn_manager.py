@@ -17,7 +17,7 @@ class BinanceEarnManager:
         
         # Tenter les nouvelles API Simple Earn (silencieux)
         if not bot.paper_trading:
-            self.earn_api = BinanceEarnAPI(bot.api_key, bot.api_secret, testnet=False)
+            self.earn_api = BinanceEarnAPI(bot.api_key, bot.api_secret, testnet=bot.testnet)
         else:
             self.earn_api = None
         
@@ -384,6 +384,10 @@ class BinanceEarnManager:
     
     def tirelire_auto_manage(self):
         """Gestion automatique tirelire: < 5 USDT → Earn, Earn >= 5 USDT → Spot"""
+        # Vérifier si Earn est activé
+        if not self.enabled:
+            return
+            
         # Initialisation différée
         self.ensure_initialized()
         
@@ -402,7 +406,7 @@ class BinanceEarnManager:
                 print(f"🐷 {available_balance:.2f} USDT → Earn ✅")
                 print()  # Ligne vide après succès
             else:
-                print(f"🐷 {available_balance:.2f} USDT → Earn ❌ (vérifiez API Earn)")
+                print(f"🐷 {available_balance:.2f} USDT → Earn ❌ (API Earn désactivée)")
                 print()  # Ligne vide après erreur
         
         # Règle 2: Si Earn >= 5 USDT → Retirer vers Spot
