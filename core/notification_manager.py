@@ -262,35 +262,37 @@ class NotificationManager:
                     potential_gain_invest_coin = amount * (apr / 100) * (duration / 365)
                     
                     # Calculer temps restant
-                    purchase_time = p.get('purchaseTime', 0)
-                    if purchase_time:
-                        from datetime import datetime, timedelta
-                        purchase_date = datetime.fromtimestamp(purchase_time / 1000)
-                        expiry_date = purchase_date + timedelta(days=duration)
-                        time_left = expiry_date - datetime.now()
-                        
-                        if time_left.total_seconds() > 0:
-                            days_left = time_left.days
-                            hours_left = time_left.seconds // 3600
-                            if days_left > 0:
-                                time_display = f"{days_left}j {hours_left}h"
+                    time_display = f"{duration}j"
+                    try:
+                        purchase_time = p.get('purchaseTime', 0)
+                        if purchase_time:
+                            from datetime import datetime, timedelta
+                            purchase_date = datetime.fromtimestamp(purchase_time / 1000)
+                            expiry_date = purchase_date + timedelta(days=duration)
+                            time_left = expiry_date - datetime.now()
+                            
+                            if time_left.total_seconds() > 0:
+                                days_left = time_left.days
+                                hours_left = time_left.seconds // 3600
+                                if days_left > 0:
+                                    time_display = f"{days_left}j {hours_left}h"
+                                else:
+                                    time_display = f"{hours_left}h"
                             else:
-                                time_display = f"{hours_left}h"
-                        else:
-                            time_display = "Expiré"
-                    else:
-                        time_display = f"{duration}j"
+                                time_display = "Expiré"
+                    except:
+                        pass
                     
                     # Si investi en crypto (pas USDT), convertir le gain en USDT
-                    if invest_coin != 'USDT':
-                        try:
+                    gain_display = f"+{potential_gain_invest_coin:.3f} USDT"
+                    try:
+                        if invest_coin != 'USDT':
                             crypto_price = bot.get_price(f"{invest_coin}/USDT")
                             potential_gain_usdt = potential_gain_invest_coin * crypto_price
                             gain_display = f"+{potential_gain_invest_coin:.6f} {invest_coin} = {potential_gain_usdt:.3f} USDT"
-                        except:
+                    except:
+                        if invest_coin != 'USDT':
                             gain_display = f"+{potential_gain_invest_coin:.6f} {invest_coin}"
-                    else:
-                        gain_display = f"+{potential_gain_invest_coin:.3f} USDT"
                     
                     if option_type == 'CALL':
                         position_details.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
