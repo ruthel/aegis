@@ -6,6 +6,8 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 import sys
 import os
 import shutil
+import threading
+from flask import Flask, jsonify
 from dotenv import load_dotenv
 
 def clear_python_cache():
@@ -67,8 +69,9 @@ def clean_bot_states():
     else:
         print("ℹ️ Aucun état paper à nettoyer")
 
-# Vider le terminal au démarrage
-os.system('cls' if os.name == 'nt' else 'clear')
+# Vider le terminal au démarrage (seulement en local)
+if not os.environ.get('PORT'):
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 # Vider les caches Python
 clear_python_cache()
@@ -76,6 +79,7 @@ clear_python_cache()
 # Charger les variables d'environnement
 def main():
     """Point d'entrée principal"""
+    global bot_instance, bot_status
     print("🚀 Démarrage du bot TETANIS...")
     
     # Forcer le rechargement de la configuration
@@ -87,7 +91,8 @@ def main():
     except ImportError as e:
         print(f"❌ Erreur import: {e}")
         print("📝 Vérifiez que tous les modules sont installés: pip install -r requirements.txt")
-        sys.exit(1)
+        bot_status = {"status": "error", "message": f"Import error: {e}"}
+        return
     
     # Récupération configuration
     api_key = os.getenv('BINANCE_API_KEY')
@@ -96,14 +101,46 @@ def main():
     
     # Démarrage du bot
     try:
-        bot = BinanceSpotBot(api_key, api_secret, testnet)
-        bot.run()
+        bot_instance = BinanceSpotBot(api_key, api_secret, testnet)
+        bot_instance.run()
     except KeyboardInterrupt:
         print("\n🛑 Arrêt du bot...")
-        sys.exit(0)
+        bot_status = {"status": "stopped", "message": "Bot stopped by user"}
     except Exception as e:
         print(f"❌ Erreur: {e}")
-        sys.exit(1)
+        bot_status = {"status": "error", "message": str(e)}
+
+# Flask app pour Render
+app = Flask(__name__)
+bot_instance = None
+bot_status = {"status": "starting", "message": "Bot initializing..."}
+
+@app.route('/')
+def home():
+    return jsonify({
+        "service": "Binance Bot TETANIS v2",
+        "status": bot_status["status"],
+        "message": bot_status["message"]
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "bot": bot_status})
+
+def run_bot():
+    """Lance le bot en arrière-plan"""
+    global bot_instance, bot_status
+    try:
+        bot_status = {"status": "running", "message": "Bot is active"}
+        main()
+    except Exception as e:
+        bot_status = {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    main()
+    # Démarrer le bot en thread séparé
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Démarrer Flask sur port 10000
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
