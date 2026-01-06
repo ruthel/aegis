@@ -261,6 +261,26 @@ class NotificationManager:
                     # CORRECTION: Convertir le gain selon la devise d'investissement
                     potential_gain_invest_coin = amount * (apr / 100) * (duration / 365)
                     
+                    # Calculer temps restant
+                    purchase_time = p.get('purchaseTime', 0)
+                    if purchase_time:
+                        from datetime import datetime, timedelta
+                        purchase_date = datetime.fromtimestamp(purchase_time / 1000)
+                        expiry_date = purchase_date + timedelta(days=duration)
+                        time_left = expiry_date - datetime.now()
+                        
+                        if time_left.total_seconds() > 0:
+                            days_left = time_left.days
+                            hours_left = time_left.seconds // 3600
+                            if days_left > 0:
+                                time_display = f"{days_left}j {hours_left}h"
+                            else:
+                                time_display = f"{hours_left}h"
+                        else:
+                            time_display = "Expiré"
+                    else:
+                        time_display = f"{duration}j"
+                    
                     # Si investi en crypto (pas USDT), convertir le gain en USDT
                     if invest_coin != 'USDT':
                         try:
@@ -273,11 +293,11 @@ class NotificationManager:
                         gain_display = f"+{potential_gain_invest_coin:.3f} USDT"
                     
                     if option_type == 'CALL':
-                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
                     elif option_type == 'PUT':
-                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
                     else:
-                        position_details.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                        position_details.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
                 
                 # Positions simulées
                 for p in simulated_positions:

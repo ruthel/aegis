@@ -414,16 +414,36 @@ class DoubleInvestmentManager:
                             # CORRECTION: Convertir le gain selon la devise d'investissement
                             potential_gain_invest_coin = amount * (apr / 100) * (duration / 365)
                             
+                            # Calculer temps restant
+                            purchase_time = pos.get('purchaseTime', 0)
+                            if purchase_time:
+                                from datetime import datetime, timedelta
+                                purchase_date = datetime.fromtimestamp(purchase_time / 1000)
+                                expiry_date = purchase_date + timedelta(days=duration)
+                                time_left = expiry_date - datetime.now()
+                                
+                                if time_left.total_seconds() > 0:
+                                    days_left = time_left.days
+                                    hours_left = time_left.seconds // 3600
+                                    if days_left > 0:
+                                        time_display = f"{days_left}j {hours_left}h"
+                                    else:
+                                        time_display = f"{hours_left}h"
+                                else:
+                                    time_display = "Expiré"
+                            else:
+                                time_display = f"{duration}j"
+                            
                             # Si investi en crypto (pas USDT), convertir le gain en USDT
                             if invest_coin != 'USDT':
                                 try:
                                     crypto_price = self.bot.get_price(f"{invest_coin}/USDT")
                                     potential_gain_usdt = potential_gain_invest_coin * crypto_price
-                                    print(f"   {option_type} {exercised_coin}: {amount:.2f} {invest_coin} @ {strike:.2f} (+{potential_gain_invest_coin:.6f} {invest_coin} = {potential_gain_usdt:.3f} USDT)")
+                                    print(f"   {option_type} {exercised_coin}: {amount:.2f} {invest_coin} @ {strike:.2f} (+{potential_gain_invest_coin:.6f} {invest_coin} = {potential_gain_usdt:.3f} USDT) [{time_display}]")
                                 except:
-                                    print(f"   {option_type} {exercised_coin}: {amount:.2f} {invest_coin} @ {strike:.2f} (+{potential_gain_invest_coin:.6f} {invest_coin})")
+                                    print(f"   {option_type} {exercised_coin}: {amount:.2f} {invest_coin} @ {strike:.2f} (+{potential_gain_invest_coin:.6f} {invest_coin}) [{time_display}]")
                             else:
-                                print(f"   {option_type} {exercised_coin}: {amount:.2f} USDT @ {strike:.2f} (+{potential_gain_invest_coin:.3f} USDT)")
+                                print(f"   {option_type} {exercised_coin}: {amount:.2f} USDT @ {strike:.2f} (+{potential_gain_invest_coin:.3f} USDT) [{time_display}]")
                     else:
                         print(f"💎 Aucune position Dual Investment active")
                     self._last_displayed_count = len(active_positions)
@@ -465,6 +485,26 @@ class DoubleInvestmentManager:
                 # CORRECTION: Convertir le gain selon la devise d'investissement
                 potential_gain_invest_coin = amount * (apr / 100) * (duration / 365)
                 
+                # Calculer temps restant
+                purchase_time = pos.get('purchaseTime', 0)
+                if purchase_time:
+                    from datetime import datetime, timedelta
+                    purchase_date = datetime.fromtimestamp(purchase_time / 1000)
+                    expiry_date = purchase_date + timedelta(days=duration)
+                    time_left = expiry_date - datetime.now()
+                    
+                    if time_left.total_seconds() > 0:
+                        days_left = time_left.days
+                        hours_left = time_left.seconds // 3600
+                        if days_left > 0:
+                            time_display = f"{days_left}j {hours_left}h"
+                        else:
+                            time_display = f"{hours_left}h"
+                    else:
+                        time_display = "Expiré"
+                else:
+                    time_display = f"{duration}j"
+                
                 # Si investi en crypto (pas USDT), convertir le gain en USDT
                 if invest_coin != 'USDT':
                     try:
@@ -477,11 +517,11 @@ class DoubleInvestmentManager:
                     gain_display = f"+{potential_gain_invest_coin:.3f} USDT"
                 
                 if option_type == 'CALL':
-                    summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                    summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
                 elif option_type == 'PUT':
-                    summary_parts.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                    summary_parts.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
                 else:
-                    summary_parts.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} ({gain_display})")
+                    summary_parts.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} ({gain_display}) [{time_display}]")
         
         # Positions simulées (pour développement)
         for pos in self.positions:
