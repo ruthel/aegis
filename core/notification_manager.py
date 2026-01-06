@@ -251,10 +251,22 @@ class NotificationManager:
                 
                 # Positions réelles
                 for p in real_positions:
-                    crypto = p.get('asset', 'N/A')
-                    ptype = p.get('productType', 'N/A')
-                    amount = float(p.get('amount', 0))
-                    position_details.append(f"{ptype} {crypto} {amount:.1f}")
+                    invest_coin = p.get('investCoin', 'UNKNOWN')
+                    exercised_coin = p.get('exercisedCoin', 'UNKNOWN')
+                    option_type = p.get('optionType', 'UNKNOWN')
+                    amount = float(p.get('subscriptionAmount', 0))
+                    apr = float(p.get('apr', 0))
+                    duration = p.get('duration', 0)
+                    
+                    # Calculer gain potentiel
+                    potential_gain = amount * (apr / 100) * (duration / 365)
+                    
+                    if option_type == 'CALL':
+                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                    elif option_type == 'PUT':
+                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
+                    else:
+                        position_details.append(f"💎 {exercised_coin} {amount:.2f} {invest_coin} (+{potential_gain:.3f} USDT)")
                 
                 # Positions simulées
                 for p in simulated_positions:
@@ -262,7 +274,10 @@ class NotificationManager:
                         crypto = p.get('symbol', 'N/A').replace('USDT', '')
                         ptype = 'CALL' if p.get('type') == 'covered_call' else 'PUT'
                         amount = p.get('amount', 0)
-                        position_details.append(f"{ptype} {crypto} {amount:.1f}")
+                        if ptype == 'CALL':
+                            position_details.append(f"📞 Call {crypto} {amount:.1f} USDT")
+                        else:
+                            position_details.append(f"📉 PUT {crypto} {amount:.1f} USDT")
                 
                 if position_details:
                     for i, detail in enumerate(position_details):
