@@ -130,6 +130,8 @@ def health():
 def run_bot():
     """Lance le bot en arrière-plan"""
     global bot_instance, bot_status
+    import time
+    time.sleep(2)  # Attendre que Flask soit prêt
     try:
         bot_status = {"status": "running", "message": "Bot is active"}
         main()
@@ -137,11 +139,11 @@ def run_bot():
         bot_status = {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    # Toujours démarrer le bot en arrière-plan
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    # Démarrer le bot en thread non-daemon pour Render
+    bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
     
     # Démarrer Flask
     port = int(os.environ.get('PORT', 10000))
     host = '0.0.0.0' if os.environ.get('PORT') else '127.0.0.1'
-    app.run(host=host, port=port, debug=False)
+    app.run(host=host, port=port, debug=False, threaded=True)

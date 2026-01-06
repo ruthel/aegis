@@ -2434,3 +2434,4 @@
 2026-01-06 11:40:52,514 - INFO - Websocket connected
 2026-01-06 11:56:09,062 - INFO - 127.0.0.1 - - [06/Jan/2026 11:56:09] "GET / HTTP/1.1" 200 -
 2026-01-06 11:56:09,159 - INFO - 127.0.0.1 - - [06/Jan/2026 11:56:09] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-01-06 11:58:18,999 - ERROR - fin=1 opcode=8 data=b'\x03\xf0Pong timeout' - goodbye
