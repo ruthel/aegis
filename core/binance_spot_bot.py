@@ -342,19 +342,18 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         'min_cost': min_costs.get(symbol, 10)
                     }
             except Exception as e:
-                # Fallback avec minimums sécurisés
+                # Fallback avec minimums du marché (pas API)
                 fallback_minimums = {
-                    'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 1.0},
-                    'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 1.0},
-                    'SOL/USDT': {'min_amount': 0.01, 'min_cost': 1.0},
-                    'BNB/USDT': {'min_amount': 0.001, 'min_cost': 1.0},
-                    'ADA/USDT': {'min_amount': 1.0, 'min_cost': 1.0},
-                    'DOT/USDT': {'min_amount': 0.1, 'min_cost': 1.0},
-                    'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 1.0},
-                    'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 1.0}
+                    'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 15.0},
+                    'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 10.0},
+                    'SOL/USDT': {'min_amount': 0.01, 'min_cost': 8.0},
+                    'BNB/USDT': {'min_amount': 0.001, 'min_cost': 12.0},
+                    'ADA/USDT': {'min_amount': 1.0, 'min_cost': 5.0},
+                    'DOT/USDT': {'min_amount': 0.1, 'min_cost': 6.0},
+                    'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 3.0},
+                    'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 7.0}
                 }
                 self.min_amounts[symbol] = fallback_minimums.get(symbol, {'min_amount': 0.001, 'min_cost': 1.0})
-        return self.min_amounts[symbol]
         return self.min_amounts[symbol]
     
     def validate_order(self, symbol, amount, price=None):
