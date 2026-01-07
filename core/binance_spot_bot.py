@@ -667,8 +667,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     self.show_dynamic_levels(tradable_pairs[:2])  # Top 2 cryptos tradables
                 
                 print()
-                # NOUVEAU: Prédiction récupération volume
-                for symbol in tradable_pairs:
+                # NOUVEAU: Prédiction récupération volume (TOUTES les cryptos configurées)
+                for pair in trading_pairs:
+                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                     volume_prediction = self.predict_volume_recovery_time(symbol)
                     if volume_prediction:
                         crypto = symbol.split('/')[0]
