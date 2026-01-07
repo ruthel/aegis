@@ -633,11 +633,15 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 stuck_positions = []
                 tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
-                # Afficher seulement les cryptos tradables
-                self.show_spot_balances(tradable_pairs if tradable_pairs else trading_pairs)
-                self.earn_manager.show_earn_performance()
-                self.show_realtime_prices(tradable_pairs if tradable_pairs else trading_pairs)
-                self.show_protection_status(tradable_pairs if tradable_pairs else trading_pairs)  # Afficher statuts protection
+                # Afficher seulement les cryptos tradables (pas de fallback)
+                if tradable_pairs:
+                    self.show_spot_balances(tradable_pairs)
+                    self.earn_manager.show_earn_performance()
+                    self.show_realtime_prices(tradable_pairs)
+                    self.show_protection_status(tradable_pairs)
+                else:
+                    self.earn_manager.show_earn_performance()
+                    print("⚠️ Aucune crypto tradable - Attente...")
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
                 if tradable_pairs:
