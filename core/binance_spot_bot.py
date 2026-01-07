@@ -38,7 +38,6 @@ from utils.crypto_detector import CryptoDetector
 from utils.dust_manager import DustManager
 from utils.dynamic_fees_manager import DynamicFeesManager
 from utils.adaptive_thresholds_manager import AdaptiveThresholdsManager
-from utils.adaptive_parameters_manager import AdaptiveParametersManager
 import logging
 
 # Import des mixins
@@ -75,7 +74,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         # Frais dynamiques (remplace frais statiques)
         self.trading_fee = 0.001  # Fallback seulement
-        self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100  # Fallback seulement
+        self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.3')) / 100
         
         # Stats
         self.daily_pnl = 0
@@ -154,7 +153,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.timing_optimizer = TimingOptimizer(self)
         self.position_sizer = PositionSizingCalculator(self)
         
-        self.price_change_threshold = 0.002  # Fallback seulement - remplacé par adaptatif
+        self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
         # Gestionnaire de balance centralisé
         self.balance_manager = BalanceManager(self)
@@ -171,7 +170,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # GESTIONNAIRES PROFESSIONNELS NIVEAU INSTITUTIONNEL
         self.dynamic_fees = DynamicFeesManager(self)
         self.adaptive_thresholds = AdaptiveThresholdsManager(self)
-        self.adaptive_params = AdaptiveParametersManager(self)
         
         os.makedirs('data', exist_ok=True)
         
@@ -267,11 +265,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         })
     
     def reconnect(self):
-        """Reconnexion simple sans récursion"""
         for attempt in range(self.max_retries):
             try:
                 self.connect()
-                # Test simple sans appel récursif
+                self.exchange.fetch_balance()
                 return True
             except Exception as e:
                 if attempt < self.max_retries - 1:
@@ -286,15 +283,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 return func(*args, **kwargs)
             except Exception as e:
                 if attempt < self.max_retries - 1:
-                    print(f"⚠️ Tentative {attempt + 1}/{self.max_retries} échouée: {e}")
+                    if self.reconnect():
+                        continue
                     time.sleep(self.retry_delay)
-                    # Reconnexion simple sans récursion
-                    try:
-                        self.connect()
-                    except:
-                        pass  # Ignore les erreurs de reconnexion
                 else:
-                    print(f"❌ Erreur API finale: {e}")
+                    print(f"❌ Erreur API: {e}")
                     raise e
     
     def load_state(self):
@@ -414,8 +407,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 fallback_prices = {'BTC': 50000, 'ETH': 3000, 'SOL': 100, 'BNB': 300}
                 crypto = symbol.split('/')[0]
                 return fallback_prices.get(crypto, 100)
-            # En mode live, retourner None pour éviter les erreurs en cascade
-            return None
+            raise e
     
     def get_ticker(self, symbol):
         """Récupère ticker avec WebSocket prioritaire et fallback REST API - VRAIES DONNÉES"""
@@ -464,7 +456,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         'close': price + 25, 'volume': 100
                     })
                 return klines
-            # En mode live, retourner liste vide pour éviter les erreurs
             return []
     
     def _timeframe_to_minutes(self, timeframe):
@@ -499,9 +490,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         tracker = self.cumulative_tracker[symbol]
         price_change = (current_price - tracker['last_price']) / tracker['last_price']
         
-        # Déterminer direction (-1 baisse, +1 hausse) - ADAPTATIF
-        threshold = self.adaptive_params.get_price_change_threshold(symbol)
-        if abs(price_change) < threshold:
+        # Déterminer direction (-1 baisse, +1 hausse)
+        if abs(price_change) < 0.0005:  # Ignore variations < 0.05%
             return False
         
         current_direction = 1 if price_change > 0 else -1
@@ -519,11 +509,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         tracker['last_price'] = current_price
         
-        # Alerte si variations consécutives dans même direction - ADAPTATIF
-        thresholds = self.adaptive_params.get_cumulative_thresholds(symbol)
-        if tracker['count'] >= thresholds['min_count']:
+        # Alerte si 4+ variations consécutives dans même direction
+        if tracker['count'] >= 4:
             total_change_pct = abs(tracker['cumulative_change']) * 100
-            if total_change_pct >= thresholds['min_change']:
+            if total_change_pct >= 0.3:  # Cumul ≥ 0.3%
                 direction_text = "baisse" if tracker['direction'] < 0 else "hausse"
                 print(f"📊 {symbol}: Tendance cumulative détectée! {tracker['count']}x {direction_text} = {total_change_pct:.2f}%")
                 
@@ -554,11 +543,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Si tendance cumulative détectée, forcer analyse immédiate
         if cumulative_trend:
             print(f"⚡ Analyse forcée suite à tendance cumulative {formatted_symbol}")
-        else:
-            # Délai minimum adaptatif entre analyses
-            min_interval = self.adaptive_params.get_min_analysis_interval(formatted_symbol)
-            if now - last_time < min_interval:
-                return
+        elif now - last_time < 0.1:
+            return
         
         self.last_analysis[formatted_symbol] = now
         try:
@@ -973,12 +959,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # 2. Position existante (surveillance renforcée)
                 has_position = self.has_active_position(symbol)
                 
-                # 3. Heure de la journée (sessions actives) - ADAPTATIF
-                is_active_session = self.adaptive_params.get_active_sessions(symbol)
+                # 3. Heure de la journée (sessions actives)
+                hour = datetime.now().hour
+                is_active_session = 8 <= hour <= 22  # Sessions EU/US
                 
-                # 4. Volume relatif - ADAPTATIF
+                # 4. Volume relatif
                 volume_ratio = self.get_volume_ratio(symbol)
-                volume_thresholds = self.adaptive_params.get_volume_thresholds(symbol)
                 
                 # Calcul base selon volatilité - NIVEAU PROFESSIONNEL
                 if volatility >= 4.0:
@@ -990,19 +976,17 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 else:
                     base_interval = 15    # Calme = 15s
                 
-                # Ajustements professionnels - ADAPTATIFS
-                multipliers = self.adaptive_params.get_adaptive_multipliers(symbol)
-                
+                # Ajustements professionnels
                 if has_position:
-                    base_interval *= multipliers['position_open']
+                    base_interval *= 0.7  # Position ouverte = plus de surveillance
                 
                 if not is_active_session:
-                    base_interval *= multipliers['session_closed']
+                    base_interval *= 2.0  # Sessions fermées = moins urgent
                 
-                if volume_ratio > volume_thresholds['high']:
-                    base_interval *= multipliers['high_volume']
-                elif volume_ratio < volume_thresholds['low']:
-                    base_interval *= multipliers['low_volume']
+                if volume_ratio > 2.0:
+                    base_interval *= 0.7  # Volume élevé = plus réactif
+                elif volume_ratio < 0.5:
+                    base_interval *= 1.5  # Volume faible = moins urgent
                 
                 intervals.append(int(base_interval))
             
@@ -1017,11 +1001,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             return 2  # Fallback par défaut 2s
     
     def get_pair_volatility(self, symbol):
-        """Récupère volatilité pour une crypto spécifique - TIMEFRAME ADAPTATIF"""
+        """Récupère volatilité pour une crypto spécifique"""
         try:
-            # Timeframe adaptatif selon crypto
-            timeframe = self.adaptive_params.get_optimal_timeframe(symbol, 'trend')
-            klines = self.get_klines(symbol, 20, timeframe)
+            klines = self.get_klines(symbol, 20, '15m')
             if len(klines) >= 10:
                 from utils.volatility_calculator import VolatilityCalculator
                 return VolatilityCalculator.calculate(klines, symbol)
@@ -1049,11 +1031,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             return False
     
     def get_volume_ratio(self, symbol):
-        """Calcule ratio volume actuel vs moyenne - TIMEFRAME ADAPTATIF"""
+        """Calcule ratio volume actuel vs moyenne"""
         try:
-            # Timeframe adaptatif selon crypto
-            timeframe = self.adaptive_params.get_optimal_timeframe(symbol, 'scalping')
-            klines = self.get_klines(symbol, 10, timeframe)
+            klines = self.get_klines(symbol, 10, '15m')
             if len(klines) < 5:
                 return 1.0
             
@@ -1083,30 +1063,25 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             best_entry = entry_opportunities[0]
             return True, f"Niveau dynamique: {best_entry['type']} ({best_entry['distance']:.1f}%)"
         
-        # 2. Pattern Recognition (nouveau) - ADAPTATIF
+        # 2. Pattern Recognition (nouveau)
         try:
-            # Timeframe adaptatif selon crypto et volatilité
-            timeframe = self.adaptive_params.get_optimal_timeframe(symbol, 'pattern')
-            klines = self.get_klines(symbol, 50, timeframe)
+            klines = self.get_klines(symbol, 50, '1h')
             if len(klines) >= 20:
                 pattern_result = self.pattern_recognition.detect_patterns(klines)
                 
-                # Patterns haussiers détectés - Seuil adaptatif
+                # Patterns haussiers détectés
                 if pattern_result['bullish_patterns']:
                     strongest = max(pattern_result['bullish_patterns'], key=lambda x: x['confidence'])
-                    threshold = self.adaptive_params.get_pattern_confidence_threshold(symbol, 'bullish')
-                    if strongest['confidence'] > threshold:
+                    if strongest['confidence'] > 75:
                         return True, f"Pattern: {strongest['description']} ({strongest['confidence']:.0f}%)"
                 
-                # Bloquer si patterns baissiers forts - Seuil adaptatif
+                # Bloquer si patterns baissiers forts
                 if pattern_result['bearish_detected']:
                     crypto = symbol.split('/')[0]
                     bearish_pattern = next(p for p in pattern_result['patterns'] if p.get('bullish') == False)
-                    threshold = self.adaptive_params.get_pattern_confidence_threshold(symbol, 'bearish')
-                    if bearish_pattern.get('confidence', 0) > threshold:
-                        print()
-                        print(f"❌ {crypto}: Pattern baissier {bearish_pattern['description']} détecté")
-                        return False, None
+                    print()
+                    print(f"❌ {crypto}: Pattern baissier {bearish_pattern['description']} détecté")
+                    return False, None
         except Exception as e:
             print(f"⚠️ Erreur pattern recognition {symbol}: {e}")
         
