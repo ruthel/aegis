@@ -257,26 +257,25 @@ class DisplayMixin:
         balance = self.balance_manager.get_balance()
         tradable_display = []
         
+        # Utiliser directement la liste filtrée par le crypto scorer
         for symbol in tradable_pairs:
             base = symbol.split('/')[0]
             free = balance.get(base, {}).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']
             
-            # Vérifier si tradable (peut acheter OU peut vendre)
+            # Déterminer type d'action possible
             can_buy = usdt_available >= min_cost
-            can_sell = False
+            can_sell = free > 0.00001 and (free * self.get_price(symbol)) >= min_cost
             
-            if free > 0.00001:
-                value = free * self.get_price(symbol)
-                can_sell = value >= min_cost
-            
-            # Ajouter avec indication achat/vente
             if can_buy and can_sell:
-                tradable_display.append(f"{base} (A/V)")  # Achat + Vente
+                tradable_display.append(f"{base} (A/V)")
             elif can_buy:
-                tradable_display.append(f"{base} (A)")    # Achat seulement
+                tradable_display.append(f"{base} (A)")
             elif can_sell:
-                tradable_display.append(f"{base} (V)")    # Vente seulement
+                tradable_display.append(f"{base} (V)")
+            else:
+                # Crypto dans la liste mais pas tradable actuellement
+                tradable_display.append(f"{base} (-)")
         
         if tradable_display:
             print(f"🔍 Tradable: {tradable_display} | USDT: {usdt_available:.2f}")

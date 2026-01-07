@@ -574,14 +574,42 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if is_stuck:
                 self.stuck_manager.execute_recovery(self, symbol, current_price)
     
+    def check_and_recover_stuck_positions_filtered(self, tradable_pairs):
+        """Vérifie les positions bloquées seulement pour les cryptos tradables"""
+        balance = self.balance_manager.get_balance()
+        for symbol in tradable_pairs:
+            base_currency = symbol.split('/')[0]
+            current_holding = balance.get(base_currency, {}).get('free', 0)
+            if current_holding <= 0.00001:
+                continue
+            position_value = current_holding * self.get_price(symbol)
+            min_trade_value = self.get_min_amount(symbol)['min_cost']
+            if position_value < min_trade_value:
+                continue
+            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+            if not buy_positions:
+                continue
+            buy_price = self.get_real_buy_price(symbol)
+            if not buy_price:
+                continue
+            buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp']).timestamp()
+            current_price = self.get_price(symbol)
+            is_stuck, loss_percent = self.stuck_manager.check_stuck_position(symbol, current_price, buy_price, buy_time)
+            if is_stuck:
+                self.stuck_manager.execute_recovery(self, symbol, current_price)
+    
     def run(self):
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
         check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
 
+        # Obtenir cryptos tradables via le système de scoring
         balance = self.balance_manager.get_balance()
+        stuck_positions = []
+        tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
+        
+        # Compter positions actives seulement pour cryptos tradables
         active_positions = 0
-        for pair in trading_pairs:
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+        for symbol in tradable_pairs:
             base_currency = symbol.split('/')[0]
             free = balance.get(base_currency, {}).get('free', 0)
             locked = balance.get(base_currency, {}).get('used', 0)
@@ -591,15 +619,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if position_value >= self.get_min_amount(symbol)['min_cost']:
                     active_positions += 1
         
-        self.show_header(trading_pairs, "intelligent", 0, active_positions)
+        self.show_header(tradable_pairs, "intelligent", 0, active_positions)
 
         try:
             while True:
                 self.show_performance()
-                self.show_spot_balances(trading_pairs)
-                self.earn_manager.show_earn_performance()
-                self.show_realtime_prices(trading_pairs)
-                self.show_protection_status()  # Afficher statuts protection
                 
                 # Obtenir balance et cryptos tradables via le système de scoring
                 balance = self.balance_manager.get_balance()
@@ -608,6 +632,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # Utiliser le crypto scorer pour filtrer les cryptos tradables
                 stuck_positions = []
                 tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
+                
+                # Afficher seulement les cryptos tradables
+                self.show_spot_balances(tradable_pairs if tradable_pairs else trading_pairs)
+                self.earn_manager.show_earn_performance()
+                self.show_realtime_prices(tradable_pairs if tradable_pairs else trading_pairs)
+                self.show_protection_status(tradable_pairs if tradable_pairs else trading_pairs)  # Afficher statuts protection
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
                 if tradable_pairs:
@@ -630,7 +660,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     if prediction and prediction['status'] in ['READY', 'WAITING']:
                         buy_predictions.append((crypto, prediction))
                 self.show_buy_predictions(buy_predictions)
-                self.check_and_recover_stuck_positions()
+                
+                # Vérifier positions bloquées seulement pour cryptos tradables
+                if tradable_pairs:
+                    self.check_and_recover_stuck_positions_filtered(tradable_pairs)
                 
                 # Vérifier le portefeuille de financement périodiquement
                 funding_interval = int(os.getenv('FUNDING_CHECK_INTERVAL', '300'))
@@ -644,8 +677,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # Vérifier exécution ordres limite paper trading
                 self.check_paper_limit_orders()
                 
-                # Vérifier avec le minimum requis
-                min_required = min(self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost'] for p in trading_pairs)
+                # Vérifier avec le minimum requis (seulement cryptos tradables)
+                min_required = min(self.get_min_amount(symbol)['min_cost'] for symbol in tradable_pairs) if tradable_pairs else 10
                 self.balance_manager.ensure_trading_balance(min_required)
                 self.earn_manager.tirelire_auto_manage()
                 self.sync_positions_from_exchange()
@@ -664,10 +697,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 
                 self.show_tradable_pairs(tradable_pairs, usdt_available)
                 
-                # Vérifier optimisation positions existantes (toujours, pas seulement si fonds insuffisants)
+                # Vérifier optimisation positions existantes seulement pour cryptos tradables
                 optimized_any = False
-                for pair in trading_pairs:
-                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                for symbol in tradable_pairs:
                     base_currency = symbol.split('/')[0]
                     free_holding = balance.get(base_currency, {}).get('free', 0)
                     locked_holding = balance.get(base_currency, {}).get('used', 0)
@@ -705,8 +737,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             print(f"\n⚠️ Erreur bot: {e}")
             raise e
     
-    def show_protection_status(self):
-        """Affiche le statut de toutes les protections actives"""
+    def show_protection_status(self, tradable_pairs):
+        """Affiche le statut de toutes les protections actives pour les cryptos tradables"""
         import time
         protections = []
         
@@ -724,10 +756,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if exchange_status:
                 protections.append(exchange_status)
         
-        # 3. Protections par symbole
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
-        for pair in trading_pairs[:2]:  # Max 2 symboles
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+        # 3. Protections par symbole (seulement cryptos tradables)
+        for symbol in tradable_pairs[:2]:  # Max 2 symboles tradables
             crypto = symbol.split('/')[0]
             
             # Manipulation
@@ -736,11 +766,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if manip_status:
                     protections.append(f"{crypto}: {manip_status}")
             
-        # 4. Liquidity
-        if hasattr(self, 'liquidity_checker'):
-            liquidity_status = self.liquidity_checker.get_status_message(symbol)
-            if liquidity_status:
-                protections.append(f"{crypto}: {liquidity_status}")
+            # Liquidity
+            if hasattr(self, 'liquidity_checker'):
+                liquidity_status = self.liquidity_checker.get_status_message(symbol)
+                if liquidity_status:
+                    protections.append(f"{crypto}: {liquidity_status}")
         
         # Afficher seulement si protections actives
         if protections:
