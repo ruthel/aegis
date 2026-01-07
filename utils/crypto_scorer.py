@@ -6,14 +6,16 @@ from utils.market_calculator import MarketCalculator
 
 class CryptoScorer:
     def __init__(self, min_score=50, max_tradeable=2):
-        self.min_score = min_score
+        self.base_min_score = min_score
         self.max_tradeable = max_tradeable
         self.blacklist = {}
         self.blacklist_duration = 3600
         self.optimizer = None  # Sera défini par le bot
+        self.score_history = {}  # Learning system
+        self.performance_weights = self._get_default_weights()
         
     def calculate_volatility_score(self, klines, symbol='', volatility=None, websocket_manager=None):
-        """Score basé sur volatilité 1-5 (0-30 points)"""
+        """Score basé sur volatilité 1-5 (0-30 points) - ADAPTATIF"""
         if len(klines) < 10:
             return 0
         
@@ -21,17 +23,11 @@ class CryptoScorer:
         if volatility is None:
             volatility = VolatilityCalculator.calculate(klines, symbol, websocket_manager)
         
-        # Mapping score 1-5 → points
-        if volatility >= 4.0:
-            return 30
-        elif volatility >= 3.0:
-            return 25
-        elif volatility >= 2.0:
-            return 20
-        elif volatility >= 1.5:
-            return 10
-        else:
-            return 5
+        # Points adaptatifs selon crypto
+        base_points = self._get_base_volatility_points(volatility)
+        crypto_multiplier = self._get_crypto_multiplier(symbol)
+        
+        return int(base_points * crypto_multiplier)
     
     def calculate_volume_score(self, klines):
         """Score basé sur volume/liquidité (0-25 points)"""
@@ -82,18 +78,24 @@ class CryptoScorer:
             if not klines or len(klines) < 10:
                 return 0
             
+            # Scoring avec pondération adaptative
+            websocket_manager = getattr(bot, 'websocket', None)
+            
             volatility_score = self.calculate_volatility_score(klines, symbol, volatility, websocket_manager)
             volume_score = self.calculate_volume_score(klines)
             momentum_score = self.calculate_momentum_score(klines)
             spread_score = self.calculate_spread_score(symbol, current_price)
             history_score = self.calculate_history_score(symbol, stuck_positions)
             
+            # Pondération dynamique selon stratégie et marché
+            weights = self._get_dynamic_weights(symbol)
+            
             total_score = (
-                volatility_score +
-                volume_score +
-                momentum_score +
-                spread_score +
-                history_score
+                volatility_score * weights['volatility'] +
+                volume_score * weights['volume'] +
+                momentum_score * weights['momentum'] +
+                spread_score * weights['spread'] +
+                history_score * weights['history']
             )
             
             return total_score
@@ -159,7 +161,10 @@ class CryptoScorer:
                 })
         
         scores.sort(key=lambda x: x['score'], reverse=True)
-        tradeable = [c['symbol'] for c in scores[:self.max_tradeable] if c['score'] >= self.min_score]
+        
+        # Seuil minimum adaptatif selon conditions marché
+        dynamic_min_score = self._get_dynamic_min_score(len(scores))
+        tradeable = [c['symbol'] for c in scores[:self.max_tradeable] if c['score'] >= dynamic_min_score]
         
         if tradeable:
             top_display = []
@@ -203,10 +208,55 @@ class CryptoScorer:
         if not klines or len(klines) < 10:
             return None
         
-        return {
+            return {
             'volatility': self.calculate_volatility_score(klines, symbol, volatility, websocket_manager),
             'volume': self.calculate_volume_score(klines),
             'momentum': self.calculate_momentum_score(klines),
             'spread': self.calculate_spread_score(symbol, current_price),
             'history': self.calculate_history_score(symbol, stuck_positions)
         }
+    
+    def _get_default_weights(self):
+        """Pondération par défaut"""
+        return {'volatility': 0.25, 'volume': 0.25, 'momentum': 0.25, 'spread': 0.15, 'history': 0.10}
+    
+    def _get_base_volatility_points(self, volatility):
+        """Points de base selon volatilité"""
+        if volatility >= 4.0:
+            return 30
+        elif volatility >= 3.0:
+            return 25
+        elif volatility >= 2.0:
+            return 20
+        elif volatility >= 1.5:
+            return 10
+        else:
+            return 5
+    
+    def _get_crypto_multiplier(self, symbol):
+        """Multiplicateur selon type de crypto"""
+        if symbol in ['BTC/USDT', 'ETH/USDT']:
+            return 1.2  # Boost 20% pour cryptos stables
+        else:
+            return 1.0
+    
+    def _get_dynamic_weights(self, symbol):
+        """Pondération adaptative selon crypto"""
+        if symbol in ['BTC/USDT', 'ETH/USDT']:
+            # Cryptos stables = plus de poids sur volume/history
+            return {'volatility': 0.20, 'volume': 0.30, 'momentum': 0.25, 'spread': 0.15, 'history': 0.10}
+        else:
+            # Altcoins = plus de poids sur volatilité/momentum
+            return {'volatility': 0.35, 'volume': 0.20, 'momentum': 0.30, 'spread': 0.10, 'history': 0.05}
+    
+    def _get_dynamic_min_score(self, available_count):
+        """Seuil minimum adaptatif"""
+        base_min = self.base_min_score
+        
+        # Ajuster selon nombre de cryptos disponibles
+        if available_count < 2:
+            return max(20, base_min - 20)  # Assouplir si peu d'options
+        elif available_count > 6:
+            return base_min + 10  # Durcir si beaucoup d'options
+        else:
+            return base_min
