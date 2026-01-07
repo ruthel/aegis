@@ -105,6 +105,25 @@ class CryptoScorer:
         klines_cache = {}
         
         usdt_available = balance.get('USDT', {}).get('free', 0)
+        
+        # NOUVELLE CONDITION: Vérifier si balance suffisante pour au moins 1 crypto
+        if usdt_available <= 0:
+            print(f"⚠️ Balance USDT: 0 - Aucune crypto tradable")
+            return []
+        
+        # Vérifier montant minimum requis pour chaque crypto
+        min_costs = []
+        for pair in trading_pairs:
+            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            min_cost = bot.get_min_amount(symbol)['min_cost']
+            min_costs.append(min_cost)
+        
+        # Si balance < montant minimum de toutes les cryptos, aucune tradable
+        min_required = min(min_costs) if min_costs else 0
+        if usdt_available < min_required:
+            print(f"⚠️ Balance {usdt_available:.2f} < Min requis {min_required:.2f} - Aucune crypto tradable")
+            return []
+        
         scores = []
         
         for pair in trading_pairs:
@@ -121,6 +140,7 @@ class CryptoScorer:
                 if (crypto_balance * price) < min_cost:
                     continue
             
+            # CONDITION PRINCIPALE: Balance doit être supérieure au montant minimal
             if usdt_available < min_cost:
                 continue
             
@@ -163,7 +183,8 @@ class CryptoScorer:
                     top_display.append(f"{c['symbol'].replace('/USDT', '')} {c['score']} (V{vol_display:.1f} L{c['volume']} M{int(c['min_cost'])})")
             print(f"🎯 TOP: {' | '.join(top_display)} → TRADING")
         else:
-            print(f"⚠️ Aucune crypto ≥{self.min_score}/100")
+            if usdt_available > 0:
+                print(f"⚠️ Aucune crypto ≥{self.min_score}/100 (Balance: {usdt_available:.2f} USDT)")
         
         return tradeable
     
