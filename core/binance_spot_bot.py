@@ -676,6 +676,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         recovery_time = volume_prediction['recovery_time_str']
                         confidence = volume_prediction['confidence']
                         print(f"📉 {crypto}: Volume baisse - Récupération {recovery_time} ({confidence}%)")
+                        
+                        # Envoyer notification Telegram avec anti-spam intégré
+                        if self.notify_trades and hasattr(self, 'notifier'):
+                            self.notifier.notify_volume_prediction(symbol, volume_prediction)
                 
                 # Prévisions de vente seulement pour cryptos tradables
                 sell_predictions = []
