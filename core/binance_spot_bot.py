@@ -75,6 +75,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         # Frais dynamiques (remplace frais statiques)
         self.trading_fee = 0.001  # Fallback seulement
+        self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100  # Fallback seulement
         
         # Stats
         self.daily_pnl = 0
