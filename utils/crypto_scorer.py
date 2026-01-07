@@ -5,7 +5,7 @@ from utils.volatility_calculator import VolatilityCalculator
 from utils.market_calculator import MarketCalculator
 
 class CryptoScorer:
-    def __init__(self, min_score=50, max_tradeable=2):
+    def __init__(self, min_score=40, max_tradeable=2):
         self.base_min_score = min_score
         self.max_tradeable = max_tradeable
         self.blacklist = {}
@@ -118,6 +118,8 @@ class CryptoScorer:
             return []
         
         scores = []
+        volatilities = []
+        volume_ratios = []
         
         for pair in trading_pairs:
             symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
@@ -141,11 +143,23 @@ class CryptoScorer:
             from utils.timeframe_manager import TimeframeManager
             optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
             
-            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 10, optimal_timeframe)
+            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 20, optimal_timeframe)
             price = prices_cache.get(symbol) or bot.get_price(symbol)
             
             if not klines or len(klines) < 10:
                 continue
+            
+            # Calculer métriques marché pour adaptation
+            from utils.volatility_calculator import VolatilityCalculator
+            volatility = VolatilityCalculator.calculate(klines, symbol)
+            volatilities.append(volatility)
+            
+            # Volume ratio (actuel vs moyenne)
+            if len(klines) >= 5:
+                current_vol = klines[-1]['volume']
+                avg_vol = sum(k['volume'] for k in klines[:-1]) / (len(klines) - 1)
+                vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
+                volume_ratios.append(vol_ratio)
             
             # Scoring avec volatilité réelle
             websocket_manager = getattr(bot, 'websocket', None)
@@ -163,8 +177,19 @@ class CryptoScorer:
         
         scores.sort(key=lambda x: x['score'], reverse=True)
         
-        # Seuil minimum adaptatif selon conditions marché
-        dynamic_min_score = self._get_dynamic_min_score(len(scores))
+        # Calculer conditions marché pour seuil adaptatif
+        market_conditions = {
+            'avg_volatility': sum(volatilities) / len(volatilities) if volatilities else 2.0,
+            'avg_volume_ratio': sum(volume_ratios) / len(volume_ratios) if volume_ratios else 1.0
+        }
+        
+        # Seuil minimum adaptatif PROFESSIONNEL
+        dynamic_min_score = self._get_dynamic_min_score(
+            available_count=len(scores),
+            capital=usdt_available,
+            market_conditions=market_conditions
+        )
+        
         tradeable = [c['symbol'] for c in scores[:self.max_tradeable] if c['score'] >= dynamic_min_score]
         
         if tradeable:
@@ -183,7 +208,17 @@ class CryptoScorer:
                     top_display.append(f"{c['symbol'].replace('/USDT', '')} {c['score']:.0f} (V{vol_display:.1f} L{c.get('volume', 0)} M{int(c['min_cost'])})")
             
             if top_display:  # Afficher seulement si cryptos tradables
-                print(f"🎯 TOP: {' | '.join(top_display)} → TRADING (Seuil: {dynamic_min_score})")
+                # Afficher les ajustements appliqués
+                adjustments = []
+                if usdt_available < 20:
+                    adjustments.append("Capital-15")
+                if market_conditions['avg_volatility'] < 1.5:
+                    adjustments.append("Volatilité-10")
+                if len(scores) < 2:
+                    adjustments.append("Options-15")
+                
+                adj_text = f" ({', '.join(adjustments)})" if adjustments else ""
+                print(f"🎯 TOP: {' | '.join(top_display)} → TRADING (Seuil adaptatif: {dynamic_min_score}{adj_text})")
             else:
                 print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
         else:
@@ -250,14 +285,41 @@ class CryptoScorer:
             # Altcoins = plus de poids sur volatilité/momentum
             return {'volatility': 0.35, 'volume': 0.20, 'momentum': 0.30, 'spread': 0.10, 'history': 0.05}
     
-    def _get_dynamic_min_score(self, available_count):
-        """Seuil minimum adaptatif"""
+    def _get_dynamic_min_score(self, available_count, capital=None, market_conditions=None):
+        """Seuil minimum adaptatif professionnel - VALEURS PAR DÉFAUT"""
         base_min = self.base_min_score
         
-        # Ajuster selon nombre de cryptos disponibles
+        # 1. Ajustement selon capital (micro-capital plus agressif)
+        if capital and capital < 20:
+            base_min -= 15  # Micro-capital: seuil plus bas
+        elif capital and capital < 50:
+            base_min -= 10  # Petit capital: légèrement plus agressif
+        
+        # 2. Ajustement selon conditions marché
+        if market_conditions:
+            # Marché calme = seuil plus bas
+            if market_conditions.get('avg_volatility', 2.0) < 1.5:
+                base_min -= 10
+            
+            # Volume faible = seuil plus bas
+            if market_conditions.get('avg_volume_ratio', 1.0) < 0.7:
+                base_min -= 5
+        
+        # 3. Ajustement selon nombre de cryptos disponibles
         if available_count < 2:
-            return max(20, base_min - 20)  # Assouplir si peu d'options
-        elif available_count > 6:
-            return base_min + 10  # Durcir si beaucoup d'options
-        else:
-            return base_min
+            base_min -= 15  # Très peu d'options = plus agressif
+        elif available_count < 4:
+            base_min -= 5   # Peu d'options = légèrement plus agressif
+        elif available_count > 8:
+            base_min += 10  # Beaucoup d'options = plus sélectif
+        
+        # 4. Ajustement temporel (weekend/nuit)
+        from datetime import datetime
+        now = datetime.now()
+        if now.weekday() >= 5:  # Weekend
+            base_min -= 5
+        elif now.hour < 8 or now.hour > 22:  # Nuit
+            base_min -= 3
+        
+        # Contraintes de sécurité
+        return max(15, min(base_min, 80))  # Entre 15 et 80

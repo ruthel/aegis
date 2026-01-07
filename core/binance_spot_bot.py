@@ -134,7 +134,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
         )
         self.crypto_scorer = CryptoScorer(
-            min_score=int(os.getenv('MIN_CRYPTO_SCORE', '50')),
+            min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40')),
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
         )
         self.decision_display = DecisionDisplay()

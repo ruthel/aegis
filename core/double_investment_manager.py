@@ -426,7 +426,14 @@ class DoubleInvestmentManager:
                             else:
                                 time_display = f"[{duration}j]"
                             
-                            print(f"   {option_type} {exercised_coin}: {amount:.2f} USDT @ {strike:.2f} (+{potential_gain_usdt:.3f} USDT) {time_display}")
+                            # Format compact professionnel recommandé
+                            emoji = "📞" if option_type == 'CALL' else "📉"
+                            profit_pct = (potential_gain_usdt / amount) * 100 if amount > 0 else 0
+                            
+                            # Format: {emoji} {type} {crypto} • {montant} USDT • {profit} ({pct}%) • {durée}
+                            display_text = f"{emoji} {option_type} {exercised_coin} • {amount:.2f} USDT • +{potential_gain_usdt:.3f} (+{profit_pct:.1f}%) • {time_display.replace('[', '').replace(']', '')}"
+                            
+                            print(f"   {display_text}")
                     else:
                         print(f"💎 Aucune position Dual Investment active")
                     self._last_displayed_count = len(active_positions)
@@ -480,14 +487,14 @@ class DoubleInvestmentManager:
                 else:
                     time_display = f"[{duration}j]"
                 
-                gain_display = f"+{potential_gain_usdt:.3f} USDT {time_display}"
+                # Format compact professionnel pour résumé
+                emoji = "📞" if option_type == 'CALL' else "📉"
+                profit_pct = (potential_gain_usdt / amount) * 100 if amount > 0 else 0
                 
-                if option_type == 'CALL':
-                    summary_parts.append(f"📞 Call {exercised_coin} {amount:.2f} USDT ({gain_display})")
-                elif option_type == 'PUT':
-                    summary_parts.append(f"📉 PUT {exercised_coin} {amount:.2f} USDT ({gain_display})")
-                else:
-                    summary_parts.append(f"💎 {exercised_coin} {amount:.2f} USDT ({gain_display})")
+                # Format: {emoji} {type} {crypto} • {montant} USDT • {profit} ({pct}%) • {durée}
+                display_text = f"{emoji} {option_type} {exercised_coin} • {amount:.2f} USDT • +{potential_gain_usdt:.3f} (+{profit_pct:.1f}%) • {time_display.replace('[', '').replace(']', '')}"
+                
+                summary_parts.append(display_text)
         
         # Positions simulées (pour développement)
         for pos in self.positions:
