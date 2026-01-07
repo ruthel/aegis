@@ -152,13 +152,14 @@ class CryptoScorer:
             score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
             if score > 0:
                 breakdown = self.get_score_breakdown(bot, symbol, stuck_positions, websocket_manager=websocket_manager)
-                scores.append({
-                    'symbol': symbol,
-                    'score': score,
-                    'volatility': breakdown['volatility'],
-                    'volume': breakdown['volume'],
-                    'min_cost': min_cost
-                })
+                if breakdown:  # Vérifier que breakdown n'est pas None
+                    scores.append({
+                        'symbol': symbol,
+                        'score': score,
+                        'volatility': breakdown['volatility'],
+                        'volume': breakdown['volume'],
+                        'min_cost': min_cost
+                    })
         
         scores.sort(key=lambda x: x['score'], reverse=True)
         
@@ -169,8 +170,8 @@ class CryptoScorer:
         if tradeable:
             top_display = []
             for c in scores[:self.max_tradeable]:
-                if c['score'] >= self.min_score:  # Seulement cryptos tradables
-                    vol_score = c['volatility']
+                if c['score'] >= dynamic_min_score:  # Utiliser seuil dynamique
+                    vol_score = c.get('volatility', 0)  # Protection contre None
                     if vol_score >= 30:
                         vol_display = 4.0
                     elif vol_score >= 25:
@@ -179,15 +180,15 @@ class CryptoScorer:
                         vol_display = 2.0
                     else:
                         vol_display = 1.0
-                    top_display.append(f"{c['symbol'].replace('/USDT', '')} {c['score']} (V{vol_display:.1f} L{c['volume']} M{int(c['min_cost'])})")
+                    top_display.append(f"{c['symbol'].replace('/USDT', '')} {c['score']:.0f} (V{vol_display:.1f} L{c.get('volume', 0)} M{int(c['min_cost'])})")
             
             if top_display:  # Afficher seulement si cryptos tradables
-                print(f"🎯 TOP: {' | '.join(top_display)} → TRADING")
+                print(f"🎯 TOP: {' | '.join(top_display)} → TRADING (Seuil: {dynamic_min_score})")
             else:
-                print(f"⚠️ Aucune crypto ≥{self.min_score}/100 (Balance: {usdt_available:.2f} USDT)")
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
         else:
             if usdt_available > 0:
-                print(f"⚠️ Aucune crypto ≥{self.min_score}/100 (Balance: {usdt_available:.2f} USDT)")
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
         
         return tradeable
     
@@ -208,7 +209,7 @@ class CryptoScorer:
         if not klines or len(klines) < 10:
             return None
         
-            return {
+        return {
             'volatility': self.calculate_volatility_score(klines, symbol, volatility, websocket_manager),
             'volume': self.calculate_volume_score(klines),
             'momentum': self.calculate_momentum_score(klines),
