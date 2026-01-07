@@ -605,7 +605,26 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # Obtenir balance et cryptos tradables dès le début
                 balance = self.balance_manager.get_balance()
                 usdt_available = balance.get('USDT', {}).get('free', 0)
-                tradable_pairs = self.get_tradable_pairs(trading_pairs, usdt_available)
+                
+                # Filtrer les cryptos réellement tradables
+                tradable_pairs = []
+                for pair in trading_pairs:
+                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                    min_cost = self.get_min_amount(symbol)['min_cost']
+                    
+                    # Vérifier si tradable (peut acheter OU peut vendre)
+                    can_buy = usdt_available >= min_cost
+                    can_sell = False
+                    
+                    base = symbol.split('/')[0]
+                    free = balance.get(base, {}).get('free', 0)
+                    if free > 0.00001:
+                        value = free * self.get_price(symbol)
+                        can_sell = value >= min_cost
+                    
+                    # Ajouter seulement si réellement tradable
+                    if can_buy or can_sell:
+                        tradable_pairs.append(symbol)
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
                 if tradable_pairs:
@@ -752,30 +771,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         print("  bot.dynamic_levels.display_levels('BTC/USDT')  # Niveaux dynamiques")
         print("  bot.exchange.fetch_balance()  # Test API direct")
     
-    def show_dynamic_levels(self, trading_pairs):
-        """Affiche les niveaux dynamiques pour les cryptos principales"""
+    def show_dynamic_levels(self, tradable_pairs):
+        """Affiche les niveaux dynamiques pour les cryptos tradables uniquement"""
         try:
-            # Vérifier d'abord si on a des cryptos tradables
-            balance = self.balance_manager.get_balance()
-            usdt_available = balance.get('USDT', {}).get('free', 0)
-            
-            # Si balance = 0, ne pas afficher/notifier les niveaux
-            if usdt_available <= 0:
-                return
-            
-            # Vérifier si balance suffisante pour au moins une crypto
-            min_costs = []
-            for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
-                min_cost = self.get_min_amount(symbol)['min_cost']
-                min_costs.append(min_cost)
-            
-            min_required = min(min_costs) if min_costs else 0
-            if usdt_available < min_required:
-                return  # Pas assez de fonds, skip les notifications
-            
-            for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            # Utiliser directement la liste des cryptos tradables passée en paramètre
+            for symbol in tradable_pairs:
                 current_price = self.get_price(symbol)
                 entry_opportunities = self.dynamic_levels.get_entry_levels(symbol, current_price)
                 
