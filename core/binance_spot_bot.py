@@ -602,23 +602,22 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 self.show_realtime_prices(trading_pairs)
                 self.show_protection_status()  # Afficher statuts protection
                 
-                # Afficher niveaux dynamiques
-                self.show_dynamic_levels(trading_pairs[:2])  # Top 2 cryptos
+                # Afficher niveaux dynamiques seulement pour cryptos tradables
+                if tradable_pairs:
+                    self.show_dynamic_levels(tradable_pairs[:2])  # Top 2 cryptos tradables
                 
                 print()
-                # Prévisions de vente
+                # Prévisions de vente seulement pour cryptos tradables
                 sell_predictions = []
-                for pair in trading_pairs:
-                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                for symbol in tradable_pairs:
                     sell_pred = self.predict_next_sell_execution(symbol)
                     if sell_pred:
                         sell_predictions.append((symbol, sell_pred))
                 self.show_sell_predictions(sell_predictions)
                 
-                # Prévisions d'achat
+                # Prévisions d'achat seulement pour cryptos tradables
                 buy_predictions = []
-                for pair in trading_pairs:
-                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                for symbol in tradable_pairs:
                     prediction = self.predict_next_buy_opportunity(symbol)
                     crypto = symbol.split('/')[0]
                     if prediction and prediction['status'] in ['READY', 'WAITING']:
@@ -656,7 +655,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 else:
                     self.last_balance_sync = time.time()
                 usdt_available = balance.get('USDT', {}).get('free', 0)
-                tradable_pairs = []
+                
+                # Obtenir seulement les cryptos tradables
+                tradable_pairs = self.get_tradable_pairs(trading_pairs, usdt_available)
+                
                 for pair in trading_pairs:
                     symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                     base_currency = symbol.split('/')[0]

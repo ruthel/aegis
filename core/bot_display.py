@@ -261,12 +261,24 @@ class DisplayMixin:
         for s in tradable_pairs:
             base = s.split('/')[0]
             free = balance.get(base, {}).get('free', 0)
+            min_cost = self.get_min_amount(s)['min_cost']
+            
+            # Vérifier si tradable (peut acheter OU peut vendre)
+            can_buy = usdt_available >= min_cost
+            can_sell = False
+            
             if free > 0.00001:
                 value = free * self.get_price(s)
-                if value >= self.get_min_amount(s)['min_cost']:
-                    tradable_display.append(base)
-            else:
-                tradable_display.append(base)
+                can_sell = value >= min_cost
+            
+            # Ajouter seulement si réellement tradable
+            if can_buy or can_sell:
+                if can_buy and can_sell:
+                    tradable_display.append(f"{base} (A/V)")  # Achat + Vente
+                elif can_buy:
+                    tradable_display.append(f"{base} (A)")    # Achat seulement
+                else:
+                    tradable_display.append(f"{base} (V)")    # Vente seulement
         
         # Log silencieux si aucun tradable disponible
         if not tradable_display or usdt_available < 0.01:
@@ -327,3 +339,28 @@ class DisplayMixin:
         print("\n🔧 COMMANDES DEBUG:")
         print("  bot.force_balance_sync()  # Forcer sync balances")
         print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
+    
+    def get_tradable_pairs(self, trading_pairs, usdt_available):
+        """Retourne la liste des paires réellement tradables"""
+        balance = self.balance_manager.get_balance()
+        tradable_pairs = []
+        
+        for pair in trading_pairs:
+            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            base = symbol.split('/')[0]
+            free = balance.get(base, {}).get('free', 0)
+            min_cost = self.get_min_amount(symbol)['min_cost']
+            
+            # Vérifier si tradable (peut acheter OU peut vendre)
+            can_buy = usdt_available >= min_cost
+            can_sell = False
+            
+            if free > 0.00001:
+                value = free * self.get_price(symbol)
+                can_sell = value >= min_cost
+            
+            # Ajouter seulement si réellement tradable
+            if can_buy or can_sell:
+                tradable_pairs.append(symbol)
+        
+        return tradable_pairs
