@@ -118,6 +118,66 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
+    def notify_volume_prediction(self, symbol, prediction):
+        """Notification prédiction récupération volume avec anti-spam"""
+        crypto = symbol.split('/')[0]
+        
+        # Anti-spam: max 1 notification par crypto par 30min
+        notification_key = f"volume_{crypto}"
+        now = time.time()
+        if hasattr(self, 'last_volume_notifications'):
+            if notification_key in self.last_volume_notifications:
+                if now - self.last_volume_notifications[notification_key] < 1800:  # 30min
+                    return False
+        else:
+            self.last_volume_notifications = {}
+        
+        self.last_volume_notifications[notification_key] = now
+        
+        # Formatage message
+        decline_duration = prediction['decline_duration_min']
+        decline_pct = prediction['decline_pct']
+        recovery_time = prediction['recovery_time_str']
+        confidence = prediction['confidence']
+        price_momentum = prediction['price_momentum']
+        divergence = prediction['divergence_detected']
+        
+        # Émojis selon contexte
+        trend_emoji = "📈" if price_momentum > 0 else "📉" if price_momentum < -0.5 else "➡️"
+        confidence_emoji = "🎯" if confidence >= 80 else "📊" if confidence >= 60 else "❓"
+        
+        msg = f"📉 VOLUME EN BAISSE | {crypto}\n\n"
+        msg += f"🔍 Analyse:\n"
+        msg += f"├─ Baisse depuis: {decline_duration}min\n"
+        msg += f"├─ Intensité: {decline_pct:.1f}%\n"
+        msg += f"└─ Prix: {trend_emoji} {price_momentum:+.1f}%"
+        
+        if divergence:
+            msg += " (divergence!)\n\n"
+        else:
+            msg += "\n\n"
+        
+        msg += f"⏰ Prédiction:\n"
+        msg += f"├─ Récupération: {recovery_time}\n"
+        msg += f"├─ Confiance: {confidence_emoji} {confidence}%\n"
+        
+        if prediction['historical_cycles'] > 0:
+            msg += f"└─ Basé sur: {prediction['historical_cycles']} cycles\n\n"
+        else:
+            msg += f"└─ Basé sur: Analyse temps réel\n\n"
+        
+        # Action recommandée
+        if divergence and confidence >= 70:
+            msg += f"🎯 Action: Patience - Opportunité proche\n"
+        elif confidence >= 60:
+            msg += f"⏳ Action: Attendre récupération volume\n"
+        else:
+            msg += f"👀 Action: Surveiller évolution\n"
+        
+        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        
+        return self.notify(msg, "")
+    
     def notify_dynamic_level(self, symbol, level_type, price, distance_pct):
         """Notification niveau dynamique détecté avec filtrage anti-spam"""
         crypto = symbol.split('/')[0]

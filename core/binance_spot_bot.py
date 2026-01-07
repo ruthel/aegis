@@ -667,6 +667,15 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     self.show_dynamic_levels(tradable_pairs[:2])  # Top 2 cryptos tradables
                 
                 print()
+                # NOUVEAU: Prédiction récupération volume
+                for symbol in tradable_pairs:
+                    volume_prediction = self.predict_volume_recovery_time(symbol)
+                    if volume_prediction:
+                        crypto = symbol.split('/')[0]
+                        recovery_time = volume_prediction['recovery_time_str']
+                        confidence = volume_prediction['confidence']
+                        print(f"📉 {crypto}: Volume baisse - Récupération {recovery_time} ({confidence}%)")
+                
                 # Prévisions de vente seulement pour cryptos tradables
                 sell_predictions = []
                 for symbol in tradable_pairs:
