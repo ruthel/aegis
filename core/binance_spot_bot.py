@@ -602,6 +602,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 self.show_realtime_prices(trading_pairs)
                 self.show_protection_status()  # Afficher statuts protection
                 
+                # Obtenir balance et cryptos tradables dès le début
+                balance = self.balance_manager.get_balance()
+                usdt_available = balance.get('USDT', {}).get('free', 0)
+                tradable_pairs = self.get_tradable_pairs(trading_pairs, usdt_available)
+                
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
                 if tradable_pairs:
                     self.show_dynamic_levels(tradable_pairs[:2])  # Top 2 cryptos tradables
@@ -654,23 +659,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                         self.last_balance_sync = time.time()
                 else:
                     self.last_balance_sync = time.time()
-                usdt_available = balance.get('USDT', {}).get('free', 0)
                 
-                # Obtenir seulement les cryptos tradables
-                tradable_pairs = self.get_tradable_pairs(trading_pairs, usdt_available)
-                
-                for pair in trading_pairs:
-                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
-                    base_currency = symbol.split('/')[0]
-                    crypto_free = balance.get(base_currency, {}).get('free', 0)
-                    crypto_locked = balance.get(base_currency, {}).get('used', 0)
-                    min_cost = self.get_min_amount(symbol)['min_cost']
-                    price = self.get_price(symbol)
-                    can_buy = usdt_available >= min_cost
-                    can_sell = (crypto_free * price) >= min_cost and crypto_locked == 0
-                    if can_buy or can_sell:
-                        tradable_pairs.append(symbol)
-
                 self.show_tradable_pairs(tradable_pairs, usdt_available)
                 
                 # Vérifier optimisation positions existantes (toujours, pas seulement si fonds insuffisants)
