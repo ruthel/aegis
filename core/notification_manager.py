@@ -354,8 +354,12 @@ class NotificationManager:
                     puts_amount = sum(float(p.get('subscriptionAmount', 0)) for p in real_puts) + sum(p.get('amount', 0) for p in sim_puts)
                     msg += f"├─ Puts: {total_puts} ({puts_amount:.1f} USDT)\n"
                 
-                # Détail des positions actives
+                # Détail des positions actives avec structure hiérarchique par type
                 position_details = []
+                
+                # Grouper par type d'option
+                calls_positions = []
+                puts_positions = []
                 
                 # Positions réelles
                 for p in real_positions:
@@ -375,20 +379,20 @@ class NotificationManager:
                         settle_datetime = datetime.fromtimestamp(settle_date / 1000)
                         days_left = (settle_datetime - datetime.now()).days
                         if days_left > 0:
-                            time_display = f"[{days_left}j]"
+                            time_display = f"{days_left}j"
                         else:
-                            time_display = "[Expiré]"
+                            time_display = "Expiré"
                     else:
-                        time_display = f"[{duration}j]"
+                        time_display = f"{duration}j"
                     
-                    gain_display = f"+{potential_gain_usdt:.3f} (+{apr*100:.1f}%) • {time_display.replace('[', '').replace(']', '')}"
+                    gain_display = f"+{potential_gain_usdt:.3f} (+{apr*100:.1f}%) • {time_display}"
+                    
+                    position_info = f"{exercised_coin} • {amount:.2f} USDT • {gain_display}"
                     
                     if option_type == 'CALL':
-                        position_details.append(f"📞 Call {exercised_coin} • {amount:.2f} USDT • {gain_display}")
+                        calls_positions.append(position_info)
                     elif option_type == 'PUT':
-                        position_details.append(f"📉 PUT {exercised_coin} • {amount:.2f} USDT • {gain_display}")
-                    else:
-                        position_details.append(f"💎 {exercised_coin} • {amount:.2f} USDT • {gain_display}")
+                        puts_positions.append(position_info)
                 
                 # Positions simulées
                 for p in simulated_positions:
@@ -396,15 +400,39 @@ class NotificationManager:
                         crypto = p.get('symbol', 'N/A').replace('USDT', '')
                         ptype = 'CALL' if p.get('type') == 'covered_call' else 'PUT'
                         amount = p.get('amount', 0)
+                        position_info = f"{crypto} • {amount:.1f} USDT"
+                        
                         if ptype == 'CALL':
-                            position_details.append(f"📞 Call {crypto} • {amount:.1f} USDT")
+                            calls_positions.append(position_info)
                         else:
-                            position_details.append(f"📉 PUT {crypto} • {amount:.1f} USDT")
+                            puts_positions.append(position_info)
                 
-                if position_details:
-                    for i, detail in enumerate(position_details):
-                        prefix = "├─" if i < len(position_details) - 1 else "└─"
-                        msg += f"{prefix} {detail}\n"
+                # Affichage hiérarchique par type
+                if puts_positions or calls_positions:
+                    # Afficher PUT en premier
+                    if puts_positions:
+                        if calls_positions:  # Il y a aussi des CALL après
+                            msg += f"├─ 📉 PUT ({len(puts_positions)} position{'s' if len(puts_positions) > 1 else ''})\n"
+                        else:  # Seulement des PUT
+                            msg += f"└─ 📉 PUT ({len(puts_positions)} position{'s' if len(puts_positions) > 1 else ''})\n"
+                        
+                        for i, pos in enumerate(puts_positions):
+                            is_last_put = (i == len(puts_positions) - 1)
+                            if calls_positions:  # Il y a des CALL après
+                                prefix = "│  ├─" if not is_last_put else "│  └─"
+                            else:  # Pas de CALL après
+                                prefix = "   ├─" if not is_last_put else "   └─"
+                            msg += f"{prefix} {pos}\n"
+                    
+                    # Afficher CALL en second
+                    if calls_positions:
+                        msg += f"└─ 📞 CALL ({len(calls_positions)} position{'s' if len(calls_positions) > 1 else ''})\n"
+                        
+                        for i, pos in enumerate(calls_positions):
+                            is_last_call = (i == len(calls_positions) - 1)
+                            prefix = "   ├─" if not is_last_call else "   └─"
+                            msg += f"{prefix} {pos}\n"
+                    
                     msg += "\n"
                 else:
                     msg += f"└─ Positions actives\n\n"
