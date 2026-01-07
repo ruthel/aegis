@@ -947,7 +947,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     def get_optimal_check_interval(self, tradable_pairs):
         """Calcule intervalle optimal selon volatilité multi-pairs - Niveau Professionnel"""
         if not tradable_pairs:
-            return 5  # Fallback par défaut 5s
+            return 2  # Fallback par défaut 2s
         
         try:
             intervals = []
@@ -966,15 +966,15 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 # 4. Volume relatif
                 volume_ratio = self.get_volume_ratio(symbol)
                 
-                # Calcul base selon volatilité
+                # Calcul base selon volatilité - NIVEAU PROFESSIONNEL
                 if volatility >= 4.0:
-                    base_interval = 10    # Très volatil = 10s
+                    base_interval = 2     # Très volatil = 2s
                 elif volatility >= 3.0:
-                    base_interval = 20    # Volatil = 20s
+                    base_interval = 5     # Volatil = 5s
                 elif volatility >= 2.0:
-                    base_interval = 45    # Moyen = 45s
+                    base_interval = 10    # Moyen = 10s
                 else:
-                    base_interval = 90    # Calme = 90s
+                    base_interval = 15    # Calme = 15s
                 
                 # Ajustements professionnels
                 if has_position:
@@ -993,12 +993,12 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             # Prendre le MINIMUM (crypto la plus urgente)
             optimal_interval = min(intervals)
             
-            # Contraintes de sécurité
-            return max(5, min(optimal_interval, 300))  # 5s à 5min
+            # Contraintes de sécurité - NIVEAU PROFESSIONNEL
+            return max(2, min(optimal_interval, 60))  # 2s à 1min
             
         except Exception as e:
             print(f"⚠️ Erreur calcul intervalle: {e}")
-            return 5  # Fallback par défaut 5s
+            return 2  # Fallback par défaut 2s
     
     def get_pair_volatility(self, symbol):
         """Récupère volatilité pour une crypto spécifique"""
