@@ -119,16 +119,38 @@ class NotificationManager:
         self.notify(msg, "")
     
     def notify_dynamic_level(self, symbol, level_type, price, distance_pct):
-        """Notification niveau dynamique détecté"""
+        """Notification niveau dynamique détecté avec filtrage anti-spam"""
         crypto = symbol.split('/')[0]
         
-        msg = f"🎯 NIVEAU DYNAMIQUE\n\n"
+        # FILTRAGE ANTI-SPAM
+        # 1. Seulement si très proche (< 1% au lieu de 2%)
+        if abs(distance_pct) >= 1.0:
+            return False
+        
+        # 2. Seulement niveaux importants
+        important_types = ['Pivot S1', 'Pivot R1', 'Support fort', 'Résistance forte', 'EMA 25', 'EMA 99']
+        if level_type not in important_types:
+            return False
+        
+        # 3. Limiter à 1 notification par crypto par heure
+        notification_key = f"dynamic_{crypto}"
+        now = time.time()
+        if hasattr(self, 'last_dynamic_spam_check'):
+            if notification_key in self.last_dynamic_spam_check:
+                if now - self.last_dynamic_spam_check[notification_key] < 3600:  # 1 heure
+                    return False
+        else:
+            self.last_dynamic_spam_check = {}
+        
+        self.last_dynamic_spam_check[notification_key] = now
+        
+        msg = f"🎯 NIVEAU CRITIQUE\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
         msg += f"📊 Type: {level_type}\n"
         msg += f"💰 Prix: {price:.2f} USDT\n"
         msg += f"📏 Distance: {distance_pct:.1f}%\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
-        self.notify(msg, "")
+        return self.notify(msg, "")
     
     def notify_daily_summary(self):
         """Résumé journalier automatique"""
