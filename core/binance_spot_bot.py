@@ -36,6 +36,8 @@ from utils.dynamic_levels_manager import DynamicLevelsManager
 from utils.capital_manager import CapitalManager
 from utils.crypto_detector import CryptoDetector
 from utils.dust_manager import DustManager
+from utils.dynamic_fees_manager import DynamicFeesManager
+from utils.adaptive_thresholds_manager import AdaptiveThresholdsManager
 import logging
 
 # Import des mixins
@@ -70,8 +72,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.notify_trades = os.getenv('NOTIFY_TRADES', 'True') == 'True'
         self.save_logs = os.getenv('SAVE_LOGS', 'True') == 'True'
         
-        # Frais
-        self.trading_fee = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100
+        # Frais dynamiques (remplace frais statiques)
+        self.trading_fee = 0.001  # Fallback seulement
         self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.3')) / 100
         
         # Stats
@@ -164,6 +166,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         # Gestionnaire de dust (valeurs très petites)
         self.dust_manager = DustManager(self)
+        
+        # GESTIONNAIRES PROFESSIONNELS NIVEAU INSTITUTIONNEL
+        self.dynamic_fees = DynamicFeesManager(self)
+        self.adaptive_thresholds = AdaptiveThresholdsManager(self)
         
         os.makedirs('data', exist_ok=True)
         
@@ -639,6 +645,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     self.earn_manager.show_earn_performance()
                     self.show_realtime_prices(tradable_pairs)
                     self.show_protection_status(tradable_pairs)
+                    # NOUVEAU: Afficher métriques professionnelles
+                    self.show_professional_metrics()
                 else:
                     self.earn_manager.show_earn_performance()
                     print("⚠️ Aucune crypto tradable - Attente...")
@@ -727,6 +735,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 if self.notify_trades and hasattr(self, 'notifier'):
                     self.notifier.send_status_update()
                 
+                # NOUVEAU: Optimisations quotidiennes automatiques
+                self.run_daily_optimizations()
+                
                 # Plus besoin de vérifier manuellement - timer automatique
                 time.sleep(check_interval)
         except KeyboardInterrupt:
@@ -814,7 +825,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
     def intelligent_strategy(self, symbol, amount, current_price):
-        """Stratégie intelligente - Niveaux dynamiques + Filtres SMC + Timing + Position Sizing"""
+        """Stratégie intelligente - Niveaux dynamiques + Filtres SMC + Timing + Position Sizing + SEUILS PROFESSIONNELS"""
         # 1. Vérifier position existante
         if not self.can_open_position(symbol):
             return
@@ -823,10 +834,29 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         if not self.check_htf_bias(symbol):
             return
         
-        # 3. Vérifier niveaux dynamiques
-        should_buy, reason = self.get_entry_signal(symbol, current_price)
-        if not should_buy:
-            return
+        # 3. NOUVEAU: Vérifier avec seuils professionnels adaptatifs
+        try:
+            analysis = self.get_cached_analysis(symbol, current_price)
+            volatility = analysis.get('volatility', 2.0)
+            
+            # Seuil adaptatif au lieu du seuil statique
+            adaptive_threshold = self.adaptive_thresholds.get_adaptive_confidence_threshold(symbol, volatility)
+            global_signal = analysis['global_signal']
+            
+            # Vérifier signal avec seuil adaptatif
+            if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
+                   global_signal['confidence'] >= adaptive_threshold):
+                crypto = symbol.split('/')[0]
+                print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < Seuil adaptatif {adaptive_threshold:.0f}%")
+                return
+            
+            print(f"✅ Signal validé avec seuil adaptatif: {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
+            
+        except Exception as e:
+            # Fallback méthode classique
+            should_buy, reason = self.get_entry_signal(symbol, current_price)
+            if not should_buy:
+                return
         
         # 4. Optimiser le timing (QUAND)
         signal_strength = self.get_signal_strength(symbol, current_price)
@@ -842,8 +872,70 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         account_balance = self.get_account_balance()
         position_data = self.position_sizer.calculate_position_size(symbol, signal_strength, account_balance)
         
-        # 6. Exécuter achat avec données optimisées
+        # 6. NOUVEAU: Optimiser type d'ordre pour frais
+        try:
+            optimal_order_type = self.dynamic_fees.optimize_order_type(symbol, 'normal')
+            print(f"💰 Ordre optimisé: {optimal_order_type} (frais réduits)")
+        except:
+            optimal_order_type = 'market'
+        
+        # 7. Exécuter achat avec données optimisées
         self.execute_optimized_buy(symbol, position_data, current_price, reason, timing_data)
+    
+    def get_real_trading_fee(self, symbol, order_type='market'):
+        """Récupère frais réels au lieu des frais statiques"""
+        try:
+            return self.dynamic_fees.get_fee_for_trade(symbol, order_type)
+        except:
+            return self.trading_fee  # Fallback
+    
+    def calculate_real_trade_cost(self, symbol, amount_usdt, order_type='market'):
+        """Calcule coût réel avec frais dynamiques"""
+        try:
+            return self.dynamic_fees.calculate_trade_cost(symbol, amount_usdt, order_type)
+        except:
+            # Fallback avec frais statiques
+            fee_cost = amount_usdt * self.trading_fee
+            return {
+                'amount': amount_usdt,
+                'fee_rate': self.trading_fee,
+                'fee_cost': fee_cost,
+                'total_cost': amount_usdt + fee_cost,
+                'vip_level': 'Unknown',
+                'bnb_discount': False
+            }
+    
+    def show_professional_metrics(self):
+        """Affiche métriques professionnelles"""
+        try:
+            # Frais dynamiques
+            fees_summary = self.dynamic_fees.get_fees_summary()
+            print(f"💰 FRAIS: {fees_summary['vip_level']} | BNB: {fees_summary['bnb_discount']} | Optimal: {fees_summary['optimal_fee']}")
+            
+            # Seuils adaptatifs pour cryptos tradables
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            for pair in trading_pairs[:2]:  # Top 2
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                crypto = symbol.split('/')[0]
+                
+                if symbol in self.adaptive_thresholds.adaptive_thresholds:
+                    threshold_summary = self.adaptive_thresholds.get_threshold_summary(symbol)
+                    print(f"🎯 {crypto}: Seuil {threshold_summary['threshold_final']} (Perf: {threshold_summary['performance_adj']}, Market: {threshold_summary['market_adj']})")
+        
+        except Exception as e:
+            pass  # Silencieux si erreur
+    
+    def run_daily_optimizations(self):
+        """Lance optimisations quotidiennes comme les pros"""
+        try:
+            # Optimiser seuils adaptatifs
+            self.adaptive_thresholds.optimize_thresholds_daily()
+            
+            # Refresh frais si nécessaire
+            self.dynamic_fees.get_real_trading_fees('BTC/USDT')  # Force refresh
+            
+        except Exception as e:
+            pass  # Silencieux si erreur
     
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position"""

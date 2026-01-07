@@ -351,12 +351,20 @@ class NotificationManager:
             else:
                 msg += f"💎 Double Investment: Aucune position\n\n"
         
-        # Opportunités
+        # Opportunités - LIMITER AUX TRADABLE PAIRS
         msg += f"🔮 Opportunités\n"
         opps = []
         
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+        # Récupérer les cryptos tradables du bot
+        try:
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            stuck_positions = []
+            tradable_pairs = bot.crypto_scorer.rank_cryptos(bot, trading_pairs, stuck_positions)
+        except:
+            tradable_pairs = []
+        
+        # Seulement les cryptos tradables
+        for symbol in tradable_pairs:
             crypto = symbol.split('/')[0]
             
             try:
