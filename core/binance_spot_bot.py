@@ -606,7 +606,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     
     def run(self):
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
-        check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
 
         # Obtenir cryptos tradables via le système de scoring
         balance = self.balance_manager.get_balance()
@@ -639,8 +638,16 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 stuck_positions = []
                 tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
-                # Afficher seulement les cryptos tradables (pas de fallback)
+                # NOUVEAU: Calculer intervalle adaptatif multi-pairs
+                check_interval = self.get_optimal_check_interval(tradable_pairs)
+                
+                # Affichage avec intervalle dynamique
                 if tradable_pairs:
+                    # Afficher intervalle adaptatif
+                    volatilities = [self.get_pair_volatility(symbol) for symbol in tradable_pairs[:2]]
+                    vol_display = ", ".join([f"{tradable_pairs[i].split('/')[0]}:{vol:.1f}" for i, vol in enumerate(volatilities)])
+                    print(f"🔄 Intervalle: {check_interval}s ({vol_display})")
+                    
                     self.show_spot_balances(tradable_pairs)
                     self.earn_manager.show_earn_performance()
                     self.show_realtime_prices(tradable_pairs)
@@ -936,6 +943,106 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             
         except Exception as e:
             pass  # Silencieux si erreur
+    
+    def get_optimal_check_interval(self, tradable_pairs):
+        """Calcule intervalle optimal selon volatilité multi-pairs - Niveau Professionnel"""
+        if not tradable_pairs:
+            return 5  # Fallback par défaut 5s
+        
+        try:
+            intervals = []
+            
+            for symbol in tradable_pairs:
+                # 1. Volatilité de la crypto
+                volatility = self.get_pair_volatility(symbol)
+                
+                # 2. Position existante (surveillance renforcée)
+                has_position = self.has_active_position(symbol)
+                
+                # 3. Heure de la journée (sessions actives)
+                hour = datetime.now().hour
+                is_active_session = 8 <= hour <= 22  # Sessions EU/US
+                
+                # 4. Volume relatif
+                volume_ratio = self.get_volume_ratio(symbol)
+                
+                # Calcul base selon volatilité
+                if volatility >= 4.0:
+                    base_interval = 10    # Très volatil = 10s
+                elif volatility >= 3.0:
+                    base_interval = 20    # Volatil = 20s
+                elif volatility >= 2.0:
+                    base_interval = 45    # Moyen = 45s
+                else:
+                    base_interval = 90    # Calme = 90s
+                
+                # Ajustements professionnels
+                if has_position:
+                    base_interval *= 0.7  # Position ouverte = plus de surveillance
+                
+                if not is_active_session:
+                    base_interval *= 2.0  # Sessions fermées = moins urgent
+                
+                if volume_ratio > 2.0:
+                    base_interval *= 0.7  # Volume élevé = plus réactif
+                elif volume_ratio < 0.5:
+                    base_interval *= 1.5  # Volume faible = moins urgent
+                
+                intervals.append(int(base_interval))
+            
+            # Prendre le MINIMUM (crypto la plus urgente)
+            optimal_interval = min(intervals)
+            
+            # Contraintes de sécurité
+            return max(5, min(optimal_interval, 300))  # 5s à 5min
+            
+        except Exception as e:
+            print(f"⚠️ Erreur calcul intervalle: {e}")
+            return 5  # Fallback par défaut 5s
+    
+    def get_pair_volatility(self, symbol):
+        """Récupère volatilité pour une crypto spécifique"""
+        try:
+            klines = self.get_klines(symbol, 20, '15m')
+            if len(klines) >= 10:
+                from utils.volatility_calculator import VolatilityCalculator
+                return VolatilityCalculator.calculate(klines, symbol)
+            return 2.0
+        except:
+            return 2.0
+    
+    def has_active_position(self, symbol):
+        """Vérifie si position active sur cette crypto"""
+        try:
+            balance = self.balance_manager.get_balance()
+            crypto = symbol.split('/')[0]
+            
+            free = balance.get(crypto, {}).get('free', 0)
+            locked = balance.get(crypto, {}).get('used', 0)
+            total = free + locked
+            
+            if total > 0.00001:
+                value = total * self.get_price(symbol)
+                min_cost = self.get_min_amount(symbol)['min_cost']
+                return value >= min_cost
+            
+            return False
+        except:
+            return False
+    
+    def get_volume_ratio(self, symbol):
+        """Calcule ratio volume actuel vs moyenne"""
+        try:
+            klines = self.get_klines(symbol, 10, '15m')
+            if len(klines) < 5:
+                return 1.0
+            
+            current_volume = klines[-1]['volume']
+            avg_volume = sum(k['volume'] for k in klines[:-1]) / (len(klines) - 1)
+            
+            return current_volume / avg_volume if avg_volume > 0 else 1.0
+        except:
+            return 1.0
     
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position"""
