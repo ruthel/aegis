@@ -321,14 +321,14 @@ class NotificationManager:
                     else:
                         time_display = f"[{duration}j]"
                     
-                    gain_display = f"+{potential_gain_usdt:.3f} USDT {time_display}"
+                    gain_display = f"+{potential_gain_usdt:.3f} (+{apr*100:.1f}%) • {time_display.replace('[', '').replace(']', '')}"
                     
                     if option_type == 'CALL':
-                        position_details.append(f"📞 Call {exercised_coin} {amount:.2f} USDT ({gain_display})")
+                        position_details.append(f"📞 Call {exercised_coin} • {amount:.2f} USDT • {gain_display}")
                     elif option_type == 'PUT':
-                        position_details.append(f"📉 PUT {exercised_coin} {amount:.2f} USDT ({gain_display})")
+                        position_details.append(f"📉 PUT {exercised_coin} • {amount:.2f} USDT • {gain_display}")
                     else:
-                        position_details.append(f"💎 {exercised_coin} {amount:.2f} USDT ({gain_display})")
+                        position_details.append(f"💎 {exercised_coin} • {amount:.2f} USDT • {gain_display}")
                 
                 # Positions simulées
                 for p in simulated_positions:
@@ -337,9 +337,9 @@ class NotificationManager:
                         ptype = 'CALL' if p.get('type') == 'covered_call' else 'PUT'
                         amount = p.get('amount', 0)
                         if ptype == 'CALL':
-                            position_details.append(f"📞 Call {crypto} {amount:.1f} USDT")
+                            position_details.append(f"📞 Call {crypto} • {amount:.1f} USDT")
                         else:
-                            position_details.append(f"📉 PUT {crypto} {amount:.1f} USDT")
+                            position_details.append(f"📉 PUT {crypto} • {amount:.1f} USDT")
                 
                 if position_details:
                     for i, detail in enumerate(position_details):
