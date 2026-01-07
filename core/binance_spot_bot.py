@@ -694,6 +694,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                     time.sleep(10)
                     continue
                 
+                # Envoyer status périodique Telegram
+                if self.notify_trades and hasattr(self, 'notifier'):
+                    self.notifier.send_status_update()
+                
                 # Plus besoin de vérifier manuellement - timer automatique
                 time.sleep(check_interval)
         except KeyboardInterrupt:
@@ -760,6 +764,25 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     def show_dynamic_levels(self, trading_pairs):
         """Affiche les niveaux dynamiques pour les cryptos principales"""
         try:
+            # Vérifier d'abord si on a des cryptos tradables
+            balance = self.balance_manager.get_balance()
+            usdt_available = balance.get('USDT', {}).get('free', 0)
+            
+            # Si balance = 0, ne pas afficher/notifier les niveaux
+            if usdt_available <= 0:
+                return
+            
+            # Vérifier si balance suffisante pour au moins une crypto
+            min_costs = []
+            for pair in trading_pairs:
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                min_cost = self.get_min_amount(symbol)['min_cost']
+                min_costs.append(min_cost)
+            
+            min_required = min(min_costs) if min_costs else 0
+            if usdt_available < min_required:
+                return  # Pas assez de fonds, skip les notifications
+            
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                 current_price = self.get_price(symbol)
