@@ -250,41 +250,36 @@ class DisplayMixin:
         print("🛑 Ctrl+C pour arrêter")
     
     def show_tradable_pairs(self, tradable_pairs, usdt_available):
-        """Affiche les paires tradables (silencieux si répétitif)"""
-        if self.paper_trading:
-            # Éviter affichage répétitif en paper trading
+        """Affiche les paires tradables (déjà filtrées par le crypto scorer)"""
+        if self.paper_trading or not tradable_pairs:
             return
         
         balance = self.balance_manager.get_balance()
         tradable_display = []
         
-        for s in tradable_pairs:
-            base = s.split('/')[0]
+        for symbol in tradable_pairs:
+            base = symbol.split('/')[0]
             free = balance.get(base, {}).get('free', 0)
-            min_cost = self.get_min_amount(s)['min_cost']
+            min_cost = self.get_min_amount(symbol)['min_cost']
             
             # Vérifier si tradable (peut acheter OU peut vendre)
             can_buy = usdt_available >= min_cost
             can_sell = False
             
             if free > 0.00001:
-                value = free * self.get_price(s)
+                value = free * self.get_price(symbol)
                 can_sell = value >= min_cost
             
-            # Ajouter seulement si réellement tradable
-            if can_buy or can_sell:
-                if can_buy and can_sell:
-                    tradable_display.append(f"{base} (A/V)")  # Achat + Vente
-                elif can_buy:
-                    tradable_display.append(f"{base} (A)")    # Achat seulement
-                else:
-                    tradable_display.append(f"{base} (V)")    # Vente seulement
+            # Ajouter avec indication achat/vente
+            if can_buy and can_sell:
+                tradable_display.append(f"{base} (A/V)")  # Achat + Vente
+            elif can_buy:
+                tradable_display.append(f"{base} (A)")    # Achat seulement
+            elif can_sell:
+                tradable_display.append(f"{base} (V)")    # Vente seulement
         
-        # Log silencieux si aucun tradable disponible
-        if not tradable_display or usdt_available < 0.01:
-            return
-        
-        print(f"🔍 Tradable: {tradable_display} | USDT: {usdt_available:.2f}")
+        if tradable_display:
+            print(f"🔍 Tradable: {tradable_display} | USDT: {usdt_available:.2f}")
     
     def show_top_cryptos(self, best_cryptos):
         """Affiche les meilleures cryptos selon le scoring"""
@@ -341,26 +336,6 @@ class DisplayMixin:
         print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
     
     def get_tradable_pairs(self, trading_pairs, usdt_available):
-        """Retourne la liste des paires réellement tradables"""
-        balance = self.balance_manager.get_balance()
-        tradable_pairs = []
-        
-        for pair in trading_pairs:
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
-            base = symbol.split('/')[0]
-            free = balance.get(base, {}).get('free', 0)
-            min_cost = self.get_min_amount(symbol)['min_cost']
-            
-            # Vérifier si tradable (peut acheter OU peut vendre)
-            can_buy = usdt_available >= min_cost
-            can_sell = False
-            
-            if free > 0.00001:
-                value = free * self.get_price(symbol)
-                can_sell = value >= min_cost
-            
-            # Ajouter seulement si réellement tradable
-            if can_buy or can_sell:
-                tradable_pairs.append(symbol)
-        
-        return tradable_pairs
+        """Retourne la liste des paires réellement tradables via le crypto scorer"""
+        stuck_positions = []
+        return self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)

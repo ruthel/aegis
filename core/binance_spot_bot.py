@@ -601,29 +601,13 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 self.show_realtime_prices(trading_pairs)
                 self.show_protection_status()  # Afficher statuts protection
                 
-                # Obtenir balance et cryptos tradables dès le début
+                # Obtenir balance et cryptos tradables via le système de scoring
                 balance = self.balance_manager.get_balance()
                 usdt_available = balance.get('USDT', {}).get('free', 0)
                 
-                # Filtrer les cryptos réellement tradables
-                tradable_pairs = []
-                for pair in trading_pairs:
-                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
-                    min_cost = self.get_min_amount(symbol)['min_cost']
-                    
-                    # Vérifier si tradable (peut acheter OU peut vendre)
-                    can_buy = usdt_available >= min_cost
-                    can_sell = False
-                    
-                    base = symbol.split('/')[0]
-                    free = balance.get(base, {}).get('free', 0)
-                    if free > 0.00001:
-                        value = free * self.get_price(symbol)
-                        can_sell = value >= min_cost
-                    
-                    # Ajouter seulement si réellement tradable
-                    if can_buy or can_sell:
-                        tradable_pairs.append(symbol)
+                # Utiliser le crypto scorer pour filtrer les cryptos tradables
+                stuck_positions = []
+                tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
                 if tradable_pairs:
