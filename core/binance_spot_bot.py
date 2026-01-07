@@ -427,10 +427,14 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             return {'last': current_price, 'percentage': 0, 'symbol': symbol}
     
     def get_klines(self, symbol, count=50, timeframe=None):
-        """Récupère les klines avec timeframe configurable - VRAIES DONNÉES"""
-        # Utiliser le timeframe spécifié ou celui par défaut depuis .env
+        """Récupère les klines avec timeframe adaptatif - VRAIES DONNÉES"""
+        # Timeframe adaptatif au lieu de statique
         if timeframe is None:
-            timeframe = os.getenv('MAIN_TIMEFRAME', '15m')
+            try:
+                from utils.timeframe_manager import TimeframeManager
+                timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', self)
+            except:
+                timeframe = os.getenv('MAIN_TIMEFRAME', '15m')  # Fallback
         
         if self.websocket.is_connected():
             klines = self.websocket.get_klines(symbol, count)

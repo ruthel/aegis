@@ -72,7 +72,11 @@ class CryptoScorer:
     def score_crypto(self, bot, symbol, stuck_positions, websocket_manager=None, volatility=None):
         """Calcule le score total d'une crypto (0-100)"""
         try:
-            klines = bot.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+            # Timeframe adaptatif au lieu de statique
+            from utils.timeframe_manager import TimeframeManager
+            optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
+            
+            klines = bot.get_klines(symbol, 20, optimal_timeframe)
             current_price = bot.get_price(symbol)
             
             if not klines or len(klines) < 10:
@@ -131,8 +135,11 @@ class CryptoScorer:
                 if (crypto_balance * price) < min_cost:
                     continue
             
-            # Récupérer données
-            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 10, os.getenv('MAIN_TIMEFRAME', '15m'))
+            # Récupérer données avec timeframe adaptatif
+            from utils.timeframe_manager import TimeframeManager
+            optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
+            
+            klines = klines_cache.get(symbol) or bot.get_klines(symbol, 10, optimal_timeframe)
             price = prices_cache.get(symbol) or bot.get_price(symbol)
             
             if not klines or len(klines) < 10:
@@ -186,7 +193,11 @@ class CryptoScorer:
     
     def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None, websocket_manager=None):
         """Détails du score pour debug"""
-        klines = bot.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+        # Timeframe adaptatif au lieu de statique
+        from utils.timeframe_manager import TimeframeManager
+        optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
+        
+        klines = bot.get_klines(symbol, 20, optimal_timeframe)
         current_price = bot.get_price(symbol)
         
         if not klines or len(klines) < 10:

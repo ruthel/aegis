@@ -71,19 +71,22 @@ class VolatilityCalculator:
                 else:
                     volatility_hourly = (atr / current_price) * 100
             
-            # Mapper vers score 1-5 pour scalping temps réel (ajusté marché crypto)
-            # 0-0.15% horaire → 1/5 (très calme)
-            # 0.15-0.30% horaire → 2/5 (calme)
-            # 0.30-0.60% horaire → 3/5 (moyen)
-            # 0.60-1.20% horaire → 4/5 (volatil)
-            # 1.20%+ horaire → 5/5 (très volatil)
-            if volatility_hourly < 0.15:
+            # Mapper vers score 1-5 adaptatif selon crypto et conditions
+            try:
+                from utils.timeframe_manager import TimeframeManager
+                # Seuils adaptatifs selon le symbole
+                thresholds = TimeframeManager.get_volatility_thresholds(symbol)
+            except:
+                # Fallback seuils fixes
+                thresholds = {'low': 0.15, 'medium': 0.30, 'high': 0.60, 'extreme': 1.20}
+            
+            if volatility_hourly < thresholds['low']:
                 volatility_score = 1.0
-            elif volatility_hourly < 0.30:
+            elif volatility_hourly < thresholds['medium']:
                 volatility_score = 2.0
-            elif volatility_hourly < 0.60:
+            elif volatility_hourly < thresholds['high']:
                 volatility_score = 3.0
-            elif volatility_hourly < 1.20:
+            elif volatility_hourly < thresholds['extreme']:
                 volatility_score = 4.0
             else:
                 volatility_score = 5.0

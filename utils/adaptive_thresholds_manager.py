@@ -18,8 +18,8 @@ class AdaptiveThresholdsManager:
         
     def get_adaptive_confidence_threshold(self, symbol, volatility):
         """Seuil de confiance adaptatif - Méthode Quantitative"""
-        # 1. Seuil de base selon volatilité
-        base_threshold = self._get_base_threshold(volatility)
+        # 1. Seuil de base selon volatilité (maintenant centralisé)
+        base_threshold = self._get_base_threshold(volatility, symbol)
         
         # 2. Ajustement selon performance récente
         performance_adj = self._calculate_performance_adjustment(symbol)
@@ -50,18 +50,23 @@ class AdaptiveThresholdsManager:
         
         return adaptive_threshold
     
-    def _get_base_threshold(self, volatility):
-        """Seuil de base selon volatilité - Calibré sur données historiques"""
-        if volatility >= 4.0:
-            return 25  # Très volatil = seuil bas
-        elif volatility >= 3.0:
-            return 30
-        elif volatility >= 2.0:
-            return 35
-        elif volatility >= 1.5:
-            return 40
-        else:
-            return 45  # Peu volatil = seuil élevé
+    def _get_base_threshold(self, volatility, symbol=None):
+        """Seuil de base selon volatilité - Utilise le gestionnaire centralisé"""
+        try:
+            from utils.timeframe_manager import TimeframeManager
+            return TimeframeManager.get_confidence_threshold(symbol or 'BTC/USDT', volatility)
+        except:
+            # Fallback seuils fixes
+            if volatility >= 4.0:
+                return 25  # Très volatil = seuil bas
+            elif volatility >= 3.0:
+                return 30
+            elif volatility >= 2.0:
+                return 35
+            elif volatility >= 1.5:
+                return 40
+            else:
+                return 45  # Peu volatil = seuil élevé
     
     def _calculate_performance_adjustment(self, symbol):
         """Ajustement selon performance récente - Méthode Adaptative"""
@@ -129,11 +134,15 @@ class AdaptiveThresholdsManager:
             # Si forte corrélation avec BTC et BTC en difficulté
             btc_momentum = self._get_btc_momentum()
             
-            if correlation > 0.7 and btc_momentum < -0.05:  # BTC baisse > 5%
+            # Seuils corrélation adaptatifs selon crypto
+            correlation_thresholds = self._get_correlation_thresholds(symbol)
+            momentum_thresholds = self._get_btc_momentum_thresholds()
+            
+            if correlation > correlation_thresholds['high'] and btc_momentum < momentum_thresholds['strong_down']:
                 return +12  # Très conservateur si corrélé à BTC en baisse
-            elif correlation > 0.5 and btc_momentum < -0.02:  # BTC baisse > 2%
+            elif correlation > correlation_thresholds['medium'] and btc_momentum < momentum_thresholds['weak_down']:
                 return +6   # Conservateur
-            elif correlation < 0.3:  # Faible corrélation = indépendant
+            elif correlation < correlation_thresholds['low']:
                 return -3   # Légèrement plus agressif
             else:
                 return 0    # Corrélation normale
@@ -144,9 +153,14 @@ class AdaptiveThresholdsManager:
     def _detect_market_regime(self, symbol):
         """Détection de régime de marché - Algorithme Quantitatif"""
         try:
+            # Timeframes adaptatifs selon volatilité
+            volatility = self._get_symbol_volatility(symbol)
+            daily_tf = self.get_optimal_timeframe(symbol, 'regime_detection', volatility)
+            hourly_tf = '1h' if volatility >= 3.0 else '4h'
+            
             # Récupérer données multi-timeframes
-            daily_klines = self.bot.get_klines(symbol, 50, '1d')
-            hourly_klines = self.bot.get_klines(symbol, 100, '1h')
+            daily_klines = self.bot.get_klines(symbol, 50, daily_tf)
+            hourly_klines = self.bot.get_klines(symbol, 100, hourly_tf)
             
             if len(daily_klines) < 20 or len(hourly_klines) < 50:
                 return 'UNKNOWN'
@@ -171,15 +185,26 @@ class AdaptiveThresholdsManager:
             # Classification du régime
             current_price = daily_closes[-1]
             
-            if recent_volatility > 8:  # Très volatil
+            # Seuils adaptatifs selon crypto au lieu de fixes
+            try:
+                from utils.timeframe_manager import TimeframeManager
+                thresholds = TimeframeManager.get_volatility_thresholds(symbol)
+                volatility_threshold = thresholds['extreme'] * 100  # Convertir en %
+            except:
+                volatility_threshold = 8  # Fallback
+            
+            # Seuils momentum adaptatifs selon volatilité de la crypto
+            momentum_thresholds = self._get_momentum_thresholds(symbol, volatility)
+            
+            if recent_volatility > volatility_threshold:
                 return 'VOLATILE'
-            elif current_price > ema_20_daily > ema_50_daily and short_momentum > 0.1:
+            elif current_price > ema_20_daily > ema_50_daily and short_momentum > momentum_thresholds['bull_strong']:
                 return 'BULL_STRONG'
-            elif current_price > ema_20_daily > ema_50_daily and short_momentum > 0:
+            elif current_price > ema_20_daily > ema_50_daily and short_momentum > momentum_thresholds['bull_weak']:
                 return 'BULL_WEAK'
-            elif current_price < ema_20_daily < ema_50_daily and short_momentum < -0.1:
+            elif current_price < ema_20_daily < ema_50_daily and short_momentum < momentum_thresholds['bear_strong']:
                 return 'BEAR_STRONG'
-            elif current_price < ema_20_daily < ema_50_daily and short_momentum < 0:
+            elif current_price < ema_20_daily < ema_50_daily and short_momentum < momentum_thresholds['bear_weak']:
                 return 'BEAR_WEAK'
             else:
                 return 'SIDEWAYS'
@@ -235,9 +260,13 @@ class AdaptiveThresholdsManager:
     def _calculate_btc_correlation(self, symbol, days=30):
         """Calcule corrélation avec BTC"""
         try:
+            # Timeframe adaptatif selon volatilité
+            volatility = self._get_symbol_volatility(symbol)
+            correlation_tf = self.get_optimal_timeframe(symbol, 'correlation', volatility)
+            
             # Récupérer données des deux cryptos
-            btc_klines = self.bot.get_klines('BTC/USDT', days, '1d')
-            symbol_klines = self.bot.get_klines(symbol, days, '1d')
+            btc_klines = self.bot.get_klines('BTC/USDT', days, correlation_tf)
+            symbol_klines = self.bot.get_klines(symbol, days, correlation_tf)
             
             if len(btc_klines) < days or len(symbol_klines) < days:
                 return 0.5  # Corrélation moyenne par défaut
@@ -258,11 +287,16 @@ class AdaptiveThresholdsManager:
     def _get_btc_momentum(self):
         """Récupère momentum BTC récent"""
         try:
-            btc_klines = self.bot.get_klines('BTC/USDT', 7, '1d')
-            if len(btc_klines) < 7:
+            # Timeframe adaptatif selon volatilité BTC
+            btc_volatility = self._get_symbol_volatility('BTC/USDT')
+            momentum_tf = '1h' if btc_volatility >= 3.0 else '1d'
+            period = 24 if momentum_tf == '1h' else 7
+            
+            btc_klines = self.bot.get_klines('BTC/USDT', period, momentum_tf)
+            if len(btc_klines) < period:
                 return 0
             
-            return (btc_klines[-1]['close'] - btc_klines[-7]['close']) / btc_klines[-7]['close']
+            return (btc_klines[-1]['close'] - btc_klines[-period]['close']) / btc_klines[-period]['close']
             
         except Exception as e:
             return 0
@@ -328,3 +362,79 @@ class AdaptiveThresholdsManager:
         """Récupère les paires de trading configurées"""
         import os
         return os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+    
+    def get_optimal_timeframe(self, symbol, analysis_type, volatility=None):
+        """Timeframe adaptatif selon volatilité et type d'analyse"""
+        if volatility is None:
+            volatility = self._get_symbol_volatility(symbol)
+        
+        if analysis_type == 'regime_detection':
+            if volatility >= 4.0:
+                return '4h'    # Très volatil = plus réactif
+            elif volatility >= 2.0:
+                return '12h'   # Moyen = compromis
+            else:
+                return '1d'    # Calme = tendance long terme
+        
+        elif analysis_type == 'correlation':
+            if volatility >= 3.0:
+                return '1h'    # Volatil = corrélation change vite
+            else:
+                return '1d'    # Stable = corrélation stable
+        
+        elif analysis_type == 'main_trading':
+            if volatility >= 4.0:
+                return '5m'    # Très volatil = ultra réactif
+            elif volatility >= 2.5:
+                return '15m'   # Moyen (actuel)
+            else:
+                return '1h'    # Calme = long terme
+        
+        return '15m'  # Fallback
+    
+    def _get_symbol_volatility(self, symbol):
+        """Récupère volatilité du symbole"""
+        try:
+            klines = self.bot.get_klines(symbol, 20, '15m')
+            if len(klines) >= 10:
+                from utils.volatility_calculator import VolatilityCalculator
+                return VolatilityCalculator.calculate(klines, symbol)
+            return 2.0
+        except:
+            return 2.0
+    
+    def _get_momentum_thresholds(self, symbol, volatility):
+        """Seuils momentum adaptatifs selon crypto et volatilité"""
+        # BTC/ETH = seuils plus bas (moins volatils)
+        if symbol in ['BTC/USDT', 'ETH/USDT']:
+            return {
+                'bull_strong': 0.05,   # 5% au lieu de 10%
+                'bull_weak': 0,
+                'bear_strong': -0.05,  # -5% au lieu de -10%
+                'bear_weak': 0
+            }
+        # Altcoins = seuils standards
+        else:
+            return {
+                'bull_strong': 0.1,    # 10% standard
+                'bull_weak': 0,
+                'bear_strong': -0.1,   # -10% standard
+                'bear_weak': 0
+            }
+    
+    def _get_correlation_thresholds(self, symbol):
+        """Seuils corrélation adaptatifs selon crypto"""
+        # Altcoins ont généralement plus de corrélation avec BTC
+        if symbol in ['BTC/USDT']:
+            return {'high': 0.9, 'medium': 0.7, 'low': 0.5}  # BTC = seuils élevés
+        elif symbol in ['ETH/USDT']:
+            return {'high': 0.8, 'medium': 0.6, 'low': 0.4}  # ETH = seuils moyens
+        else:
+            return {'high': 0.7, 'medium': 0.5, 'low': 0.3}  # Altcoins = seuils bas
+    
+    def _get_btc_momentum_thresholds(self):
+        """Seuils momentum BTC adaptatifs"""
+        return {
+            'strong_down': -0.05,  # -5%
+            'weak_down': -0.02     # -2%
+        }

@@ -2,9 +2,8 @@
 
 class BinanceEMAAnalyzer:
     def __init__(self):
-        self.ema_short = 7   # Court terme (Jaune)
-        self.ema_medium = 25  # Moyen terme (Rose)
-        self.ema_long = 99    # Long terme (Violet)
+        # Périodes EMA adaptatives (seront calculées dynamiquement)
+        self.default_periods = {'short': 7, 'medium': 25, 'long': 99}
     
     def calculate_ema(self, prices, period):
         """Calcule l'EMA pour une période donnée"""
@@ -19,16 +18,29 @@ class BinanceEMAAnalyzer:
         
         return ema
     
-    def analyze(self, klines, current_price):
+    def analyze(self, klines, current_price, symbol=None, timeframe='15m'):
         """Analyse complète EMA 7/25/99 et détection du cas"""
         if len(klines) < 99:
             return None
         
+        # Périodes EMA adaptatives selon timeframe et volatilité
+        try:
+            from utils.timeframe_manager import TimeframeManager
+            ema_periods = TimeframeManager.get_ema_periods(symbol or 'BTC/USDT', timeframe)
+            ema_short_period = ema_periods['short']
+            ema_medium_period = ema_periods['medium'] 
+            ema_long_period = ema_periods['long']
+        except:
+            # Fallback périodes par défaut
+            ema_short_period = self.default_periods['short']
+            ema_medium_period = self.default_periods['medium']
+            ema_long_period = self.default_periods['long']
+        
         closes = [k['close'] for k in klines]
         
-        ema_7 = self.calculate_ema(closes, 7)
-        ema_25 = self.calculate_ema(closes, 25)
-        ema_99 = self.calculate_ema(closes, 99)
+        ema_7 = self.calculate_ema(closes, ema_short_period)
+        ema_25 = self.calculate_ema(closes, ema_medium_period)
+        ema_99 = self.calculate_ema(closes, ema_long_period)
         
         if not all([ema_7, ema_25, ema_99]):
             return None
