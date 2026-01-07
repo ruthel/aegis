@@ -13,7 +13,8 @@ class AdaptiveThresholdsManager:
         self.market_regimes = {}
         self.adaptive_thresholds = {}
         self.last_optimization = 0
-        self.optimization_interval = 86400  # 24h comme les pros
+        # Dynamique: s'adapte au rythme du bot
+        self.base_multiplier = 1800  # 30min si check_interval=1s
         
     def get_adaptive_confidence_threshold(self, symbol, volatility):
         """Seuil de confiance adaptatif - Méthode Quantitative"""
@@ -267,12 +268,20 @@ class AdaptiveThresholdsManager:
             return 0
     
     def optimize_thresholds_daily(self):
-        """Optimisation quotidienne des seuils - Processus Automatisé"""
+        """Optimisation adaptative des seuils - Processus Automatisé"""
         now = time.time()
-        if now - self.last_optimization < self.optimization_interval:
-            return
         
-        print("🔧 Optimisation quotidienne des seuils adaptatifs...")
+        # Calcul dynamique de l'intervalle d'optimisation
+        try:
+            trading_pairs = self.bot.crypto_scorer.rank_cryptos(self.bot, 
+                self.bot.get_trading_pairs(), [])
+            current_check_interval = self.bot.get_optimal_check_interval(trading_pairs)
+            optimization_interval = current_check_interval * self.base_multiplier
+        except:
+            optimization_interval = 3600  # Fallback 1h
+        
+        if now - self.last_optimization < optimization_interval:
+            return
         
         # Analyser performance des seuils actuels
         performance_metrics = self._analyze_threshold_performance()
@@ -314,3 +323,8 @@ class AdaptiveThresholdsManager:
             'correlation_adj': f"{components['correlation']:+.0f}%",
             'last_update': datetime.fromtimestamp(data['timestamp']).strftime('%H:%M:%S')
         }
+    
+    def get_trading_pairs(self):
+        """Récupère les paires de trading configurées"""
+        import os
+        return os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
