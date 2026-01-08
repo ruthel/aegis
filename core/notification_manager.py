@@ -373,15 +373,24 @@ class NotificationManager:
                     # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
                     potential_gain_usdt = amount * apr * (duration / 365)
                     
-                    # Calculer jours restants
+                    # Calculer temps restant
                     settle_date = p.get('settleDate', 0)
                     if settle_date:
                         settle_datetime = datetime.fromtimestamp(settle_date / 1000)
-                        days_left = (settle_datetime - datetime.now()).days
-                        if days_left > 0:
-                            time_display = f"{days_left}j"
-                        else:
+                        time_remaining = settle_datetime - datetime.now()
+                        total_seconds = time_remaining.total_seconds()
+                        
+                        if total_seconds <= 0:
                             time_display = "Expiré"
+                        elif total_seconds < 3600:  # < 1 heure
+                            minutes = int(total_seconds // 60)
+                            time_display = f"{minutes}min"
+                        elif total_seconds < 86400:  # < 24 heures
+                            hours = int(total_seconds // 3600)
+                            time_display = f"{hours}h"
+                        else:  # >= 24 heures
+                            days = int(total_seconds // 86400)
+                            time_display = f"{days}j"
                     else:
                         time_display = f"{duration}j"
                     

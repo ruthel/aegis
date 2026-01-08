@@ -346,6 +346,23 @@ class DoubleInvestmentManager:
         except Exception as e:
             print(f"⚠️ Erreur traitement expiration: {e}")
     
+    def _format_time_remaining(self, settle_datetime):
+        """Formate le temps restant selon les règles: jours si >24h, heures si >1h, minutes sinon"""
+        time_remaining = settle_datetime - datetime.now()
+        total_seconds = time_remaining.total_seconds()
+        
+        if total_seconds <= 0:
+            return "Expiré"
+        elif total_seconds < 3600:  # < 1 heure
+            minutes = int(total_seconds // 60)
+            return f"{minutes}min"
+        elif total_seconds < 86400:  # < 24 heures
+            hours = int(total_seconds // 3600)
+            return f"{hours}h"
+        else:  # >= 24 heures
+            days = int(total_seconds // 86400)
+            return f"{days}j"
+    
     def get_dual_investment_positions_from_api(self):
         """Récupère les positions réelles de Dual Investment via l'API Binance avec cache"""
         try:
@@ -414,24 +431,20 @@ class DoubleInvestmentManager:
                             # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
                             potential_gain_usdt = amount * apr * (duration / 365)
                             
-                            # Calculer jours restants
+                            # Calculer temps restant
                             settle_date = pos.get('settleDate', 0)
                             if settle_date:
                                 settle_datetime = datetime.fromtimestamp(settle_date / 1000)
-                                days_left = (settle_datetime - datetime.now()).days
-                                if days_left > 0:
-                                    time_display = f"[{days_left}j]"
-                                else:
-                                    time_display = "[Expiré]"
+                                time_display = self._format_time_remaining(settle_datetime)
                             else:
-                                time_display = f"[{duration}j]"
+                                time_display = f"{duration}j"
                             
                             # Format compact professionnel recommandé
                             emoji = "📞" if option_type == 'CALL' else "📉"
                             profit_pct = (potential_gain_usdt / amount) * 100 if amount > 0 else 0
                             
                             # Format: {emoji} {type} {crypto} • {montant} USDT • {profit} ({pct}%) • {durée}
-                            display_text = f"{emoji} {option_type} {exercised_coin} • {amount:.2f} USDT • +{potential_gain_usdt:.3f} (+{profit_pct:.1f}%) • {time_display.replace('[', '').replace(']', '')}"
+                            display_text = f"{emoji} {option_type} {exercised_coin} • {amount:.2f} USDT • +{potential_gain_usdt:.3f} (+{profit_pct:.1f}%) • {time_display}"
                             
                             print(f"   {display_text}")
                     else:
@@ -475,24 +488,20 @@ class DoubleInvestmentManager:
                 # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
                 potential_gain_usdt = amount * apr * (duration / 365)
                 
-                # Calculer jours restants
+                # Calculer temps restant
                 settle_date = pos.get('settleDate', 0)
                 if settle_date:
                     settle_datetime = datetime.fromtimestamp(settle_date / 1000)
-                    days_left = (settle_datetime - datetime.now()).days
-                    if days_left > 0:
-                        time_display = f"[{days_left}j]"
-                    else:
-                        time_display = "[Expiré]"
+                    time_display = self._format_time_remaining(settle_datetime)
                 else:
-                    time_display = f"[{duration}j]"
+                    time_display = f"{duration}j"
                 
                 # Format compact professionnel pour résumé
                 emoji = "📞" if option_type == 'CALL' else "📉"
                 profit_pct = (potential_gain_usdt / amount) * 100 if amount > 0 else 0
                 
                 # Format: {emoji} {type} {crypto} • {montant} USDT • {profit} ({pct}%) • {durée}
-                display_text = f"{emoji} {option_type} {exercised_coin} • {amount:.2f} USDT • +{potential_gain_usdt:.3f} (+{profit_pct:.1f}%) • {time_display.replace('[', '').replace(']', '')}"
+                display_text = f"{emoji} {option_type} {exercised_coin} • {amount:.2f} USDT • +{potential_gain_usdt:.3f} (+{profit_pct:.1f}%) • {time_display}"
                 
                 summary_parts.append(display_text)
         
