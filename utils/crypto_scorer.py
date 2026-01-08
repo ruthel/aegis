@@ -66,29 +66,43 @@ class CryptoScorer:
         return 10
     
     def score_crypto(self, bot, symbol, stuck_positions, websocket_manager=None, volatility=None):
-        """Calcule le score total d'une crypto (0-100)"""
+        """Calcule le score total d'une crypto (0-100) - Version professionnelle 7j"""
         try:
-            # Timeframe adaptatif au lieu de statique
             from utils.timeframe_manager import TimeframeManager
             optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
             
-            klines = bot.get_klines(symbol, 20, optimal_timeframe)
+            # Essayer d'abord 7 jours pour volume professionnel
+            klines_7d = bot.get_klines(symbol, 672, '15m')  # 7 jours
+            klines_short = bot.get_klines(symbol, 20, optimal_timeframe)  # Analyse rapide
             current_price = bot.get_price(symbol)
             
-            if not klines or len(klines) < 10:
+            if not klines_short or len(klines_short) < 10:
                 return 0
             
-            # Scoring avec pondération adaptative
+            # Scoring avec données optimales
             websocket_manager = getattr(bot, 'websocket', None)
+            volatility_score = self.calculate_volatility_score(klines_short, symbol, volatility, websocket_manager)
             
-            volatility_score = self.calculate_volatility_score(klines, symbol, volatility, websocket_manager)
-            volume_score = self.calculate_volume_score(klines)
-            momentum_score = self.calculate_momentum_score(klines)
+            # Volume score avec priorité 7j
+            if klines_7d and len(klines_7d) >= 672:
+                volume_score = self.calculate_volume_score(klines_7d)  # 7j optimal
+                data_quality = 'HIGH_7D'
+            elif len(klines_short) >= 96:  # Fallback 24h
+                klines_24h = bot.get_klines(symbol, 96, '15m')
+                volume_score = self.calculate_volume_score(klines_24h) if klines_24h else self.calculate_volume_score(klines_short)
+                data_quality = 'MEDIUM_24H'
+            else:
+                volume_score = self.calculate_volume_score(klines_short)  # Fallback minimal
+                data_quality = 'LIMITED'
+            
+            momentum_score = self.calculate_momentum_score(klines_short)
             spread_score = self.calculate_spread_score(symbol, current_price)
             history_score = self.calculate_history_score(symbol, stuck_positions)
             
-            # Pondération dynamique selon stratégie et marché
+            # Pondération avec bonus qualité données
             weights = self._get_dynamic_weights(symbol)
+            if data_quality == 'HIGH_7D':
+                weights['volume'] *= 1.2  # Bonus 20% pour données 7j
             
             total_score = (
                 volatility_score * weights['volatility'] +
@@ -98,7 +112,7 @@ class CryptoScorer:
                 history_score * weights['history']
             )
             
-            return total_score
+            return min(total_score, 100)  # Cap à 100
             
         except Exception as e:
             print(f"❌ Erreur scoring {symbol}: {e}")
@@ -233,21 +247,27 @@ class CryptoScorer:
         print(f"🚫 {symbol} ajouté à la blacklist pour {self.blacklist_duration/3600:.1f}h")
     
     def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None, websocket_manager=None):
-        """Détails du score pour debug"""
-        # Timeframe adaptatif au lieu de statique
+        """Détails du score pour debug - Version professionnelle"""
         from utils.timeframe_manager import TimeframeManager
         optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
         
-        klines = bot.get_klines(symbol, 20, optimal_timeframe)
+        klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
+        klines_long = bot.get_klines(symbol, 96, '15m')  # 24h
         current_price = bot.get_price(symbol)
         
-        if not klines or len(klines) < 10:
+        if not klines_short or len(klines_short) < 10:
             return None
         
+        # Volume professionnel si données 24h disponibles
+        if klines_long and len(klines_long) >= 50:
+            volume_score = self.calculate_volume_score(klines_long)
+        else:
+            volume_score = self.calculate_volume_score(klines_short)
+        
         return {
-            'volatility': self.calculate_volatility_score(klines, symbol, volatility, websocket_manager),
-            'volume': self.calculate_volume_score(klines),
-            'momentum': self.calculate_momentum_score(klines),
+            'volatility': self.calculate_volatility_score(klines_short, symbol, volatility, websocket_manager),
+            'volume': volume_score,
+            'momentum': self.calculate_momentum_score(klines_short),
             'spread': self.calculate_spread_score(symbol, current_price),
             'history': self.calculate_history_score(symbol, stuck_positions)
         }
