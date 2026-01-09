@@ -13,7 +13,7 @@ try:
 except ImportError:
     NUMPY_AVAILABLE = False
 
-class MarketCalculator:
+class MarketAnalyzer:
     """Calculs de marché centralisés - Tout-en-un"""
     
     def __init__(self, min_score=40, max_tradeable=2):
@@ -406,7 +406,39 @@ class MarketCalculator:
         last = self.last_predictions[symbol]
         return time.time() - last['timestamp'] > 1800  # 30min
     
-    # ===== MÉTHODES EXISTANTES (inchangées) =====
+    # ===== MÉTHODES CONFIDENCE CALCULATOR =====
+    
+    @staticmethod
+    def get_min_confidence(volatility, symbol=None):
+        """
+        Calcule le seuil de confiance minimum selon la volatilité - ADAPTATIF
+        
+        Args:
+            volatility: Score volatilité 1-5
+            symbol: Symbole pour optimisations futures
+        
+        Returns:
+            int: Seuil de confiance minimum (%)
+        """
+        # Utiliser le gestionnaire centralisé
+        try:
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            analyzer = TimeframeAnalyzer()
+            return analyzer.get_confidence_threshold(symbol or 'BTC/USDT', volatility)
+        except:
+            # Fallback seuils réduits car 15m = signaux plus fiables
+            if volatility >= 3.0:  # Était 4.0
+                return 30  # Réduit: 35 → 30
+            elif volatility >= 2.0:  # Était 3.0
+                return 35  # Réduit: 40 → 35
+            elif volatility >= 1.5:  # Était 2.0
+                return 38  # Réduit: 42 → 38
+            elif volatility >= 1.0:
+                return 45  # Réduit: 50 → 45
+            else:
+                return 50  # Réduit: 55 → 50
+    
+    # ===== MÉTHODES EXISTANTES =====
     
     @staticmethod
     def calculate_momentum(klines):
@@ -439,11 +471,11 @@ class MarketCalculator:
         try:
             klines_7d = bot.get_klines(symbol, 672, '15m')
             if len(klines_7d) >= 672:
-                return MarketCalculator._calculate_7d_metrics(klines_7d)
+                return MarketAnalyzer._calculate_7d_metrics(klines_7d)
             
             klines_24h = bot.get_klines(symbol, 96, '15m')
             if len(klines_24h) >= 50:
-                return MarketCalculator._calculate_24h_metrics(klines_24h)
+                return MarketAnalyzer._calculate_24h_metrics(klines_24h)
             
             return None
         except:
@@ -475,7 +507,7 @@ class MarketCalculator:
             'ratio_vs_7d': current_volume / sma_672 if sma_672 > 0 else 1,
             'vwap_7d': vwap,
             'data_quality': 'HIGH_7D',
-            'volume_trend': MarketCalculator._get_volume_trend_7d(sma_96, sma_336, sma_672)
+            'volume_trend': MarketAnalyzer._get_volume_trend_7d(sma_96, sma_336, sma_672)
         }
     
     @staticmethod
@@ -550,7 +582,7 @@ class MarketCalculator:
         if len(klines) < 10:
             return 0
         
-        momentum = MarketCalculator.calculate_momentum(klines)
+        momentum = MarketAnalyzer.calculate_momentum(klines)
         
         if momentum >= 1:
             return 25
@@ -644,8 +676,9 @@ class MarketCalculator:
     def score_crypto(self, bot, symbol, stuck_positions, websocket_manager=None, volatility=None):
         """Calcule le score total d'une crypto (0-100) - Version professionnelle 7j"""
         try:
-            from utils.timeframe_manager import TimeframeManager
-            optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            analyzer = TimeframeAnalyzer()
+            optimal_timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', bot)
             
             klines_7d = bot.get_klines(symbol, 672, '15m')
             klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
@@ -718,8 +751,9 @@ class MarketCalculator:
                 if (crypto_balance * price) < min_cost:
                     continue
             
-            from utils.timeframe_manager import TimeframeManager
-            optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            analyzer = TimeframeAnalyzer()
+            optimal_timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', bot)
             
             klines = bot.get_klines(symbol, 20, optimal_timeframe)
             
@@ -804,8 +838,9 @@ class MarketCalculator:
     
     def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None, websocket_manager=None):
         """Détails du score pour debug - Version professionnelle"""
-        from utils.timeframe_manager import TimeframeManager
-        optimal_timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', bot)
+        from utils.timeframe_analyzer import TimeframeAnalyzer
+        analyzer = TimeframeAnalyzer()
+        optimal_timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', bot)
         
         klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
         klines_long = bot.get_klines(symbol, 96, '15m')

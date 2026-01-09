@@ -1,7 +1,6 @@
 """Module d'analyse et prévisions pour le bot de trading"""
 from datetime import datetime
-from utils.confidence_calculator import ConfidenceCalculator
-from utils.market_calculator import MarketCalculator
+from utils.market_analyzer import MarketAnalyzer
 from utils.ema_analyzer import BinanceEMAAnalyzer
 import time
 import os
@@ -25,8 +24,8 @@ class AnalysisMixin:
         
         # NOUVEAU: Analyse Support/Résistance avancée
         if len(klines) >= 50:
-            sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
-            reversal_prediction = self.sr_analyzer.predict_reversal_probability(current_price, sr_levels)
+            sr_levels = self.pattern_recognition.find_support_resistance_levels(klines)
+            reversal_prediction = self.pattern_recognition.predict_reversal_probability(current_price, sr_levels)
             
             analysis['support_resistance'] = {
                 'levels': sr_levels,
@@ -88,9 +87,9 @@ class AnalysisMixin:
             if len(klines) < 10:
                 return None
             
-            momentum = MarketCalculator.calculate_momentum(klines)
-            volatility = MarketCalculator.calculate_volatility(klines, symbol)
-            avg_volume = MarketCalculator.calculate_volume_avg(klines)
+            momentum = MarketAnalyzer.calculate_momentum(klines)
+            volatility = MarketAnalyzer.calculate_volatility(klines, symbol)
+            avg_volume = MarketAnalyzer.calculate_volume_avg(klines)
             
             closes = [k['close'] for k in klines[-20:]]
             price_changes = [abs(closes[i] - closes[i-1]) / closes[i-1] * 100 for i in range(1, len(closes))]
@@ -151,7 +150,7 @@ class AnalysisMixin:
         try:
             # Initialiser le prédicteur si nécessaire
             if not hasattr(self, 'volume_predictor'):
-                self.volume_predictor = self.market_calculator
+                self.volume_predictor = self.market_analyzer
             
             # Récupérer données temps réel
             klines_1m = self.get_klines(symbol, 60, '1m')
@@ -210,7 +209,7 @@ class AnalysisMixin:
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
             vol_value = analysis.get('volatility', 2.0)
-            min_conf = ConfidenceCalculator.get_min_confidence(vol_value)
+            min_conf = MarketAnalyzer.get_min_confidence(vol_value)
             
             can_buy_now = (
                 signal['action'] in ['BUY', 'STRONG_BUY'] and
@@ -259,9 +258,9 @@ class AnalysisMixin:
                 
                 # 3. SUPPORT/RÉSISTANCE pour cible précise
                 support_factor = 1.0
-                if hasattr(self, 'sr_analyzer') and len(klines_15m) >= 50:
+                if hasattr(self, 'pattern_recognition') and len(klines_15m) >= 50:
                     try:
-                        sr_levels = self.sr_analyzer.find_support_resistance_levels(klines_15m)
+                        sr_levels = self.pattern_recognition.find_support_resistance_levels(klines_15m)
                         for level in sr_levels:
                             distance = abs(level['price'] - current_price) / current_price * 100
                             if distance < 0.3:  # Très proche d'un niveau

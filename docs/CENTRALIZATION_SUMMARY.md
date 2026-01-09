@@ -5,9 +5,9 @@
 ### 1. `utils/volatility_calculator.py`
 **Singleton centralisé pour calcul de volatilité**
 - `calculate(klines, symbol)` - Calcul volatilité avec cache 5min
-- Utilisé par : `multi_timeframe_analyzer.py`, `crypto_scorer.py`, `advanced_risk_manager.py`, `numpy_optimizer.py`
+- Utilisé par : `timeframe_analyzer.py`, `crypto_scorer.py`, `risk_manager.py`, `numpy_optimizer.py`
 
-### 2. `utils/market_calculator.py`
+### 2. `utils/market_analyzer.py`
 **Calculateur centralisé pour métriques de marché**
 - `calculate_momentum(klines)` - Momentum sur 10 périodes
 - `calculate_volume_avg(klines, periods=5)` - Volume moyen
@@ -20,7 +20,7 @@
 **Utilisé par :**
 - `crypto_scorer.py`
 - `numpy_optimizer.py`
-- `multi_timeframe_analyzer.py`
+- `timeframe_analyzer.py`
 - `stuck_position_manager.py`
 
 ## 📊 Méthodes Dupliquées Éliminées
@@ -47,12 +47,12 @@ hours_held = (time.time() - buy_time) / 3600
 ### Après Centralisation
 ```python
 # Partout
-from utils.market_calculator import MarketCalculator
+from utils.market_analyzer import MarketAnalyzer
 
-momentum = MarketCalculator.calculate_momentum(klines)
-score = MarketCalculator.calculate_momentum_score(klines)
-loss = MarketCalculator.calculate_loss_percent(current_price, buy_price)
-hours = MarketCalculator.calculate_hours_held(buy_time)
+momentum = MarketAnalyzer.calculate_momentum(klines)
+score = MarketAnalyzer.calculate_momentum_score(klines)
+loss = MarketAnalyzer.calculate_loss_percent(current_price, buy_price)
+hours = MarketAnalyzer.calculate_hours_held(buy_time)
 ```
 
 ## 🎯 Avantages
@@ -90,13 +90,13 @@ hours = MarketCalculator.calculate_hours_held(buy_time)
 
 ### Créés
 - ✅ `utils/volatility_calculator.py`
-- ✅ `utils/market_calculator.py`
+- ✅ `utils/market_analyzer.py`
 
 ### Mis à jour
 - ✅ `utils/crypto_scorer.py`
 - ✅ `utils/numpy_optimizer.py`
-- ✅ `utils/multi_timeframe_analyzer.py`
-- ✅ `utils/advanced_risk_manager.py`
+- ✅ `utils/timeframe_analyzer.py`
+- ✅ `utils/risk_manager.py`
 - ✅ `utils/stuck_position_manager.py`
 
 ## 🚀 Prochaines Étapes Possibles

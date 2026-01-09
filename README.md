@@ -187,10 +187,10 @@ binance-bot-v2/
 │   └── websocket_manager.py    # WebSocket temps réel
 ├── utils/                       # Utilitaires spécialisés
 │   ├── crypto_scorer.py        # Scoring cryptos 0-100
-│   ├── advanced_risk_manager.py # Gestion risques professionnelle
-│   ├── multi_timeframe_analyzer.py # Timeframes adaptatifs (4H/1H/15M ou 15M/5M/1M)
+│   ├── risk_manager.py # Gestion risques professionnelle
+│   ├── timeframe_analyzer.py # Timeframes adaptatifs (4H/1H/15M ou 15M/5M/1M)
 │   ├── volatility_calculator.py # Calculs volatilité centralisés
-│   ├── market_calculator.py    # Métriques marché centralisées
+│   ├── market_analyzer.py    # Métriques marché centralisées
 │   └── capital_manager.py      # Gestion automatique tous capitaux (8+ USDT)
 ├── config.py                   # Configuration centralisée (.env)
 ├── run.py                      # Point d'entrée sécurisé
@@ -558,7 +558,7 @@ python -m cProfile -o profile.stats run.py
 
 ### Centralisation Code
 - **Calculs dupliqués éliminés** : -200 lignes code
-- **Utilitaires centralisés** : volatility_calculator, market_calculator
+- **Utilitaires centralisés** : volatility_calculator, market_analyzer
 - **Maintenance simplifiée** : Une source de vérité par calcul
 - **Performance optimisée** : NumPy automatique + cache partagé
 

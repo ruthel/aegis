@@ -10,31 +10,31 @@ from core.notification_manager import NotificationManager
 from core.earn_manager import BinanceEarnManager
 from core.double_investment_manager import DoubleInvestmentManager
 from core.balance_manager import BalanceManager
-from utils.advanced_risk_manager import AdvancedRiskManager, TrailingStopManager, CorrelationManager
+from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
 from utils.flash_crash_detector import FlashCrashDetector
-from utils.macro_event_monitor import MacroEventMonitor
+
 from utils.contagion_detector import ContagionDetector
-from utils.multi_exchange_fallback import MultiExchangeFallback
+
 from utils.manipulation_detector import ManipulationDetector
-from utils.news_monitor import NewsMonitor
-from utils.multi_timeframe_analyzer import MultiTimeframeAnalyzer
-from utils.safety_manager import SafetyManager
+
+from utils.timeframe_analyzer import TimeframeAnalyzer
+
 from utils.stuck_position_manager import StuckPositionManager
 from utils.decision_display import DecisionDisplay
-from utils.support_resistance_analyzer import SupportResistanceAnalyzer
+
 from utils.stablecoin_monitor import StablecoinMonitor
 from utils.pattern_recognition import PatternRecognition
 from utils.slippage_calculator import SlippageCalculator
 from utils.liquidity_checker import LiquidityChecker
-from utils.market_calculator import MarketCalculator
+from utils.market_analyzer import MarketAnalyzer
 from utils.timing_optimizer import TimingOptimizer
 from utils.position_sizing_calculator import PositionSizingCalculator
 from utils.dynamic_levels_manager import DynamicLevelsManager
 from utils.capital_manager import CapitalManager
 from utils.crypto_detector import CryptoDetector
-from utils.dust_manager import DustManager
-from utils.dynamic_fees_manager import DynamicFeesManager
-from utils.adaptive_thresholds_manager import AdaptiveThresholdsManager
+
+
+
 import logging
 
 # Import des mixins
@@ -99,40 +99,45 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.cumulative_tracker = {}  # {symbol: {'direction': 1/-1, 'count': 0, 'start_price': 0}}
         self.last_dynamic_notifications = {}  # Éviter notifications consécutives identiques
         
+        # NOUVEAU: Cache de décisions unifié - Niveau Institutionnel
+        self.decision_cache = {}  # {symbol: {'decision': bool, 'reason': str, 'timestamp': float}}
+        self._last_decision = {}  # Anti-spam logs
+        
         # Ordres
         self.pending_orders = {}
         self.order_timeout = 86400
         
         # Gestionnaires (nommage cohérent)
-        self.advanced_risk_manager = AdvancedRiskManager()
+        self.risk_manager = RiskManager(
+            max_daily_trades=int(os.getenv('MAX_DAILY_TRADES', '50')),
+            max_daily_loss=self.max_daily_loss,
+            emergency_stop_loss=float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
+        )
+        self.risk_manager.bot = self  # Référence pour les méthodes adaptatives
         self.trailing_stop_manager = TrailingStopManager(float(os.getenv('TRAILING_STOP_PERCENT', '3')))
         self.correlation_manager = CorrelationManager()
         
         # NOUVEAUX DÉTECTEURS CRITIQUES
         self.flash_crash_detector = FlashCrashDetector()
-        self.macro_monitor = MacroEventMonitor()
+
         self.contagion_detector = ContagionDetector()
-        self.multi_exchange_fallback = MultiExchangeFallback()
+
         self.manipulation_detector = ManipulationDetector()
-        self.news_monitor = NewsMonitor()
-        self.multi_tf_analyzer = MultiTimeframeAnalyzer()
-        self.safety_manager = SafetyManager(
-            max_daily_trades=int(os.getenv('MAX_DAILY_TRADES', '50')),
-            max_daily_loss=self.max_daily_loss,
-            emergency_stop_loss=float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
-        )
+
+        self.multi_tf_analyzer = TimeframeAnalyzer()
+
         self.earn_manager = BinanceEarnManager(self)
         self.double_investment_manager = DoubleInvestmentManager(self)
         self.stuck_manager = StuckPositionManager(
             max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
             stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
         )
-        self.market_calculator = MarketCalculator(
+        self.market_analyzer = MarketAnalyzer(
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40')),
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
         )
         self.decision_display = DecisionDisplay()
-        self.sr_analyzer = SupportResistanceAnalyzer()
+
         self.stablecoin_monitor = StablecoinMonitor()
         self.pattern_recognition = PatternRecognition()
         self.slippage_calculator = SlippageCalculator()
@@ -157,11 +162,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.crypto_detector = CryptoDetector(self)
         
         # Gestionnaire de dust (valeurs très petites)
-        self.dust_manager = DustManager(self)
+
         
         # GESTIONNAIRES PROFESSIONNELS NIVEAU INSTITUTIONNEL
-        self.dynamic_fees = DynamicFeesManager(self)
-        self.adaptive_thresholds = AdaptiveThresholdsManager(self)
+
+
         
         os.makedirs('data', exist_ok=True)
         
@@ -423,8 +428,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Timeframe adaptatif au lieu de statique
         if timeframe is None:
             try:
-                from utils.timeframe_manager import TimeframeManager
-                timeframe = TimeframeManager.get_main_timeframe(symbol, 'intelligent', self)
+                from utils.timeframe_analyzer import TimeframeAnalyzer
+                analyzer = TimeframeAnalyzer()
+                timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', self)
             except:
                 timeframe = os.getenv('MAIN_TIMEFRAME', '15m')  # Fallback
         
@@ -606,7 +612,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Obtenir cryptos tradables via le système de scoring unifié
         balance = self.balance_manager.get_balance()
         stuck_positions = []
-        tradable_pairs = self.market_calculator.rank_cryptos(self, trading_pairs, stuck_positions)
+        tradable_pairs = self.market_analyzer.rank_cryptos(self, trading_pairs, stuck_positions)
         
         # Compter positions actives seulement pour cryptos tradables
         active_positions = 0
@@ -630,9 +636,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 balance = self.balance_manager.get_balance()
                 usdt_available = balance.get('USDT', {}).get('free', 0)
                 
-                # Utiliser le market_calculator pour filtrer les cryptos tradables
+                # Utiliser le market_analyzer pour filtrer les cryptos tradables
                 stuck_positions = []
-                tradable_pairs = self.market_calculator.rank_cryptos(self, trading_pairs, stuck_positions)
+                tradable_pairs = self.market_analyzer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
                 # NOUVEAU: Calculer intervalle adaptatif multi-pairs
                 check_interval = self.get_optimal_check_interval(tradable_pairs)
@@ -774,21 +780,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         import time
         protections = []
         
-        # 1. Macro Events
-        if hasattr(self, 'macro_monitor') and not self.macro_monitor.can_trade():
-            if hasattr(self.macro_monitor, 'risk_off_start') and self.macro_monitor.risk_off_start:
-                remaining = (self.macro_monitor.risk_off_duration - 
-                           (time.time() - self.macro_monitor.risk_off_start)) / 3600
-                if remaining > 0:
-                    protections.append(f"🚫 RISK-OFF ({remaining:.1f}h)")
-        
-        # 2. Multi-Exchange
-        if hasattr(self, 'multi_exchange_fallback'):
-            exchange_status = self.multi_exchange_fallback.get_status_message()
-            if exchange_status:
-                protections.append(exchange_status)
-        
-        # 3. Protections par symbole (seulement cryptos tradables)
+        # 1. Protections par symbole (seulement cryptos tradables)
         for symbol in tradable_pairs[:2]:  # Max 2 symboles tradables
             crypto = symbol.split('/')[0]
             
@@ -857,7 +849,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             volatility = analysis.get('volatility', 2.0)
             
             # Seuil adaptatif au lieu du seuil statique
-            adaptive_threshold = self.adaptive_thresholds.get_adaptive_confidence_threshold(symbol, volatility)
+            adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, volatility)
             global_signal = analysis['global_signal']
             
             # Vérifier signal avec seuil adaptatif
@@ -867,7 +859,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 
                 # Obtenir détails du score pour log amélioré
                 try:
-                    score_breakdown = self.market_calculator.get_score_breakdown(self, symbol, [])
+                    score_breakdown = self.market_analyzer.get_score_breakdown(self, symbol, [])
                     if score_breakdown:
                         v_score = score_breakdown.get('volatility', 0)
                         vol_score = score_breakdown.get('volume', 0) 
@@ -905,7 +897,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         # 6. NOUVEAU: Optimiser type d'ordre pour frais
         try:
-            optimal_order_type = self.dynamic_fees.optimize_order_type(symbol, 'normal')
+            optimal_order_type = self.capital_manager.optimize_order_type(symbol, 'normal')
             print(f"💰 Ordre optimisé: {optimal_order_type} (frais réduits)")
         except:
             optimal_order_type = 'market'
@@ -916,14 +908,14 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     def get_real_trading_fee(self, symbol, order_type='market'):
         """Récupère frais réels au lieu des frais statiques"""
         try:
-            return self.dynamic_fees.get_fee_for_trade(symbol, order_type)
+            return self.capital_manager.get_fee_for_trade(symbol, order_type)
         except:
             return self.trading_fee  # Fallback
     
     def calculate_real_trade_cost(self, symbol, amount_usdt, order_type='market'):
         """Calcule coût réel avec frais dynamiques"""
         try:
-            return self.dynamic_fees.calculate_trade_cost(symbol, amount_usdt, order_type)
+            return self.capital_manager.calculate_trade_cost(symbol, amount_usdt, order_type)
         except:
             # Fallback avec frais statiques
             fee_cost = amount_usdt * self.trading_fee
@@ -940,7 +932,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         """Affiche métriques professionnelles"""
         try:
             # Frais dynamiques
-            fees_summary = self.dynamic_fees.get_fees_summary()
+            fees_summary = self.capital_manager.get_fees_summary()
             print(f"💰 FRAIS: {fees_summary['vip_level']} | BNB: {fees_summary['bnb_discount']} | Optimal: {fees_summary['optimal_fee']}")
             
             # Seuils adaptatifs pour cryptos tradables
@@ -949,8 +941,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                 crypto = symbol.split('/')[0]
                 
-                if symbol in self.adaptive_thresholds.adaptive_thresholds:
-                    threshold_summary = self.adaptive_thresholds.get_threshold_summary(symbol)
+                if symbol in self.risk_manager.adaptive_thresholds:
+                    threshold_summary = self.risk_manager.get_threshold_summary(symbol)
                     print(f"🎯 {crypto}: Seuil {threshold_summary['threshold_final']} (Perf: {threshold_summary['performance_adj']}, Market: {threshold_summary['market_adj']})")
         
         except Exception as e:
@@ -960,10 +952,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         """Lance optimisations quotidiennes comme les pros"""
         try:
             # Optimiser seuils adaptatifs
-            self.adaptive_thresholds.optimize_thresholds_daily()
+            self.risk_manager.optimize_thresholds_daily()
             
             # Refresh frais si nécessaire
-            self.dynamic_fees.get_real_trading_fees('BTC/USDT')  # Force refresh
+            self.capital_manager.get_real_trading_fees('BTC/USDT')  # Force refresh
             
         except Exception as e:
             pass  # Silencieux si erreur
@@ -1029,7 +1021,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         try:
             klines = self.get_klines(symbol, 20, '15m')
             if len(klines) >= 10:
-                return self.market_calculator.calculate_volatility(klines, symbol)
+                return self.market_analyzer.calculate_volatility(klines, symbol)
             return 2.0
         except:
             return 2.0
@@ -1136,22 +1128,70 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         return ema
     
-    def check_htf_bias(self, symbol):
-        """Filtre HTF adaptatif - Détection automatique du régime de marché"""
+    def get_unified_trading_decision(self, symbol):
+        """MÉTHODE UNIFIÉE - Niveau Hedge Fund - Élimine toutes contradictions"""
+        crypto = symbol.split('/')[0]
+        current_time = time.time()
+        
+        # 1. Vérifier cache (TTL 30 secondes) - Anti-over-trading
+        if symbol in self.decision_cache:
+            cached = self.decision_cache[symbol]
+            if current_time - cached['timestamp'] < 30:
+                return cached['decision'], cached['reason']
+        
+        # 2. LOGIQUE UNIFIÉE - Hiérarchie Institutionnelle
         try:
-            market_type = self.detect_market_regime(symbol)
-            crypto = symbol.split('/')[0]
+            # PRIORITÉ 1: RSI oversold extrême (< 25) - OVERRIDE TOUT
+            if self.is_extreme_oversold(symbol):
+                decision = True
+                reason = f"✅ {crypto}: RSI oversold - Achat autorisé"
             
-            if market_type == 'BULL':
-                return self.check_bullish_htf_bias(symbol)
-            elif market_type == 'BEAR':
-                return self.check_bearish_htf_bias(symbol)
-            else:  # SIDEWAYS
-                return True  # Marché latéral = autoriser
+            # PRIORITÉ 2: Support fort - OVERRIDE marché baissier
+            elif self.is_near_strong_support(symbol):
+                decision = True
+                reason = f"✅ {crypto}: Support fort détecté - Achat autorisé"
+            
+            # PRIORITÉ 3: Régime de marché
+            else:
+                market_type = self.detect_market_regime(symbol)
                 
+                if market_type == 'BULL':
+                    decision = self.check_bullish_htf_bias(symbol)
+                    reason = f"✅ {crypto}: Marché haussier" if decision else f"❌ {crypto}: HTF baissier"
+                
+                elif market_type == 'BEAR':
+                    decision = False
+                    reason = f"❌ {crypto}: Marché baissier sans exception - Skip"
+                
+                else:  # SIDEWAYS
+                    decision = True
+                    reason = f"✅ {crypto}: Marché latéral - Achat autorisé"
+            
+            # 3. Sauvegarder dans cache
+            self.decision_cache[symbol] = {
+                'decision': decision,
+                'reason': reason,
+                'timestamp': current_time
+            }
+            
+            return decision, reason
+            
         except Exception as e:
-            print(f"⚠️ Erreur filtre HTF {symbol}: {e}")
-            return True
+            # Fallback sécurisé
+            decision = False
+            reason = f"❌ {crypto}: Erreur analyse - Skip"
+            return decision, reason
+    
+    def check_htf_bias(self, symbol):
+        """Filtre HTF unifié - PLUS DE CONTRADICTIONS"""
+        decision, reason = self.get_unified_trading_decision(symbol)
+        
+        # Afficher seulement si changement de décision (Anti-spam)
+        if self._last_decision.get(symbol) != reason:
+            print(reason)
+            self._last_decision[symbol] = reason
+        
+        return decision
     
     def detect_market_regime(self, symbol):
         """Détecte automatiquement le régime de marché"""
@@ -1181,31 +1221,19 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         
         return current_price > ema_50 > ema_200
     
-    def check_bearish_htf_bias(self, symbol):
-        """Filtre HTF avec exceptions pour marché baissier"""
-        crypto = symbol.split('/')[0]
-        
-        # Exception 1: Support fort
-        if self.is_near_strong_support(symbol):
-            print(f"✅ {crypto}: Support fort détecté - Achat autorisé")
-            return True
-        
-        # Exception 2: RSI oversold extrême
-        if self.is_extreme_oversold(symbol):
-            print(f"✅ {crypto}: RSI oversold - Achat autorisé")
-            return True
-        
-        print(f"❌ {crypto}: Marché baissier sans exception - Skip")
-        return False
+
     
     def is_near_strong_support(self, symbol):
-        """Vérifie proximité support fort"""
+        """Vérifie proximité support fort - Algorithmic S/R"""
         try:
             klines = self.get_klines(symbol, 100, '4h')
-            levels_data = self.sr_analyzer.find_support_resistance_levels(klines)
+            if len(klines) < 20:
+                return False
+                
+            levels_data = self.pattern_recognition.find_support_resistance_levels(klines)
             current_price = self.get_price(symbol)
             
-            for support in levels_data['support_levels'][:2]:
+            for support in levels_data.get('support_levels', [])[:2]:
                 distance_pct = abs(current_price - support['price']) / current_price
                 if distance_pct <= 0.02 and support['strength'] >= 3:
                     return True
@@ -1214,7 +1242,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             return False
     
     def is_extreme_oversold(self, symbol):
-        """Vérifie RSI oversold extrême"""
+        """Vérifie RSI oversold extrême (< 25) - Niveau Institutionnel"""
         try:
             klines = self.get_klines(symbol, 30, '4h')
             if len(klines) < 14:
@@ -1222,7 +1250,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             
             closes = [k['close'] for k in klines]
             rsi = self.multi_tf_analyzer.calculate_rsi(closes)
-            return rsi is not None and rsi < 25
+            return rsi is not None and rsi < 25  # Seuil institutionnel
         except:
             return False
     

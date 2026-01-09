@@ -3,13 +3,145 @@ from collections import deque
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.market_calculator import MarketCalculator
+from utils.market_analyzer import MarketAnalyzer
 
-class MultiTimeframeAnalyzer:
+class TimeframeAnalyzer:
     def __init__(self):
         self.cache = {}
         self.data_cache = {}  # Cache des données par timeframe
         self.signal_history = deque(maxlen=10)
+    
+    # ========== MÉTHODES FUSIONNÉES DE TIMEFRAME_MANAGER ==========
+    
+    def get_main_timeframe(self, symbol, strategy_type='intelligent', bot=None):
+        """Timeframe principal adaptatif pour le trading"""
+        volatility = self._get_volatility(symbol, bot)
+        
+        if strategy_type == 'scalping':
+            if volatility >= 4.0:
+                return '1m'    # Très volatil = ultra réactif
+            elif volatility >= 3.0:
+                return '5m'    # Volatil = réactif
+            else:
+                return '15m'   # Normal = standard
+        
+        elif strategy_type == 'swing':
+            if volatility >= 3.0:
+                return '15m'   # Volatil = moyen terme
+            else:
+                return '1h'    # Calme = long terme
+        
+        else:  # intelligent/adaptive (défaut)
+            if volatility >= 4.0:
+                return '5m'    # Très volatil
+            elif volatility >= 2.5:
+                return '15m'   # Moyen (actuel)
+            else:
+                return '1h'    # Calme
+    
+    def get_analysis_timeframe(self, symbol, analysis_type, bot=None):
+        """Timeframe pour analyses spécifiques"""
+        volatility = self._get_volatility(symbol, bot)
+        
+        if analysis_type == 'ema_analysis':
+            if volatility >= 4.0:
+                return '5m'    # Très volatil = plus réactif
+            elif volatility >= 2.0:
+                return '15m'   # Moyen
+            else:
+                return '1h'    # Calme = tendance stable
+        
+        elif analysis_type == 'volume_analysis':
+            if volatility >= 3.0:
+                return '15m'   # Volatil = volume change vite
+            else:
+                return '1h'    # Stable = volume stable
+        
+        elif analysis_type == 'momentum_analysis':
+            if volatility >= 3.5:
+                return '5m'    # Très volatil = momentum rapide
+            elif volatility >= 2.0:
+                return '15m'   # Moyen
+            else:
+                return '1h'    # Calme
+    
+    def get_volatility_thresholds(self, symbol):
+        """Seuils de volatilité adaptatifs selon crypto"""
+        # Seuils différents selon type de crypto
+        if symbol in ['BTC/USDT', 'ETH/USDT']:
+            # Cryptos stables = seuils plus bas
+            return {'low': 0.10, 'medium': 0.25, 'high': 0.50, 'extreme': 1.00}
+        elif 'USDT' in symbol:
+            # Altcoins = seuils standards
+            return {'low': 0.15, 'medium': 0.30, 'high': 0.60, 'extreme': 1.20}
+        else:
+            # Autres paires = seuils élevés
+            return {'low': 0.20, 'medium': 0.40, 'high': 0.80, 'extreme': 1.50}
+    
+    def get_ema_periods(self, symbol, timeframe, bot=None):
+        """Périodes EMA adaptatives selon timeframe et volatilité"""
+        volatility = self._get_volatility(symbol, bot)
+        
+        if timeframe in ['1m', '5m']:
+            if volatility >= 4.0:
+                return {'short': 5, 'medium': 15, 'long': 50}  # Plus réactif
+            else:
+                return {'short': 7, 'medium': 21, 'long': 99}  # Standard
+        
+        elif timeframe == '15m':
+            if volatility >= 3.0:
+                return {'short': 3, 'medium': 12, 'long': 45}  # Réactif
+            else:
+                return {'short': 7, 'medium': 25, 'long': 99}  # Standard
+        
+        elif timeframe in ['1h', '4h']:
+            return {'short': 7, 'medium': 25, 'long': 99}  # Standard long terme
+        
+        else:
+            return {'short': 7, 'medium': 25, 'long': 99}  # Défaut
+    
+    def get_confidence_threshold(self, symbol, volatility=None, bot=None, balance=None):
+        """Seuil de confiance adaptatif - LOGIQUE PROFESSIONNELLE"""
+        if volatility is None:
+            volatility = self._get_volatility(symbol, bot)
+        
+        # STRATÉGIE PROFESSIONNELLE selon taille de compte
+        if balance and balance < 50:  # Petit compte
+            # Objectif: Croissance rapide (comme les pros débutants)
+            base_threshold = 20  # Agressif
+            if volatility >= 3.0:
+                return max(15, base_threshold - 5)  # Très agressif si volatil
+            return base_threshold
+            
+        elif balance and balance < 200:  # Compte moyen
+            # Objectif: Équilibre croissance/préservation
+            base_threshold = 30
+            if volatility >= 4.0:
+                return base_threshold - 5
+            elif volatility <= 1.5:
+                return base_threshold + 5
+            return base_threshold
+            
+        else:  # Gros compte (> 200 ou non spécifié)
+            # Objectif: Préservation capital (comme fonds institutionnels)
+            base_threshold = 45  # Conservateur
+            if volatility >= 4.0:
+                return base_threshold - 10  # Même conservateur, on profite volatilité
+            elif volatility <= 1.5:
+                return min(60, base_threshold + 10)  # Très sélectif si calme
+            return base_threshold
+    def _get_volatility(self, symbol, bot=None):
+        """Récupère volatilité du symbole"""
+        try:
+            if bot:
+                klines = bot.get_klines(symbol, 20, '15m')
+                if len(klines) >= 10:
+                    return bot.market_analyzer.calculate_volatility(klines, symbol)
+            return 2.5  # Volatilité moyenne par défaut
+        except:
+            return 2.5
+    
+    # ========== MÉTHODES EXISTANTES ==========
         
     def get_klines_for_timeframe(self, bot, symbol, timeframe, limit=50):
         """Récupère les données kline pour un timeframe spécifique"""
@@ -189,17 +321,17 @@ class MultiTimeframeAnalyzer:
         try:
             # Utiliser WebSocket si disponible
             if hasattr(bot, 'websocket') and bot.websocket.is_connected():
-                return MarketCalculator.calculate_volatility_from_websocket(bot.websocket, symbol)
+                return MarketAnalyzer.calculate_volatility_from_websocket(bot.websocket, symbol)
             
             # Fallback API REST
             klines = bot.get_klines(symbol, 60, os.getenv('MAIN_TIMEFRAME', '15m'))
-            return MarketCalculator.calculate_volatility(klines, symbol)
+            return MarketAnalyzer.calculate_volatility(klines, symbol)
         except Exception as e:
             return 2.0
     
     def get_crypto_profile(self, symbol, volatility):
         """Retourne le profil adaptatif selon crypto et volatilité"""
-        return MarketCalculator.get_crypto_profile(volatility)
+        return MarketAnalyzer.get_crypto_profile(volatility)
     
     def analyze_all_timeframes(self, bot, symbol, current_price):
         """Analyse tous les timeframes et génère un signal global"""

@@ -170,7 +170,7 @@ Raison : Surachat détecté, attente correction
 
 ## 🚀 Personnalisation (Avancé)
 
-Pour modifier les seuils de volatilité ou les timeframes, éditez `utils/multi_timeframe_analyzer.py` :
+Pour modifier les seuils de volatilité ou les timeframes, éditez `utils/timeframe_analyzer.py` :
 
 ```python
 def get_adaptive_timeframes(self, volatility):

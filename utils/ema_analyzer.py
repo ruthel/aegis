@@ -25,8 +25,9 @@ class BinanceEMAAnalyzer:
         
         # Périodes EMA adaptatives selon timeframe et volatilité
         try:
-            from utils.timeframe_manager import TimeframeManager
-            ema_periods = TimeframeManager.get_ema_periods(symbol or 'BTC/USDT', timeframe)
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            analyzer = TimeframeAnalyzer()
+            ema_periods = analyzer.get_ema_periods(symbol or 'BTC/USDT', timeframe)
             ema_short_period = ema_periods['short']
             ema_medium_period = ema_periods['medium'] 
             ema_long_period = ema_periods['long']

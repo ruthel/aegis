@@ -4,7 +4,7 @@
 - Suppression: utils/fixed_levels_manager.py (non utilisé)
 - Suppression: utils/multi_position_manager.py (non utilisé) 
 - Suppression: utils/pro_strategy.py (non utilisé)
-- Suppression: core/risk_manager.py (remplacé par advanced_risk_manager)
+- Suppression: core/risk_manager.py (remplacé par risk_manager)
 - Suppression: docs/TASKS_PROFIT_OPTIMIZATIONS.md (doublon avec PROFIT_OPTIMIZATIONS.md)
 - Suppression: docs/OPTIMIZATIONS.md (doublon avec QUICK_START_OPTIMIZATIONS.md)
 - Correction: Références setup_guide.py inexistant dans README.md

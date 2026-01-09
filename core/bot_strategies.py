@@ -1,5 +1,5 @@
 """Module stratégies - Version unifiée simplifiée"""
-from utils.confidence_calculator import ConfidenceCalculator
+from utils.market_analyzer import MarketAnalyzer
 from utils.ema_analyzer import BinanceEMAAnalyzer
 from utils.pullback_detector import PullbackDetector
 import time
@@ -10,7 +10,7 @@ class StrategiesMixin:
     
     def realtime_intelligent(self, symbol, amount, price):
         """Version temps réel de la stratégie intelligente"""
-        if not self.safety_manager.can_trade():
+        if not self.risk_manager.can_trade():
             return
         
         # Gérer le cycle Double Investment périodiquement

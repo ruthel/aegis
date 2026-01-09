@@ -22,8 +22,8 @@ class DisplayMixin:
                 try:
                     klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
                     if len(klines) >= 50:
-                        sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
-                        reversal_pred = self.sr_analyzer.predict_reversal_probability(price, sr_levels)
+                        sr_levels = self.pattern_recognition.find_support_resistance_levels(klines)
+                        reversal_pred = self.pattern_recognition.predict_reversal_probability(price, sr_levels)
                         
                         if reversal_pred['has_reversal_potential']:
                             direction = reversal_pred['direction']
@@ -309,8 +309,8 @@ class DisplayMixin:
                     klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
                     if len(klines) >= 50:
                         current_price = self.get_price(symbol)
-                        sr_levels = self.sr_analyzer.find_support_resistance_levels(klines)
-                        reversal_pred = self.sr_analyzer.predict_reversal_probability(current_price, sr_levels)
+                        sr_levels = self.pattern_recognition.find_support_resistance_levels(klines)
+                        reversal_pred = self.pattern_recognition.predict_reversal_probability(current_price, sr_levels)
                         
                         if reversal_pred['nearest_support']:
                             support_price = reversal_pred['nearest_support']['price']
