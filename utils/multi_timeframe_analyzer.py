@@ -189,11 +189,11 @@ class MultiTimeframeAnalyzer:
         try:
             # Utiliser WebSocket si disponible
             if hasattr(bot, 'websocket') and bot.websocket.is_connected():
-                return VolatilityCalculator.calculate_from_websocket(bot.websocket, symbol)
+                return MarketCalculator.calculate_volatility_from_websocket(bot.websocket, symbol)
             
             # Fallback API REST
             klines = bot.get_klines(symbol, 60, os.getenv('MAIN_TIMEFRAME', '15m'))
-            return VolatilityCalculator.calculate(klines, symbol)
+            return MarketCalculator.calculate_volatility(klines, symbol)
         except Exception as e:
             return 2.0
     
