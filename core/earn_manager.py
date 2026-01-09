@@ -1,25 +1,29 @@
 import time
 import json
 import os
+import requests
+import hmac
+import hashlib
 from datetime import datetime, timedelta
-from core.binance_earn_api import BinanceEarnAPI
+from urllib.parse import urlencode
 
 class BinanceEarnManager:
     def __init__(self, bot):
         self.bot = bot
         self.enabled = os.getenv('ENABLE_EARN', 'True') == 'True'
-
+        
+        # Configuration Earn
         self.min_trading_balance = float(os.getenv('MIN_TRADING_BALANCE', '10'))
         self.earn_allocation_percent = float(os.getenv('EARN_ALLOCATION_PERCENT', '80'))
         self.flexible_threshold = float(os.getenv('FLEXIBLE_SAVINGS_THRESHOLD', '5'))
         self.locked_threshold = float(os.getenv('LOCKED_STAKING_THRESHOLD', '50'))
         self.earn_withdraw_threshold = float(os.getenv('EARN_WITHDRAW_THRESHOLD', '5'))
         
-        # Tenter les nouvelles API Simple Earn (silencieux)
-        if not bot.paper_trading:
-            self.earn_api = BinanceEarnAPI(bot.api_key, bot.api_secret, testnet=bot.testnet)
-        else:
-            self.earn_api = None
+        # Configuration API Binance
+        self.api_key = bot.api_key
+        self.api_secret = bot.api_secret
+        self.testnet = bot.testnet
+        self.base_url = "https://api.binance.com"
         
         self.earn_positions = self.load_earn_positions()
         self.last_allocation_check = 0
@@ -41,6 +45,135 @@ class BinanceEarnManager:
         self.last_earn_balance = 0
         self.last_earn_rewards = 0
         
+    def _generate_signature(self, params):
+        """Génère la signature pour l'API Binance"""
+        query_string = urlencode(params)
+        return hmac.new(
+            self.api_secret.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+    
+    def _make_request(self, method, endpoint, params=None, signed=True):
+        """Effectue une requête à l'API Binance"""
+        # Skip Earn API calls if on testnet (not supported)
+        if self.testnet or self.bot.paper_trading:
+            return None
+            
+        if params is None:
+            params = {}
+        
+        if signed:
+            params['timestamp'] = int(time.time() * 1000)
+            params['signature'] = self._generate_signature(params)
+        
+        headers = {
+            'X-MBX-APIKEY': self.api_key
+        }
+        
+        url = f"{self.base_url}{endpoint}"
+        
+        try:
+            if method == 'GET':
+                response = requests.get(url, params=params, headers=headers, timeout=10)
+            elif method == 'POST':
+                response = requests.post(url, data=params, headers=headers, timeout=10)
+            
+            response.raise_for_status()
+            return response.json()
+        
+        except requests.exceptions.RequestException as e:
+            # Silencieux pour les erreurs 400 (permissions insuffisantes)
+            return None
+    
+    def get_flexible_products(self):
+        """Récupère la liste des produits Flexible (API 2025)"""
+        endpoint = "/sapi/v1/simple-earn/flexible/list"
+        params = {}
+        return self._make_request('GET', endpoint, params)
+    
+    def get_locked_products(self):
+        """Récupère la liste des produits Locked (API 2025)"""
+        endpoint = "/sapi/v1/simple-earn/locked/list"
+        params = {}
+        return self._make_request('GET', endpoint, params)
+    
+    def subscribe_flexible_product(self, product_id, amount):
+        """Souscrit à un produit Flexible Savings (nouvelle API)"""
+        endpoint = "/sapi/v1/simple-earn/flexible/subscribe"
+        params = {
+            'productId': str(product_id),
+            'amount': f"{float(amount):.8f}"
+        }
+        return self._make_request('POST', endpoint, params)
+    
+    def redeem_flexible_product(self, product_id, amount, type='FAST'):
+        """Rachète un produit Flexible Savings (nouvelle API)"""
+        endpoint = "/sapi/v1/simple-earn/flexible/redeem"
+        params = {
+            'productId': product_id,
+            'amount': amount,
+            'type': type
+        }
+        return self._make_request('POST', endpoint, params)
+    
+    def subscribe_locked_product(self, project_id, amount):
+        """Souscrit à un produit Locked Staking (nouvelle API)"""
+        endpoint = "/sapi/v1/simple-earn/locked/subscribe"
+        params = {
+            'projectId': project_id,
+            'amount': amount
+        }
+        return self._make_request('POST', endpoint, params)
+    
+    def get_flexible_positions(self):
+        """Récupère les positions Flexible (API 2025)"""
+        endpoint = "/sapi/v1/simple-earn/flexible/position"
+        params = {}
+        return self._make_request('GET', endpoint, params)
+    
+    def get_locked_positions(self):
+        """Récupère les positions Locked (API 2025)"""
+        endpoint = "/sapi/v1/simple-earn/locked/position"
+        params = {}
+        return self._make_request('GET', endpoint, params)
+    
+    def get_lending_account(self):
+        """Récupère le compte Lending"""
+        endpoint = "/sapi/v1/lending/union/account"
+        return self._make_request('GET', endpoint)
+    
+    def find_usdt_flexible_product(self):
+        """Trouve le produit USDT Flexible (API 2025)"""
+        result = self.get_flexible_products()
+        if result and 'rows' in result:
+            for product in result['rows']:
+                if product.get('asset') == 'USDT':
+                    return {
+                        'productId': product['productId'],
+                        'asset': product['asset'],
+                        'avgAnnualInterestRate': float(product.get('latestAnnualPercentageRate', 0)),
+                        'canPurchase': product.get('canPurchase', True),
+                        'canRedeem': product.get('canRedeem', True)
+                    }
+        return None
+    
+    def find_usdt_locked_product(self, duration_days=30):
+        """Trouve un produit USDT Locked (API 2025)"""
+        result = self.get_locked_products()
+        if result and 'rows' in result:
+            for product in result['rows']:
+                if (product.get('asset') == 'USDT' and 
+                    product.get('duration') == duration_days):
+                    return {
+                        'projectId': product['projectId'],
+                        'asset': product['asset'],
+                        'interestRate': float(product.get('interestRate', 0)),
+                        'duration': product['duration'],
+                        'lotSize': float(product.get('minPurchaseAmount', 1))
+                    }
+        return None
+    
     def load_earn_positions(self):
         """Charge les positions Earn sauvegardées"""
         try:
@@ -67,7 +200,7 @@ class BinanceEarnManager:
     
     def refresh_available_products(self):
         """Actualise la liste des produits disponibles"""
-        if self.earn_api is None:
+        if self.bot.paper_trading:
             print()
             print("🎯 Flexible USDT: 3.5% APY (simulé)")
             print("🔒 Locked USDT 30j: 8.0% APY (simulé)")
@@ -78,8 +211,8 @@ class BinanceEarnManager:
             return
         
         try:
-            self.usdt_flexible_product = self.earn_api.find_usdt_flexible_product()
-            self.usdt_locked_product = self.earn_api.find_usdt_locked_product(30)
+            self.usdt_flexible_product = self.find_usdt_flexible_product()
+            self.usdt_locked_product = self.find_usdt_locked_product(30)
             self.last_product_refresh = now
             
             if self.usdt_flexible_product:
@@ -105,7 +238,6 @@ class BinanceEarnManager:
         except Exception as e:
             print(f"⚠️ Erreur API Simple Earn: {e}")
             print("📝 Basculement vers mode simulation")
-            self.earn_api = None
     
     def should_allocate_to_earn(self):
         """Vérifie s'il faut allouer des fonds vers Earn"""
@@ -153,7 +285,7 @@ class BinanceEarnManager:
     def allocate_to_flexible_savings(self, amount):
         """Alloue des fonds vers Flexible Savings"""
         try:
-            if self.earn_api is None or self.bot.paper_trading:
+            if self.bot.paper_trading:
                 # Mode simulation
                 position = {
                     'amount': amount,
@@ -163,8 +295,7 @@ class BinanceEarnManager:
                     'status': 'active'
                 }
                 self.earn_positions['flexible_savings'].append(position)
-                if self.bot.paper_trading:
-                    self.bot.paper_balance -= amount
+                self.bot.paper_balance -= amount
                 return True
             else:
                 # Mode live avec nouvelles API
@@ -181,7 +312,7 @@ class BinanceEarnManager:
                 print(f"🔄 Souscription: {amount:.2f} USDT (ProductID: {self.usdt_flexible_product['productId']})")
                 
                 try:
-                    result = self.earn_api.subscribe_flexible_product(
+                    result = self.subscribe_flexible_product(
                         self.usdt_flexible_product['productId'], 
                         amount
                     )
@@ -235,11 +366,11 @@ class BinanceEarnManager:
     
     def silent_sync_earn_positions(self):
         """Synchronisation silencieuse au démarrage"""
-        if self.earn_api is None or self.bot.paper_trading:
+        if self.bot.paper_trading:
             return
         
         try:
-            result = self.earn_api.get_flexible_positions()
+            result = self.get_flexible_positions()
             if result and 'rows' in result:
                 self.earn_positions['flexible_savings'] = []
                 
@@ -259,7 +390,7 @@ class BinanceEarnManager:
     
     def sync_earn_positions_from_api(self):
         """Synchronise les positions Earn depuis l'API Binance"""
-        if self.earn_api is None or self.bot.paper_trading:
+        if self.bot.paper_trading:
             return
         
         # Sync temps réel toutes les 30 secondes
@@ -270,7 +401,7 @@ class BinanceEarnManager:
         self.last_earn_sync = now
         
         try:
-            result = self.earn_api.get_flexible_positions()
+            result = self.get_flexible_positions()
             if result and 'rows' in result:
                 old_total = sum(pos['amount'] for pos in self.earn_positions['flexible_savings'] if pos['status'] == 'active')
                 self.earn_positions['flexible_savings'] = []
@@ -326,7 +457,7 @@ class BinanceEarnManager:
                                 continue
                             
                             withdraw = min(pos['amount'], remaining)
-                            result = self.earn_api.redeem_flexible_product(
+                            result = self.redeem_flexible_product(
                                 pos['product_id'],
                                 withdraw,
                                 'FAST'

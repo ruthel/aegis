@@ -17,7 +17,7 @@ from utils.position_manager import PositionManager
 from utils.pattern_analyzer import PatternAnalyzer
 
 from utils.market_analyzer import MarketAnalyzer
-from utils.timing_optimizer import TimingOptimizer
+
 from utils.capital_manager import CapitalManager
 
 
@@ -126,8 +126,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # PHASE 1 - Gestionnaire de niveaux dynamiques
         self.pattern_analyzer = PatternAnalyzer(self)
         
-        # PHASE 2 - Optimiseurs QUAND et COMBIEN
-        self.timing_optimizer = TimingOptimizer(self)
+
         
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
@@ -809,37 +808,51 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if not self.check_htf_bias(symbol):
             return
         
-        # 3. NOUVEAU: Vérifier avec seuils professionnels adaptatifs
+        # 3. SCORING PROFESSIONNEL UNIFIÉ
+        websocket_manager = getattr(self, 'websocket', None)
+        crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
+        
+        # Seuil adaptatif dynamique
+        balance = self.balance_manager.get_balance()
+        usdt_available = balance.get('USDT', {}).get('free', 0)
+        
+        dynamic_min_score = self.market_analyzer._get_dynamic_min_score(
+            available_count=2,  # Estimation
+            capital=usdt_available,
+            market_conditions={'avg_volatility': 2.0, 'avg_volume_ratio': 1.0}
+        )
+        
+        if crypto_score < dynamic_min_score:
+            crypto = symbol.split('/')[0]
+            
+            # Log avec score professionnel pondéré
+            try:
+                details = self.market_analyzer.get_score_details(self, symbol, [], websocket_manager)
+                if details:
+                    v_score = details.get('volatility', 0)
+                    vol_score = details.get('volume', 0)
+                    m_score = details.get('momentum', 0)
+                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score})")
+                else:
+                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
+            except:
+                print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
+            return
+        
+        # Vérification signal de confiance
         try:
             analysis = self.get_cached_analysis(symbol, current_price)
             volatility = analysis.get('volatility', 2.0)
-            
-            # Seuil adaptatif au lieu du seuil statique
             adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, volatility)
             global_signal = analysis['global_signal']
             
-            # Vérifier signal avec seuil adaptatif
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
                 crypto = symbol.split('/')[0]
-                
-                # Obtenir détails du score pour log amélioré
-                try:
-                    score_breakdown = self.market_analyzer.get_score_breakdown(self, symbol, [])
-                    if score_breakdown:
-                        v_score = score_breakdown.get('volatility', 0)
-                        vol_score = score_breakdown.get('volume', 0) 
-                        m_score = score_breakdown.get('momentum', 0)
-                        total_score = sum(score_breakdown.values())
-                        
-                        print(f"❌ {crypto}: Score {total_score:.0f}/100 < 15 (V:{v_score} Vol:{vol_score} M:{m_score}) | Signal {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
-                    else:
-                        print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < Seuil adaptatif {adaptive_threshold:.0f}%")
-                except:
-                    print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < Seuil adaptatif {adaptive_threshold:.0f}%")
+                print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
                 return
             
-            print(f"✅ Signal validé avec seuil adaptatif: {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
+            print(f"✅ Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
             
         except Exception as e:
             # Fallback méthode classique
@@ -847,17 +860,14 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if not should_buy:
                 return
         
-        # 4. Optimiser le timing (QUAND)
-        signal_strength = self.get_signal_strength(symbol, current_price)
-        timing_data = self.timing_optimizer.get_optimal_timing(symbol, signal_strength)
-        
-        if timing_data['action'] not in ['BUY_NOW', 'BUY_READY']:
+        # 4. Vérifier timing optimal (sessions de trading)
+        if not self._is_optimal_trading_time():
             crypto = symbol.split('/')[0]
-            print()
-            print(f"⏳ {crypto}: Timing non optimal ({timing_data['score']:.2f}) - {timing_data['action']}")
+            print(f"⏳ {crypto}: Session de trading non optimale - Attente")
             return
         
         # 5. Calculer position sizing optimal (COMBIEN)
+        signal_strength = self.get_signal_strength(symbol, current_price)
         account_balance = self.get_account_balance()
         position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
         
@@ -869,7 +879,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             optimal_order_type = 'market'
         
         # 7. Exécuter achat avec données optimisées
-        self.execute_optimized_buy(symbol, position_data, current_price, reason, timing_data)
+        self.execute_optimized_buy(symbol, position_data, current_price, reason)
     
     def get_real_trading_fee(self, symbol, order_type='market'):
         """Récupère frais réels au lieu des frais statiques"""
@@ -1221,6 +1231,12 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return False
     
 
+    def _is_optimal_trading_time(self):
+        """Vérifie si c'est un moment optimal pour trader (sessions actives)"""
+        hour = datetime.now().hour
+        # Sessions optimales (UTC): Europe (8-16h) et Asie (0-4h)
+        return (8 <= hour <= 16) or (0 <= hour <= 4)
+    
     def get_signal_strength(self, symbol, current_price):
         """Calcule la force du signal (0-100)"""
         try:
@@ -1242,7 +1258,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except:
             return 100  # Fallback
     
-    def execute_optimized_buy(self, symbol, position_data, current_price, reason, timing_data):
+    def execute_optimized_buy(self, symbol, position_data, current_price, reason):
         """Exécute l'achat avec données optimisées"""
         crypto = symbol.split('/')[0]
         existing_positions = [p for p in self.state.get('positions', []) 
@@ -1252,7 +1268,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Affichage amélioré
         print(f"🚀 ACHAT OPTIMISÉ {crypto}: {position_data['position_size_usdt']:.1f} USDT (Position #{position_count + 1})")
         print(f"   💡 Raison: {reason}")
-        print(f"   ⏰ Timing: {timing_data['score']:.2f} ({timing_data['action']})")
         print(f"   💰 Prix: {current_price:.2f} | Stop: {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%)")
         print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
         

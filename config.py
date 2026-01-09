@@ -13,8 +13,6 @@ TESTNET = os.getenv('TESTNET', 'True').lower() == 'true'
 TRADING_PAIRS = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
 
 TRADE_AMOUNT = float(os.getenv('TRADE_AMOUNT', '5'))
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '5'))
-REALTIME_TRADING = os.getenv('REALTIME_TRADING', 'True').lower() == 'true'
 
 # ===== GESTION SOLDE =====
 USE_FULL_BALANCE = os.getenv('USE_FULL_BALANCE', 'False').lower() == 'true'
@@ -32,7 +30,6 @@ MIN_PROFIT_THRESHOLD = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8'))
 
 # Variables supplémentaires du .env actuel
 RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '2'))
-ALERT_ON_LOSS = os.getenv('ALERT_ON_LOSS', 'True').lower() == 'true'
 
 # ===== PAPER TRADING =====
 PAPER_TRADING = os.getenv('PAPER_TRADING', 'False').lower() == 'true'
@@ -55,9 +52,6 @@ STUCK_THRESHOLD_HOURS = int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
 MIN_CRYPTO_SCORE = int(os.getenv('MIN_CRYPTO_SCORE', '40'))  # Adaptatif par défaut
 MAX_TRADEABLE_CRYPTOS = int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
 
-# ===== ENVIRONNEMENT =====
-CURRENT_ENVIRONMENT = os.getenv('CURRENT_ENVIRONMENT', 'testnet')
-
 # ===== NOTIFICATIONS TELEGRAM =====
 BOT_NAME = os.getenv('BOT_NAME', 'TETANIS')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
@@ -79,7 +73,4 @@ BINANCE_MAINNET_API_KEY = BINANCE_API_KEY
 BINANCE_MAINNET_API_SECRET = BINANCE_API_SECRET
 BINANCE_TESTNET_API_KEY = BINANCE_API_KEY
 BINANCE_TESTNET_API_SECRET = BINANCE_API_SECRET
-AUTO_MODE = False
 TRADING_PAIR = 'BTC/USDT'
-TRADE_AMOUNT_USDT = TRADE_AMOUNT
-MIN_PROFIT_PERCENT = MIN_PROFIT_THRESHOLD

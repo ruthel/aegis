@@ -772,13 +772,13 @@ class MarketAnalyzer:
             websocket_manager = getattr(bot, 'websocket', None)
             score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
             if score > 0:
-                breakdown = self.get_score_breakdown(bot, symbol, stuck_positions, websocket_manager=websocket_manager)
-                if breakdown:
+                details = self.get_score_details(bot, symbol, stuck_positions, websocket_manager)
+                if details:
                     scores.append({
                         'symbol': symbol,
                         'score': score,
-                        'volatility': breakdown['volatility'],
-                        'volume': breakdown['volume'],
+                        'volatility': details['volatility'],
+                        'volume': details['volume'],
                         'min_cost': min_cost
                     })
         
@@ -836,31 +836,7 @@ class MarketAnalyzer:
         self.blacklist[symbol] = time.time()
         print(f"🚫 {symbol} ajouté à la blacklist pour {self.blacklist_duration/3600:.1f}h")
     
-    def get_score_breakdown(self, bot, symbol, stuck_positions, volatility=None, websocket_manager=None):
-        """Détails du score pour debug - Version professionnelle"""
-        from utils.timeframe_analyzer import TimeframeAnalyzer
-        analyzer = TimeframeAnalyzer()
-        optimal_timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', bot)
-        
-        klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
-        klines_long = bot.get_klines(symbol, 96, '15m')
-        current_price = bot.get_price(symbol)
-        
-        if not klines_short or len(klines_short) < 10:
-            return None
-        
-        if klines_long and len(klines_long) >= 50:
-            volume_score = self.calculate_volume_score(klines_long)
-        else:
-            volume_score = self.calculate_volume_score(klines_short)
-        
-        return {
-            'volatility': self.calculate_volatility_score(klines_short, symbol, volatility, websocket_manager),
-            'volume': volume_score,
-            'momentum': self.calculate_momentum_score(klines_short),
-            'spread': self.calculate_spread_score(symbol, current_price),
-            'history': self.calculate_history_score(symbol, stuck_positions)
-        }
+
     
     def _get_default_weights(self):
         """Pondération par défaut"""
@@ -893,6 +869,38 @@ class MarketAnalyzer:
         else:
             return {'volatility': 0.35, 'volume': 0.20, 'momentum': 0.30, 'spread': 0.10, 'history': 0.05}
     
+    def get_score_details(self, bot, symbol, stuck_positions, websocket_manager=None):
+        """Détails du score professionnel pour debug - Utilise score_crypto() comme source unique"""
+        try:
+            # Calculer le score professionnel pondéré
+            final_score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
+            
+            # Calculer les composants bruts pour affichage
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            analyzer = TimeframeAnalyzer()
+            optimal_timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', bot)
+            
+            klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
+            klines_long = bot.get_klines(symbol, 96, '15m')
+            current_price = bot.get_price(symbol)
+            
+            if not klines_short or len(klines_short) < 10:
+                return None
+            
+            # Composants bruts (pour affichage debug uniquement)
+            volatility_raw = self.calculate_volatility_score(klines_short, symbol, None, websocket_manager)
+            volume_raw = self.calculate_volume_score(klines_long if klines_long and len(klines_long) >= 50 else klines_short)
+            momentum_raw = self.calculate_momentum_score(klines_short)
+            
+            return {
+                'final_score': final_score,  # Score professionnel pondéré
+                'volatility': volatility_raw,  # Pour debug uniquement
+                'volume': volume_raw,          # Pour debug uniquement
+                'momentum': momentum_raw       # Pour debug uniquement
+            }
+        except:
+            return None
+    
     def _get_dynamic_min_score(self, available_count, capital=None, market_conditions=None):
         """Seuil minimum adaptatif professionnel - VALEURS PAR DÉFAUT"""
         base_min = self.base_min_score
@@ -916,6 +924,7 @@ class MarketAnalyzer:
         elif available_count > 8:
             base_min += 10
         
+        from datetime import datetime
         now = datetime.now()
         if now.weekday() >= 5:
             base_min -= 5
@@ -970,6 +979,7 @@ class MarketAnalyzer:
         price_momentum = (prices_1m[-1] - prices_1m[0]) / prices_1m[0] * 100
         
         # Session de marché
+        from datetime import datetime, timedelta
         hour = datetime.now().hour
         if 14 <= hour <= 21:  # Session US
             session_factor = 0.8  # Plus rapide
