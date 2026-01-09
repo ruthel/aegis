@@ -1032,24 +1032,33 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return 1.0
     
     def can_open_position(self, symbol):
-        """Vérifie si on peut ouvrir une position"""
+        """Vérifie si on peut ouvrir une position - CALCUL BALANCE NET"""
         max_positions = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '4'))
         
-        # CORRECTION: Filtrer correctement par symbole ET side
-        existing_positions = [p for p in self.state.get('positions', []) 
-                            if p.get('symbol') == symbol and p.get('side') == 'buy']
+        # NOUVELLE LOGIQUE: Calculer la balance nette des trades
+        all_trades = [p for p in self.state.get('positions', []) if p.get('symbol') == symbol]
         
-        # DEBUG: Afficher les positions trouvées pour cette crypto spécifique
+        # Calculer total acheté vs total vendu
+        total_bought = sum(p.get('amount', 0) for p in all_trades if p.get('side') == 'buy')
+        total_sold = sum(p.get('amount', 0) for p in all_trades if p.get('side') == 'sell')
+        net_position = total_bought - total_sold
+        
+        # Compter seulement les achats non vendus (approximation)
+        buy_trades = [p for p in all_trades if p.get('side') == 'buy']
+        sell_trades = [p for p in all_trades if p.get('side') == 'sell']
+        
+        # Estimer le nombre de positions ouvertes
+        open_positions_count = max(0, len(buy_trades) - len(sell_trades))
+        
+        # DEBUG: Afficher le calcul
         crypto = symbol.split('/')[0]
-        if existing_positions:
-            print(f"🔍 DEBUG {crypto}: {len(existing_positions)} positions BUY trouvées")
-            for i, pos in enumerate(existing_positions):
-                print(f"   Position {i+1}: {pos.get('timestamp', 'N/A')} - {pos.get('amount', 'N/A')} {crypto}")
-        else:
-            print(f"🔍 DEBUG {crypto}: Aucune position BUY trouvée dans state")
+        print(f"🔍 DEBUG {crypto}: Total acheté: {total_bought:.3f}, Total vendu: {total_sold:.3f}")
+        print(f"🔍 DEBUG {crypto}: Position nette: {net_position:.3f} {crypto}")
+        print(f"🔍 DEBUG {crypto}: Trades: {len(buy_trades)} achats, {len(sell_trades)} ventes")
+        print(f"🔍 DEBUG {crypto}: Positions estimées ouvertes: {open_positions_count}")
         
-        can_open = len(existing_positions) < max_positions
-        print(f"🔍 DEBUG {crypto}: {len(existing_positions)}/{max_positions} positions - Peut ouvrir: {can_open}")
+        can_open = open_positions_count < max_positions
+        print(f"🔍 DEBUG {crypto}: {open_positions_count}/{max_positions} positions - Peut ouvrir: {can_open}")
         
         return can_open
     
