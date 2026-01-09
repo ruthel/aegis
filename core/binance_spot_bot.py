@@ -26,7 +26,6 @@ from utils.stablecoin_monitor import StablecoinMonitor
 from utils.pattern_recognition import PatternRecognition
 from utils.slippage_calculator import SlippageCalculator
 from utils.liquidity_checker import LiquidityChecker
-from utils.volatility_calculator import VolatilityCalculator
 from utils.market_calculator import MarketCalculator
 from utils.timing_optimizer import TimingOptimizer
 from utils.position_sizing_calculator import PositionSizingCalculator
@@ -138,7 +137,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.pattern_recognition = PatternRecognition()
         self.slippage_calculator = SlippageCalculator()
         self.liquidity_checker = LiquidityChecker()
-        self.volatility_calculator = VolatilityCalculator()
         
         # PHASE 1 - Gestionnaire de niveaux dynamiques
         self.dynamic_levels = DynamicLevelsManager(self)
