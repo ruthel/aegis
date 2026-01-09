@@ -104,8 +104,7 @@ class TimeframeManager:
             if bot:
                 klines = bot.get_klines(symbol, 20, '15m')
                 if len(klines) >= 10:
-                    from utils.volatility_calculator import VolatilityCalculator
-                    return VolatilityCalculator.calculate(klines, symbol)
+                    return bot.market_calculator.calculate_volatility(klines, symbol)
             return 2.5  # Volatilité moyenne par défaut
         except:
             return 2.5

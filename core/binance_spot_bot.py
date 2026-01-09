@@ -1029,8 +1029,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         try:
             klines = self.get_klines(symbol, 20, '15m')
             if len(klines) >= 10:
-                from utils.volatility_calculator import VolatilityCalculator
-                return VolatilityCalculator.calculate(klines, symbol)
+                return self.market_calculator.calculate_volatility(klines, symbol)
             return 2.0
         except:
             return 2.0

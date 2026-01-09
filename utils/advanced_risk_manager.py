@@ -3,7 +3,6 @@ import time
 import os
 from datetime import datetime, timedelta
 import statistics
-from utils.volatility_calculator import VolatilityCalculator
 
 class AdvancedRiskManager:
     def __init__(self):
@@ -14,7 +13,7 @@ class AdvancedRiskManager:
         """Calcule la volatilité réelle sur les dernières périodes"""
         try:
             klines = bot.get_klines(symbol, periods, os.getenv('MAIN_TIMEFRAME', '15m'))
-            return VolatilityCalculator.calculate(klines, symbol) / 100  # Convertir en décimal
+            return bot.market_calculator.calculate_volatility(klines, symbol) / 100  # Convertir en décimal
         except Exception as e:
             print(f"Erreur calcul volatilité {symbol}: {e}")
             return 0.02  # Volatilité par défaut (2%)
