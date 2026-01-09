@@ -832,11 +832,28 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     v_score = details.get('volatility', 0)
                     vol_score = details.get('volume', 0)
                     m_score = details.get('momentum', 0)
-                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score})")
+                    
+                    # Ajouter confiance du signal
+                    try:
+                        analysis = self.get_cached_analysis(symbol, current_price)
+                        signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
+                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score}) | Signal {signal_confidence:.0f}%")
+                    except:
+                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score})")
                 else:
-                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
+                    try:
+                        analysis = self.get_cached_analysis(symbol, current_price)
+                        signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
+                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} | Signal {signal_confidence:.0f}%")
+                    except:
+                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
             except:
-                print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
+                try:
+                    analysis = self.get_cached_analysis(symbol, current_price)
+                    signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
+                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} | Signal {signal_confidence:.0f}%")
+                except:
+                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
             return
         
         # Vérification signal de confiance
@@ -849,15 +866,27 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
                 crypto = symbol.split('/')[0]
-                print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
+                try:
+                    analysis = self.get_cached_analysis(symbol, current_price)
+                    signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
+                    print(f"❌ {crypto}: Signal {signal_confidence:.0f}% < {adaptive_threshold:.0f}%")
+                except:
+                    print(f"❌ {crypto}: Signal < {adaptive_threshold:.0f}%")
                 return
             
             print(f"✅ Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
             
         except Exception as e:
             # Fallback méthode classique
-            should_buy, reason = self.get_entry_signal(symbol, current_price)
-            if not should_buy:
+            try:
+                should_buy, reason = self.get_entry_signal(symbol, current_price)
+                if not should_buy:
+                    crypto = symbol.split('/')[0]
+                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (Fallback)")
+                    return
+            except:
+                crypto = symbol.split('/')[0]
+                print(f"❌ {crypto}: Erreur analyse - Score {crypto_score:.0f}/100")
                 return
         
         # 4. Vérifier timing optimal (sessions de trading)
