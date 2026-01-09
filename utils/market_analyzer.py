@@ -826,7 +826,12 @@ class MarketAnalyzer:
             else:
                 print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
         else:
-            if usdt_available > 0:
+            # DEBUG: Afficher les scores réels pour diagnostiquer
+            if scores and usdt_available > 0:
+                debug_scores = [f"{c['symbol'].replace('/USDT', '')}: {c['score']:.1f}" for c in scores[:5]]
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
+                print(f"📊 Scores actuels: {' | '.join(debug_scores)}")
+            elif usdt_available > 0:
                 print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
         
         return tradeable
