@@ -1,7 +1,7 @@
 """Module d'analyse et prévisions pour le bot de trading"""
 from datetime import datetime
 from utils.market_analyzer import MarketAnalyzer
-from utils.ema_analyzer import BinanceEMAAnalyzer
+
 import time
 import os
 
@@ -12,17 +12,8 @@ class AnalysisMixin:
         """Récupère analyse depuis cache ou calcule si nécessaire"""
         analysis = self.multi_tf_analyzer.analyze_all_timeframes(self, symbol, current_price)
         
-        # Enrichir avec analyse EMA Binance
-        if not hasattr(self, 'ema_analyzer'):
-            self.ema_analyzer = BinanceEMAAnalyzer()
-        
-        klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
-        ema_analysis = self.ema_analyzer.analyze(klines, current_price)
-        
-        if ema_analysis:
-            analysis['ema_binance'] = ema_analysis
-        
         # NOUVEAU: Analyse Support/Résistance avancée
+        klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
         if len(klines) >= 50:
             sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines)
             reversal_prediction = self.pattern_analyzer.predict_reversal_probability(current_price, sr_levels)
