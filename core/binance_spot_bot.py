@@ -800,8 +800,11 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     
     def intelligent_strategy(self, symbol, amount, current_price):
         """Stratégie intelligente - Validation en cascade professionnelle"""
+        crypto = symbol.split('/')[0]
+        
         # 1. Vérifier position existante
         if not self.can_open_position(symbol):
+            print(f"❌ {crypto}: Positions max atteintes")
             return
         
         # 2. SCORING PROFESSIONNEL EN PREMIER (Fail Fast)
@@ -822,8 +825,9 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             market_conditions={'avg_volatility': 2.0, 'avg_volume_ratio': 1.0}
         )
         
-        # REJET SILENCIEUX si score insuffisant
+        # REJET si score insuffisant
         if crypto_score < dynamic_min_score:
+            print(f"❌ {crypto}: Score insuffisant {crypto_score}/100 < {dynamic_min_score}")
             return
         
         # 3. SIGNAL TECHNIQUE (Deuxième filtre)
@@ -833,25 +837,28 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, volatility)
             global_signal = analysis['global_signal']
             
-            # REJET SILENCIEUX si signal insuffisant
+            # REJET si signal insuffisant
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
+                print(f"❌ {crypto}: Signal insuffisant {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
                 return
                 
         except Exception as e:
-            # Fallback - REJET SILENCIEUX si erreur
+            # Fallback - REJET si erreur
+            print(f"❌ {crypto}: Erreur analyse technique")
             return
         
         # 4. CONTEXTE MARCHÉ (Troisième filtre)
         if not self.check_htf_bias(symbol):
+            print(f"❌ {crypto}: Contexte marché défavorable")
             return
         
         # 5. TIMING OPTIMAL (Quatrième filtre)
         if not self._is_optimal_trading_time():
+            print(f"❌ {crypto}: Session trading non optimale")
             return
         
         # ✅ TOUS LES CRITÈRES PASSÉS - LOG COMPLET DE SUCCÈS
-        crypto = symbol.split('/')[0]
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
         
         # 6. Calculer position sizing optimal (COMBIEN)
