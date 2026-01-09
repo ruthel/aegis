@@ -11,27 +11,14 @@ from core.earn_manager import BinanceEarnManager
 from core.double_investment_manager import DoubleInvestmentManager
 from core.balance_manager import BalanceManager
 from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
-
-
-from utils.contagion_detector import ContagionDetector
-
-
-
 from utils.timeframe_analyzer import TimeframeAnalyzer
+from utils.position_manager import PositionManager
 
-from utils.stuck_position_manager import StuckPositionManager
-from utils.decision_display import DecisionDisplay
-
-from utils.stablecoin_monitor import StablecoinMonitor
 from utils.pattern_analyzer import PatternAnalyzer
-from utils.slippage_calculator import SlippageCalculator
 
 from utils.market_analyzer import MarketAnalyzer
 from utils.timing_optimizer import TimingOptimizer
-from utils.position_sizing_calculator import PositionSizingCalculator
-
 from utils.capital_manager import CapitalManager
-from utils.crypto_detector import CryptoDetector
 
 
 
@@ -118,13 +105,12 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # NOUVEAUX DÉTECTEURS CRITIQUES
 
-        self.contagion_detector = ContagionDetector()
-
         self.multi_tf_analyzer = TimeframeAnalyzer()
 
         self.earn_manager = BinanceEarnManager(self)
         self.double_investment_manager = DoubleInvestmentManager(self)
-        self.stuck_manager = StuckPositionManager(
+        self.stuck_manager = PositionManager(
+            self,
             max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
             stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
         )
@@ -132,18 +118,16 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40')),
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
         )
-        self.decision_display = DecisionDisplay()
 
-        self.stablecoin_monitor = StablecoinMonitor()
+
         self.pattern_analyzer = PatternAnalyzer()
-        self.slippage_calculator = SlippageCalculator()
+
         
         # PHASE 1 - Gestionnaire de niveaux dynamiques
         self.pattern_analyzer = PatternAnalyzer(self)
         
         # PHASE 2 - Optimiseurs QUAND et COMBIEN
         self.timing_optimizer = TimingOptimizer(self)
-        self.position_sizer = PositionSizingCalculator(self)
         
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
@@ -153,8 +137,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Gestionnaire de capital automatique
         self.capital_manager = CapitalManager(self)
         
-        # Détecteur de cryptos automatique
-        self.crypto_detector = CryptoDetector(self)
+
         
         # Gestionnaire de dust (valeurs très petites)
 
@@ -876,7 +859,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # 5. Calculer position sizing optimal (COMBIEN)
         account_balance = self.get_account_balance()
-        position_data = self.position_sizer.calculate_position_size(symbol, signal_strength, account_balance)
+        position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
         
         # 6. NOUVEAU: Optimiser type d'ordre pour frais
         try:
