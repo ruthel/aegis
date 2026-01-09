@@ -827,33 +827,27 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
             # Log avec score professionnel pondéré
             try:
-                details = self.market_analyzer.get_score_details(self, symbol, [], websocket_manager)
-                if details:
-                    v_score = details.get('volatility', 0)
-                    vol_score = details.get('volume', 0)
-                    m_score = details.get('momentum', 0)
+                score_details = self.market_analyzer.get_score_details(self, symbol, [], websocket_manager)
+                if score_details:
+                    v_score = score_details.get('volatility', 0)
+                    vol_score = score_details.get('volume', 0)
+                    m_score = score_details.get('momentum', 0)
                     
                     # Ajouter confiance du signal
                     try:
                         analysis = self.get_cached_analysis(symbol, current_price)
                         signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
-                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score}) | Signal {signal_confidence:.0f}%")
+                        adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, analysis.get('volatility', 2.0))
+                        
+                        score_op = ">" if crypto_score >= dynamic_min_score else "<"
+                        signal_op = ">" if signal_confidence >= adaptive_threshold else "<"
+                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 {score_op} {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score}) | Signal {signal_confidence:.0f}% {signal_op} {adaptive_threshold:.0f}%")
                     except:
                         print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score})")
                 else:
-                    try:
-                        analysis = self.get_cached_analysis(symbol, current_price)
-                        signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
-                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} | Signal {signal_confidence:.0f}%")
-                    except:
-                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
+                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score}")
             except:
-                try:
-                    analysis = self.get_cached_analysis(symbol, current_price)
-                    signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
-                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} | Signal {signal_confidence:.0f}%")
-                except:
-                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < Seuil adaptatif {dynamic_min_score}")
+                print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score}")
             return
         
         # Vérification signal de confiance

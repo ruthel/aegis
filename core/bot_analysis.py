@@ -154,15 +154,11 @@ class AnalysisMixin:
             )
             
             if prediction and self.volume_predictor.should_notify(symbol, prediction):
-                # Envoyer notification Telegram
+                # Envoyer notification Telegram SEULEMENT
                 if hasattr(self, 'notification_manager'):
                     self.notification_manager.notify_volume_prediction(symbol, prediction)
                 
-                # Log console
-                crypto = symbol.split('/')[0]
-                recovery_time = prediction['recovery_time_str']
-                confidence = prediction['confidence']
-                print(f"📉 {crypto} Volume baisse détectée - Récupération: {recovery_time} ({confidence}%)")
+                # PAS de log console ici (éviter doublon)
             
             return prediction
             
