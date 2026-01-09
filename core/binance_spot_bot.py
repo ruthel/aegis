@@ -1036,12 +1036,19 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         max_positions = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '4'))
         existing_positions = [p for p in self.state.get('positions', []) 
                             if p['symbol'] == symbol and p['side'] == 'buy']
-        return len(existing_positions) < max_positions
+        
+        # DEBUG: Afficher les positions trouvées
+        crypto = symbol.split('/')[0]
+        if existing_positions:
+            print(f"🔍 DEBUG {crypto}: {len(existing_positions)} positions trouvées dans state")
+            for i, pos in enumerate(existing_positions):
+                print(f"   Position {i+1}: {pos.get('timestamp', 'N/A')} - {pos.get('amount', 'N/A')}")
+        
+        can_open = len(existing_positions) < max_positions
+        print(f"🔍 DEBUG {crypto}: {len(existing_positions)}/{max_positions} positions - Peut ouvrir: {can_open}")
+        
+        return can_open
     
-
-
-
-
     def get_entry_signal(self, symbol, current_price):
         """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""
         # 1. Niveaux dynamiques professionnels (priorité)
