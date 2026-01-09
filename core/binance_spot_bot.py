@@ -1034,15 +1034,19 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position"""
         max_positions = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '4'))
-        existing_positions = [p for p in self.state.get('positions', []) 
-                            if p['symbol'] == symbol and p['side'] == 'buy']
         
-        # DEBUG: Afficher les positions trouvées
+        # CORRECTION: Filtrer correctement par symbole ET side
+        existing_positions = [p for p in self.state.get('positions', []) 
+                            if p.get('symbol') == symbol and p.get('side') == 'buy']
+        
+        # DEBUG: Afficher les positions trouvées pour cette crypto spécifique
         crypto = symbol.split('/')[0]
         if existing_positions:
-            print(f"🔍 DEBUG {crypto}: {len(existing_positions)} positions trouvées dans state")
+            print(f"🔍 DEBUG {crypto}: {len(existing_positions)} positions BUY trouvées")
             for i, pos in enumerate(existing_positions):
-                print(f"   Position {i+1}: {pos.get('timestamp', 'N/A')} - {pos.get('amount', 'N/A')}")
+                print(f"   Position {i+1}: {pos.get('timestamp', 'N/A')} - {pos.get('amount', 'N/A')} {crypto}")
+        else:
+            print(f"🔍 DEBUG {crypto}: Aucune position BUY trouvée dans state")
         
         can_open = len(existing_positions) < max_positions
         print(f"🔍 DEBUG {crypto}: {len(existing_positions)}/{max_positions} positions - Peut ouvrir: {can_open}")
