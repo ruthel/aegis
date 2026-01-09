@@ -1057,16 +1057,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             else:
                 real_open_positions = 0
             
-            # DEBUG: Afficher les vraies données
-            print(f"🔍 DEBUG {crypto}: Balance réelle: {total_holding:.6f} {crypto} (Libre: {free_amount:.6f}, Verrouillé: {locked_amount:.6f})")
-            if total_holding > 0.00001:
-                print(f"🔍 DEBUG {crypto}: Valeur position: {position_value:.2f} USDT")
-            print(f"🔍 DEBUG {crypto}: Positions réelles ouvertes: {real_open_positions}")
-            
-            can_open = real_open_positions < max_positions
-            print(f"🔍 DEBUG {crypto}: {real_open_positions}/{max_positions} positions - Peut ouvrir: {can_open}")
-            
-            return can_open
+            return real_open_positions < max_positions
             
         except Exception as e:
             print(f"⚠️ Erreur vérification position {symbol}: {e}")
