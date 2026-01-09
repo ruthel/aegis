@@ -1454,13 +1454,16 @@ class MarketAnalyzer:
         
         market_conditions = {
             'avg_volatility': sum(volatilities) / len(volatilities) if volatilities else 2.0,
-            'avg_volume_ratio': sum(volume_ratios) / len(volume_ratios) if volume_ratios else 1.0
+            'avg_volume_ratio': sum(volume_ratios) / len(volume_ratios) if volume_ratios else 1.0,
+            'klines_data': klines if klines and len(klines) >= 20 else None  # Pour détection régime marché
         }
         
         dynamic_min_score = self._get_dynamic_min_score(
             available_count=len(scores),
             capital=usdt_available,
-            market_conditions=market_conditions
+            market_conditions=market_conditions,
+            bot=bot,
+            symbol=None  # Pas de symbol spécifique pour le ranking global
         )
         
         # STOCKER le seuil calculé pour intelligent_strategy()
@@ -1664,22 +1667,108 @@ class MarketAnalyzer:
         except Exception as e:
             return None
     
-    def _get_dynamic_min_score(self, available_count, capital=None, market_conditions=None):
-        """Seuil minimum adaptatif professionnel - VALEURS PAR DÉFAUT"""
+    def _detect_market_regime(self, klines_data):
+        """Détection automatique du régime de marché"""
+        if not klines_data or len(klines_data) < 20:
+            return 'UNKNOWN'
+        
+        prices = [float(k['close']) for k in klines_data[-20:]]
+        volumes = [float(k['volume']) for k in klines_data[-20:]]
+        
+        # Tendance
+        sma_5 = sum(prices[-5:]) / 5
+        sma_20 = sum(prices) / len(prices)
+        trend_strength = (sma_5 - sma_20) / sma_20 * 100
+        
+        # Volatilité
+        price_changes = [abs(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
+        volatility = sum(price_changes) / len(price_changes) * 100
+        
+        # Volume trend
+        vol_recent = sum(volumes[-5:]) / 5
+        vol_avg = sum(volumes) / len(volumes)
+        volume_ratio = vol_recent / vol_avg if vol_avg > 0 else 1
+        
+        if trend_strength > 1.5 and volatility < 2.0 and volume_ratio > 1.2:
+            return 'BULL_TRENDING'
+        elif trend_strength < -1.5 and volatility < 2.0 and volume_ratio > 1.2:
+            return 'BEAR_TRENDING'
+        elif volatility > 3.0:
+            return 'HIGH_VOLATILITY'
+        else:
+            return 'SIDEWAYS'
+    
+    def _apply_regime_adjustment(self, base_min, market_conditions):
+        """Ajustement basé sur le régime de marché"""
+        if not market_conditions or 'klines_data' not in market_conditions:
+            return base_min
+        
+        regime = self._detect_market_regime(market_conditions['klines_data'])
+        
+        adjustments = {
+            'BULL_TRENDING': -8,
+            'BEAR_TRENDING': +12,
+            'HIGH_VOLATILITY': +10,
+            'SIDEWAYS': +3,
+            'UNKNOWN': 0
+        }
+        
+        return base_min + adjustments.get(regime, 0)
+    
+    def _calculate_portfolio_risk_adjustment(self, bot, symbol):
+        """Ajustement basé sur le risque portfolio"""
+        if not bot or not hasattr(bot, 'positions') or not bot.positions:
+            return 0
+        
+        existing_symbols = [pos.get('symbol', '').replace('USDT', '') for pos in bot.positions]
+        
+        correlation_groups = {
+            'MAJOR': ['BTC', 'ETH'],
+            'DEFI': ['UNI', 'AAVE', 'COMP', 'MKR'],
+            'LAYER1': ['SOL', 'ADA', 'DOT', 'AVAX'],
+            'MEME': ['DOGE', 'SHIB', 'PEPE']
+        }
+        
+        current_symbol = symbol.replace('USDT', '')
+        current_group = None
+        
+        for group, symbols in correlation_groups.items():
+            if current_symbol in symbols:
+                current_group = group
+                break
+        
+        if current_group:
+            same_group_count = sum(1 for sym in existing_symbols 
+                                  if sym in correlation_groups.get(current_group, []))
+            
+            if same_group_count >= 2:
+                return +15
+            elif same_group_count == 1:
+                return +5
+        
+        return -3
+    
+    def _get_dynamic_min_score(self, available_count, capital=None, market_conditions=None, bot=None, symbol=None):
+        """Seuil minimum adaptatif professionnel - VERSION COMPLÈTE"""
         base_min = self.base_min_score
         
+        # 1. Ajustements capital
         if capital and capital < 20:
-            base_min -= 20
+            base_min -= 35 #20
         elif capital and capital < 50:
-            base_min -= 15
+            base_min -= 15 #15
         
+        # 2. Conditions marché + régime
         if market_conditions:
             if market_conditions.get('avg_volatility', 2.0) < 1.5:
                 base_min -= 10
-            
             if market_conditions.get('avg_volume_ratio', 1.0) < 0.7:
                 base_min -= 5
+            
+            # Régime de marché
+            base_min = self._apply_regime_adjustment(base_min, market_conditions)
         
+        # 3. Disponibilité cryptos
         if available_count < 2:
             base_min -= 15
         elif available_count < 4:
@@ -1687,12 +1776,34 @@ class MarketAnalyzer:
         elif available_count > 8:
             base_min += 10
         
+        # 4. Performance historique
+        if bot and symbol and hasattr(bot, 'trade_history'):
+            recent_trades = [t for t in bot.trade_history if t.get('symbol') == symbol][-10:]
+            if recent_trades:
+                win_rate = sum(1 for t in recent_trades if t.get('profit', 0) > 0) / len(recent_trades)
+                if win_rate > 0.7:
+                    base_min -= 8
+                elif win_rate < 0.4:
+                    base_min += 12
+        
+        # 5. Risque portfolio
+        if bot and symbol:
+            portfolio_adj = self._calculate_portfolio_risk_adjustment(bot, symbol)
+            base_min += portfolio_adj
+        
+        # 6. Sessions optimales
         from datetime import datetime
         now = datetime.now()
         if now.weekday() >= 5:
             base_min -= 5
         elif now.hour < 8 or now.hour > 22:
             base_min -= 3
+        
+        # Session de marché optimale
+        if 14 <= now.hour <= 21:  # Session US
+            base_min -= 3
+        elif 8 <= now.hour <= 16:  # Session EU
+            base_min -= 1
         
         return max(15, min(base_min, 80))
     
