@@ -7,7 +7,6 @@ from queue import Queue
 from datetime import datetime
 from core.websocket_manager import WebSocketManager
 from core.notification_manager import NotificationManager
-from core.technical_indicators import SignalGenerator
 from core.earn_manager import BinanceEarnManager
 from core.double_investment_manager import DoubleInvestmentManager
 from core.balance_manager import BalanceManager
@@ -104,9 +103,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         # Ordres
         self.pending_orders = {}
         self.order_timeout = 86400
-        
-        # Générateur signaux
-        self.signal_generator = SignalGenerator()
         
         # Gestionnaires (nommage cohérent)
         self.advanced_risk_manager = AdvancedRiskManager()
@@ -1228,7 +1224,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 return False
             
             closes = [k['close'] for k in klines]
-            rsi = self.signal_generator.technical_indicators.calculate_rsi(closes)
+            rsi = self.multi_tf_analyzer.calculate_rsi(closes)
             return rsi is not None and rsi < 25
         except:
             return False
