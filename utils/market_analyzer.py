@@ -682,6 +682,57 @@ class MarketAnalyzer:
         
         return ema
     
+    def calculate_support_resistance_score(self, bot, symbol, current_price):
+        """Score Support/Resistance (0-15 points) - Utilise PatternAnalyzer existant"""
+        try:
+            if not hasattr(bot, 'pattern_analyzer'):
+                return 8  # Score neutre
+            
+            klines = bot.get_klines(symbol, 100, '4h')
+            if len(klines) < 50:
+                return 8
+            
+            levels_data = bot.pattern_analyzer.find_support_resistance_levels(klines)
+            reversal_data = bot.pattern_analyzer.predict_reversal_probability(current_price, levels_data)
+            
+            # Scoring selon proximité et force des niveaux
+            if reversal_data['has_reversal_potential']:
+                probability = reversal_data['probability']
+                if reversal_data['direction'] == 'UP':  # Près support = bon pour achat
+                    return min(15, int(probability / 100 * 15))
+                else:  # Près résistance = mauvais pour achat
+                    return max(3, int((100 - probability) / 100 * 15))
+            
+            # Pas de niveau proche = score moyen
+            return 8
+            
+        except Exception as e:
+            return 8  # Score neutre en cas d'erreur
+    
+    def calculate_multi_timeframe_score(self, bot, symbol):
+        """Score Multi-Timeframe (0-10 points) - Utilise TimeframeAnalyzer existant"""
+        try:
+            if not hasattr(bot, 'multi_tf_analyzer'):
+                return 5  # Score neutre
+            
+            current_price = bot.get_price(symbol)
+            analysis = bot.multi_tf_analyzer.analyze_all_timeframes(bot, symbol, current_price)
+            
+            global_signal = analysis['global_signal']
+            confidence = global_signal['confidence']
+            action = global_signal['action']
+            
+            # Scoring selon alignement des timeframes
+            if action in ['STRONG_BUY', 'BUY']:
+                return min(10, int(confidence / 10))  # Confidence 80% = 8 points
+            elif action in ['STRONG_SELL', 'SELL']:
+                return max(2, int((100 - confidence) / 10))  # Inverse pour vente
+            else:  # HOLD
+                return 5  # Neutre
+                
+        except Exception as e:
+            return 5  # Score neutre en cas d'erreur
+    
     def calculate_market_cap_score(self, symbol):
         """Score Market Cap (0-10 points) - Taille relative"""
         # Ranking approximatif des cryptos par market cap
@@ -708,6 +759,206 @@ class MarketAnalyzer:
             return 4
         else:              # Au-delà Top 50
             return 2
+    
+    # ===== 8 NOUVEAUX FACTEURS AVANCÉS =====
+    
+    def calculate_orderbook_imbalance_score(self, bot, symbol):
+        """Score déséquilibre carnet d'ordres (0-15 points)"""
+        try:
+            orderbook = bot.exchange.fetch_order_book(symbol, limit=10)
+            bid_volume = sum(bid[1] for bid in orderbook['bids'][:5])
+            ask_volume = sum(ask[1] for ask in orderbook['asks'][:5])
+            
+            if bid_volume + ask_volume == 0:
+                return 10
+            
+            imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume)
+            
+            if imbalance > 0.3:  # Plus d'acheteurs
+                return 15
+            elif imbalance > 0.1:
+                return 12
+            elif imbalance < -0.3:  # Plus de vendeurs
+                return 5
+            else:
+                return 10
+        except:
+            return 10
+    
+    def calculate_price_action_score(self, klines):
+        """Score patterns prix (0-12 points) - Doji, Hammer, etc."""
+        if len(klines) < 3:
+            return 6
+        
+        last = klines[-1]
+        if last['open'] == 0:
+            return 6
+            
+        body_size = abs(last['close'] - last['open']) / last['open']
+        wick_ratio = (last['high'] - last['low']) / last['open'] if last['open'] > 0 else 0
+        
+        # Doji (indécision)
+        if body_size < 0.001:
+            return 8
+        # Hammer (reversal bullish)
+        elif last['close'] > last['open'] and wick_ratio > 0.02:
+            return 12
+        # Strong candle
+        elif body_size > 0.01:
+            return 10
+        else:
+            return 6
+    
+    def calculate_volume_profile_score(self, klines):
+        """Score profil volume (0-18 points)"""
+        if len(klines) < 20:
+            return 9
+        
+        volumes = [k['volume'] for k in klines[-20:]]
+        prices = [k['close'] for k in klines[-20:]]
+        
+        total_volume = sum(volumes)
+        if total_volume == 0:
+            return 9
+        
+        # Volume-weighted average price
+        vwap = sum(p * v for p, v in zip(prices, volumes)) / total_volume
+        current_price = prices[-1]
+        
+        if current_price == 0:
+            return 9
+            
+        distance_from_vwap = abs(current_price - vwap) / current_price
+        
+        if distance_from_vwap < 0.01:  # Près VWAP
+            return 18
+        elif distance_from_vwap < 0.02:
+            return 15
+        else:
+            return 9
+    
+    def calculate_momentum_divergence_score(self, klines):
+        """Score divergence momentum/prix (0-16 points)"""
+        if len(klines) < 20:
+            return 8
+        
+        prices = [k['close'] for k in klines[-10:]]
+        volumes = [k['volume'] for k in klines[-10:]]
+        
+        if prices[0] == 0 or volumes[0] == 0:
+            return 8
+        
+        price_trend = (prices[-1] - prices[0]) / prices[0]
+        volume_trend = (volumes[-1] - volumes[0]) / volumes[0]
+        
+        # Divergence bullish : prix baisse, volume monte
+        if price_trend < -0.01 and volume_trend > 0.1:
+            return 16
+        # Convergence normale
+        elif (price_trend > 0 and volume_trend > 0):
+            return 12
+        else:
+            return 8
+    
+    def calculate_volatility_clustering_score(self, klines):
+        """Score clustering volatilité (0-12 points)"""
+        if len(klines) < 20:
+            return 6
+        
+        returns = []
+        for i in range(1, len(klines)):
+            if klines[i-1]['close'] > 0:
+                ret = (klines[i]['close'] - klines[i-1]['close']) / klines[i-1]['close']
+                returns.append(abs(ret))
+        
+        if len(returns) < 10:
+            return 6
+        
+        recent_vol = sum(returns[-5:]) / 5
+        avg_vol = sum(returns) / len(returns)
+        
+        vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1
+        
+        if 0.8 <= vol_ratio <= 1.2:  # Volatilité stable
+            return 12
+        elif vol_ratio > 2.0:  # Volatilité excessive
+            return 4
+        else:
+            return 8
+    
+    def calculate_fibonacci_score(self, klines):
+        """Score niveaux Fibonacci (0-10 points)"""
+        if len(klines) < 50:
+            return 5
+        
+        prices = [k['close'] for k in klines]
+        high = max(prices[-20:])
+        low = min(prices[-20:])
+        current = prices[-1]
+        
+        if high == low or current == 0:
+            return 5
+        
+        # Niveaux Fibonacci
+        fib_levels = {
+            0.236: high - (high - low) * 0.236,
+            0.382: high - (high - low) * 0.382,
+            0.618: high - (high - low) * 0.618
+        }
+        
+        for level, price in fib_levels.items():
+            if abs(current - price) / current < 0.01:  # Près niveau Fib
+                return 10
+        
+        return 5
+    
+    def calculate_microstructure_score(self, klines):
+        """Score microstructure (0-14 points) - Tick size, gaps"""
+        if len(klines) < 10:
+            return 7
+        
+        gaps = []
+        tick_sizes = []
+        
+        for i in range(1, len(klines)):
+            if klines[i-1]['close'] > 0 and klines[i]['open'] > 0:
+                # Gap entre close précédent et open actuel
+                gap = abs(klines[i]['open'] - klines[i-1]['close']) / klines[i-1]['close']
+                gaps.append(gap)
+                
+                # Tick size (plus petit mouvement)
+                if klines[i]['open'] > 0:
+                    tick = abs(klines[i]['close'] - klines[i]['open']) / klines[i]['open']
+                    tick_sizes.append(tick)
+        
+        if not gaps or not tick_sizes:
+            return 7
+        
+        avg_gap = sum(gaps) / len(gaps)
+        avg_tick = sum(tick_sizes) / len(tick_sizes)
+        
+        # Faibles gaps + ticks réguliers = bon
+        if avg_gap < 0.001 and 0.001 < avg_tick < 0.01:
+            return 14
+        else:
+            return 7
+    
+    def calculate_seasonality_score(self, symbol):
+        """Score saisonnalité intraday (0-10 points)"""
+        from datetime import datetime
+        
+        hour = datetime.now().hour
+        crypto = symbol.split('/')[0]
+        
+        # Patterns horaires par crypto (basé sur données historiques)
+        hourly_patterns = {
+            'BTC': {8: 12, 14: 15, 20: 10, 2: 8},  # Meilleurs à 14h UTC
+            'ETH': {9: 12, 15: 14, 21: 9, 3: 7},
+            'SOL': {10: 11, 16: 13, 22: 8, 4: 6}
+        }
+        
+        pattern = hourly_patterns.get(crypto, {})
+        return pattern.get(hour, 5)  # Score par défaut 5
     
     @staticmethod
     def calculate_momentum(klines):
@@ -970,6 +1221,20 @@ class MarketAnalyzer:
             technical_score = self.calculate_technical_score(klines_short)
             market_cap_score = self.calculate_market_cap_score(symbol)
             
+            # FACTEURS DÉJÀ IMPLÉMENTÉS (utilise analyseurs existants)
+            support_resistance_score = self.calculate_support_resistance_score(bot, symbol, current_price)
+            multi_timeframe_score = self.calculate_multi_timeframe_score(bot, symbol)
+            
+            # 8 NOUVEAUX FACTEURS AVANCÉS
+            orderbook_score = self.calculate_orderbook_imbalance_score(bot, symbol)
+            price_action_score = self.calculate_price_action_score(klines_short)
+            volume_profile_score = self.calculate_volume_profile_score(klines_short)
+            momentum_div_score = self.calculate_momentum_divergence_score(klines_short)
+            volatility_cluster_score = self.calculate_volatility_clustering_score(klines_short)
+            fibonacci_score = self.calculate_fibonacci_score(klines_short)
+            microstructure_score = self.calculate_microstructure_score(klines_short)
+            seasonality_score = self.calculate_seasonality_score(symbol)
+            
             # Déterminer qualité des données
             if klines_7d and len(klines_7d) >= 672:
                 data_quality = 'HIGH_7D'
@@ -995,6 +1260,16 @@ class MarketAnalyzer:
                 liquidity_score * weights['liquidity'] +
                 technical_score * weights['technical'] +
                 market_cap_score * weights['market_cap'] +
+                support_resistance_score * weights['support_resistance'] +
+                multi_timeframe_score * weights['multi_timeframe'] +
+                orderbook_score * weights['orderbook'] +
+                price_action_score * weights['price_action'] +
+                volume_profile_score * weights['volume_profile'] +
+                momentum_div_score * weights['momentum_div'] +
+                volatility_cluster_score * weights['volatility_cluster'] +
+                fibonacci_score * weights['fibonacci'] +
+                microstructure_score * weights['microstructure'] +
+                seasonality_score * weights['seasonality'] +
                 spread_score * weights['spread'] +
                 history_score * weights['history']
             )
@@ -1124,12 +1399,15 @@ class MarketAnalyzer:
 
     
     def _get_default_weights(self):
-        """Pondération par défaut - 10 facteurs"""
+        """Pondération par défaut - 20 facteurs"""
         return {
-            'volatility': 0.15, 'volume': 0.12, 'momentum': 0.15,
-            'rsi': 0.20, 'correlation': 0.15, 'liquidity': 0.08,
-            'technical': 0.08, 'market_cap': 0.03,
-            'spread': 0.02, 'history': 0.02
+            'rsi': 0.15, 'support_resistance': 0.11, 'orderbook': 0.07,
+            'correlation': 0.11, 'volume_profile': 0.08, 'multi_timeframe': 0.07,
+            'momentum': 0.07, 'technical': 0.07, 'momentum_div': 0.06,
+            'volatility': 0.07, 'liquidity': 0.06, 'microstructure': 0.06,
+            'volume': 0.05, 'price_action': 0.05, 'volatility_cluster': 0.05,
+            'fibonacci': 0.04, 'seasonality': 0.04, 'market_cap': 0.02,
+            'spread': 0.01, 'history': 0.01
         }
     
     def _get_base_volatility_points(self, volatility):
@@ -1153,21 +1431,27 @@ class MarketAnalyzer:
             return 1.0
     
     def _get_dynamic_weights(self, symbol, market_conditions=None):
-        """Pondération adaptative selon crypto ET conditions de marché - 10 Facteurs Pro"""
-        # Nouvelle pondération avec 10 facteurs
+        """Pondération adaptative selon crypto ET conditions de marché - 20 Facteurs Pro"""
+        # Nouvelle pondération avec 20 facteurs
         if symbol in ['BTC/USDT', 'ETH/USDT']:
             base_weights = {
-                'volatility': 0.12, 'volume': 0.12, 'momentum': 0.12,
-                'rsi': 0.20, 'correlation': 0.15, 'liquidity': 0.12,
-                'technical': 0.08, 'market_cap': 0.05,
-                'spread': 0.02, 'history': 0.02
+                'rsi': 0.15, 'support_resistance': 0.12, 'orderbook': 0.08,
+                'correlation': 0.10, 'volume_profile': 0.09, 'multi_timeframe': 0.08,
+                'liquidity': 0.08, 'technical': 0.06, 'momentum': 0.05,
+                'volatility': 0.06, 'momentum_div': 0.06, 'microstructure': 0.07,
+                'volume': 0.04, 'price_action': 0.05, 'volatility_cluster': 0.05,
+                'fibonacci': 0.04, 'seasonality': 0.04, 'market_cap': 0.03,
+                'spread': 0.01, 'history': 0.01
             }
         else:
             base_weights = {
-                'volatility': 0.15, 'volume': 0.10, 'momentum': 0.15,
-                'rsi': 0.20, 'correlation': 0.15, 'liquidity': 0.08,
-                'technical': 0.10, 'market_cap': 0.03,
-                'spread': 0.02, 'history': 0.02
+                'rsi': 0.15, 'support_resistance': 0.10, 'orderbook': 0.06,
+                'correlation': 0.12, 'volume_profile': 0.07, 'multi_timeframe': 0.06,
+                'momentum': 0.09, 'technical': 0.08, 'momentum_div': 0.07,
+                'volatility': 0.08, 'liquidity': 0.05, 'microstructure': 0.05,
+                'volume': 0.04, 'price_action': 0.04, 'volatility_cluster': 0.04,
+                'fibonacci': 0.03, 'seasonality': 0.03, 'market_cap': 0.02,
+                'spread': 0.01, 'history': 0.01
             }
         
         # Ajustements dynamiques selon marché
@@ -1175,32 +1459,38 @@ class MarketAnalyzer:
             avg_volatility = market_conditions.get('avg_volatility', 2.0)
             avg_volume_ratio = market_conditions.get('avg_volume_ratio', 1.0)
             
-            # Marché très volatil = privilégier RSI + technical
+            # Marché très volatil = privilégier RSI + support/resistance + orderbook
             if avg_volatility > 3.5:
-                base_weights['rsi'] += 0.05
-                base_weights['technical'] += 0.05
-                base_weights['momentum'] -= 0.05
-                base_weights['volatility'] -= 0.05
+                base_weights['rsi'] += 0.03
+                base_weights['support_resistance'] += 0.02
+                base_weights['orderbook'] += 0.02
+                base_weights['momentum'] -= 0.03
+                base_weights['volatility'] -= 0.02
+                base_weights['volume_profile'] -= 0.02
             
-            # Marché calme = privilégier volume + liquidité
+            # Marché calme = privilégier multi-timeframe + liquidité + microstructure
             elif avg_volatility < 1.5:
-                base_weights['volume'] += 0.05
-                base_weights['liquidity'] += 0.05
-                base_weights['momentum'] -= 0.10
+                base_weights['multi_timeframe'] += 0.03
+                base_weights['liquidity'] += 0.02
+                base_weights['microstructure'] += 0.02
+                base_weights['momentum'] -= 0.04
+                base_weights['volatility_cluster'] -= 0.03
             
-            # Volume anormal = ajuster liquidité
+            # Volume anormal = ajuster volume_profile + momentum_div
             if avg_volume_ratio > 2.0:
-                base_weights['liquidity'] += 0.03
+                base_weights['volume_profile'] += 0.02
+                base_weights['momentum_div'] += 0.02
                 base_weights['spread'] -= 0.01
-                base_weights['history'] -= 0.02
+                base_weights['history'] -= 0.01
+                base_weights['seasonality'] -= 0.02
             elif avg_volume_ratio < 0.5:
-                base_weights['liquidity'] -= 0.03
-                base_weights['volatility'] += 0.03
+                base_weights['volume_profile'] -= 0.02
+                base_weights['volatility'] += 0.02
         
         return base_weights
     
     def get_score_details(self, bot, symbol, stuck_positions, websocket_manager=None):
-        """Détails du score professionnel pour debug - 10 facteurs"""
+        """Détails du score professionnel pour debug - 20 facteurs"""
         try:
             # Calculer le score professionnel pondéré
             final_score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
@@ -1217,7 +1507,7 @@ class MarketAnalyzer:
             if not klines_short or len(klines_short) < 10:
                 return None
             
-            # TOUS les composants (10 facteurs)
+            # TOUS les composants (20 facteurs)
             volatility_raw = self.calculate_volatility_score(klines_short, symbol, None, websocket_manager)
             volume_raw = self.calculate_volume_score(klines_long if klines_long and len(klines_long) >= 50 else klines_short)
             momentum_raw = self.calculate_momentum_score(klines_short)
@@ -1226,6 +1516,18 @@ class MarketAnalyzer:
             liquidity_raw = self.calculate_liquidity_score(bot, symbol)
             technical_raw = self.calculate_technical_score(klines_short)
             market_cap_raw = self.calculate_market_cap_score(symbol)
+            support_resistance_raw = self.calculate_support_resistance_score(bot, symbol, current_price)
+            multi_timeframe_raw = self.calculate_multi_timeframe_score(bot, symbol)
+            
+            # 8 nouveaux facteurs
+            orderbook_raw = self.calculate_orderbook_imbalance_score(bot, symbol)
+            price_action_raw = self.calculate_price_action_score(klines_short)
+            volume_profile_raw = self.calculate_volume_profile_score(klines_short)
+            momentum_div_raw = self.calculate_momentum_divergence_score(klines_short)
+            volatility_cluster_raw = self.calculate_volatility_clustering_score(klines_short)
+            fibonacci_raw = self.calculate_fibonacci_score(klines_short)
+            microstructure_raw = self.calculate_microstructure_score(klines_short)
+            seasonality_raw = self.calculate_seasonality_score(symbol)
             
             return {
                 'final_score': final_score,
@@ -1236,7 +1538,17 @@ class MarketAnalyzer:
                 'correlation': correlation_raw,
                 'liquidity': liquidity_raw,
                 'technical': technical_raw,
-                'market_cap': market_cap_raw
+                'market_cap': market_cap_raw,
+                'support_resistance': support_resistance_raw,
+                'multi_timeframe': multi_timeframe_raw,
+                'orderbook': orderbook_raw,
+                'price_action': price_action_raw,
+                'volume_profile': volume_profile_raw,
+                'momentum_div': momentum_div_raw,
+                'volatility_cluster': volatility_cluster_raw,
+                'fibonacci': fibonacci_raw,
+                'microstructure': microstructure_raw,
+                'seasonality': seasonality_raw
             }
         except Exception as e:
             return None
