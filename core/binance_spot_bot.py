@@ -829,7 +829,10 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # REJET si signal insuffisant
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
-                print(f"❌ {crypto}: Signal insuffisant {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
+                if global_signal['action'] not in ['BUY', 'STRONG_BUY']:
+                    print(f"❌ {crypto}: Action non favorable ({global_signal['action']})")
+                else:
+                    print(f"❌ {crypto}: Signal insuffisant {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
                 return
                 
         except Exception as e:
