@@ -811,19 +811,8 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         websocket_manager = getattr(self, 'websocket', None)
         crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
         
-        # Récupérer le MÊME seuil que celui utilisé dans rank_cryptos()
-        balance = self.balance_manager.get_balance()
-        usdt_available = balance.get('USDT', {}).get('free', 0)
-        
-        # Simuler les mêmes conditions que rank_cryptos() pour avoir le même seuil
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
-        scores_count = len([p for p in trading_pairs if usdt_available >= self.get_min_amount(p if '/' in p else f"{p[:3]}/{p[3:]}")['min_cost']])
-        
-        dynamic_min_score = self.market_analyzer._get_dynamic_min_score(
-            available_count=scores_count,
-            capital=usdt_available,
-            market_conditions={'avg_volatility': 2.0, 'avg_volume_ratio': 1.0}
-        )
+        # Utiliser le seuil déjà calculé par rank_cryptos() - Source unique
+        dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 25)
         
         # REJET si score insuffisant
         if crypto_score < dynamic_min_score:
