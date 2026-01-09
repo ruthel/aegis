@@ -816,7 +816,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # REJET si score insuffisant
         if crypto_score < dynamic_min_score:
-            print(f"❌ {crypto}: Score insuffisant {crypto_score:.2f}/100 < {dynamic_min_score}")
+            print(f"❌ {crypto}: Score insuffisant {crypto_score:.2f}% < {dynamic_min_score}")
             return
         
         # 3. SIGNAL TECHNIQUE (Deuxième filtre)
