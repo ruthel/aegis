@@ -21,7 +21,6 @@ from utils.news_monitor import NewsMonitor
 from utils.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from utils.safety_manager import SafetyManager
 from utils.stuck_position_manager import StuckPositionManager
-from utils.crypto_scorer import CryptoScorer
 from utils.decision_display import DecisionDisplay
 from utils.support_resistance_analyzer import SupportResistanceAnalyzer
 from utils.stablecoin_monitor import StablecoinMonitor
@@ -133,7 +132,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
             stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
         )
-        self.crypto_scorer = CryptoScorer(
+        self.market_calculator = MarketCalculator(
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40')),
             max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
         )
@@ -144,7 +143,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.slippage_calculator = SlippageCalculator()
         self.liquidity_checker = LiquidityChecker()
         self.volatility_calculator = VolatilityCalculator()
-        self.market_calculator = MarketCalculator()
         
         # PHASE 1 - Gestionnaire de niveaux dynamiques
         self.dynamic_levels = DynamicLevelsManager(self)
@@ -611,10 +609,10 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     def run(self):
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
 
-        # Obtenir cryptos tradables via le système de scoring
+        # Obtenir cryptos tradables via le système de scoring unifié
         balance = self.balance_manager.get_balance()
         stuck_positions = []
-        tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
+        tradable_pairs = self.market_calculator.rank_cryptos(self, trading_pairs, stuck_positions)
         
         # Compter positions actives seulement pour cryptos tradables
         active_positions = 0
@@ -638,9 +636,9 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 balance = self.balance_manager.get_balance()
                 usdt_available = balance.get('USDT', {}).get('free', 0)
                 
-                # Utiliser le crypto scorer pour filtrer les cryptos tradables
+                # Utiliser le market_calculator pour filtrer les cryptos tradables
                 stuck_positions = []
-                tradable_pairs = self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
+                tradable_pairs = self.market_calculator.rank_cryptos(self, trading_pairs, stuck_positions)
                 
                 # NOUVEAU: Calculer intervalle adaptatif multi-pairs
                 check_interval = self.get_optimal_check_interval(tradable_pairs)
