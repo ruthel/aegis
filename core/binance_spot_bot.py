@@ -1032,35 +1032,46 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return 1.0
     
     def can_open_position(self, symbol):
-        """Vérifie si on peut ouvrir une position - CALCUL BALANCE NET"""
+        """Vérifie si on peut ouvrir une position - UTILISE LES VRAIES POSITIONS BINANCE"""
         max_positions = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '4'))
         
-        # NOUVELLE LOGIQUE: Calculer la balance nette des trades
-        all_trades = [p for p in self.state.get('positions', []) if p.get('symbol') == symbol]
-        
-        # Calculer total acheté vs total vendu
-        total_bought = sum(p.get('amount', 0) for p in all_trades if p.get('side') == 'buy')
-        total_sold = sum(p.get('amount', 0) for p in all_trades if p.get('side') == 'sell')
-        net_position = total_bought - total_sold
-        
-        # Compter seulement les achats non vendus (approximation)
-        buy_trades = [p for p in all_trades if p.get('side') == 'buy']
-        sell_trades = [p for p in all_trades if p.get('side') == 'sell']
-        
-        # Estimer le nombre de positions ouvertes
-        open_positions_count = max(0, len(buy_trades) - len(sell_trades))
-        
-        # DEBUG: Afficher le calcul
-        crypto = symbol.split('/')[0]
-        print(f"🔍 DEBUG {crypto}: Total acheté: {total_bought:.3f}, Total vendu: {total_sold:.3f}")
-        print(f"🔍 DEBUG {crypto}: Position nette: {net_position:.3f} {crypto}")
-        print(f"🔍 DEBUG {crypto}: Trades: {len(buy_trades)} achats, {len(sell_trades)} ventes")
-        print(f"🔍 DEBUG {crypto}: Positions estimées ouvertes: {open_positions_count}")
-        
-        can_open = open_positions_count < max_positions
-        print(f"🔍 DEBUG {crypto}: {open_positions_count}/{max_positions} positions - Peut ouvrir: {can_open}")
-        
-        return can_open
+        # NOUVELLE APPROCHE: Utiliser les vraies positions depuis Binance
+        try:
+            # Vérifier la balance réelle sur Binance
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            crypto = symbol.split('/')[0]
+            
+            # Position réelle = balance libre + verrouillée
+            free_amount = balance.get(crypto, {}).get('free', 0)
+            locked_amount = balance.get(crypto, {}).get('used', 0)
+            total_holding = free_amount + locked_amount
+            
+            # Calculer la valeur en USDT
+            if total_holding > 0.00001:
+                current_price = self.get_price(symbol)
+                position_value = total_holding * current_price
+                min_cost = self.get_min_amount(symbol)['min_cost']
+                
+                # Compter comme position ouverte si valeur > minimum
+                real_open_positions = 1 if position_value >= min_cost else 0
+            else:
+                real_open_positions = 0
+            
+            # DEBUG: Afficher les vraies données
+            print(f"🔍 DEBUG {crypto}: Balance réelle: {total_holding:.6f} {crypto} (Libre: {free_amount:.6f}, Verrouillé: {locked_amount:.6f})")
+            if total_holding > 0.00001:
+                print(f"🔍 DEBUG {crypto}: Valeur position: {position_value:.2f} USDT")
+            print(f"🔍 DEBUG {crypto}: Positions réelles ouvertes: {real_open_positions}")
+            
+            can_open = real_open_positions < max_positions
+            print(f"🔍 DEBUG {crypto}: {real_open_positions}/{max_positions} positions - Peut ouvrir: {can_open}")
+            
+            return can_open
+            
+        except Exception as e:
+            print(f"⚠️ Erreur vérification position {symbol}: {e}")
+            # Fallback: autoriser l'ouverture en cas d'erreur
+            return True
     
     def get_entry_signal(self, symbol, current_price):
         """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""
