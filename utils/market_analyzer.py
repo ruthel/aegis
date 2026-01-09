@@ -1668,10 +1668,10 @@ class MarketAnalyzer:
         """Seuil minimum adaptatif professionnel - VALEURS PAR DÉFAUT"""
         base_min = self.base_min_score
         
-        # if capital and capital < 20:
-        #     base_min -= 15
-        # elif capital and capital < 50:
-        #     base_min -= 10
+        if capital and capital < 20:
+            base_min -= 20
+        elif capital and capital < 50:
+            base_min -= 15
         
         if market_conditions:
             if market_conditions.get('avg_volatility', 2.0) < 1.5:
