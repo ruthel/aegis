@@ -24,8 +24,8 @@ class AnalysisMixin:
         
         # NOUVEAU: Analyse Support/Résistance avancée
         if len(klines) >= 50:
-            sr_levels = self.pattern_recognition.find_support_resistance_levels(klines)
-            reversal_prediction = self.pattern_recognition.predict_reversal_probability(current_price, sr_levels)
+            sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines)
+            reversal_prediction = self.pattern_analyzer.predict_reversal_probability(current_price, sr_levels)
             
             analysis['support_resistance'] = {
                 'levels': sr_levels,
@@ -258,9 +258,9 @@ class AnalysisMixin:
                 
                 # 3. SUPPORT/RÉSISTANCE pour cible précise
                 support_factor = 1.0
-                if hasattr(self, 'pattern_recognition') and len(klines_15m) >= 50:
+                if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
                     try:
-                        sr_levels = self.pattern_recognition.find_support_resistance_levels(klines_15m)
+                        sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
                         for level in sr_levels:
                             distance = abs(level['price'] - current_price) / current_price * 100
                             if distance < 0.3:  # Très proche d'un niveau

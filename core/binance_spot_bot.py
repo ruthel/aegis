@@ -11,11 +11,11 @@ from core.earn_manager import BinanceEarnManager
 from core.double_investment_manager import DoubleInvestmentManager
 from core.balance_manager import BalanceManager
 from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
-from utils.flash_crash_detector import FlashCrashDetector
+
 
 from utils.contagion_detector import ContagionDetector
 
-from utils.manipulation_detector import ManipulationDetector
+
 
 from utils.timeframe_analyzer import TimeframeAnalyzer
 
@@ -23,13 +23,13 @@ from utils.stuck_position_manager import StuckPositionManager
 from utils.decision_display import DecisionDisplay
 
 from utils.stablecoin_monitor import StablecoinMonitor
-from utils.pattern_recognition import PatternRecognition
+from utils.pattern_analyzer import PatternAnalyzer
 from utils.slippage_calculator import SlippageCalculator
-from utils.liquidity_checker import LiquidityChecker
+
 from utils.market_analyzer import MarketAnalyzer
 from utils.timing_optimizer import TimingOptimizer
 from utils.position_sizing_calculator import PositionSizingCalculator
-from utils.dynamic_levels_manager import DynamicLevelsManager
+
 from utils.capital_manager import CapitalManager
 from utils.crypto_detector import CryptoDetector
 
@@ -39,12 +39,11 @@ import logging
 
 # Import des mixins
 from core.bot_trading import TradingMixin
-from core.bot_strategies import StrategiesMixin
 from core.bot_sync import SyncMixin
 from core.bot_analysis import AnalysisMixin
 from core.bot_display import DisplayMixin
 
-class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, DisplayMixin):
+class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     """Bot de trading Binance Spot avec stratégies avancées"""
     
     def __init__(self, api_key, api_secret, testnet=False):
@@ -118,11 +117,8 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.correlation_manager = CorrelationManager()
         
         # NOUVEAUX DÉTECTEURS CRITIQUES
-        self.flash_crash_detector = FlashCrashDetector()
 
         self.contagion_detector = ContagionDetector()
-
-        self.manipulation_detector = ManipulationDetector()
 
         self.multi_tf_analyzer = TimeframeAnalyzer()
 
@@ -139,12 +135,11 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         self.decision_display = DecisionDisplay()
 
         self.stablecoin_monitor = StablecoinMonitor()
-        self.pattern_recognition = PatternRecognition()
+        self.pattern_analyzer = PatternAnalyzer()
         self.slippage_calculator = SlippageCalculator()
-        self.liquidity_checker = LiquidityChecker()
         
         # PHASE 1 - Gestionnaire de niveaux dynamiques
-        self.dynamic_levels = DynamicLevelsManager(self)
+        self.pattern_analyzer = PatternAnalyzer(self)
         
         # PHASE 2 - Optimiseurs QUAND et COMBIEN
         self.timing_optimizer = TimingOptimizer(self)
@@ -784,18 +779,6 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         for symbol in tradable_pairs[:2]:  # Max 2 symboles tradables
             crypto = symbol.split('/')[0]
             
-            # Manipulation
-            if hasattr(self, 'manipulation_detector'):
-                manip_status = self.manipulation_detector.get_manipulation_status(symbol)
-                if manip_status:
-                    protections.append(f"{crypto}: {manip_status}")
-            
-            # Liquidity
-            if hasattr(self, 'liquidity_checker'):
-                liquidity_status = self.liquidity_checker.get_status_message(symbol)
-                if liquidity_status:
-                    protections.append(f"{crypto}: {liquidity_status}")
-        
         # Afficher seulement si protections actives
         if protections:
             print(f"🛡️ PROTECTIONS: {' | '.join(protections[:3])}")  # Max 3
@@ -805,7 +788,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         print("\n🔧 COMMANDES DEBUG:")
         print("  bot.balance_manager.force_balance_sync()  # Forcer sync balances")
         print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
-        print("  bot.dynamic_levels.display_levels('BTC/USDT')  # Niveaux dynamiques")
+        print("  bot.pattern_analyzer.display_levels('BTC/USDT')  # Niveaux dynamiques")
         print("  bot.exchange.fetch_balance()  # Test API direct")
     
     def show_dynamic_levels(self, tradable_pairs):
@@ -814,7 +797,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             # Utiliser directement la liste des cryptos tradables passée en paramètre
             for symbol in tradable_pairs:
                 current_price = self.get_price(symbol)
-                entry_opportunities = self.dynamic_levels.get_entry_levels(symbol, current_price)
+                entry_opportunities = self.pattern_analyzer.get_entry_levels(symbol, current_price)
                 
                 if entry_opportunities:
                     crypto = symbol.split('/')[0]
@@ -1073,7 +1056,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
     def get_entry_signal(self, symbol, current_price):
         """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""
         # 1. Niveaux dynamiques professionnels (priorité)
-        entry_opportunities = self.dynamic_levels.get_entry_levels(symbol, current_price)
+        entry_opportunities = self.pattern_analyzer.get_entry_levels(symbol, current_price)
         if entry_opportunities:
             best_entry = entry_opportunities[0]
             return True, f"Niveau dynamique: {best_entry['type']} ({best_entry['distance']:.1f}%)"
@@ -1082,7 +1065,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
         try:
             klines = self.get_klines(symbol, 50, '1h')
             if len(klines) >= 20:
-                pattern_result = self.pattern_recognition.detect_patterns(klines)
+                pattern_result = self.pattern_analyzer.detect_patterns(klines)
                 
                 # Patterns haussiers détectés
                 if pattern_result['bullish_patterns']:
@@ -1230,7 +1213,7 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if len(klines) < 20:
                 return False
                 
-            levels_data = self.pattern_recognition.find_support_resistance_levels(klines)
+            levels_data = self.pattern_analyzer.find_support_resistance_levels(klines)
             current_price = self.get_price(symbol)
             
             for support in levels_data.get('support_levels', [])[:2]:
@@ -1300,3 +1283,4 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
                 self.trailing_stop_manager.add_position(symbol, current_price)
         else:
             print(f"❌ Échec de l'achat")
+    
