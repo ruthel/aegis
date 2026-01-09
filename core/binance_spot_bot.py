@@ -799,16 +799,12 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
     def intelligent_strategy(self, symbol, amount, current_price):
-        """Stratégie intelligente - Niveaux dynamiques + Filtres SMC + Timing + Position Sizing + SEUILS PROFESSIONNELS"""
+        """Stratégie intelligente - Validation en cascade professionnelle"""
         # 1. Vérifier position existante
         if not self.can_open_position(symbol):
             return
         
-        # 2. Filtre HTF adaptatif (inclut déjà discount zone et stop hunt)
-        if not self.check_htf_bias(symbol):
-            return
-        
-        # 3. SCORING PROFESSIONNEL UNIFIÉ - UTILISER LE MÊME SEUIL QUE rank_cryptos()
+        # 2. SCORING PROFESSIONNEL EN PREMIER (Fail Fast)
         websocket_manager = getattr(self, 'websocket', None)
         crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
         
@@ -826,86 +822,52 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             market_conditions={'avg_volatility': 2.0, 'avg_volume_ratio': 1.0}
         )
         
+        # REJET SILENCIEUX si score insuffisant
         if crypto_score < dynamic_min_score:
-            crypto = symbol.split('/')[0]
-            
-            # Log avec score professionnel pondéré
-            try:
-                score_details = self.market_analyzer.get_score_details(self, symbol, [], websocket_manager)
-                if score_details:
-                    v_score = score_details.get('volatility', 0)
-                    vol_score = score_details.get('volume', 0)
-                    m_score = score_details.get('momentum', 0)
-                    
-                    # Ajouter confiance du signal
-                    try:
-                        analysis = self.get_cached_analysis(symbol, current_price)
-                        signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
-                        adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, analysis.get('volatility', 2.0))
-                        
-                        score_op = ">" if crypto_score >= dynamic_min_score else "<"
-                        signal_op = ">" if signal_confidence >= adaptive_threshold else "<"
-                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 {score_op} {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score}) | Signal {signal_confidence:.0f}% {signal_op} {adaptive_threshold:.0f}%")
-                    except:
-                        print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (V:{v_score} Vol:{vol_score} M:{m_score})")
-                else:
-                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score}")
-            except:
-                print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score}")
             return
         
-        # Vérification signal de confiance
+        # 3. SIGNAL TECHNIQUE (Deuxième filtre)
         try:
             analysis = self.get_cached_analysis(symbol, current_price)
             volatility = analysis.get('volatility', 2.0)
             adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, volatility)
             global_signal = analysis['global_signal']
             
+            # REJET SILENCIEUX si signal insuffisant
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
-                crypto = symbol.split('/')[0]
-                try:
-                    analysis = self.get_cached_analysis(symbol, current_price)
-                    signal_confidence = analysis.get('global_signal', {}).get('confidence', 0)
-                    print(f"❌ {crypto}: Signal {signal_confidence:.0f}% < {adaptive_threshold:.0f}%")
-                except:
-                    print(f"❌ {crypto}: Signal < {adaptive_threshold:.0f}%")
                 return
-            
-            print(f"✅ Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
-            
+                
         except Exception as e:
-            # Fallback méthode classique
-            try:
-                should_buy, reason = self.get_entry_signal(symbol, current_price)
-                if not should_buy:
-                    crypto = symbol.split('/')[0]
-                    print(f"❌ {crypto}: Score {crypto_score:.0f}/100 < {dynamic_min_score} (Fallback)")
-                    return
-            except:
-                crypto = symbol.split('/')[0]
-                print(f"❌ {crypto}: Erreur analyse - Score {crypto_score:.0f}/100")
-                return
-        
-        # 4. Vérifier timing optimal (sessions de trading)
-        if not self._is_optimal_trading_time():
-            crypto = symbol.split('/')[0]
-            print(f"⏳ {crypto}: Session de trading non optimale - Attente")
+            # Fallback - REJET SILENCIEUX si erreur
             return
         
-        # 5. Calculer position sizing optimal (COMBIEN)
+        # 4. CONTEXTE MARCHÉ (Troisième filtre)
+        if not self.check_htf_bias(symbol):
+            return
+        
+        # 5. TIMING OPTIMAL (Quatrième filtre)
+        if not self._is_optimal_trading_time():
+            return
+        
+        # ✅ TOUS LES CRITÈRES PASSÉS - LOG COMPLET DE SUCCÈS
+        crypto = symbol.split('/')[0]
+        print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
+        
+        # 6. Calculer position sizing optimal (COMBIEN)
         signal_strength = self.get_signal_strength(symbol, current_price)
         account_balance = self.get_account_balance()
         position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
         
-        # 6. NOUVEAU: Optimiser type d'ordre pour frais
+        # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
             optimal_order_type = self.capital_manager.optimize_order_type(symbol, 'normal')
             print(f"💰 Ordre optimisé: {optimal_order_type} (frais réduits)")
         except:
             optimal_order_type = 'market'
         
-        # 7. Exécuter achat avec données optimisées
+        # 8. Exécuter achat avec données optimisées
+        reason = f"Validation complète - Score {crypto_score}/100"
         self.execute_optimized_buy(symbol, position_data, current_price, reason)
     
     def get_real_trading_fee(self, symbol, order_type='market'):
@@ -1186,14 +1148,10 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return decision, reason
     
     def check_htf_bias(self, symbol):
-        """Filtre HTF unifié - PLUS DE CONTRADICTIONS"""
+        """Filtre HTF unifié - REJET SILENCIEUX"""
         decision, reason = self.get_unified_trading_decision(symbol)
         
-        # Afficher seulement si changement de décision (Anti-spam)
-        if self._last_decision.get(symbol) != reason:
-            print(reason)
-            self._last_decision[symbol] = reason
-        
+        # PAS de log ici - seulement return silencieux
         return decision
     
     def detect_market_regime(self, symbol):
