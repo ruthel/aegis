@@ -438,7 +438,276 @@ class MarketAnalyzer:
             else:
                 return 50  # Réduit: 55 → 50
     
-    # ===== MÉTHODES EXISTANTES =====
+    # ===== NOUVEAUX FACTEURS PROFESSIONNELS =====
+    
+    def calculate_rsi_score(self, klines):
+        """Score RSI (0-20 points) - Niveau Professionnel"""
+        if len(klines) < 14:
+            return 10  # Score neutre
+        
+        closes = [k['close'] for k in klines]
+        rsi = self._calculate_rsi(closes, 14)
+        
+        if rsi is None:
+            return 10
+        
+        # Scoring professionnel RSI
+        if 30 <= rsi <= 70:  # Zone neutre optimale
+            return 20
+        elif 25 <= rsi < 30 or 70 < rsi <= 75:  # Légèrement oversold/overbought
+            return 15
+        elif rsi < 25:  # Très oversold (opportunité)
+            return 12
+        elif rsi > 75:  # Très overbought (risque)
+            return 8
+        else:
+            return 10
+    
+    def _calculate_rsi(self, closes, period=14):
+        """Calcule RSI standard"""
+        if len(closes) < period + 1:
+            return None
+        
+        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        
+        if avg_loss == 0:
+            return 100
+        
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+    
+    def calculate_correlation_score(self, bot, symbol):
+        """Score corrélation avec BTC (0-15 points)"""
+        if symbol == 'BTC/USDT':
+            return 15  # BTC = référence
+        
+        try:
+            # Klines 7 jours pour corrélation fiable
+            symbol_klines = bot.get_klines(symbol, 168, '1h')  # 7j en 1h
+            btc_klines = bot.get_klines('BTC/USDT', 168, '1h')
+            
+            if len(symbol_klines) < 50 or len(btc_klines) < 50:
+                return 10  # Score neutre si pas assez de données
+            
+            # Prendre même longueur
+            min_len = min(len(symbol_klines), len(btc_klines))
+            symbol_closes = [k['close'] for k in symbol_klines[-min_len:]]
+            btc_closes = [k['close'] for k in btc_klines[-min_len:]]
+            
+            correlation = self._calculate_correlation(symbol_closes, btc_closes)
+            
+            # Scoring: Faible corrélation = meilleur (diversification)
+            if correlation < 0.3:  # Très faible corrélation
+                return 15
+            elif correlation < 0.5:  # Faible corrélation
+                return 12
+            elif correlation < 0.7:  # Corrélation modérée
+                return 10
+            elif correlation < 0.9:  # Forte corrélation
+                return 7
+            else:  # Très forte corrélation (risque)
+                return 5
+                
+        except:
+            return 10  # Score neutre en cas d'erreur
+    
+    def _calculate_correlation(self, x, y):
+        """Calcule corrélation de Pearson"""
+        if len(x) != len(y) or len(x) < 2:
+            return 0.5
+        
+        n = len(x)
+        sum_x = sum(x)
+        sum_y = sum(y)
+        sum_xy = sum(x[i] * y[i] for i in range(n))
+        sum_x2 = sum(xi * xi for xi in x)
+        sum_y2 = sum(yi * yi for yi in y)
+        
+        numerator = n * sum_xy - sum_x * sum_y
+        denominator = ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)) ** 0.5
+        
+        if denominator == 0:
+            return 0
+        
+        return abs(numerator / denominator)  # Valeur absolue
+    
+    def calculate_liquidity_score(self, bot, symbol):
+        """Score liquidité (0-15 points) - Spread + Order book"""
+        try:
+            # Estimer spread via ticker
+            ticker = bot.get_ticker(symbol)
+            if not ticker:
+                return 10
+            
+            # Spread estimé (bid-ask)
+            current_price = ticker.get('last', 0)
+            if current_price <= 0:
+                return 10
+            
+            # Estimation spread selon crypto (données réelles Binance)
+            if symbol in ['BTC/USDT', 'ETH/USDT']:
+                estimated_spread = 0.01  # 0.01%
+            elif symbol in ['BNB/USDT', 'SOL/USDT']:
+                estimated_spread = 0.02  # 0.02%
+            else:
+                estimated_spread = 0.05  # 0.05%
+            
+            # Volume 24h comme proxy liquidité
+            volume_24h = ticker.get('quoteVolume', 0)
+            
+            # Score combiné spread + volume
+            spread_score = 15 if estimated_spread <= 0.01 else 12 if estimated_spread <= 0.02 else 8 if estimated_spread <= 0.05 else 5
+            volume_score = 15 if volume_24h > 100000000 else 12 if volume_24h > 50000000 else 8 if volume_24h > 10000000 else 5
+            
+            return int((spread_score + volume_score) / 2)
+            
+        except:
+            return 10  # Score neutre
+    
+    def calculate_technical_score(self, klines):
+        """Score technique (0-20 points) - MACD + Bollinger + EMA"""
+        if len(klines) < 26:  # MACD nécessite 26 périodes
+            return 10
+        
+        closes = [k['close'] for k in klines]
+        score = 0
+        signals = 0
+        
+        # 1. MACD Signal (0-7 points)
+        try:
+            macd_signal = self._calculate_macd_signal(closes)
+            if macd_signal == 'BUY':
+                score += 7
+            elif macd_signal == 'NEUTRAL':
+                score += 4
+            # SELL = 0 points
+            signals += 1
+        except:
+            pass
+        
+        # 2. Bollinger Bands (0-7 points)
+        try:
+            bb_signal = self._calculate_bollinger_signal(closes)
+            if bb_signal == 'BUY':  # Prix près bande basse
+                score += 7
+            elif bb_signal == 'NEUTRAL':
+                score += 4
+            signals += 1
+        except:
+            pass
+        
+        # 3. EMA Crossover (0-6 points)
+        try:
+            ema_signal = self._calculate_ema_crossover(closes)
+            if ema_signal == 'BUY':
+                score += 6
+            elif ema_signal == 'NEUTRAL':
+                score += 3
+            signals += 1
+        except:
+            pass
+        
+        # Moyenne pondérée
+        if signals > 0:
+            return min(20, int((score / signals) * (20 / 7)))  # Normaliser sur 20
+        return 10
+    
+    def _calculate_macd_signal(self, closes):
+        """Signal MACD simple"""
+        if len(closes) < 26:
+            return 'NEUTRAL'
+        
+        ema_12 = self._calculate_ema(closes, 12)
+        ema_26 = self._calculate_ema(closes, 26)
+        macd = ema_12 - ema_26
+        
+        # Signal simple: MACD > 0 = haussier
+        if macd > 0:
+            return 'BUY'
+        elif macd < -0.5:
+            return 'SELL'
+        return 'NEUTRAL'
+    
+    def _calculate_bollinger_signal(self, closes):
+        """Signal Bollinger Bands"""
+        if len(closes) < 20:
+            return 'NEUTRAL'
+        
+        sma_20 = sum(closes[-20:]) / 20
+        variance = sum((c - sma_20) ** 2 for c in closes[-20:]) / 20
+        std_dev = variance ** 0.5
+        
+        upper_band = sma_20 + (2 * std_dev)
+        lower_band = sma_20 - (2 * std_dev)
+        current_price = closes[-1]
+        
+        # Signal: Prix près bande basse = achat
+        distance_to_lower = (current_price - lower_band) / (upper_band - lower_band)
+        
+        if distance_to_lower < 0.2:  # Près bande basse
+            return 'BUY'
+        elif distance_to_lower > 0.8:  # Près bande haute
+            return 'SELL'
+        return 'NEUTRAL'
+    
+    def _calculate_ema_crossover(self, closes):
+        """Signal croisement EMA 9/21"""
+        if len(closes) < 21:
+            return 'NEUTRAL'
+        
+        ema_9 = self._calculate_ema(closes, 9)
+        ema_21 = self._calculate_ema(closes, 21)
+        
+        if ema_9 > ema_21:
+            return 'BUY'
+        elif ema_9 < ema_21 * 0.98:  # 2% en dessous
+            return 'SELL'
+        return 'NEUTRAL'
+    
+    def _calculate_ema(self, prices, period):
+        """Calcule EMA"""
+        if len(prices) < period:
+            return sum(prices) / len(prices)
+        
+        multiplier = 2 / (period + 1)
+        ema = sum(prices[:period]) / period
+        
+        for price in prices[period:]:
+            ema = (price * multiplier) + (ema * (1 - multiplier))
+        
+        return ema
+    
+    def calculate_market_cap_score(self, symbol):
+        """Score Market Cap (0-10 points) - Taille relative"""
+        # Ranking approximatif des cryptos par market cap
+        market_cap_ranking = {
+            'BTC/USDT': 1,   # #1
+            'ETH/USDT': 2,   # #2
+            'BNB/USDT': 4,   # #4
+            'SOL/USDT': 5,   # #5
+            'ADA/USDT': 10,  # #10
+            'DOT/USDT': 15,  # #15
+            'MATIC/USDT': 20, # #20
+            'AVAX/USDT': 25   # #25
+        }
+        
+        rank = market_cap_ranking.get(symbol, 100)
+        
+        if rank <= 3:      # Top 3
+            return 10
+        elif rank <= 10:   # Top 10
+            return 8
+        elif rank <= 25:   # Top 25
+            return 6
+        elif rank <= 50:   # Top 50
+            return 4
+        else:              # Au-delà Top 50
+            return 2
     
     @staticmethod
     def calculate_momentum(klines):
@@ -687,32 +956,45 @@ class MarketAnalyzer:
             if not klines_short or len(klines_short) < 10:
                 return 0
             
-            websocket_manager = getattr(bot, 'websocket', None)
+            # Calculer TOUS les scores (10 facteurs)
             volatility_score = self.calculate_volatility_score(klines_short, symbol, volatility, websocket_manager)
-            
-            if klines_7d and len(klines_7d) >= 672:
-                volume_score = self.calculate_volume_score(klines_7d)
-                data_quality = 'HIGH_7D'
-            elif len(klines_short) >= 96:
-                klines_24h = bot.get_klines(symbol, 96, '15m')
-                volume_score = self.calculate_volume_score(klines_24h) if klines_24h else self.calculate_volume_score(klines_short)
-                data_quality = 'MEDIUM_24H'
-            else:
-                volume_score = self.calculate_volume_score(klines_short)
-                data_quality = 'LIMITED'
-            
+            volume_score = self.calculate_volume_score(klines_7d) if klines_7d and len(klines_7d) >= 672 else self.calculate_volume_score(klines_short)
             momentum_score = self.calculate_momentum_score(klines_short)
             spread_score = self.calculate_spread_score(symbol, current_price)
             history_score = self.calculate_history_score(symbol, stuck_positions)
             
-            weights = self._get_dynamic_weights(symbol)
+            # NOUVEAUX FACTEURS PROFESSIONNELS
+            rsi_score = self.calculate_rsi_score(klines_short)
+            correlation_score = self.calculate_correlation_score(bot, symbol)
+            liquidity_score = self.calculate_liquidity_score(bot, symbol)
+            technical_score = self.calculate_technical_score(klines_short)
+            market_cap_score = self.calculate_market_cap_score(symbol)
+            
+            # Déterminer qualité des données
+            if klines_7d and len(klines_7d) >= 672:
+                data_quality = 'HIGH_7D'
+            else:
+                data_quality = 'LIMITED'
+            
+            # Conditions de marché (nécessaire pour ponderation)
+            market_conditions = {
+                'avg_volatility': 2.0,  # Valeur par défaut
+                'avg_volume_ratio': 1.0
+            }
+            
+            weights = self._get_dynamic_weights(symbol, market_conditions)
             if data_quality == 'HIGH_7D':
-                weights['volume'] *= 1.2
+                weights['volume'] *= 1.1  # Bonus réduit car plus de facteurs
             
             total_score = (
                 volatility_score * weights['volatility'] +
                 volume_score * weights['volume'] +
                 momentum_score * weights['momentum'] +
+                rsi_score * weights['rsi'] +
+                correlation_score * weights['correlation'] +
+                liquidity_score * weights['liquidity'] +
+                technical_score * weights['technical'] +
+                market_cap_score * weights['market_cap'] +
                 spread_score * weights['spread'] +
                 history_score * weights['history']
             )
@@ -842,8 +1124,13 @@ class MarketAnalyzer:
 
     
     def _get_default_weights(self):
-        """Pondération par défaut"""
-        return {'volatility': 0.25, 'volume': 0.25, 'momentum': 0.25, 'spread': 0.15, 'history': 0.10}
+        """Pondération par défaut - 10 facteurs"""
+        return {
+            'volatility': 0.15, 'volume': 0.12, 'momentum': 0.15,
+            'rsi': 0.20, 'correlation': 0.15, 'liquidity': 0.08,
+            'technical': 0.08, 'market_cap': 0.03,
+            'spread': 0.02, 'history': 0.02
+        }
     
     def _get_base_volatility_points(self, volatility):
         """Points de base selon volatilité"""
@@ -865,15 +1152,55 @@ class MarketAnalyzer:
         else:
             return 1.0
     
-    def _get_dynamic_weights(self, symbol):
-        """Pondération adaptative selon crypto"""
+    def _get_dynamic_weights(self, symbol, market_conditions=None):
+        """Pondération adaptative selon crypto ET conditions de marché - 10 Facteurs Pro"""
+        # Nouvelle pondération avec 10 facteurs
         if symbol in ['BTC/USDT', 'ETH/USDT']:
-            return {'volatility': 0.20, 'volume': 0.30, 'momentum': 0.25, 'spread': 0.15, 'history': 0.10}
+            base_weights = {
+                'volatility': 0.12, 'volume': 0.12, 'momentum': 0.12,
+                'rsi': 0.20, 'correlation': 0.15, 'liquidity': 0.12,
+                'technical': 0.08, 'market_cap': 0.05,
+                'spread': 0.02, 'history': 0.02
+            }
         else:
-            return {'volatility': 0.35, 'volume': 0.20, 'momentum': 0.30, 'spread': 0.10, 'history': 0.05}
+            base_weights = {
+                'volatility': 0.15, 'volume': 0.10, 'momentum': 0.15,
+                'rsi': 0.20, 'correlation': 0.15, 'liquidity': 0.08,
+                'technical': 0.10, 'market_cap': 0.03,
+                'spread': 0.02, 'history': 0.02
+            }
+        
+        # Ajustements dynamiques selon marché
+        if market_conditions:
+            avg_volatility = market_conditions.get('avg_volatility', 2.0)
+            avg_volume_ratio = market_conditions.get('avg_volume_ratio', 1.0)
+            
+            # Marché très volatil = privilégier RSI + technical
+            if avg_volatility > 3.5:
+                base_weights['rsi'] += 0.05
+                base_weights['technical'] += 0.05
+                base_weights['momentum'] -= 0.05
+                base_weights['volatility'] -= 0.05
+            
+            # Marché calme = privilégier volume + liquidité
+            elif avg_volatility < 1.5:
+                base_weights['volume'] += 0.05
+                base_weights['liquidity'] += 0.05
+                base_weights['momentum'] -= 0.10
+            
+            # Volume anormal = ajuster liquidité
+            if avg_volume_ratio > 2.0:
+                base_weights['liquidity'] += 0.03
+                base_weights['spread'] -= 0.01
+                base_weights['history'] -= 0.02
+            elif avg_volume_ratio < 0.5:
+                base_weights['liquidity'] -= 0.03
+                base_weights['volatility'] += 0.03
+        
+        return base_weights
     
     def get_score_details(self, bot, symbol, stuck_positions, websocket_manager=None):
-        """Détails du score professionnel pour debug - Utilise score_crypto() comme source unique"""
+        """Détails du score professionnel pour debug - 10 facteurs"""
         try:
             # Calculer le score professionnel pondéré
             final_score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
@@ -890,18 +1217,28 @@ class MarketAnalyzer:
             if not klines_short or len(klines_short) < 10:
                 return None
             
-            # Composants bruts (pour affichage debug uniquement)
+            # TOUS les composants (10 facteurs)
             volatility_raw = self.calculate_volatility_score(klines_short, symbol, None, websocket_manager)
             volume_raw = self.calculate_volume_score(klines_long if klines_long and len(klines_long) >= 50 else klines_short)
             momentum_raw = self.calculate_momentum_score(klines_short)
+            rsi_raw = self.calculate_rsi_score(klines_short)
+            correlation_raw = self.calculate_correlation_score(bot, symbol)
+            liquidity_raw = self.calculate_liquidity_score(bot, symbol)
+            technical_raw = self.calculate_technical_score(klines_short)
+            market_cap_raw = self.calculate_market_cap_score(symbol)
             
             return {
-                'final_score': final_score,  # Score professionnel pondéré
-                'volatility': volatility_raw,  # Pour debug uniquement
-                'volume': volume_raw,          # Pour debug uniquement
-                'momentum': momentum_raw       # Pour debug uniquement
+                'final_score': final_score,
+                'volatility': volatility_raw,
+                'volume': volume_raw,
+                'momentum': momentum_raw,
+                'rsi': rsi_raw,
+                'correlation': correlation_raw,
+                'liquidity': liquidity_raw,
+                'technical': technical_raw,
+                'market_cap': market_cap_raw
             }
-        except:
+        except Exception as e:
             return None
     
     def _get_dynamic_min_score(self, available_count, capital=None, market_conditions=None):
