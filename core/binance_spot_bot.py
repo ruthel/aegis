@@ -870,7 +870,21 @@ class BinanceSpotBot(TradingMixin, StrategiesMixin, SyncMixin, AnalysisMixin, Di
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
                 crypto = symbol.split('/')[0]
-                print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < Seuil adaptatif {adaptive_threshold:.0f}%")
+                
+                # Obtenir détails du score pour log amélioré
+                try:
+                    score_breakdown = self.market_calculator.get_score_breakdown(self, symbol, [])
+                    if score_breakdown:
+                        v_score = score_breakdown.get('volatility', 0)
+                        vol_score = score_breakdown.get('volume', 0) 
+                        m_score = score_breakdown.get('momentum', 0)
+                        total_score = sum(score_breakdown.values())
+                        
+                        print(f"❌ {crypto}: Score {total_score:.0f}/100 < 15 (V:{v_score} Vol:{vol_score} M:{m_score}) | Signal {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
+                    else:
+                        print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < Seuil adaptatif {adaptive_threshold:.0f}%")
+                except:
+                    print(f"❌ {crypto}: Signal {global_signal['confidence']:.0f}% < Seuil adaptatif {adaptive_threshold:.0f}%")
                 return
             
             print(f"✅ Signal validé avec seuil adaptatif: {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")

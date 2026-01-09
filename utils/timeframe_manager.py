@@ -111,19 +111,33 @@ class TimeframeManager:
             return 2.5
     
     @staticmethod
-    def get_confidence_threshold(symbol, volatility=None, bot=None):
-        """Seuil de confiance adaptatif (remplace confidence_calculator)"""
+    def get_confidence_threshold(symbol, volatility=None, bot=None, balance=None):
+        """Seuil de confiance adaptatif - LOGIQUE PROFESSIONNELLE"""
         if volatility is None:
             volatility = TimeframeManager._get_volatility(symbol, bot)
         
-        # Seuils adaptatifs selon volatilité
-        if volatility >= 4.0:
-            return 25  # Très volatil = seuil bas
-        elif volatility >= 3.0:
-            return 30
-        elif volatility >= 2.0:
-            return 35
-        elif volatility >= 1.5:
-            return 40
-        else:
-            return 45  # Peu volatil = seuil élevé
+        # STRATÉGIE PROFESSIONNELLE selon taille de compte
+        if balance and balance < 50:  # Petit compte
+            # Objectif: Croissance rapide (comme les pros débutants)
+            base_threshold = 20  # Agressif
+            if volatility >= 3.0:
+                return max(15, base_threshold - 5)  # Très agressif si volatil
+            return base_threshold
+            
+        elif balance and balance < 200:  # Compte moyen
+            # Objectif: Équilibre croissance/préservation
+            base_threshold = 30
+            if volatility >= 4.0:
+                return base_threshold - 5
+            elif volatility <= 1.5:
+                return base_threshold + 5
+            return base_threshold
+            
+        else:  # Gros compte (> 200 ou non spécifié)
+            # Objectif: Préservation capital (comme fonds institutionnels)
+            base_threshold = 45  # Conservateur
+            if volatility >= 4.0:
+                return base_threshold - 10  # Même conservateur, on profite volatilité
+            elif volatility <= 1.5:
+                return min(60, base_threshold + 10)  # Très sélectif si calme
+            return base_threshold

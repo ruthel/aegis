@@ -1,7 +1,6 @@
 """Module d'analyse et prévisions pour le bot de trading"""
 from datetime import datetime
 from utils.confidence_calculator import ConfidenceCalculator
-from utils.volatility_calculator import VolatilityCalculator
 from utils.market_calculator import MarketCalculator
 from utils.ema_analyzer import BinanceEMAAnalyzer
 import time
@@ -90,7 +89,7 @@ class AnalysisMixin:
                 return None
             
             momentum = MarketCalculator.calculate_momentum(klines)
-            volatility = VolatilityCalculator.calculate(klines, symbol)
+            volatility = MarketCalculator.calculate_volatility(klines, symbol)
             avg_volume = MarketCalculator.calculate_volume_avg(klines)
             
             closes = [k['close'] for k in klines[-20:]]
@@ -152,8 +151,7 @@ class AnalysisMixin:
         try:
             # Initialiser le prédicteur si nécessaire
             if not hasattr(self, 'volume_predictor'):
-                from utils.volume_predictor import VolumePredictor
-                self.volume_predictor = VolumePredictor()
+                self.volume_predictor = self.market_calculator
             
             # Récupérer données temps réel
             klines_1m = self.get_klines(symbol, 60, '1m')
