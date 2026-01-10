@@ -273,6 +273,8 @@ class NotificationManager:
         message += f"⏱️ **Durée**: {elapsed_hours:.1f}h\n\n"
         message += f"🔄 Le bot reprend ses paramètres normaux."
         return self.notify(message)
+    
+    def send_status_update(self):
         """Envoie status périodique"""
         now = time.time()
         if now - self.last_status_time < self.periodic_interval:
