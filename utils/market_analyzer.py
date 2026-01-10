@@ -1818,7 +1818,7 @@ class MarketAnalyzer:
         elif 8 <= now.hour <= 16:  # Session EU
             base_min -= 1
         
-        return max(15, min(base_min, 80))
+        return max(10, min(base_min, 80))
     
     def _detect_volume_decline(self, klines_1m: List, klines_15m: List) -> Optional[Dict]:
         """Ancienne méthode pour fallback"""
