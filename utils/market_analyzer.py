@@ -1749,63 +1749,136 @@ class MarketAnalyzer:
         return -3
     
     def _get_dynamic_min_score(self, available_count, capital=None, market_conditions=None, bot=None, symbol=None):
-        """Seuil minimum adaptatif professionnel - VERSION COMPLÈTE"""
+        """Seuil minimum adaptatif professionnel - VERSION COMPLÈTE AVEC DEBUG"""
         base_min = self.base_min_score
+        adjustments = []
+        
+        print(f"\n🔍 DEBUG DYNAMIC MIN SCORE")
+        print(f"   📊 Base Score: {base_min}")
+        print(f"   💰 Capital: {capital:.2f} USDT" if capital else "   💰 Capital: Non défini")
+        print(f"   🎯 Cryptos disponibles: {available_count}")
         
         # 1. Ajustements capital
+        capital_adj = 0
         if capital and capital < 20:
-            base_min -= 35 #20
+            capital_adj = -20
+            adjustments.append("Capital<20: -20")
         elif capital and capital < 50:
-            base_min -= 15 #15
+            capital_adj = -15
+            adjustments.append("Capital<50: -15")
+        base_min += capital_adj
+        print(f"   💵 Ajustement Capital: {capital_adj:+d} → {base_min}")
         
         # 2. Conditions marché + régime
+        market_adj = 0
+        regime_adj = 0
         if market_conditions:
-            if market_conditions.get('avg_volatility', 2.0) < 1.5:
-                base_min -= 10
-            if market_conditions.get('avg_volume_ratio', 1.0) < 0.7:
-                base_min -= 5
+            avg_vol = market_conditions.get('avg_volatility', 2.0)
+            avg_vol_ratio = market_conditions.get('avg_volume_ratio', 1.0)
+            
+            if avg_vol < 1.5:
+                market_adj -= 10
+                adjustments.append(f"Volatilité<1.5 ({avg_vol:.1f}): -10")
+            
+            if avg_vol_ratio < 0.7:
+                market_adj -= 5
+                adjustments.append(f"Volume<0.7 ({avg_vol_ratio:.1f}): -5")
             
             # Régime de marché
-            base_min = self._apply_regime_adjustment(base_min, market_conditions)
+            if 'klines_data' in market_conditions and market_conditions['klines_data']:
+                regime = self._detect_market_regime(market_conditions['klines_data'])
+                regime_adjustments = {
+                    'BULL_TRENDING': -8,
+                    'BEAR_TRENDING': +12,
+                    'HIGH_VOLATILITY': +10,
+                    'SIDEWAYS': +3,
+                    'UNKNOWN': 0
+                }
+                regime_adj = regime_adjustments.get(regime, 0)
+                if regime_adj != 0:
+                    adjustments.append(f"Régime {regime}: {regime_adj:+d}")
+                print(f"   📈 Régime Marché: {regime} ({regime_adj:+d})")
+            
+        base_min += market_adj + regime_adj
+        print(f"   🌍 Ajustement Marché: {market_adj:+d} + Régime: {regime_adj:+d} → {base_min}")
         
         # 3. Disponibilité cryptos
+        availability_adj = 0
         if available_count < 2:
-            base_min -= 15
+            availability_adj = -15
+            adjustments.append("Options<2: -15")
         elif available_count < 4:
-            base_min -= 5
+            availability_adj = -5
+            adjustments.append("Options<4: -5")
         elif available_count > 8:
-            base_min += 10
+            availability_adj = +10
+            adjustments.append("Options>8: +10")
+        base_min += availability_adj
+        print(f"   🎲 Ajustement Disponibilité: {availability_adj:+d} → {base_min}")
         
         # 4. Performance historique
+        perf_adj = 0
         if bot and symbol and hasattr(bot, 'trade_history'):
             recent_trades = [t for t in bot.trade_history if t.get('symbol') == symbol][-10:]
             if recent_trades:
                 win_rate = sum(1 for t in recent_trades if t.get('profit', 0) > 0) / len(recent_trades)
                 if win_rate > 0.7:
-                    base_min -= 8
+                    perf_adj = -8
+                    adjustments.append(f"WinRate {win_rate:.1%}: -8")
                 elif win_rate < 0.4:
-                    base_min += 12
+                    perf_adj = +12
+                    adjustments.append(f"WinRate {win_rate:.1%}: +12")
+                print(f"   📊 Performance {symbol}: WinRate {win_rate:.1%} ({perf_adj:+d})")
+        base_min += perf_adj
         
         # 5. Risque portfolio
+        portfolio_adj = 0
         if bot and symbol:
             portfolio_adj = self._calculate_portfolio_risk_adjustment(bot, symbol)
-            base_min += portfolio_adj
+            if portfolio_adj != 0:
+                if portfolio_adj > 0:
+                    adjustments.append(f"Corrélation: +{portfolio_adj}")
+                else:
+                    adjustments.append(f"Diversification: {portfolio_adj}")
+        base_min += portfolio_adj
+        print(f"   🎯 Ajustement Portfolio: {portfolio_adj:+d} → {base_min}")
         
         # 6. Sessions optimales
+        session_adj = 0
         from datetime import datetime
         now = datetime.now()
+        
         if now.weekday() >= 5:
-            base_min -= 5
+            session_adj -= 5
+            adjustments.append("Weekend: -5")
         elif now.hour < 8 or now.hour > 22:
-            base_min -= 3
+            session_adj -= 3
+            adjustments.append("Heures creuses: -3")
         
         # Session de marché optimale
         if 14 <= now.hour <= 21:  # Session US
-            base_min -= 3
+            session_adj -= 3
+            adjustments.append("Session US: -3")
         elif 8 <= now.hour <= 16:  # Session EU
-            base_min -= 1
+            session_adj -= 1
+            adjustments.append("Session EU: -1")
         
-        return max(15, min(base_min, 80))
+        base_min += session_adj
+        print(f"   ⏰ Ajustement Session: {session_adj:+d} → {base_min}")
+        
+        # Limites finales
+        final_score = max(15, min(base_min, 80))
+        if final_score != base_min:
+            if final_score == 15:
+                adjustments.append("Limite min: 15")
+            elif final_score == 80:
+                adjustments.append("Limite max: 80")
+        
+        print(f"   ✅ SEUIL FINAL: {final_score} (Range: 15-80)")
+        print(f"   📋 Ajustements: {', '.join(adjustments) if adjustments else 'Aucun'}")
+        print(f"   🎯 Différence vs base: {final_score - self.base_min_score:+d}")
+        
+        return final_score
     
     def _detect_volume_decline(self, klines_1m: List, klines_15m: List) -> Optional[Dict]:
         """Ancienne méthode pour fallback"""
