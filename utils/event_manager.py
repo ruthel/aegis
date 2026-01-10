@@ -77,8 +77,8 @@ class MacroEventManager:
             
             # Notification Telegram directe
             try:
-                if os.getenv('TELEGRAM_BOT_TOKEN') and os.getenv('TELEGRAM_CHAT_ID'):
-                    notifier = NotificationManager()
+                notifier = NotificationManager()
+                if notifier.enabled:
                     notifier.notify_macro_event_start(detected_event, event_info)
                     print(f"   📨 Notification Telegram envoyée")
             except Exception as e:
@@ -96,8 +96,8 @@ class MacroEventManager:
                 
                 # Notification fin d'événement directe
                 try:
-                    if os.getenv('TELEGRAM_BOT_TOKEN') and os.getenv('TELEGRAM_CHAT_ID'):
-                        notifier = NotificationManager()
+                    notifier = NotificationManager()
+                    if notifier.enabled:
                         notifier.notify_macro_event_end(self.current_event, elapsed_hours)
                         print(f"   📨 Notification fin envoyée")
                 except Exception as e:
