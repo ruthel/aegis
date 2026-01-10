@@ -255,7 +255,24 @@ class NotificationManager:
         self.daily_stats['start_balance'] = total_value
         self.daily_stats['start_time'] = datetime.now()
     
-    def send_status_update(self):
+    def notify_macro_event_start(self, event_type, event_info):
+        """Notification début d'événement macro"""
+        message = f"🚨 **MACRO EVENT DÉTECTÉ**\n\n"
+        message += f"🏷️ **Type**: {event_type}\n"
+        message += f"📋 **Description**: {event_info['description']}\n\n"
+        message += f"🎁 **Bonus Score**: +{event_info['score_bonus']} points\n"
+        message += f"🎯 **Réduction Seuil**: -{event_info['threshold_reduction']} points\n"
+        message += f"⏰ **Durée Estimée**: {event_info['duration_hours']}h\n\n"
+        message += f"🤖 Le bot s'adapte automatiquement aux conditions macro."
+        return self.notify(message)
+    
+    def notify_macro_event_end(self, event_type, elapsed_hours):
+        """Notification fin d'événement macro"""
+        message = f"✅ **FIN MACRO EVENT**\n\n"
+        message += f"🏷️ **Type**: {event_type}\n"
+        message += f"⏱️ **Durée**: {elapsed_hours:.1f}h\n\n"
+        message += f"🔄 Le bot reprend ses paramètres normaux."
+        return self.notify(message)
         """Envoie status périodique"""
         now = time.time()
         if now - self.last_status_time < self.periodic_interval:
