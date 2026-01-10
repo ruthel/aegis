@@ -1761,9 +1761,9 @@ class MarketAnalyzer:
         
         # 1. Ajustements capital
         if capital and capital < 20:
-            base_min -= 20
+            base_min -= 25 #20
         elif capital and capital < 50:
-            base_min -= 15
+            base_min -= 20 #15
         
         # 2. Conditions marché + régime
         if market_conditions:
