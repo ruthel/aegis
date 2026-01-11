@@ -207,84 +207,112 @@ class TimeframeAnalyzer:
         return converted
     
     def analyze_timeframe(self, klines, current_price):
-        """Analyse un timeframe spécifique avec filtres avancés"""
-        if len(klines) < 30:
-            return {'trend': 'unknown', 'strength': 0, 'signals': []}
+        """Analyse un timeframe spécifique avec 20 facteurs professionnels"""
+        if len(klines) < 50:
+            return {'trend': 'unknown', 'strength': 0, 'signals': [], 'confidence': 0}
         
         closes = [k['close'] for k in klines]
+        highs = [k['high'] for k in klines]
+        lows = [k['low'] for k in klines]
         volumes = [k['volume'] for k in klines]
         
-        # Calculer les indicateurs
-        rsi = self.calculate_rsi(closes)
-        macd, signal, histogram = self.calculate_macd(closes)
-        upper_bb, middle_bb, lower_bb = self.calculate_bollinger_bands(closes)
-        ema_20 = self.calculate_ema(closes, 20)
-        ema_50 = self.calculate_ema(closes, 50)
+        # ===== CALCUL DES 20 FACTEURS PROFESSIONNELS =====
         
-        # NOUVEAUX FILTRES PHASE 1
-        volume_confirmation = self.check_volume_confirmation(volumes)
-        is_trending = self.is_trending_market(klines)
+        # 1-5: FACTEURS AMÉLIORÉS (existants)
+        rsi_multi = self.calculate_rsi_multi_period(closes)
+        macd_advanced = self.calculate_macd_advanced(closes)
+        bollinger_advanced = self.calculate_bollinger_advanced(closes, current_price)
+        ema_ribbon = self.calculate_ema_ribbon(closes, current_price)
+        volume_profile = self.calculate_volume_profile_advanced(klines)
         
-        # Analyser la tendance
-        trend = self.determine_trend(closes, ema_20, ema_50)
+        # 6-10: MOMENTUM AVANCÉ
+        stochastic = self.calculate_stochastic(highs, lows, closes)
+        williams_r = self.calculate_williams_r(highs, lows, closes)
+        roc = self.calculate_roc(closes)
+        cci = self.calculate_cci(klines)
+        elder_ray = self.calculate_elder_ray(klines)
         
-        # Analyser les signaux avec filtres
-        signals = []
-        strength = 0
+        # 11-15: TREND & SUPPORT/RESISTANCE
+        ichimoku = self.calculate_ichimoku(klines)
+        parabolic_sar = self.calculate_parabolic_sar(klines, current_price)
+        fibonacci = self.calculate_fibonacci_levels(klines, current_price)
+        pivot_points = self.calculate_pivot_points(klines, current_price)
+        aroon = self.calculate_aroon(highs, lows)
         
-        # Signal RSI avec confirmation volume
-        if rsi is not None:
-            if rsi < 35:
-                signals.append("RSI survente")
-                strength += 1.5 if volume_confirmation else 0.5
-            elif rsi > 65:
-                signals.append("RSI surachat")
-                strength -= 1.5 if volume_confirmation else 0.5
+        # 16-20: VOLUME & FLOW
+        mfi = self.calculate_mfi(klines)
+        obv = self.calculate_obv(closes, volumes)
+        ad_line = self.calculate_ad_line(klines)
+        cmf = self.calculate_cmf(klines)
+        atr_signals = self.calculate_atr_signals(klines)
         
-        # Signal MACD avec confirmation volume
-        if macd is not None and signal is not None:
-            if macd > signal and histogram > 0:
-                signals.append("MACD haussier")
-                strength += 1.5 if volume_confirmation else 1
-            elif macd < signal and histogram < 0:
-                signals.append("MACD baissier")
-                strength -= 1.5 if volume_confirmation else 1
+        # ===== PONDÉRATION PROFESSIONNELLE =====
+        weights = {
+            # Momentum (35%)
+            'rsi_multi': 0.08, 'macd_advanced': 0.08, 'stochastic': 0.06,
+            'williams_r': 0.05, 'roc': 0.04, 'elder_ray': 0.04,
+            
+            # Trend (25%)
+            'ema_ribbon': 0.07, 'ichimoku': 0.06, 'parabolic_sar': 0.06,
+            'aroon': 0.06,
+            
+            # Volume (20%)
+            'volume_profile': 0.06, 'mfi': 0.05, 'obv': 0.05, 'ad_line': 0.04,
+            
+            # Support/Resistance (15%)
+            'fibonacci': 0.05, 'pivot_points': 0.05, 'bollinger_advanced': 0.05,
+            
+            # Volatility/Other (5%)
+            'atr_signals': 0.03, 'cci': 0.02, 'cmf': 0.02
+        }
         
-        # Signal Bollinger Bands
-        if lower_bb is not None and upper_bb is not None:
-            if current_price <= lower_bb:
-                signals.append("BB support")
-                strength += 1.5 if volume_confirmation else 1
-            elif current_price >= upper_bb:
-                signals.append("BB résistance")
-                strength -= 1.5 if volume_confirmation else 1
+        # ===== CALCUL SCORE PONDÉRÉ =====
+        factors = {
+            'rsi_multi': rsi_multi, 'macd_advanced': macd_advanced,
+            'bollinger_advanced': bollinger_advanced, 'ema_ribbon': ema_ribbon,
+            'volume_profile': volume_profile, 'stochastic': stochastic,
+            'williams_r': williams_r, 'roc': roc, 'cci': cci,
+            'elder_ray': elder_ray, 'ichimoku': ichimoku,
+            'parabolic_sar': parabolic_sar, 'fibonacci': fibonacci,
+            'pivot_points': pivot_points, 'aroon': aroon, 'mfi': mfi,
+            'obv': obv, 'ad_line': ad_line, 'cmf': cmf, 'atr_signals': atr_signals
+        }
         
-        # Signal EMA
-        if ema_20 is not None and ema_50 is not None:
-            if ema_20 > ema_50:
-                signals.append("EMA haussier")
-                strength += 0.5
-            else:
-                signals.append("EMA baissier")
-                strength -= 0.5
+        total_strength = 0
+        active_signals = []
         
-        # Réduire force si marché non-tendanciel
-        if not is_trending:
-            strength *= 0.7
-            signals.append("Marché latéral")
+        for factor_name, factor_data in factors.items():
+            if factor_data and 'strength' in factor_data:
+                weight = weights.get(factor_name, 0.01)
+                strength = factor_data['strength']
+                total_strength += strength * weight
+                
+                if abs(strength) > 0.5:  # Signal significatif
+                    signal_type = factor_data.get('signal', 'neutral')
+                    if signal_type != 'neutral':
+                        active_signals.append(f"{factor_name}: {signal_type}")
+        
+        # ===== DÉTERMINATION TENDANCE =====
+        trend = 'bullish' if total_strength > 0.3 else 'bearish' if total_strength < -0.3 else 'neutral'
+        
+        # ===== CALCUL CONFIANCE =====
+        signal_count = len(active_signals)
+        signal_consistency = self._calculate_signal_consistency(factors)
+        
+        confidence = min(95, max(10, 
+            (abs(total_strength) * 40) + 
+            (signal_count * 5) + 
+            (signal_consistency * 30)
+        ))
         
         return {
             'trend': trend,
-            'strength': strength,
-            'signals': signals,
-            'volume_confirmation': volume_confirmation,
-            'is_trending': is_trending,
-            'indicators': {
-                'rsi': rsi,
-                'macd': macd,
-                'bb_position': self.get_bb_position(current_price, upper_bb, middle_bb, lower_bb),
-                'ema_trend': 'bullish' if ema_20 and ema_50 and ema_20 > ema_50 else 'bearish'
-            }
+            'strength': total_strength,
+            'signals': active_signals[:8],  # Top 8 signaux
+            'confidence': round(confidence, 1),
+            'factors': factors,
+            'signal_count': signal_count,
+            'consistency': signal_consistency
         }
     
     def determine_trend(self, closes, ema_20, ema_50):
@@ -850,3 +878,590 @@ class TimeframeAnalyzer:
             
         last_signal = recent_signals[-1]['signal']
         return f"{last_signal['action']} ({last_signal['strength']:.1f}) - {last_signal['reason']}"
+    # ===== 20 FACTEURS PROFESSIONNELS - IMPLÉMENTATION =====
+    
+    def calculate_rsi_multi_period(self, closes):
+        """RSI multi-période avec divergences"""
+        try:
+            rsi_14 = self.calculate_rsi(closes, 14)
+            rsi_21 = self.calculate_rsi(closes, 21)
+            
+            if rsi_14 is None or rsi_21 is None:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Analyse multi-période
+            if rsi_14 < 30 and rsi_21 < 35:
+                return {'strength': 2.0, 'signal': 'oversold_strong'}
+            elif rsi_14 > 70 and rsi_21 > 65:
+                return {'strength': -2.0, 'signal': 'overbought_strong'}
+            elif rsi_14 < 40:
+                return {'strength': 1.0, 'signal': 'oversold'}
+            elif rsi_14 > 60:
+                return {'strength': -1.0, 'signal': 'overbought'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_macd_advanced(self, closes):
+        """MACD avancé avec histogram et divergences"""
+        try:
+            macd, signal, histogram = self.calculate_macd(closes)
+            
+            if macd is None or signal is None:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Analyse avancée
+            if macd > signal and histogram > 0:
+                strength = min(2.0, abs(histogram) * 10)
+                return {'strength': strength, 'signal': 'bullish_crossover'}
+            elif macd < signal and histogram < 0:
+                strength = min(2.0, abs(histogram) * 10)
+                return {'strength': -strength, 'signal': 'bearish_crossover'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_bollinger_advanced(self, closes, current_price):
+        """Bollinger Bands avancé avec %B et squeeze"""
+        try:
+            upper, middle, lower = self.calculate_bollinger_bands(closes)
+            
+            if upper is None or lower is None:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # %B calculation
+            bb_width = upper - lower
+            percent_b = (current_price - lower) / bb_width if bb_width > 0 else 0.5
+            
+            # BB Squeeze detection
+            bb_squeeze = bb_width < (middle * 0.02)  # 2% squeeze
+            
+            if percent_b < 0.1:  # Near lower band
+                strength = 1.5 if bb_squeeze else 1.0
+                return {'strength': strength, 'signal': 'bb_support'}
+            elif percent_b > 0.9:  # Near upper band
+                strength = 1.5 if bb_squeeze else 1.0
+                return {'strength': -strength, 'signal': 'bb_resistance'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_ema_ribbon(self, closes, current_price):
+        """EMA Ribbon avec cloud analysis"""
+        try:
+            ema_7 = self.calculate_ema(closes, 7)
+            ema_25 = self.calculate_ema(closes, 25)
+            ema_99 = self.calculate_ema(closes, 99)
+            
+            if not all([ema_7, ema_25, ema_99]):
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Cloud analysis
+            if ema_7 > ema_25 > ema_99 and current_price > ema_7:
+                return {'strength': 2.0, 'signal': 'strong_uptrend'}
+            elif ema_7 < ema_25 < ema_99 and current_price < ema_7:
+                return {'strength': -2.0, 'signal': 'strong_downtrend'}
+            elif ema_7 > ema_25:
+                return {'strength': 1.0, 'signal': 'uptrend'}
+            elif ema_7 < ema_25:
+                return {'strength': -1.0, 'signal': 'downtrend'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_volume_profile_advanced(self, klines):
+        """Volume Profile avec VWAP"""
+        try:
+            if len(klines) < 20:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # VWAP calculation
+            total_pv = sum(k['close'] * k['volume'] for k in klines[-20:])
+            total_volume = sum(k['volume'] for k in klines[-20:])
+            vwap = total_pv / total_volume if total_volume > 0 else 0
+            
+            current_price = klines[-1]['close']
+            current_volume = klines[-1]['volume']
+            avg_volume = sum(k['volume'] for k in klines[-10:]) / 10
+            
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+            price_vs_vwap = (current_price - vwap) / vwap if vwap > 0 else 0
+            
+            if volume_ratio > 1.5 and price_vs_vwap > 0.01:
+                return {'strength': 1.5, 'signal': 'volume_breakout_up'}
+            elif volume_ratio > 1.5 and price_vs_vwap < -0.01:
+                return {'strength': -1.5, 'signal': 'volume_breakout_down'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_stochastic(self, highs, lows, closes, k_period=14, d_period=3):
+        """Stochastic Oscillator"""
+        try:
+            if len(closes) < k_period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # %K calculation
+            lowest_low = min(lows[-k_period:])
+            highest_high = max(highs[-k_period:])
+            current_close = closes[-1]
+            
+            if highest_high == lowest_low:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            k_percent = ((current_close - lowest_low) / (highest_high - lowest_low)) * 100
+            
+            if k_percent < 20:
+                return {'strength': 1.5, 'signal': 'stoch_oversold'}
+            elif k_percent > 80:
+                return {'strength': -1.5, 'signal': 'stoch_overbought'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_williams_r(self, highs, lows, closes, period=14):
+        """Williams %R"""
+        try:
+            if len(closes) < period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            highest_high = max(highs[-period:])
+            lowest_low = min(lows[-period:])
+            current_close = closes[-1]
+            
+            if highest_high == lowest_low:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            williams_r = ((highest_high - current_close) / (highest_high - lowest_low)) * -100
+            
+            if williams_r < -80:
+                return {'strength': 1.5, 'signal': 'wr_oversold'}
+            elif williams_r > -20:
+                return {'strength': -1.5, 'signal': 'wr_overbought'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_roc(self, closes, period=12):
+        """Rate of Change"""
+        try:
+            if len(closes) < period + 1:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            current_price = closes[-1]
+            past_price = closes[-(period + 1)]
+            
+            if past_price == 0:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            roc = ((current_price - past_price) / past_price) * 100
+            
+            if roc > 5:
+                return {'strength': min(2.0, roc / 5), 'signal': 'strong_momentum_up'}
+            elif roc < -5:
+                return {'strength': max(-2.0, roc / 5), 'signal': 'strong_momentum_down'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_cci(self, klines, period=20):
+        """Commodity Channel Index"""
+        try:
+            if len(klines) < period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Typical Price
+            typical_prices = [(k['high'] + k['low'] + k['close']) / 3 for k in klines[-period:]]
+            sma_tp = sum(typical_prices) / len(typical_prices)
+            
+            # Mean Deviation
+            mean_deviation = sum(abs(tp - sma_tp) for tp in typical_prices) / len(typical_prices)
+            
+            if mean_deviation == 0:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            current_tp = (klines[-1]['high'] + klines[-1]['low'] + klines[-1]['close']) / 3
+            cci = (current_tp - sma_tp) / (0.015 * mean_deviation)
+            
+            if cci > 100:
+                return {'strength': min(2.0, cci / 100), 'signal': 'cci_overbought'}
+            elif cci < -100:
+                return {'strength': max(-2.0, cci / 100), 'signal': 'cci_oversold'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_elder_ray(self, klines):
+        """Elder Ray Index (Bull/Bear Power)"""
+        try:
+            if len(klines) < 13:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            closes = [k['close'] for k in klines]
+            highs = [k['high'] for k in klines]
+            lows = [k['low'] for k in klines]
+            
+            ema_13 = self.calculate_ema(closes, 13)
+            if ema_13 is None:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            bull_power = highs[-1] - ema_13
+            bear_power = lows[-1] - ema_13
+            
+            bull_strength = bull_power / ema_13 * 100 if ema_13 > 0 else 0
+            bear_strength = bear_power / ema_13 * 100 if ema_13 > 0 else 0
+            
+            if bull_power > 0 and bear_power > 0:
+                return {'strength': 1.5, 'signal': 'bulls_control'}
+            elif bull_power < 0 and bear_power < 0:
+                return {'strength': -1.5, 'signal': 'bears_control'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_ichimoku(self, klines):
+        """Ichimoku Cloud"""
+        try:
+            if len(klines) < 52:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            highs = [k['high'] for k in klines]
+            lows = [k['low'] for k in klines]
+            closes = [k['close'] for k in klines]
+            
+            # Tenkan-sen (9 periods)
+            tenkan = (max(highs[-9:]) + min(lows[-9:])) / 2
+            
+            # Kijun-sen (26 periods)
+            kijun = (max(highs[-26:]) + min(lows[-26:])) / 2
+            
+            current_price = closes[-1]
+            
+            if current_price > tenkan > kijun:
+                return {'strength': 2.0, 'signal': 'ichimoku_bullish'}
+            elif current_price < tenkan < kijun:
+                return {'strength': -2.0, 'signal': 'ichimoku_bearish'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_parabolic_sar(self, klines, current_price):
+        """Parabolic SAR"""
+        try:
+            if len(klines) < 10:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Simplified SAR calculation
+            highs = [k['high'] for k in klines[-10:]]
+            lows = [k['low'] for k in klines[-10:]]
+            
+            recent_high = max(highs)
+            recent_low = min(lows)
+            
+            # Determine trend
+            if current_price > (recent_high + recent_low) / 2:
+                sar_level = recent_low * 0.98  # 2% below recent low
+                if current_price > sar_level:
+                    return {'strength': 1.0, 'signal': 'sar_uptrend'}
+            else:
+                sar_level = recent_high * 1.02  # 2% above recent high
+                if current_price < sar_level:
+                    return {'strength': -1.0, 'signal': 'sar_downtrend'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_fibonacci_levels(self, klines, current_price):
+        """Fibonacci Retracements"""
+        try:
+            if len(klines) < 20:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            highs = [k['high'] for k in klines[-20:]]
+            lows = [k['low'] for k in klines[-20:]]
+            
+            swing_high = max(highs)
+            swing_low = min(lows)
+            
+            # Fibonacci levels
+            fib_236 = swing_high - (swing_high - swing_low) * 0.236
+            fib_382 = swing_high - (swing_high - swing_low) * 0.382
+            fib_618 = swing_high - (swing_high - swing_low) * 0.618
+            
+            # Check proximity to Fib levels
+            for level, name in [(fib_236, 'fib_236'), (fib_382, 'fib_382'), (fib_618, 'fib_618')]:
+                distance = abs(current_price - level) / current_price
+                if distance < 0.01:  # Within 1%
+                    return {'strength': 1.0, 'signal': f'near_{name}'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_pivot_points(self, klines, current_price):
+        """Pivot Points"""
+        try:
+            if len(klines) < 2:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Previous day data
+            prev_high = klines[-2]['high']
+            prev_low = klines[-2]['low']
+            prev_close = klines[-2]['close']
+            
+            # Pivot Point
+            pivot = (prev_high + prev_low + prev_close) / 3
+            
+            # Support and Resistance
+            r1 = 2 * pivot - prev_low
+            s1 = 2 * pivot - prev_high
+            
+            # Check proximity
+            for level, name in [(pivot, 'pivot'), (r1, 'r1'), (s1, 's1')]:
+                distance = abs(current_price - level) / current_price
+                if distance < 0.005:  # Within 0.5%
+                    return {'strength': 1.5, 'signal': f'near_{name}'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_aroon(self, highs, lows, period=25):
+        """Aroon Indicator"""
+        try:
+            if len(highs) < period or len(lows) < period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            # Find periods since highest high and lowest low
+            high_period = 0
+            low_period = 0
+            
+            recent_highs = highs[-period:]
+            recent_lows = lows[-period:]
+            
+            max_high = max(recent_highs)
+            min_low = min(recent_lows)
+            
+            # Find last occurrence
+            for i in range(len(recent_highs) - 1, -1, -1):
+                if recent_highs[i] == max_high and high_period == 0:
+                    high_period = len(recent_highs) - 1 - i
+                if recent_lows[i] == min_low and low_period == 0:
+                    low_period = len(recent_lows) - 1 - i
+            
+            aroon_up = ((period - high_period) / period) * 100
+            aroon_down = ((period - low_period) / period) * 100
+            
+            if aroon_up > 70 and aroon_down < 30:
+                return {'strength': 1.5, 'signal': 'aroon_uptrend'}
+            elif aroon_down > 70 and aroon_up < 30:
+                return {'strength': -1.5, 'signal': 'aroon_downtrend'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_mfi(self, klines, period=14):
+        """Money Flow Index"""
+        try:
+            if len(klines) < period + 1:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            money_flows = []
+            for i in range(1, len(klines)):
+                typical_price = (klines[i]['high'] + klines[i]['low'] + klines[i]['close']) / 3
+                prev_typical = (klines[i-1]['high'] + klines[i-1]['low'] + klines[i-1]['close']) / 3
+                
+                raw_money_flow = typical_price * klines[i]['volume']
+                
+                if typical_price > prev_typical:
+                    money_flows.append(('positive', raw_money_flow))
+                elif typical_price < prev_typical:
+                    money_flows.append(('negative', raw_money_flow))
+                else:
+                    money_flows.append(('neutral', raw_money_flow))
+            
+            if len(money_flows) < period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            recent_flows = money_flows[-period:]
+            positive_flow = sum(flow[1] for flow in recent_flows if flow[0] == 'positive')
+            negative_flow = sum(flow[1] for flow in recent_flows if flow[0] == 'negative')
+            
+            if positive_flow + negative_flow == 0:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            money_ratio = positive_flow / negative_flow if negative_flow > 0 else float('inf')
+            mfi = 100 - (100 / (1 + money_ratio))
+            
+            if mfi > 80:
+                return {'strength': -1.5, 'signal': 'mfi_overbought'}
+            elif mfi < 20:
+                return {'strength': 1.5, 'signal': 'mfi_oversold'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_obv(self, closes, volumes):
+        """On-Balance Volume"""
+        try:
+            if len(closes) < 10 or len(volumes) < 10:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            obv_values = [volumes[0]]
+            
+            for i in range(1, len(closes)):
+                if closes[i] > closes[i-1]:
+                    obv_values.append(obv_values[-1] + volumes[i])
+                elif closes[i] < closes[i-1]:
+                    obv_values.append(obv_values[-1] - volumes[i])
+                else:
+                    obv_values.append(obv_values[-1])
+            
+            # OBV trend
+            recent_obv = obv_values[-5:]
+            obv_trend = (recent_obv[-1] - recent_obv[0]) / abs(recent_obv[0]) if recent_obv[0] != 0 else 0
+            
+            if obv_trend > 0.1:
+                return {'strength': 1.0, 'signal': 'obv_accumulation'}
+            elif obv_trend < -0.1:
+                return {'strength': -1.0, 'signal': 'obv_distribution'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_ad_line(self, klines):
+        """Accumulation/Distribution Line"""
+        try:
+            if len(klines) < 10:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            ad_values = [0]
+            
+            for k in klines[1:]:
+                if k['high'] == k['low']:
+                    clv = 0
+                else:
+                    clv = ((k['close'] - k['low']) - (k['high'] - k['close'])) / (k['high'] - k['low'])
+                
+                ad_values.append(ad_values[-1] + clv * k['volume'])
+            
+            # A/D Line trend
+            recent_ad = ad_values[-5:]
+            ad_trend = (recent_ad[-1] - recent_ad[0]) / abs(recent_ad[0]) if recent_ad[0] != 0 else 0
+            
+            if ad_trend > 0.05:
+                return {'strength': 1.0, 'signal': 'ad_accumulation'}
+            elif ad_trend < -0.05:
+                return {'strength': -1.0, 'signal': 'ad_distribution'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_cmf(self, klines, period=21):
+        """Chaikin Money Flow"""
+        try:
+            if len(klines) < period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            recent_klines = klines[-period:]
+            money_flow_volume = 0
+            total_volume = 0
+            
+            for k in recent_klines:
+                if k['high'] == k['low']:
+                    clv = 0
+                else:
+                    clv = ((k['close'] - k['low']) - (k['high'] - k['close'])) / (k['high'] - k['low'])
+                
+                money_flow_volume += clv * k['volume']
+                total_volume += k['volume']
+            
+            if total_volume == 0:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            cmf = money_flow_volume / total_volume
+            
+            if cmf > 0.1:
+                return {'strength': 1.0, 'signal': 'cmf_buying_pressure'}
+            elif cmf < -0.1:
+                return {'strength': -1.0, 'signal': 'cmf_selling_pressure'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def calculate_atr_signals(self, klines, period=14):
+        """ATR-based Volatility Signals"""
+        try:
+            if len(klines) < period + 1:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            tr_values = []
+            for i in range(1, len(klines)):
+                high = klines[i]['high']
+                low = klines[i]['low']
+                prev_close = klines[i-1]['close']
+                
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                tr_values.append(tr)
+            
+            if len(tr_values) < period:
+                return {'strength': 0, 'signal': 'neutral'}
+            
+            current_atr = sum(tr_values[-period:]) / period
+            prev_atr = sum(tr_values[-period-5:-5]) / period if len(tr_values) >= period + 5 else current_atr
+            
+            atr_change = (current_atr - prev_atr) / prev_atr if prev_atr > 0 else 0
+            
+            if atr_change > 0.2:  # 20% increase in volatility
+                return {'strength': 1.0, 'signal': 'volatility_breakout'}
+            elif atr_change < -0.2:  # 20% decrease in volatility
+                return {'strength': -0.5, 'signal': 'volatility_compression'}
+            
+            return {'strength': 0, 'signal': 'neutral'}
+        except:
+            return {'strength': 0, 'signal': 'neutral'}
+    
+    def _calculate_signal_consistency(self, factors):
+        """Calcule la cohérence des signaux"""
+        try:
+            bullish_signals = 0
+            bearish_signals = 0
+            total_signals = 0
+            
+            for factor_data in factors.values():
+                if factor_data and 'strength' in factor_data:
+                    strength = factor_data['strength']
+                    if abs(strength) > 0.5:  # Signal significatif
+                        total_signals += 1
+                        if strength > 0:
+                            bullish_signals += 1
+                        else:
+                            bearish_signals += 1
+            
+            if total_signals == 0:
+                return 0
+            
+            # Cohérence = dominance du signal majoritaire
+            dominant_signals = max(bullish_signals, bearish_signals)
+            consistency = (dominant_signals / total_signals) * 100
+            
+            return consistency
+        except:
+            return 0
