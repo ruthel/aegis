@@ -819,14 +819,26 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"❌ {crypto}: Score insuffisant {crypto_score:.2f}% < {dynamic_min_score}")
             return
         
-        # 3. SIGNAL TECHNIQUE (Deuxième filtre)
+        # 3. SIGNAL TECHNIQUE + SUPPORT TOUCH OVERRIDE
         try:
             analysis = self.get_cached_analysis(symbol, current_price)
             volatility = analysis.get('volatility', 2.0)
             adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, volatility)
             global_signal = analysis['global_signal']
             
-            # REJET si signal insuffisant
+            # OVERRIDE: Vérifier support touch AVANT rejet signal
+            support_check = self.check_support_touch(symbol, current_price)
+            if support_check['is_support_touch']:
+                print(f"🎯 {crypto}: SUPPORT TOUCH OVERRIDE - Achat forcé à {support_check['support_price']:.2f}")
+                # Exécution immédiate
+                signal_strength = support_check['confidence']
+                account_balance = self.get_account_balance()
+                position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
+                reason = f"Support touch {support_check['support_price']:.2f} - Override signal"
+                self.execute_optimized_buy(symbol, position_data, current_price, reason)
+                return
+            
+            # REJET si signal insuffisant (seulement si pas de support touch)
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
                 if global_signal['action'] not in ['BUY', 'STRONG_BUY']:

@@ -136,6 +136,27 @@ class AnalysisMixin:
         except:
             return None
     
+    def check_support_touch(self, symbol, current_price):
+        """Méthode commune pour vérifier si prix touche support"""
+        try:
+            klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
+            if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
+                sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
+                support_levels = sr_levels.get('support_levels', [])
+                
+                for support in support_levels[:3]:  # Top 3 supports
+                    support_price = support['price']
+                    # BUY si prix <= support * 1.001 (±0.1%)
+                    if current_price <= support_price * 1.001:
+                        return {
+                            'is_support_touch': True,
+                            'support_price': support_price,
+                            'confidence': 85
+                        }
+            return {'is_support_touch': False}
+        except:
+            return {'is_support_touch': False}
+    
     def predict_volume_recovery_time(self, symbol):
         """Prédit quand le volume va récupérer avec notification"""
         try:
@@ -215,25 +236,15 @@ class AnalysisMixin:
                 }
             
             # CORRECTION CRITIQUE: Vérifier si prix touche support
-            klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
-            if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
-                try:
-                    sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
-                    support_levels = sr_levels.get('support_levels', [])
-                    
-                    for support in support_levels[:3]:  # Top 3 supports
-                        support_price = support['price']
-                        # BUY si prix <= support * 1.001 (±0.1% - compatible profit 0.5%)
-                        if current_price <= support_price * 1.001:
-                            return {
-                                'status': 'READY',
-                                'time_estimate': 'Maintenant',
-                                'confidence': 85,
-                                'target_price': current_price,
-                                'reason': f"Support touch {support_price:.2f}"
-                            }
-                except:
-                    pass
+            support_check = self.check_support_touch(symbol, current_price)
+            if support_check['is_support_touch']:
+                return {
+                    'status': 'READY',
+                    'time_estimate': 'Maintenant',
+                    'confidence': support_check['confidence'],
+                    'target_price': current_price,
+                    'reason': f"Support touch {support_check['support_price']:.2f}"
+                }
             
             # AMÉLIORATION: Prédiction précise avec données 1m temps réel
             confidence_gap = max(0, min_conf - signal['confidence'])
