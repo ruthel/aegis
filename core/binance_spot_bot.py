@@ -829,12 +829,15 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # OVERRIDE: Vérifier support touch AVANT rejet signal
             support_check = self.check_support_touch(symbol, current_price)
             if support_check['is_support_touch']:
-                print(f"🎯 {crypto}: SUPPORT TOUCH OVERRIDE - Achat forcé à {support_check['support_price']:.2f}")
-                # Exécution immédiate
+                print(f"🎯 {crypto}: SUPPORT TOUCH PRO - {support_check['reason']}")
+                # Exécution avec target ajusté
                 signal_strength = support_check['confidence']
                 account_balance = self.get_account_balance()
                 position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
-                reason = f"Support touch {support_check['support_price']:.2f} - Override signal"
+                # Ajuster target selon analyse professionnelle
+                position_data['target_price'] = support_check['target_price']
+                position_data['stop_loss_price'] = support_check['stop_loss']
+                reason = f"Support PRO {support_check['support_price']:.2f} - {support_check['reason']}"
                 self.execute_optimized_buy(symbol, position_data, current_price, reason)
                 return
             

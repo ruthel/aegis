@@ -137,7 +137,7 @@ class AnalysisMixin:
             return None
     
     def check_support_touch(self, symbol, current_price):
-        """Méthode commune pour vérifier si prix touche support"""
+        """Support touch avec critères professionnels - Edge positif"""
         try:
             klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
             if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
@@ -148,14 +148,81 @@ class AnalysisMixin:
                     support_price = support['price']
                     # BUY si prix <= support * 1.001 (±0.1%)
                     if current_price <= support_price * 1.001:
+                        # VÉRIFICATIONS PROFESSIONNELLES
+                        
+                        # 1. SUPPORT DE QUALITÉ (≥3 rebonds)
+                        rebounds = support.get('strength', 1)
+                        if rebounds < 3:
+                            print(f"❌ Support faible ({rebounds} rebonds)")
+                            continue
+                        
+                        # 2. VOLUME DE CONFIRMATION (≥150% moyenne)
+                        klines_recent = self.get_klines(symbol, 10, '15m')
+                        volume_ratio = 1.0
+                        if len(klines_recent) >= 5:
+                            current_volume = klines_recent[-1]['volume']
+                            avg_volume = sum(k['volume'] for k in klines_recent[:-1]) / (len(klines_recent) - 1)
+                            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+                            
+                            if volume_ratio < 1.5:
+                                print(f"❌ Volume insuffisant ({volume_ratio:.1f}x)")
+                                continue
+                        
+                        # 3. CONTEXTE HAUSSIER (Prix > EMA 50)
+                        klines_long = self.get_klines(symbol, 50, '1h')
+                        if len(klines_long) >= 50:
+                            closes = [k['close'] for k in klines_long]
+                            ema_50 = self._calculate_ema(closes, 50)
+                            
+                            if current_price < ema_50 * 0.98:  # 2% de tolérance
+                                print(f"❌ Contexte baissier (< EMA50)")
+                                continue
+                        
+                        # 4. RATIO R/R FAVORABLE (Target 1.5% minimum)
+                        stop_loss_price = current_price * 0.99  # -1% stop
+                        target_price = current_price * 1.015   # +1.5% target
+                        risk = abs(current_price - stop_loss_price)
+                        reward = abs(target_price - current_price)
+                        risk_reward_ratio = reward / risk if risk > 0 else 0
+                        
+                        if risk_reward_ratio < 1.5:
+                            print(f"❌ R/R défavorable (1:{risk_reward_ratio:.1f})")
+                            continue
+                        
+                        # ✅ TOUS LES CRITÈRES PASSÉS
+                        confidence = 75  # Base professionnelle
+                        if rebounds >= 5:
+                            confidence += 5
+                        if volume_ratio >= 2.0:
+                            confidence += 5
+                        if risk_reward_ratio >= 2.0:
+                            confidence += 5
+                        
                         return {
                             'is_support_touch': True,
                             'support_price': support_price,
-                            'confidence': 85
+                            'confidence': min(confidence, 90),
+                            'target_price': target_price,
+                            'stop_loss': stop_loss_price,
+                            'reason': f'Support PRO: {rebounds} rebonds, Vol {volume_ratio:.1f}x, R/R 1:{risk_reward_ratio:.1f}'
                         }
+                        
             return {'is_support_touch': False}
         except:
             return {'is_support_touch': False}
+    
+    def _calculate_ema(self, prices, period):
+        """Calcule EMA"""
+        if len(prices) < period:
+            return sum(prices) / len(prices) if prices else 0
+        
+        multiplier = 2 / (period + 1)
+        ema = sum(prices[:period]) / period
+        
+        for price in prices[period:]:
+            ema = (price * multiplier) + (ema * (1 - multiplier))
+        
+        return ema
     
     def predict_volume_recovery_time(self, symbol):
         """Prédit quand le volume va récupérer avec notification"""
@@ -272,7 +339,7 @@ class AnalysisMixin:
                 
                 # Momentum 1m
                 prices_1m = [k['close'] for k in klines_1m[-5:]]
-                momentum_1m = (prices_1m[-1] - prices_1m[0]) / prices_1m[0] * 100
+                momentum_1m = (prices_1m[-1] - prices_1m[0]) / prices_1m[0] * 100 if len(prices_1m) >= 2 else 0
                 momentum_factor = 0.7 if abs(momentum_1m) > 1 else 0.85 if abs(momentum_1m) > 0.5 else 1.2
                 
                 # 3. SUPPORT/RÉSISTANCE pour cible précise
