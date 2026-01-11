@@ -192,7 +192,12 @@ class AnalysisMixin:
                         # ✅ TOUS LES CRITÈRES PASSÉS
                         confidence = 75  # Base professionnelle
                         if rebounds >= 5:
-                            confidence += 5
+                            confidence = 85  # Niveau très fort
+                        elif rebounds >= 3:
+                            confidence = 75  # Niveau valide
+                        else:
+                            confidence = 50  # Niveau faible
+                        
                         if volume_ratio >= 2.0:
                             confidence += 5
                         if risk_reward_ratio >= 2.0:

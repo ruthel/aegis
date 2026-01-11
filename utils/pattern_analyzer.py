@@ -355,7 +355,7 @@ class PatternAnalyzer:
         for level_price, touches in levels.items():
             if len(touches) >= self.min_touches:
                 avg_volume = sum(t['volume'] for t in touches) / len(touches)
-                strength = len(touches) * (avg_volume / 1000000)
+                strength = len(touches)  # Nombre de rebonds simple
                 
                 resistance_levels.append({
                     'price': level_price,
@@ -383,7 +383,7 @@ class PatternAnalyzer:
         for level_price, touches in levels.items():
             if len(touches) >= self.min_touches:
                 avg_volume = sum(t['volume'] for t in touches) / len(touches)
-                strength = len(touches) * (avg_volume / 1000000)
+                strength = len(touches)  # Nombre de rebonds simple
                 
                 support_levels.append({
                     'price': level_price,
