@@ -214,6 +214,27 @@ class AnalysisMixin:
                     'reason': f"Signal {signal['action']}"
                 }
             
+            # CORRECTION CRITIQUE: Vérifier si prix touche support
+            klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
+            if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
+                try:
+                    sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
+                    support_levels = sr_levels.get('support_levels', [])
+                    
+                    for support in support_levels[:3]:  # Top 3 supports
+                        support_price = support['price']
+                        # BUY si prix <= support * 1.001 (±0.1% - compatible profit 0.5%)
+                        if current_price <= support_price * 1.001:
+                            return {
+                                'status': 'READY',
+                                'time_estimate': 'Maintenant',
+                                'confidence': 85,
+                                'target_price': current_price,
+                                'reason': f"Support touch {support_price:.2f}"
+                            }
+                except:
+                    pass
+            
             # AMÉLIORATION: Prédiction précise avec données 1m temps réel
             confidence_gap = max(0, min_conf - signal['confidence'])
             
@@ -300,10 +321,8 @@ class AnalysisMixin:
             else:
                 time_estimate = "Indéterminé"
             
-            if signal['action'] == 'HOLD':
-                target_price = current_price * 0.98
-                reason = f"Baisse → {target_price:.2f}"
-            elif signal['action'] in ['SELL', 'STRONG_SELL']:
+            # CORRECTION: Ne plus prédire baisse sur HOLD, attendre signal positif
+            if signal['action'] in ['SELL', 'STRONG_SELL']:
                 target_price = current_price * 0.95
                 reason = f"Retournement attendu"
             else:
