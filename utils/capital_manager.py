@@ -57,7 +57,7 @@ class CapitalManager:
                 'trade_amount': max(min_amounts.get('min_trade', 1), total_balance_usdt * 0.15),
                 'spot_allocation': 1.0,  # 100% spot
                 'dual_allocation': 0.0,  # 0% double investment
-                'max_daily_loss': max(2, total_balance_usdt * 0.25),
+                'max_daily_loss': max(10, total_balance_usdt * 0.25),
                 'max_positions': 1,  # Une position à la fois
                 'aggressive_mode': True,
                 'compound_rate': 1.0,  # 100% réinvestissement
@@ -74,7 +74,7 @@ class CapitalManager:
                 'trade_amount': max(min_amounts.get('min_trade', 2), total_balance_usdt * 0.12),
                 'spot_allocation': 0.95,  # 95% spot
                 'dual_allocation': 0.05,  # 5% double investment
-                'max_daily_loss': max(5, total_balance_usdt * 0.20),
+                'max_daily_loss': max(10, total_balance_usdt * 0.20),
                 'max_positions': 2,
                 'aggressive_mode': True,
                 'compound_rate': 0.9,  # 90% réinvestissement
