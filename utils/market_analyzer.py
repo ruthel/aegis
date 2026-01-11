@@ -1459,7 +1459,7 @@ class MarketAnalyzer:
         market_conditions = {
             'avg_volatility': sum(volatilities) / len(volatilities) if volatilities else 2.0,
             'avg_volume_ratio': sum(volume_ratios) / len(volume_ratios) if volume_ratios else 1.0,
-            'klines_data': klines if klines and len(klines) >= 20 else None  # Pour détection régime marché
+            'klines_data': None  # Pas de klines spécifiques pour le ranking global
         }
         
         # DÉTECTION MACRO EVENT
