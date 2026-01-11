@@ -137,7 +137,7 @@ class AnalysisMixin:
             return None
     
     def check_support_touch(self, symbol, current_price):
-        """Support touch avec critères professionnels - Edge positif"""
+        """Support touch simplifié - Seul le support de qualité compte"""
         try:
             klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
             if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
@@ -148,68 +148,27 @@ class AnalysisMixin:
                     support_price = support['price']
                     # BUY si prix <= support * 1.001 (±0.1%)
                     if current_price <= support_price * 1.001:
-                        # VÉRIFICATIONS PROFESSIONNELLES
                         
-                        # 1. SUPPORT DE QUALITÉ (≥3 rebonds)
+                        # SEUL FILTRE: SUPPORT DE QUALITÉ (≥3 rebonds)
                         rebounds = support.get('strength', 1)
                         if rebounds < 3:
                             print(f"❌ Support faible ({rebounds} rebonds)")
                             continue
                         
-                        # 2. VOLUME DE CONFIRMATION (≥150% moyenne)
-                        klines_recent = self.get_klines(symbol, 10, '15m')
-                        volume_ratio = 1.0
-                        if len(klines_recent) >= 5:
-                            current_volume = klines_recent[-1]['volume']
-                            avg_volume = sum(k['volume'] for k in klines_recent[:-1]) / (len(klines_recent) - 1)
-                            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-                            
-                            if volume_ratio < 1.5:
-                                print(f"❌ Volume insuffisant ({volume_ratio:.1f}x)")
-                                continue
+                        # ✅ SUPPORT VALIDE
+                        confidence = 75 if rebounds >= 5 else 70 if rebounds >= 4 else 65
                         
-                        # 3. CONTEXTE HAUSSIER (Prix > EMA 50)
-                        klines_long = self.get_klines(symbol, 50, '1h')
-                        if len(klines_long) >= 50:
-                            closes = [k['close'] for k in klines_long]
-                            ema_50 = self._calculate_ema(closes, 50)
-                            
-                            if current_price < ema_50 * 0.98:  # 2% de tolérance
-                                print(f"❌ Contexte baissier (< EMA50)")
-                                continue
-                        
-                        # 4. RATIO R/R FAVORABLE (Target 1.5% minimum)
-                        stop_loss_price = current_price * 0.99  # -1% stop
-                        target_price = current_price * 1.015   # +1.5% target
-                        risk = abs(current_price - stop_loss_price)
-                        reward = abs(target_price - current_price)
-                        risk_reward_ratio = reward / risk if risk > 0 else 0
-                        
-                        if risk_reward_ratio < 1.5:
-                            print(f"❌ R/R défavorable (1:{risk_reward_ratio:.1f})")
-                            continue
-                        
-                        # ✅ TOUS LES CRITÈRES PASSÉS
-                        confidence = 75  # Base professionnelle
-                        if rebounds >= 5:
-                            confidence = 85  # Niveau très fort
-                        elif rebounds >= 3:
-                            confidence = 75  # Niveau valide
-                        else:
-                            confidence = 50  # Niveau faible
-                        
-                        if volume_ratio >= 2.0:
-                            confidence += 5
-                        if risk_reward_ratio >= 2.0:
-                            confidence += 5
+                        # Targets simples
+                        stop_loss_price = current_price * 0.99   # -1% stop
+                        target_price = current_price * 1.015     # +1.5% target
                         
                         return {
                             'is_support_touch': True,
                             'support_price': support_price,
-                            'confidence': min(confidence, 90),
+                            'confidence': confidence,
                             'target_price': target_price,
                             'stop_loss': stop_loss_price,
-                            'reason': f'Support PRO: {rebounds} rebonds, Vol {volume_ratio:.1f}x, R/R 1:{risk_reward_ratio:.1f}'
+                            'reason': f'Support {rebounds} rebonds @ {support_price:.2f}'
                         }
                         
             return {'is_support_touch': False}
