@@ -50,7 +50,6 @@ STUCK_THRESHOLD_HOURS = int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
 
 # ===== SÉLECTION CRYPTOS =====
 MIN_CRYPTO_SCORE = int(os.getenv('MIN_CRYPTO_SCORE', '40'))  # Adaptatif par défaut
-MAX_TRADEABLE_CRYPTOS = int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
 
 # ===== NOTIFICATIONS TELEGRAM =====
 BOT_NAME = os.getenv('BOT_NAME', 'TETANIS')

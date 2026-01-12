@@ -352,12 +352,8 @@ class NotificationManager:
             if item['has_orders']:
                 try:
                     # Récupérer les ordres ouverts pour cette crypto
-                    print(f"🔍 DEBUG: Récupération ordres pour {item['crypto']}/USDT")
-                    # Utiliser la méthode existante du bot
                     open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USDT")
-                    print(f"🔍 DEBUG: Ordres trouvés: {len(open_orders) if open_orders else 0}")
                     if open_orders:
-                        print(f"🔍 DEBUG: Premier ordre: {open_orders[0]}")
                         for j, order in enumerate(open_orders):
                             is_last_order = (j == len(open_orders) - 1)
                             order_prefix = "   └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
@@ -387,7 +383,6 @@ class NotificationManager:
                         msg += f"{order_prefix} 🤖 Ordre actif (détails indisponibles)\n"
                 except Exception as e:
                     # Fallback si erreur récupération ordres
-                    print(f"🔍 DEBUG: Erreur récupération ordres {item['crypto']}: {e}")
                     order_prefix = "   └─" if is_last else "│  └─"
                     msg += f"{order_prefix} 🤖 Ordre actif\n"
         

@@ -115,8 +115,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
         )
         self.market_analyzer = MarketAnalyzer(
-            min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40')),
-            max_tradeable=int(os.getenv('MAX_TRADEABLE_CRYPTOS', '2'))
+            min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40'))
         )
 
 
@@ -1033,17 +1032,13 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position - UTILISE LES VRAIES POSITIONS BINANCE"""
+        from utils.market_analyzer import MarketAnalyzer
+        
         # Calculer max_positions selon capital
         try:
             total_capital = self.capital_manager.get_total_capital()
-            if total_capital <= 20:
-                max_positions = 1
-            elif total_capital <= 50:
-                max_positions = 2
-            elif total_capital <= 100:
-                max_positions = 3
-            else:
-                max_positions = 4
+            limits = MarketAnalyzer.get_position_limits(total_capital)
+            max_positions = limits['max_positions_per_crypto']
         except:
             max_positions = 4  # Fallback par défaut
         

@@ -46,10 +46,14 @@ class CapitalManager:
         }
         
     def get_adaptive_config(self, total_balance_usdt):
-        """Configuration automatique selon le capital"""
+        """Configuration automatique selon le capital avec limites de positions"""
         
         # Récupérer les montants minimums de l'API Binance
         min_amounts = self._get_binance_min_amounts()
+        
+        # Obtenir les limites de positions
+        from utils.market_analyzer import MarketAnalyzer
+        limits = MarketAnalyzer.get_position_limits(total_balance_usdt)
         
         if total_balance_usdt < 20:
             # Mode Micro-Capital (8-20 USDT)
@@ -58,7 +62,9 @@ class CapitalManager:
                 'spot_allocation': 1.0,  # 100% spot
                 'dual_allocation': 0.0,  # 0% double investment
                 'max_daily_loss': max(10, total_balance_usdt * 0.25),
-                'max_positions': 1,  # Une position à la fois
+                'max_positions': limits['max_positions_per_crypto'],
+                'max_tradeable_cryptos': limits['max_tradeable_cryptos'],
+                'total_max_positions': limits['total_max_positions'],
                 'aggressive_mode': True,
                 'compound_rate': 1.0,  # 100% réinvestissement
                 'min_profit_threshold': 0.5,  # 0.5% minimum

@@ -16,10 +16,11 @@ except ImportError:
 class MarketAnalyzer:
     """Calculs de marché centralisés - Tout-en-un"""
     
-    def __init__(self, min_score=40, max_tradeable=2):
+    def __init__(self, min_score=40):
+        """Initialise le MarketAnalyzer avec les paramètres de scoring"""
         # Configuration scoring crypto
         self.base_min_score = min_score
-        self.max_tradeable = max_tradeable
+        self.max_tradeable = 2  # Valeur par défaut, sera mise à jour dynamiquement
         self.blacklist = {}
         self.blacklist_duration = 3600
         self.score_history = {}
@@ -30,8 +31,20 @@ class MarketAnalyzer:
         self.last_predictions = {}
         
         # NOUVEAU: Gestionnaire d'événements macro
-        from utils.event_manager import MacroEventManager
-        self.macro_manager = MacroEventManager()
+        try:
+            from utils.event_manager import MacroEventManager
+            self.macro_manager = MacroEventManager()
+        except ImportError:
+            self.macro_manager = None
+    
+    def _get_default_weights(self):
+        """Retourne les poids par défaut pour le scoring"""
+        return {
+            'volume': 0.3,
+            'volatility': 0.25,
+            'momentum': 0.25,
+            'liquidity': 0.2
+        }
     
     # ===== MÉTHODES VOLATILITÉ =====
     
@@ -1397,12 +1410,27 @@ class MarketAnalyzer:
     
     def rank_cryptos(self, bot, trading_pairs, stuck_positions):
         """Classe toutes les cryptos et retourne les meilleures"""
+        # Calculer limites dynamiques selon capital
+        try:
+            if hasattr(bot, 'capital_manager'):
+                total_capital = bot.capital_manager.get_total_capital()
+            else:
+                balance = bot.balance_manager.get_balance()
+                total_capital = balance.get('USDT', {}).get('free', 0)
+            
+            limits = self.get_position_limits(total_capital)
+            self.max_tradeable = limits['max_tradeable_cryptos']
+        except:
+            self.max_tradeable = 2  # Fallback
+        
         balance = bot.balance_manager.get_balance()
         usdt_available = balance.get('USDT', {}).get('free', 0)
         
         if usdt_available <= 0:
             print(f"⚠️ Balance USDT: 0 - Aucune crypto tradable")
             return []
+        
+    def __init__(self, min_score=40, max_tradeable=2):
         
         scores = []
         volatilities = []
@@ -1936,3 +1964,54 @@ class MarketAnalyzer:
             'session_factor': session_factor,
             'volatility_factor': volatility_factor
         }
+    @staticmethod
+    def get_position_limits(total_capital):
+        """
+        Calcule les limites de positions selon le capital total
+        
+        Args:
+            total_capital (float): Capital total en USDT
+            
+        Returns:
+            dict: {
+                'max_positions_per_crypto': int,
+                'max_tradeable_cryptos': int,
+                'total_max_positions': int
+            }
+        """
+        if total_capital <= 10:
+            return {
+                'max_positions_per_crypto': 1,
+                'max_tradeable_cryptos': 1,
+                'total_max_positions': 1
+            }
+        elif total_capital <= 15:
+            return {
+                'max_positions_per_crypto': 1,
+                'max_tradeable_cryptos': 2,
+                'total_max_positions': 2
+            }
+        elif total_capital <= 20:
+            return {
+                'max_positions_per_crypto': 1,
+                'max_tradeable_cryptos': 4,
+                'total_max_positions': 4
+            }
+        elif total_capital <= 50:
+            return {
+                'max_positions_per_crypto': 2,
+                'max_tradeable_cryptos': 4,
+                'total_max_positions': 8
+            }
+        elif total_capital <= 100:
+            return {
+                'max_positions_per_crypto': 3,
+                'max_tradeable_cryptos': 4,
+                'total_max_positions': 12
+            }
+        else:
+            return {
+                'max_positions_per_crypto': 4,
+                'max_tradeable_cryptos': 4,
+                'total_max_positions': 16
+            }

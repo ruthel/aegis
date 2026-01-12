@@ -190,7 +190,23 @@ class PositionManager:
     # === POSITION SIZING METHODS ===
     
     def calculate_position_size(self, symbol, signal_strength, account_balance):
-        """Calcule la taille de position optimale"""
+        """Calcule la taille de position optimale avec limites dynamiques"""
+        # Obtenir les limites selon le capital
+        try:
+            limits = MarketAnalyzer.get_position_limits(account_balance)
+            max_positions = limits['total_max_positions']
+            max_per_crypto = limits['max_positions_per_crypto']
+            
+            # Ajuster la taille selon les limites
+            if max_positions == 0:
+                return self._get_zero_position_size()
+            
+            # Calculer taille de base
+            base_size = account_balance / max_positions if max_positions > 0 else account_balance * 0.1
+            
+        except:
+            base_size = account_balance * 0.1  # Fallback 10%
+        
         cache_key = f"{symbol}_position"
         now = datetime.now()
         
@@ -198,10 +214,10 @@ class PositionManager:
         if (cache_key in self.cache and 
             (now - self.cache[cache_key]['timestamp']).seconds < self.cache_duration):
             cached_data = self.cache[cache_key]
-            return self._adjust_for_balance(cached_data['base_size'], account_balance, cached_data['risk_data'])
+            return self._adjust_for_balance(cached_data['base_size'], base_size, cached_data['risk_data'])
         
         # Calculer nouvelle taille
-        position_data = self._calculate_optimal_size(symbol, signal_strength, account_balance)
+        position_data = self._calculate_optimal_size(symbol, signal_strength, base_size)
         
         # Cache résultat
         self.cache[cache_key] = {
@@ -427,7 +443,16 @@ class PositionManager:
         """Ajuste taille cachée pour nouveau balance"""
         return cached_size
     
-    def _get_fallback_size(self, account_balance):
+    def _get_zero_position_size(self):
+        """Retourne une position de taille zéro quand trading arrêté"""
+        return {
+            'position_size_usdt': 0,
+            'position_size_crypto': 0,
+            'stop_loss_price': 0,
+            'stop_loss_percent': 0,
+            'risk_reward_ratio': 0,
+            'risk_metrics': {'trading_disabled': True}
+        }
         """Taille de fallback en cas d'erreur"""
         return {
             'position_size_usdt': min(10.0, account_balance * 0.02),
