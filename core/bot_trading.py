@@ -174,11 +174,33 @@ class TradingMixin:
             print(f"❌ Erreur ordre limite: {e}")
             return None
     
-    def sell_limit(self, symbol, amount, price):
+    def sell_limit(self, symbol, amount, price=None):
+        """Ordre limite de vente avec prix cible intelligent"""
         try:
+            # Si pas de prix spécifié, utiliser la prédiction professionnelle
+            if price is None:
+                current_price = self.get_price(symbol)
+                prediction = self.market_analyzer.predict_price_target_with_probability(
+                    self, symbol, current_price, min_profit_pct=0.6
+                )
+                
+                if prediction:
+                    price = prediction['target_price']
+                    print(f"🎯 {symbol.split('/')[0]} → Target: {price:.6f} ({prediction['method_used']}) | "
+                          f"Probabilité: {prediction['probability']}% | {prediction['time_horizon']}")
+                    
+                    if self.notify_trades:
+                        profit_pct = prediction['profit_potential']
+                        self.notifier.notify_smart_limit_order(
+                            symbol, amount, price, profit_pct, prediction
+                        )
+                else:
+                    # Fallback: prix actuel + profit minimum
+                    price = current_price * 1.006  # +0.6%
+                    print(f"⚠️ {symbol.split('/')[0]} → Fallback target: {price:.6f} (+0.6%)")
+            
             if self.paper_trading:
                 order = {'id': f'limit_sell_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}
-                # Ajouter à pending_orders pour simulation
                 self.pending_orders[order['id']] = {
                     'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
                 }
@@ -330,7 +352,7 @@ class TradingMixin:
             self.save_state()
     
     def optimize_existing_position(self, symbol):
-        """Optimise une position existante en recalculant la moyenne des positions"""
+        """Optimise une position existante avec prix cible intelligent"""
         balance = self.balance_manager.get_balance()
         base_currency = symbol.split('/')[0]
         free_holding = balance.get(base_currency, {}).get('free', 0)
@@ -341,15 +363,31 @@ class TradingMixin:
         if total_amount <= 0.00001:
             return False
         
-        # Si tout est libre (pas d'ordre actif), placer un ordre de vente
+        # Si tout est libre (pas d'ordre actif), placer un ordre de vente intelligent
         if locked_holding <= 0.00001:
             avg_buy_price = self.get_real_buy_price(symbol)
             if avg_buy_price:
-                min_profit = self.min_profit_threshold + (2 * self.trading_fee)
-                sell_price = avg_buy_price * (1 + min_profit)
+                current_price = self.get_price(symbol)
+                
+                # Utiliser la prédiction intelligente pour le prix cible
+                prediction = self.market_analyzer.predict_price_target_with_probability(
+                    self, symbol, current_price, min_profit_pct=0.6
+                )
+                
+                if prediction:
+                    sell_price = prediction['target_price']
+                    print(f"💰 Optimisation {base_currency}: Target intelligent {sell_price:.6f} "
+                          f"({prediction['method_used']}, {prediction['probability']}%)")
+                else:
+                    # Fallback: méthode traditionnelle
+                    min_profit = self.min_profit_threshold + (2 * self.trading_fee)
+                    sell_price = avg_buy_price * (1 + min_profit)
+                    print(f"💰 Optimisation {base_currency}: Target fallback {sell_price:.6f}")
+                
                 sell_order = self.sell_limit(symbol, free_holding, sell_price)
                 if sell_order:
-                    print(f"💰 Ordre de vente placé: {free_holding:.6f} {base_currency} @ {sell_price:.2f}")
+                    profit_pct = ((sell_price - avg_buy_price) / avg_buy_price) * 100
+                    print(f"💰 Ordre de vente placé: {free_holding:.6f} {base_currency} @ {sell_price:.6f} (+{profit_pct:.1f}%)")
                     return True
             return False
         

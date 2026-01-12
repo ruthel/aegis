@@ -64,17 +64,38 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
-    def notify_limit_order(self, symbol, amount, price, profit_pct, estimation):
-        """Notification ordre limite placé"""
+    def notify_smart_limit_order(self, symbol, amount, price, profit_pct, prediction):
+        """Notification ordre limite intelligent avec prédiction"""
         crypto = symbol.split('/')[0]
-        msg = f"🎯 ORDRE LIMITE {crypto}\n\n"
-        msg += f"📤 Vente @ {price:.2f} USDT\n"
-        msg += f"💰 Quantité: {amount:.6f} {crypto}\n"
-        msg += f"🎯 Profit cible: +{profit_pct:.2f}%\n\n"
+        method_names = {
+            'resistance_based': 'Résistance',
+            'fibonacci_based': 'Fibonacci', 
+            'atr_based': 'ATR',
+            'fallback': 'Minimum'
+        }
         
-        if estimation:
-            msg += f"⏳ Estimation: {estimation.get('time_estimate', 'N/A')}\n"
-            msg += f"📊 Probabilité: {estimation.get('probability', 0)}%\n\n"
+        method_display = method_names.get(prediction['method_used'], prediction['method_used'])
+        confidence_emoji = "🎯" if prediction['probability'] >= 75 else "📊" if prediction['probability'] >= 60 else "❓"
+        
+        msg = f"🎯 ORDRE LIMITE INTELLIGENT\n\n"
+        msg += f"🪙 Crypto: {crypto}\n"
+        msg += f"📤 Prix: {price:.6f} USDT\n"
+        msg += f"💰 Quantité: {amount:.6f} {crypto}\n"
+        msg += f"🎯 Profit: +{profit_pct:.2f}%\n\n"
+        msg += f"🧠 Analyse:\n"
+        msg += f"├─ Méthode: {method_display}\n"
+        msg += f"├─ Probabilité: {confidence_emoji} {prediction['probability']}%\n"
+        msg += f"├─ Confiance: {prediction['confidence_level']}\n"
+        msg += f"└─ Horizon: {prediction['time_horizon']}\n\n"
+        
+        # Détail des facteurs
+        factors = prediction.get('factors', {})
+        if factors:
+            msg += f"📊 Facteurs:\n"
+            msg += f"├─ Volatilité: {factors.get('volatility_score', 0)}/100\n"
+            msg += f"├─ Volume: {factors.get('volume_score', 0)}/100\n"
+            msg += f"├─ Technique: {factors.get('technical_score', 0)}/100\n"
+            msg += f"└─ Momentum: {factors.get('momentum_score', 0)}/100\n\n"
         
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")

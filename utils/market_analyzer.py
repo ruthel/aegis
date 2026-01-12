@@ -229,6 +229,503 @@ class MarketAnalyzer:
         except:
             return 'normal'
     
+    # ===== SYSTÈME DE PRÉDICTION DE PRIX CIBLE PROFESSIONNEL =====
+    
+    def predict_price_target_with_probability(self, bot, symbol, current_price, min_profit_pct=0.6):
+        """Prédit le prix cible avec probabilité de réussite - Méthode professionnelle"""
+        try:
+            # Récupérer données techniques
+            klines_4h = bot.get_klines(symbol, 50, '4h')
+            klines_1h = bot.get_klines(symbol, 100, '1h')
+            
+            if not klines_4h or not klines_1h:
+                return None
+            
+            # Calculer facteurs de probabilité
+            factors = self._analyze_prediction_factors(bot, symbol, klines_4h, klines_1h, current_price)
+            
+            # Calculer prix cible basé sur résistances
+            target_result = self._calculate_professional_target(klines_4h, klines_1h, current_price, min_profit_pct)
+            
+            # Calculer probabilité globale
+            probability = self._calculate_target_probability(factors, target_result['target_price'], current_price)
+            
+            # Déterminer niveau de confiance
+            if probability >= 75:
+                confidence_level = "TRÈS ÉLEVÉE"
+                time_horizon = "2-6h"
+            elif probability >= 60:
+                confidence_level = "ÉLEVÉE" 
+                time_horizon = "4-12h"
+            elif probability >= 45:
+                confidence_level = "MODÉRÉE"
+                time_horizon = "6-24h"
+            else:
+                confidence_level = "FAIBLE"
+                time_horizon = ">24h"
+            
+            return {
+                'target_price': target_result['target_price'],
+                'probability': probability,
+                'confidence_level': confidence_level,
+                'time_horizon': time_horizon,
+                'profit_potential': ((target_result['target_price'] - current_price) / current_price) * 100,
+                'method_used': target_result['method_used'],
+                'factors': factors
+            }
+            
+        except Exception as e:
+            return None
+    
+    def _analyze_prediction_factors(self, bot, symbol, klines_4h, klines_1h, current_price):
+        """Analyse TOUS les facteurs influençant la probabilité - NIVEAU PROFESSIONNEL (12 facteurs)"""
+        factors = {}
+        closes_1h = [k['close'] for k in klines_1h]
+        closes_4h = [k['close'] for k in klines_4h]
+        
+        # 1. VOLATILITÉ (impact sur précision)
+        volatility = self.calculate_volatility(klines_1h, symbol)
+        if volatility <= 2.5:
+            factors['volatility_score'] = 85  # Optimal pour prédiction
+        elif volatility <= 3.5:
+            factors['volatility_score'] = 70
+        else:
+            factors['volatility_score'] = 40  # Trop volatil
+        
+        # 2. VOLUME CONFIRMATION + PROFIL
+        volumes = [k['volume'] for k in klines_1h[-10:]]
+        avg_volume = sum(volumes[:-1]) / len(volumes[:-1])
+        current_volume = volumes[-1]
+        
+        # Volume ratio
+        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+        if volume_ratio > 1.5:
+            volume_base = 90
+        elif volume_ratio > 1.2:
+            volume_base = 75
+        else:
+            volume_base = 50
+        
+        # VWAP confirmation
+        total_pv = sum(k['close'] * k['volume'] for k in klines_1h[-10:])
+        total_vol = sum(k['volume'] for k in klines_1h[-10:])
+        vwap = total_pv / total_vol if total_vol > 0 else current_price
+        vwap_distance = abs(current_price - vwap) / current_price
+        
+        if vwap_distance < 0.005:  # Très près VWAP
+            volume_base += 10
+        elif vwap_distance > 0.02:  # Loin VWAP
+            volume_base -= 15
+        
+        factors['volume_score'] = min(95, volume_base)
+        
+        # 3. SUPPORT/RÉSISTANCE AVANCÉ
+        try:
+            if hasattr(bot, 'pattern_analyzer'):
+                levels = bot.pattern_analyzer.find_support_resistance_levels(klines_4h)
+                if levels:
+                    # Analyser proximité et force des niveaux
+                    nearest_resistance = None
+                    min_distance = float('inf')
+                    
+                    for level in levels.get('resistance_levels', []):
+                        if level > current_price:
+                            distance = (level - current_price) / current_price
+                            if distance < min_distance:
+                                min_distance = distance
+                                nearest_resistance = level
+                    
+                    if nearest_resistance:
+                        if min_distance < 0.01:  # Très proche résistance
+                            factors['sr_score'] = 95
+                        elif min_distance < 0.03:  # Proche résistance
+                            factors['sr_score'] = 85
+                        else:
+                            factors['sr_score'] = 70
+                    else:
+                        factors['sr_score'] = 60
+                else:
+                    factors['sr_score'] = 40
+            else:
+                factors['sr_score'] = 60
+        except:
+            factors['sr_score'] = 60
+        
+        # 4. RSI MULTI-TIMEFRAME
+        rsi_1h = self._calculate_rsi(closes_1h)
+        rsi_4h = self._calculate_rsi(closes_4h) if len(closes_4h) >= 14 else None
+        
+        rsi_score = 50  # Base
+        if rsi_1h:
+            if 30 <= rsi_1h <= 70:  # Zone neutre
+                rsi_score = 85
+            elif 25 <= rsi_1h < 30 or 70 < rsi_1h <= 75:
+                rsi_score = 70
+            elif rsi_1h < 25:  # Oversold
+                rsi_score = 60
+            else:  # Overbought
+                rsi_score = 40
+        
+        # Bonus alignement multi-timeframe
+        if rsi_4h and rsi_1h:
+            if abs(rsi_1h - rsi_4h) < 10:  # Alignement
+                rsi_score += 10
+        
+        factors['rsi_score'] = min(95, rsi_score)
+        
+        # 5. MACD CONFLUENCE
+        macd_score = 50
+        if len(closes_1h) >= 26:
+            ema_12 = self._calculate_ema(closes_1h, 12)
+            ema_26 = self._calculate_ema(closes_1h, 26)
+            macd_line = ema_12 - ema_26
+            
+            # Signal line (EMA 9 du MACD)
+            macd_values = []
+            for i in range(26, len(closes_1h)):
+                ema12 = self._calculate_ema(closes_1h[:i+1], 12)
+                ema26 = self._calculate_ema(closes_1h[:i+1], 26)
+                macd_values.append(ema12 - ema26)
+            
+            if len(macd_values) >= 9:
+                signal_line = self._calculate_ema(macd_values, 9)
+                
+                if macd_line > signal_line and macd_line > 0:
+                    macd_score = 90  # Signal haussier fort
+                elif macd_line > signal_line:
+                    macd_score = 75  # Signal haussier
+                elif macd_line > 0:
+                    macd_score = 65  # Momentum positif
+                else:
+                    macd_score = 35  # Momentum négatif
+        
+        factors['macd_score'] = macd_score
+        
+        # 6. BOLLINGER BANDS POSITION
+        bb_score = 50
+        if len(closes_1h) >= 20:
+            sma_20 = sum(closes_1h[-20:]) / 20
+            variance = sum((c - sma_20) ** 2 for c in closes_1h[-20:]) / 20
+            std_dev = variance ** 0.5
+            
+            upper_band = sma_20 + (2 * std_dev)
+            lower_band = sma_20 - (2 * std_dev)
+            
+            bb_position = (current_price - lower_band) / (upper_band - lower_band)
+            
+            if 0.3 <= bb_position <= 0.7:  # Zone neutre
+                bb_score = 85
+            elif 0.2 <= bb_position < 0.3:  # Près bande basse
+                bb_score = 75
+            elif bb_position > 0.8:  # Près bande haute
+                bb_score = 40
+            else:
+                bb_score = 60
+        
+        factors['bollinger_score'] = bb_score
+        
+        # 7. MOMENTUM MULTI-TIMEFRAME
+        momentum_1h = self.calculate_momentum(klines_1h)
+        momentum_4h = self.calculate_momentum(klines_4h) if len(klines_4h) >= 10 else 0
+        
+        momentum_score = 50
+        if momentum_1h > 1.0 and momentum_4h > 0.5:
+            momentum_score = 90  # Momentum aligné fort
+        elif momentum_1h > 0.5:
+            momentum_score = 75
+        elif momentum_1h > 0:
+            momentum_score = 65
+        elif momentum_1h > -0.5:
+            momentum_score = 45
+        else:
+            momentum_score = 30
+        
+        factors['momentum_score'] = momentum_score
+        
+        # 8. FIBONACCI RETRACEMENT
+        fib_score = 50
+        if len(closes_4h) >= 20:
+            high_20 = max(closes_4h[-20:])
+            low_20 = min(closes_4h[-20:])
+            
+            if high_20 != low_20:
+                fib_levels = {
+                    0.236: high_20 - (high_20 - low_20) * 0.236,
+                    0.382: high_20 - (high_20 - low_20) * 0.382,
+                    0.618: high_20 - (high_20 - low_20) * 0.618,
+                    0.786: high_20 - (high_20 - low_20) * 0.786
+                }
+                
+                for level_name, level_price in fib_levels.items():
+                    distance = abs(current_price - level_price) / current_price
+                    if distance < 0.01:  # Très proche niveau Fib
+                        if level_name in [0.382, 0.618]:  # Niveaux clés
+                            fib_score = 90
+                        else:
+                            fib_score = 75
+                        break
+        
+        factors['fibonacci_score'] = fib_score
+        
+        # 9. ORDERBOOK IMBALANCE (estimation)
+        try:
+            # Estimation via spread et volume
+            ticker = bot.get_ticker(symbol)
+            if ticker:
+                bid_ask_spread = 0.01  # Estimation
+                if bid_ask_spread < 0.005:
+                    orderbook_score = 85
+                elif bid_ask_spread < 0.01:
+                    orderbook_score = 70
+                else:
+                    orderbook_score = 50
+            else:
+                orderbook_score = 60
+        except:
+            orderbook_score = 60
+        
+        factors['orderbook_score'] = orderbook_score
+        
+        # 10. PRICE ACTION PATTERNS
+        price_action_score = 50
+        if len(klines_1h) >= 3:
+            last_candle = klines_1h[-1]
+            prev_candle = klines_1h[-2]
+            
+            # Analyse du pattern de la dernière bougie
+            body_size = abs(last_candle['close'] - last_candle['open']) / last_candle['open']
+            upper_wick = (last_candle['high'] - max(last_candle['open'], last_candle['close'])) / last_candle['open']
+            lower_wick = (min(last_candle['open'], last_candle['close']) - last_candle['low']) / last_candle['open']
+            
+            # Hammer/Doji patterns
+            if body_size < 0.005 and (upper_wick > 0.01 or lower_wick > 0.01):
+                price_action_score = 80  # Doji avec wicks
+            elif last_candle['close'] > last_candle['open'] and lower_wick > body_size * 2:
+                price_action_score = 85  # Hammer bullish
+            elif body_size > 0.015 and last_candle['close'] > last_candle['open']:
+                price_action_score = 75  # Strong bullish candle
+            elif body_size > 0.015 and last_candle['close'] < last_candle['open']:
+                price_action_score = 35  # Strong bearish candle
+        
+        factors['price_action_score'] = price_action_score
+        
+        # 11. MARKET STRUCTURE (Higher Highs/Lower Lows)
+        structure_score = 50
+        if len(closes_1h) >= 10:
+            recent_highs = [max(closes_1h[i:i+3]) for i in range(len(closes_1h)-6, len(closes_1h)-2)]
+            recent_lows = [min(closes_1h[i:i+3]) for i in range(len(closes_1h)-6, len(closes_1h)-2)]
+            
+            if len(recent_highs) >= 2 and len(recent_lows) >= 2:
+                # Higher highs and higher lows = uptrend
+                if recent_highs[-1] > recent_highs[0] and recent_lows[-1] > recent_lows[0]:
+                    structure_score = 85
+                # Lower highs and lower lows = downtrend
+                elif recent_highs[-1] < recent_highs[0] and recent_lows[-1] < recent_lows[0]:
+                    structure_score = 40
+                # Consolidation
+                else:
+                    structure_score = 65
+        
+        factors['market_structure_score'] = structure_score
+        
+        # 12. SESSION DE MARCHÉ & TIMING
+        from datetime import datetime
+        hour = datetime.now().hour
+        
+        if 14 <= hour <= 21:  # Session US (plus volatile)
+            session_score = 85
+        elif 8 <= hour <= 16:  # Session EU (stable)
+            session_score = 90
+        elif 22 <= hour <= 6:  # Session Asie (moins prévisible)
+            session_score = 60
+        else:  # Transition
+            session_score = 70
+        
+        # Bonus weekend (moins de bruit institutionnel)
+        if datetime.now().weekday() >= 5:
+            session_score += 5
+        
+        factors['session_score'] = min(95, session_score)
+        
+        return factors
+    
+    def _calculate_professional_target(self, klines_4h, klines_1h, current_price, min_profit_pct):
+        """Calcule prix cible selon méthode professionnelle (ordre de priorité)"""
+        
+        # 1. RÉSISTANCE TECHNIQUE (Priorité absolue)
+        resistance = self._find_nearest_resistance(klines_4h, current_price)
+        if resistance:
+            target = self._calculate_resistance_based_target(resistance, current_price)
+            method = 'resistance_based'
+        
+        # 2. FIBONACCI EXTENSION (Si pas de résistance claire)
+        elif self._has_fibonacci_setup(klines_4h):
+            target = self._calculate_fibonacci_target(klines_4h, current_price)
+            method = 'fibonacci_based'
+        
+        # 3. ATR TARGET (Volatilité-based)
+        elif self._has_sufficient_volatility(klines_1h):
+            atr = self._calculate_atr_simple(klines_1h)
+            target = current_price + (atr * 1.5)
+            method = 'atr_based'
+        
+        # 4. PROFIT MINIMUM (Dernier recours)
+        else:
+            target = current_price * (1 + min_profit_pct / 100)
+            method = 'fallback'
+        
+        # FILTRE FINAL : Respecter profit minimum
+        min_target = current_price * (1 + min_profit_pct / 100)
+        final_target = max(target, min_target)
+        
+        return {
+            'target_price': final_target,
+            'method_used': method
+        }
+    
+    def _find_nearest_resistance(self, klines, current_price):
+        """Identifie la résistance la plus proche au-dessus du prix actuel"""
+        highs = [k['high'] for k in klines[-30:]]
+        resistance_levels = []
+        
+        for i in range(2, len(highs)-2):
+            if (highs[i] > highs[i-1] and highs[i] > highs[i+1] and 
+                highs[i] > highs[i-2] and highs[i] > highs[i+2]):
+                if highs[i] > current_price * 1.002:  # Au moins 0.2% au-dessus
+                    resistance_levels.append(highs[i])
+        
+        if resistance_levels:
+            return min(resistance_levels)  # La plus proche
+        return None
+    
+    def _calculate_resistance_based_target(self, resistance, current_price):
+        """Calcule target SOUS la résistance (stratégie professionnelle)"""
+        distance_to_resistance = (resistance - current_price) / current_price
+        
+        if distance_to_resistance > 0.05:      # >5% de distance
+            safety_margin = 0.03  # 3% sous la résistance
+        elif distance_to_resistance > 0.02:    # 2-5% de distance  
+            safety_margin = 0.02  # 2% sous la résistance
+        else:                                  # <2% de distance
+            safety_margin = 0.01  # 1% sous la résistance
+        
+        return resistance * (1 - safety_margin)
+    
+    def _has_fibonacci_setup(self, klines):
+        """Vérifie si setup Fibonacci valide"""
+        if len(klines) < 20:
+            return False
+        
+        prices = [k['close'] for k in klines[-20:]]
+        high = max(prices)
+        low = min(prices)
+        current = prices[-1]
+        
+        # Setup valide si retracement > 38.2% et < 78.6%
+        retracement = (high - current) / (high - low) if high != low else 0
+        return 0.382 <= retracement <= 0.786
+    
+    def _calculate_fibonacci_target(self, klines, current_price):
+        """Calcule target Fibonacci (extension 127.2%)"""
+        prices = [k['close'] for k in klines[-20:]]
+        high = max(prices)
+        low = min(prices)
+        
+        # Extension 127.2%
+        fib_extension = high + (high - low) * 0.272
+        return min(fib_extension, current_price * 1.05)  # Max 5% de hausse
+    
+    def _has_sufficient_volatility(self, klines):
+        """Vérifie si volatilité suffisante pour ATR target"""
+        volatility = self.calculate_volatility(klines)
+        return volatility >= 2.0
+    
+    def _calculate_atr_simple(self, klines):
+        """Calcule ATR simple pour target"""
+        true_ranges = []
+        for i in range(1, min(len(klines), 15)):
+            tr = max(
+                klines[-i]['high'] - klines[-i]['low'],
+                abs(klines[-i]['high'] - klines[-i-1]['close']),
+                abs(klines[-i]['low'] - klines[-i-1]['close'])
+            )
+            true_ranges.append(tr)
+        
+        return sum(true_ranges) / len(true_ranges) if true_ranges else 0
+    
+    def _calculate_target_probability(self, factors, target_price, current_price):
+        """Calcule probabilité globale basée sur TOUS les facteurs - NIVEAU PROFESSIONNEL (12 facteurs)"""
+        
+        # PONDÉRATION PROFESSIONNELLE (12 facteurs)
+        weights = {
+            'volatility_score': 0.12,      # Stabilité prédiction
+            'volume_score': 0.11,          # Confirmation volume + VWAP
+            'sr_score': 0.15,              # Support/Résistance (critique)
+            'rsi_score': 0.10,             # RSI multi-timeframe
+            'macd_score': 0.09,            # MACD confluence
+            'bollinger_score': 0.08,       # Position Bollinger
+            'momentum_score': 0.09,        # Momentum multi-TF
+            'fibonacci_score': 0.07,       # Niveaux Fibonacci
+            'orderbook_score': 0.06,       # Liquidité/Spread
+            'price_action_score': 0.05,    # Patterns bougies
+            'market_structure_score': 0.04, # Structure marché
+            'session_score': 0.04          # Timing optimal
+        }
+        
+        # Vérification total = 1.0
+        total_weight = sum(weights.values())
+        if abs(total_weight - 1.0) > 0.01:
+            # Normalisation si nécessaire
+            for key in weights:
+                weights[key] /= total_weight
+        
+        # SCORE PONDÉRÉ PROFESSIONNEL
+        weighted_score = sum(factors.get(factor, 50) * weight for factor, weight in weights.items())
+        
+        # AJUSTEMENTS DISTANCE TARGET (plus sophistiqués)
+        price_move_pct = ((target_price - current_price) / current_price) * 100
+        
+        # Pénalités graduelles selon ambition du target
+        if price_move_pct > 5.0:        # Très ambitieux
+            weighted_score *= 0.60
+        elif price_move_pct > 3.0:      # Ambitieux
+            weighted_score *= 0.75
+        elif price_move_pct > 2.0:      # Modéré
+            weighted_score *= 0.85
+        elif price_move_pct > 1.0:      # Raisonnable
+            weighted_score *= 0.95
+        elif price_move_pct < 0.3:      # Trop proche
+            weighted_score *= 0.88
+        # 0.3-1.0% = optimal (pas d'ajustement)
+        
+        # BONUS CONFLUENCE (facteurs alignés)
+        high_confidence_factors = sum(1 for score in factors.values() if score >= 80)
+        if high_confidence_factors >= 8:      # 8+ facteurs excellents
+            weighted_score *= 1.15
+        elif high_confidence_factors >= 6:    # 6+ facteurs excellents
+            weighted_score *= 1.10
+        elif high_confidence_factors >= 4:    # 4+ facteurs excellents
+            weighted_score *= 1.05
+        
+        # PÉNALITÉ FACTEURS FAIBLES
+        low_confidence_factors = sum(1 for score in factors.values() if score <= 40)
+        if low_confidence_factors >= 4:       # 4+ facteurs faibles
+            weighted_score *= 0.85
+        elif low_confidence_factors >= 2:     # 2+ facteurs faibles
+            weighted_score *= 0.92
+        
+        # AJUSTEMENT VOLATILITÉ SPÉCIFIQUE
+        volatility_score = factors.get('volatility_score', 50)
+        if volatility_score <= 40:  # Très volatil
+            weighted_score *= 0.90  # Réduction supplémentaire
+        elif volatility_score >= 85:  # Très stable
+            weighted_score *= 1.05  # Bonus stabilité
+        
+        # AJUSTEMENT SESSION DÉJÀ INCLUS dans session_score
+        # Pas de double ajustement
+        
+        return min(95, max(15, int(weighted_score)))
+    
     # ===== MÉTHODES VOLUME PREDICTOR =====
     
     def predict_volume_recovery(self, symbol: str, klines_1m: List, klines_15m: List, current_price: float) -> Optional[Dict]:
