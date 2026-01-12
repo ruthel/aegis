@@ -1430,8 +1430,6 @@ class MarketAnalyzer:
             print(f"⚠️ Balance USDT: 0 - Aucune crypto tradable")
             return []
         
-    def __init__(self, min_score=40, max_tradeable=2):
-        
         scores = []
         volatilities = []
         volume_ratios = []
