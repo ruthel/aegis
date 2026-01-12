@@ -1,6 +1,6 @@
 """
 Pattern Recognition System
-Détecte Head & Shoulders, Double Top/Bottom, Triangles + Support/Résistance + Dynamic Levels + Pullback
+Détecte Head & Shoulders, Double Top/Bottom, Triangles + Support/Résistance + Dynamic Levels
 """
 
 import numpy as np
@@ -13,7 +13,7 @@ import os
 from datetime import datetime
 
 class PatternAnalyzer:
-    def __init__(self, bot=None):
+    def __init__(self, bot):
         self.logger = logging.getLogger(__name__)
         self.min_pattern_length = 20
         # Support/Resistance integration
@@ -23,12 +23,6 @@ class PatternAnalyzer:
         self.bot = bot
         self.cache = {}
         self.cache_duration = 300  # 5 minutes
-        # Pullback Detector integration
-        self.pullback_shallow = float(os.getenv('PULLBACK_SHALLOW', '-1.0')) / 100
-        self.pullback_deep = float(os.getenv('PULLBACK_DEEP', '-3.0')) / 100
-        self.profit_target = float(os.getenv('SCALPING_PROFIT_TARGET', '0.8')) / 100
-        self.timeout = int(os.getenv('SCALPING_TIMEOUT', '300'))
-        self.pending_orders = {}
         
     def detect_patterns(self, klines: List[Dict]) -> Dict:
         """Détecte tous les patterns dans les klines"""
@@ -787,208 +781,3 @@ class PatternAnalyzer:
                 'order_blocks': [],
                 'volume_poc': None
             }
-    
-    def display_levels(self, symbol):
-        """Affiche les niveaux pour debug"""
-        try:
-            levels = self.get_dynamic_levels(symbol)
-            current_price = self.bot.get_price(symbol)
-            
-            print(f"\n📊 NIVEAUX DYNAMIQUES {symbol} (Prix: {current_price:.2f})")
-            
-            pivots = levels.get('pivot_points', {})
-            if pivots:
-                print("🔸 Pivot Points:")
-                for name, price in pivots.items():
-                    if price:
-                        distance = (price - current_price) / current_price * 100
-                        print(f"   {name.upper()}: {price:.2f} ({distance:+.1f}%)")
-            
-            supports = levels.get('support', [])
-            if supports:
-                print("🟢 Supports:")
-                for i, support in enumerate(supports[:3]):
-                    distance = (support - current_price) / current_price * 100
-                    print(f"   S{i+1}: {support:.2f} ({distance:+.1f}%)")
-            
-            resistances = levels.get('resistance', [])
-            if resistances:
-                print("🔴 Résistances:")
-                for i, resistance in enumerate(resistances[:3]):
-                    distance = (resistance - current_price) / current_price * 100
-                    print(f"   R{i+1}: {resistance:.2f} ({distance:+.1f}%)")
-            
-            order_blocks = levels.get('order_blocks', [])
-            if order_blocks:
-                print("📦 Order Blocks:")
-                for i, ob in enumerate(order_blocks[:2]):
-                    avg_price = (ob['high'] + ob['low']) / 2
-                    distance = (avg_price - current_price) / current_price * 100
-                    print(f"   OB{i+1} ({ob['type']}): {avg_price:.2f} ({distance:+.1f}%)")
-            
-            poc = levels.get('volume_poc')
-            if poc:
-                distance = (poc - current_price) / current_price * 100
-                print(f"📊 Volume POC: {poc:.2f} ({distance:+.1f}%)")
-            
-        except Exception as e:
-            print(f"⚠️ Erreur affichage niveaux {symbol}: {e}")
-    
-    # === PULLBACK DETECTOR METHODS ===
-    
-    def detect_pullback(self, bot, symbol, current_price, ema_analysis):
-        """Détecte si c'est un pullback valide pour scalping"""
-        if ema_analysis['case'] != 3:
-            return None
-        
-        pullback_timeframe = os.getenv('PULLBACK_TIMEFRAME', '5m')
-        recent_high_periods = int(os.getenv('RECENT_HIGH_PERIODS', '20'))
-        
-        klines = bot.get_klines(symbol, recent_high_periods, pullback_timeframe)
-        if len(klines) < 10:
-            return None
-        
-        closes = [k['close'] for k in klines]
-        volumes = [k['volume'] for k in klines]
-        
-        recent_high = max(closes[-10:])
-        pullback_pct = (current_price - recent_high) / recent_high
-        
-        if not (self.pullback_deep <= pullback_pct <= self.pullback_shallow):
-            return None
-        
-        avg_volume = sum(volumes[-10:]) / 10
-        current_volume = volumes[-1]
-        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-        
-        if volume_ratio > 1.5:
-            return None
-        
-        rsi = self.calculate_rsi_pullback(closes)
-        if rsi and rsi < 40:
-            return None
-        
-        support_price = ema_analysis['ema_25']
-        
-        if not self.check_distance_to_high(bot, symbol, current_price):
-            return None
-        
-        return {
-            'is_valid': True,
-            'pullback_pct': pullback_pct * 100,
-            'support_price': support_price,
-            'entry_price': max(support_price, current_price * 0.999),
-            'target_price': current_price * (1 + self.profit_target),
-            'volume_ratio': volume_ratio,
-            'rsi': rsi,
-            'recent_high': recent_high
-        }
-    
-    def calculate_rsi_pullback(self, closes, period=14):
-        """Calcule le RSI pour pullback"""
-        if len(closes) < period + 1:
-            return None
-        
-        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
-        
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        
-        if avg_loss == 0:
-            return 100
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
-    
-    def check_distance_to_high(self, bot, symbol, current_price):
-        """Vérifie qu'on n'est pas trop proche du high journalier"""
-        try:
-            if not bot.paper_trading:
-                ticker = bot.safe_request(bot.exchange.fetch_ticker, symbol)
-                high_24h = ticker.get('high', current_price * 1.05)
-            else:
-                high_24h = current_price * 1.02
-            
-            distance_pct = (high_24h - current_price) / current_price
-            return distance_pct >= 0.01
-        except:
-            return True
-    
-    def place_limit_buy_order(self, bot, symbol, entry_price, amount):
-        """Place un ordre limite d'achat"""
-        try:
-            print(f"📊 Scalping Pullback: Ordre limite ACHAT")
-            print(f"   Prix entrée: {entry_price:.2f}")
-            print(f"   Montant: {amount:.6f}")
-            print(f"   Timeout: {self.timeout}s")
-            
-            if bot.paper_trading:
-                order = {
-                    'id': f"pullback_{int(time.time())}",
-                    'symbol': symbol,
-                    'type': 'limit',
-                    'side': 'buy',
-                    'price': entry_price,
-                    'amount': amount,
-                    'status': 'open',
-                    'timestamp': time.time()
-                }
-            else:
-                order = bot.safe_request(
-                    bot.exchange.create_limit_buy_order,
-                    symbol,
-                    amount,
-                    entry_price
-                )
-            
-            self.pending_orders[order['id']] = {
-                'order': order,
-                'timestamp': time.time(),
-                'timeout': self.timeout,
-                'symbol': symbol,
-                'type': 'pullback_buy'
-            }
-            
-            return order
-        except Exception as e:
-            print(f"❌ Erreur ordre limite: {e}")
-            return None
-    
-    def check_and_cancel_expired_orders(self, bot):
-        """Annule les ordres expirés"""
-        now = time.time()
-        expired = []
-        
-        for order_id, data in self.pending_orders.items():
-            if now - data['timestamp'] > data['timeout']:
-                expired.append(order_id)
-        
-        for order_id in expired:
-            data = self.pending_orders[order_id]
-            
-            if not bot.paper_trading:
-                try:
-                    order_status = bot.safe_request(bot.exchange.fetch_order, order_id, data['symbol'])
-                    if order_status['status'] in ['closed', 'canceled', 'expired']:
-                        del self.pending_orders[order_id]
-                        continue
-                except:
-                    del self.pending_orders[order_id]
-                    continue
-            
-            try:
-                print(f"⏱️ Timeout ordre pullback {data['symbol']} - Annulation")
-                
-                if not bot.paper_trading:
-                    bot.safe_request(bot.exchange.cancel_order, order_id, data['symbol'])
-                
-                del self.pending_orders[order_id]
-            except Exception as e:
-                if '-2011' in str(e) or 'Unknown order' in str(e):
-                    del self.pending_orders[order_id]
-                else:
-                    print(f"⚠️ Erreur annulation: {e}")

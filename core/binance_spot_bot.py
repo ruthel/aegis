@@ -120,14 +120,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         )
 
 
-        self.pattern_analyzer = PatternAnalyzer()
-
-        
-        # PHASE 1 - Gestionnaire de niveaux dynamiques
         self.pattern_analyzer = PatternAnalyzer(self)
-        
-
-        
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
         
         # Gestionnaire de balance centralisé

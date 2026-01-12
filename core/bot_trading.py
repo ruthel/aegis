@@ -14,12 +14,12 @@ class TradingMixin:
                 print(f"❌ Limite quotidienne atteinte: {self.total_trades}/{self.max_daily_trades}")
                 return None
         
-        # VÉRIFICATION 2: Position existante (sauf moyennage ou mode PRO)
-        if not allow_averaging and os.getenv('ALLOW_MULTIPLE_POSITIONS', 'False') != 'True':
+        # VÉRIFICATION 2: Position existante (sauf moyennage)
+        if not allow_averaging:
             existing_positions = [p for p in self.state.get('positions', []) 
                                 if p['symbol'] == symbol and p['side'] == 'buy']
             if existing_positions:
-                print(f"❌ Position déjà ouverte sur {symbol} - 1 max/crypto")
+                print(f"❌ Position déjà ouverte sur {symbol} - Limite atteinte")
                 return None
         
         if self.paper_trading:
@@ -35,7 +35,7 @@ class TradingMixin:
             min_trade_value = self.get_min_amount(symbol)['min_cost']
             
             if position_value >= min_trade_value:
-                print(f"⚠️ {symbol.split('/')[0]} déjà détenu ({position_value:.2f} USDT) - 1 max/crypto")
+                print(f"⚠️ {symbol.split('/')[0]} déjà détenu ({position_value:.2f} USDT) - Limite atteinte")
                 return None
         
         if not self.validate_order(symbol, amount):

@@ -344,3 +344,49 @@ class DisplayMixin:
         """Retourne la liste des paires réellement tradables via le crypto scorer"""
         stuck_positions = []
         return self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)
+    
+    def display_levels(self, symbol):
+        """Affiche les niveaux dynamiques pour debug"""
+        try:
+            levels = self.pattern_analyzer.get_dynamic_levels(symbol)
+            current_price = self.get_price(symbol)
+            
+            print(f"\n📊 NIVEAUX DYNAMIQUES {symbol} (Prix: {current_price:.2f})")
+            
+            pivots = levels.get('pivot_points', {})
+            if pivots:
+                print("🔸 Pivot Points:")
+                for name, price in pivots.items():
+                    if price:
+                        distance = (price - current_price) / current_price * 100
+                        print(f"   {name.upper()}: {price:.2f} ({distance:+.1f}%)")
+            
+            supports = levels.get('support', [])
+            if supports:
+                print("🟢 Supports:")
+                for i, support in enumerate(supports[:3]):
+                    distance = (support - current_price) / current_price * 100
+                    print(f"   S{i+1}: {support:.2f} ({distance:+.1f}%)")
+            
+            resistances = levels.get('resistance', [])
+            if resistances:
+                print("🔴 Résistances:")
+                for i, resistance in enumerate(resistances[:3]):
+                    distance = (resistance - current_price) / current_price * 100
+                    print(f"   R{i+1}: {resistance:.2f} ({distance:+.1f}%)")
+            
+            order_blocks = levels.get('order_blocks', [])
+            if order_blocks:
+                print("📦 Order Blocks:")
+                for i, ob in enumerate(order_blocks[:2]):
+                    avg_price = (ob['high'] + ob['low']) / 2
+                    distance = (avg_price - current_price) / current_price * 100
+                    print(f"   OB{i+1} ({ob['type']}): {avg_price:.2f} ({distance:+.1f}%)")
+            
+            poc = levels.get('volume_poc')
+            if poc:
+                distance = (poc - current_price) / current_price * 100
+                print(f"📊 Volume POC: {poc:.2f} ({distance:+.1f}%)")
+            
+        except Exception as e:
+            print(f"⚠️ Erreur affichage niveaux {symbol}: {e}")
