@@ -298,8 +298,8 @@ class NotificationManager:
         balance = bot.balance_manager.get_balance()
         usdt = balance.get('USDT', {}).get('free', 0)
         
-        # Portfolio
-        portfolio_items = [f"USDT: {usdt:.2f}"]
+        # Portfolio avec détail des ordres et P&L
+        portfolio_items = []
         total_value = usdt
         
         for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
@@ -313,19 +313,74 @@ class NotificationManager:
                 price = bot.get_price(symbol)
                 value = total * price
                 if value >= bot.get_min_amount(symbol)['min_cost']:
-                    status = " (ordre actif)" if locked > 0 else ""
-                    portfolio_items.append(f"{crypto}: {total:.3f}{status}")
+                    # Calculer P&L de la position
+                    try:
+                        avg_buy_price = bot.position_manager.get_average_buy_price(crypto)
+                        if avg_buy_price > 0:
+                            pnl_pct = ((price - avg_buy_price) / avg_buy_price) * 100
+                            pnl_usdt = (price - avg_buy_price) * total
+                            pnl_display = f" • {pnl_pct:+.1f}% ({pnl_usdt:+.1f} USDT)"
+                        else:
+                            pnl_display = ""
+                    except:
+                        pnl_display = ""
+                    
+                    portfolio_items.append({
+                        'crypto': crypto,
+                        'amount': total,
+                        'value': value,
+                        'pnl_display': pnl_display,
+                        'has_orders': locked > 0
+                    })
                     total_value += value
         
         # Stats
         win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
         
         msg = f"🤖 {BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}\n\n"
-        msg += f"💼 Portfolio\n"
+        msg += f"💼 Portfolio ({total_value:.2f} USDT)\n"
+        msg += f"├─ USDT: {usdt:.2f}\n"
+        
+        # Afficher chaque crypto avec détail des ordres
         for i, item in enumerate(portfolio_items):
-            prefix = "├─" if i < len(portfolio_items) - 1 else "└─"
-            msg += f"{prefix} {item}\n"
-        msg += f"└─ Total: ~{total_value:.2f} USDT\n\n"
+            is_last = (i == len(portfolio_items) - 1)
+            prefix = "└─" if is_last else "├─"
+            
+            msg += f"{prefix} {item['crypto']}: {item['amount']:.6f} • {item['value']:.2f} USDT{item['pnl_display']}\n"
+            
+            # Détail des ordres pour cette crypto
+            if item['has_orders']:
+                try:
+                    # Récupérer les ordres ouverts pour cette crypto
+                    open_orders = bot.get_open_orders(f"{item['crypto']}/USDT")
+                    if open_orders:
+                        for j, order in enumerate(open_orders):
+                            is_last_order = (j == len(open_orders) - 1)
+                            order_prefix = "   └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
+                            
+                            # Déterminer source de l'ordre
+                            source = "🤖" if order.get('clientOrderId', '').startswith('bot_') else "👤"
+                            
+                            # Calculer profit potentiel
+                            current_price = bot.get_price(f"{item['crypto']}/USDT")
+                            order_price = float(order['price'])
+                            profit_pct = ((order_price - current_price) / current_price) * 100
+                            
+                            # Calculer temps depuis création
+                            order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
+                            time_diff = datetime.now() - order_time
+                            if time_diff.days > 0:
+                                time_display = f"{time_diff.days}j"
+                            elif time_diff.seconds > 3600:
+                                time_display = f"{time_diff.seconds // 3600}h"
+                            else:
+                                time_display = f"{time_diff.seconds // 60}min"
+                            
+                            msg += f"{order_prefix} {source} Limite: {float(order['amount']):.6f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
+                except:
+                    # Fallback si erreur récupération ordres
+                    order_prefix = "   └─" if is_last else "│  └─"
+                    msg += f"{order_prefix} 🤖 Ordre actif\n"
         
         msg += f"📈 Performance\n"
         msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
