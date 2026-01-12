@@ -380,7 +380,7 @@ class NotificationManager:
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
-                            msg += f"{order_prefix} {source} Limite: {float(order['amount']):.6f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
+                            msg += f"{order_prefix} {source} Limite: {float(order['amount']):.3f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
                     else:
                         # Pas d'ordres trouvés mais balance locked > 0
                         order_prefix = "   └─" if is_last else "│  └─"
