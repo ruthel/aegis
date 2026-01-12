@@ -104,17 +104,18 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
-    def notify_cumulative_trend(self, symbol, direction, count, total_change_pct):
+    def notify_cumulative_trend(self, symbol, direction, count, total_change_pct, current_price):
         """Notification tendance cumulative détectée"""
         crypto = symbol.split('/')[0]
-        direction_text = "📉 Baisse" if direction < 0 else "📈 Hausse"
+        direction_text = "tendance baissière" if direction < 0 else "tendance haussière"
         direction_emoji = "📉" if direction < 0 else "📈"
         
-        msg = f"{direction_emoji} TENDANCE CUMULATIVE\n\n"
+        msg = f"{direction_emoji} {direction_text.upper()}\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"📊 Pattern: {count}x {direction_text.split()[1].lower()}\n"
+        msg += f"💰 Prix: {current_price:.2f} USDT\n"
+        msg += f"🎯 Élan: {count} impulsions\n"
         msg += f"📈 Cumul: {total_change_pct:.2f}%\n\n"
-        msg += f"⚡ Analyse forcée en cours...\n\n"
+        msg += f"⚡ Analyse en cours...\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     

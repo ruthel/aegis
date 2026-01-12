@@ -497,7 +497,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Envoyer notification Telegram
                 if self.notify_trades and hasattr(self, 'notifier'):
-                    self.notifier.notify_cumulative_trend(symbol, tracker['direction'], tracker['count'], total_change_pct)
+                    self.notifier.notify_cumulative_trend(symbol, tracker['direction'], tracker['count'], total_change_pct, current_price)
                 
                 # Reset après alerte
                 tracker['count'] = 0
