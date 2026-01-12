@@ -1040,7 +1040,19 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position - UTILISE LES VRAIES POSITIONS BINANCE"""
-        max_positions = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '4'))
+        # Calculer max_positions selon capital
+        try:
+            total_capital = self.capital_manager.get_total_capital()
+            if total_capital <= 20:
+                max_positions = 1
+            elif total_capital <= 50:
+                max_positions = 2
+            elif total_capital <= 100:
+                max_positions = 3
+            else:
+                max_positions = 4
+        except:
+            max_positions = 4  # Fallback par défaut
         
         # NOUVELLE APPROCHE: Utiliser les vraies positions depuis Binance
         try:
