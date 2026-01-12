@@ -162,31 +162,37 @@ class DisplayMixin:
             if not buy_price:
                 continue
             
-            # Si locked, afficher ordre limite actif avec prix réel Binance
+            # Si locked, afficher TOUS les ordres limite actifs (bot + manuels)
             if locked > 0.00001:
-                # Récupérer le prix réel de l'ordre depuis Binance
-                real_order_price = None
-                if not self.paper_trading:
-                    try:
-                        open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-                        for order in open_orders:
-                            if order['side'] == 'sell':
-                                real_order_price = order['price']
-                                break
-                    except:
-                        pass
+                # Afficher tous les ordres limite pour cette crypto
+                limit_orders = []
+                for order_id, order_data in self.pending_orders.items():
+                    if (order_data['symbol'] == symbol and 
+                        order_data['side'] == 'sell'):
+                        order = order_data['order']
+                        source = order_data.get('source', 'unknown')
+                        source_emoji = "🤖" if source == 'bot' else "👤"
+                        limit_orders.append({
+                            'price': order['price'],
+                            'amount': order['amount'],
+                            'source': source_emoji
+                        })
                 
-                # Fallback sur prix calculé si pas trouvé
-                if real_order_price is None:
-                    real_order_price = buy_price * (1 + min_profit_needed)
-                
-                distance_pct = ((real_order_price - current_price) / current_price) * 100
-                
-                # Marquer les ordres éloignés comme bloquants
-                if distance_pct > 5:
-                    self.async_print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USDT)")
+                if limit_orders:
+                    for i, order in enumerate(limit_orders):
+                        distance_pct = ((order['price'] - current_price) / current_price) * 100
+                        
+                        # Marquer les ordres éloignés comme bloquants
+                        if distance_pct > 5:
+                            self.async_print(f"🔴 {base_currency} bloqué: ordre {order['source']} @ {order['price']:.2f} USDT")
+                        else:
+                            self.async_print(f"🟡 {base_currency}: Ordre {order['source']} @ {order['price']:.2f} USDT")
+                            self.async_print(f"   📍 Actuel: {current_price:.2f} (+{distance_pct:.1f}% à atteindre)")
                 else:
-                    self.async_print(f"🟡 {base_currency}: Ordre @ {real_order_price:.2f} USDT")
+                    # Fallback si aucun ordre trouvé mais crypto locked
+                    fallback_price = buy_price * (1 + min_profit_needed)
+                    distance_pct = ((fallback_price - current_price) / current_price) * 100
+                    self.async_print(f"🟡 {base_currency}: Ordre @ {fallback_price:.2f} USDT")
                     self.async_print(f"   📍 Actuel: {current_price:.2f} (+{distance_pct:.1f}% à atteindre)")
                 continue
             

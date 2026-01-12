@@ -356,29 +356,41 @@ class TradingMixin:
         return False
     
     def detect_order_modifications(self):
-        """Détecte les modifications d'ordres faites manuellement sur Binance"""
+        """Synchronise TOUS les ordres ouverts depuis Binance (bot + manuels)"""
         if self.paper_trading:
             return
         
         try:
             import os
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            all_open_orders = {}
+            
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                 open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                 
                 for order in open_orders:
                     order_id = str(order['id'])
+                    
+                    # Détecter modifications d'ordres existants
                     if order_id in self.pending_orders:
                         old_price = self.pending_orders[order_id]['order'].get('price')
                         if old_price and abs(old_price - order['price']) > 0.01:
                             crypto = symbol.split('/')[0]
                             print(f"🔄 {crypto}: Ordre modifié {old_price:.2f} → {order['price']:.2f}")
                     
-                    self.pending_orders[order_id] = {
-                        'order': order, 'timestamp': order['timestamp'] / 1000, 
-                        'symbol': symbol, 'side': order['side']
+                    # Synchroniser TOUS les ordres (bot + manuels)
+                    all_open_orders[order_id] = {
+                        'order': order, 
+                        'timestamp': order['timestamp'] / 1000, 
+                        'symbol': symbol, 
+                        'side': order['side'],
+                        'source': 'manual' if order_id not in self.pending_orders else 'bot'
                     }
+            
+            # Remplacer par tous les ordres synchronisés
+            self.pending_orders = all_open_orders
+            
         except Exception as e:
             pass
     
