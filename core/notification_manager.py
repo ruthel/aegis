@@ -353,7 +353,8 @@ class NotificationManager:
                 try:
                     # Récupérer les ordres ouverts pour cette crypto
                     print(f"🔍 DEBUG: Récupération ordres pour {item['crypto']}/USDT")
-                    open_orders = bot.get_open_orders(f"{item['crypto']}/USDT")
+                    # Utiliser la méthode existante du bot
+                    open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USDT")
                     print(f"🔍 DEBUG: Ordres trouvés: {len(open_orders) if open_orders else 0}")
                     if open_orders:
                         print(f"🔍 DEBUG: Premier ordre: {open_orders[0]}")
