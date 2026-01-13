@@ -196,9 +196,9 @@ class NotificationManager:
         # Récupérer le prix actuel
         current_price = self.bot_ref.get_price(symbol) if self.bot_ref else 0
         
-        # Formater les volumes (CORRECTION: previous_volume = moyenne 24h, current_volume = volume actuel)
-        current_vol = prediction.get('current_volume', 0)
-        avg_vol_24h = prediction.get('previous_volume', 0)  # C'est la moyenne 24h, pas le volume précédent!
+        # Formater les volumes (CORRECTION: utiliser estimated_vol_15m pour comparaison cohérente)
+        estimated_vol = prediction.get('estimated_vol_15m', 0)  # Volume estimé 15min
+        avg_vol_24h = prediction.get('previous_volume', 0)      # Moyenne 24h (volume par 15min)
         
         def format_volume(vol):
             if vol >= 1000000:
@@ -208,8 +208,8 @@ class NotificationManager:
             else:
                 return f"{vol:.0f}"
         
-        # Pour une BAISSE: afficher moyenne → volume actuel (ordre chronologique)
-        volume_display = f"({format_volume(avg_vol_24h)} → {format_volume(current_vol)})"
+        # Pour une BAISSE: afficher moyenne → volume estimé (ordre chronologique, échelle cohérente)
+        volume_display = f"({format_volume(avg_vol_24h)} → {format_volume(estimated_vol)})"
         
         msg += f"├─ Intensité: {decline_pct:.1f}% {volume_display}\n"
         msg += f"└─ Prix: {current_price:.2f} USDT ({trend_emoji} {price_momentum:+.1f}%)"
