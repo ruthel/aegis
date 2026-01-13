@@ -171,8 +171,25 @@ class NotificationManager:
         msg = f"📉 VOLUME EN BAISSE | {crypto}\n\n"
         msg += f"🔍 Analyse:\n"
         msg += f"├─ Baisse depuis: {decline_duration}min\n"
-        msg += f"├─ Intensité: {decline_pct:.1f}%\n"
-        msg += f"└─ Prix: {trend_emoji} {price_momentum:+.1f}%"
+        # Récupérer le prix actuel
+        current_price = self.bot_ref.get_price(symbol) if self.bot_ref else 0
+        
+        # Formater les volumes
+        current_volume = prediction.get('current_volume', 0)
+        avg_volume = prediction.get('avg_volume', 0)
+        
+        def format_volume(vol):
+            if vol >= 1000000:
+                return f"{vol/1000000:.1f}M"
+            elif vol >= 1000:
+                return f"{vol/1000:.0f}K"
+            else:
+                return f"{vol:.0f}"
+        
+        volume_display = f"({format_volume(avg_volume)} → {format_volume(current_volume)})"
+        
+        msg += f"├─ Intensité: {decline_pct:.1f}% {volume_display}\n"
+        msg += f"└─ Prix: {current_price:.2f} USDT ({trend_emoji} {price_momentum:+.1f}%)"
         
         if divergence:
             msg += " (divergence!)\n\n"

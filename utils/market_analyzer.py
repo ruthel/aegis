@@ -2284,7 +2284,7 @@ class MarketAnalyzer:
         
         # 1. Ajustements capital
         if capital and capital < 20:
-            base_min -= 25 #20
+            base_min -= 30  # Était 25, augmenté pour plus de cryptos
         elif capital and capital < 50:
             base_min -= 20 #15
         
@@ -2306,9 +2306,9 @@ class MarketAnalyzer:
         
         # 4. Disponibilité cryptos
         if available_count < 2:
-            base_min -= 15
+            base_min -= 20  # Était 15, augmenté pour forcer plus de cryptos
         elif available_count < 4:
-            base_min -= 5
+            base_min -= 10  # Était 5, augmenté
         elif available_count > 8:
             base_min += 10
         
