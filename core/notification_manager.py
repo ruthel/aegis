@@ -125,23 +125,33 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
-    def notify_cumulative_trend(self, symbol, direction, count, total_change_pct, current_price):
+    def notify_cumulative_trend(self, symbol, direction, count, total_change_pct, current_price, start_price=None):
         """Notification tendance cumulative détectée"""
         crypto = symbol.split('/')[0]
         direction_text = "tendance baissière" if direction < 0 else "tendance haussière"
         direction_emoji = "📉" if direction < 0 else "📈"
         
+        # Calcul valeur absolue si prix de départ disponible
+        if start_price:
+            price_change_abs = current_price - start_price
+            change_display = f"{total_change_pct:.2f}% ({price_change_abs:+.2f} USDT)"
+            price_detail = f"├─ Prix départ: {start_price:.2f} USDT\n"
+        else:
+            change_display = f"{total_change_pct:.2f}%"
+            price_detail = ""
+        
         msg = f"{direction_emoji} {direction_text.upper()}\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"💰 Prix: {current_price:.2f} USDT\n"
+        msg += f"💰 Prix actuel: {current_price:.2f} USDT\n"
+        msg += price_detail
         msg += f"🎯 Élan: {count} impulsions\n"
-        msg += f"📈 Cumul: {total_change_pct:.2f}%\n\n"
+        msg += f"📈 Cumul: {change_display}\n\n"
         msg += f"⚡ Analyse en cours...\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
     def notify_volume_prediction(self, symbol, prediction):
-        """Notification prédiction récupération volume avec anti-spam"""
+        """Notification prédiction récupération volume avec valeurs absolues"""
         crypto = symbol.split('/')[0]
         
         # Anti-spam: max 1 notification par crypto par 30min
@@ -156,13 +166,34 @@ class NotificationManager:
         
         self.last_volume_notifications[notification_key] = now
         
-        # Formatage message
+        # Formatage message avec valeurs absolues
         decline_duration = prediction['decline_duration_min']
         decline_pct = prediction['decline_pct']
         recovery_time = prediction['recovery_time_str']
         confidence = prediction['confidence']
         price_momentum = prediction['price_momentum']
         divergence = prediction['divergence_detected']
+        current_price = prediction.get('current_price', 0)
+        current_volume = prediction.get('current_volume', 0)
+        previous_volume = prediction.get('previous_volume', 0)
+        
+        # Calcul valeurs absolues
+        if current_volume and previous_volume:
+            volume_change_abs = current_volume - previous_volume
+            if abs(volume_change_abs) >= 1000000:
+                volume_display = f"{decline_pct:.1f}% ({volume_change_abs/1000000:+.1f}M)"
+            elif abs(volume_change_abs) >= 1000:
+                volume_display = f"{decline_pct:.1f}% ({volume_change_abs/1000:+.0f}K)"
+            else:
+                volume_display = f"{decline_pct:.1f}% ({volume_change_abs:+.0f})"
+        else:
+            volume_display = f"{decline_pct:.1f}%"
+        
+        if current_price > 0:
+            price_change_abs = current_price * (price_momentum / 100)
+            price_display = f"{price_momentum:+.1f}% ({price_change_abs:+.2f} USDT)"
+        else:
+            price_display = f"{price_momentum:+.1f}%"
         
         # Émojis selon contexte
         trend_emoji = "📈" if price_momentum > 0 else "📉" if price_momentum < -0.5 else "➡️"
@@ -171,8 +202,8 @@ class NotificationManager:
         msg = f"📉 VOLUME EN BAISSE | {crypto}\n\n"
         msg += f"🔍 Analyse:\n"
         msg += f"├─ Baisse depuis: {decline_duration}min\n"
-        msg += f"├─ Intensité: {decline_pct:.1f}%\n"
-        msg += f"└─ Prix: {trend_emoji} {price_momentum:+.1f}%"
+        msg += f"├─ Intensité: {volume_display}\n"
+        msg += f"└─ Prix: {trend_emoji} {price_display}"
         
         if divergence:
             msg += " (divergence!)\n\n"
@@ -200,8 +231,8 @@ class NotificationManager:
         
         return self.notify(msg, "")
     
-    def notify_dynamic_level(self, symbol, level_type, price, distance_pct):
-        """Notification niveau dynamique détecté avec filtrage anti-spam"""
+    def notify_dynamic_level(self, symbol, level_type, price, distance_pct, current_price=None):
+        """Notification niveau dynamique avec distance absolue"""
         crypto = symbol.split('/')[0]
         
         # FILTRAGE ANTI-SPAM
@@ -226,16 +257,50 @@ class NotificationManager:
         
         self.last_dynamic_spam_check[notification_key] = now
         
+        # Calcul distance absolue
+        if current_price:
+            distance_abs = abs(current_price - price)
+            distance_display = f"{distance_pct:.1f}% ({distance_abs:.2f} USDT)"
+            current_price_line = f"💰 Prix actuel: {current_price:.2f} USDT\n"
+        else:
+            distance_display = f"{distance_pct:.1f}%"
+            current_price_line = ""
+        
         msg = f"🎯 NIVEAU CRITIQUE\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
         msg += f"📊 Type: {level_type}\n"
-        msg += f"💰 Prix: {price:.2f} USDT\n"
-        msg += f"📏 Distance: {distance_pct:.1f}%\n\n"
+        msg += current_price_line
+        msg += f"🎯 Niveau: {price:.2f} USDT\n"
+        msg += f"📏 Distance: {distance_display}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         return self.notify(msg, "")
     
+    def format_price_change(self, current_price, previous_price=None, change_pct=None):
+        """Formateur unifié pour changements de prix"""
+        if previous_price and change_pct:
+            change_abs = current_price - previous_price
+            return f"{change_pct:+.2f}% ({change_abs:+.2f} USDT)"
+        elif change_pct:
+            change_abs = current_price * (change_pct / 100)
+            return f"{change_pct:+.2f}% ({change_abs:+.2f} USDT)"
+        else:
+            return f"{current_price:.2f} USDT"
+
+    def format_volume_change(self, current_volume, previous_volume=None, change_pct=None):
+        """Formateur unifié pour changements de volume"""
+        if previous_volume and change_pct:
+            change_abs = current_volume - previous_volume
+            if abs(change_abs) >= 1000000:
+                change_display = f"{change_abs/1000000:+.1f}M"
+            elif abs(change_abs) >= 1000:
+                change_display = f"{change_abs/1000:+.0f}K"
+            else:
+                change_display = f"{change_abs:+.0f}"
+            return f"{change_pct:+.1f}% ({change_display})"
+        else:
+            return f"{change_pct:+.1f}%" if change_pct else "N/A"
+    
     def notify_daily_summary(self):
-        """Résumé journalier automatique"""
         if not self.bot_ref:
             return
         
