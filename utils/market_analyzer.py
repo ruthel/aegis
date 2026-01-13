@@ -969,7 +969,11 @@ class MarketAnalyzer:
             'high_quality_cycles': len(high_quality_cycles),
             'data_quality': 'HIGH_7D',
             'session_factor': session_factor,
-            'volatility_factor': volatility_factor
+            'volatility_factor': volatility_factor,
+            'current_price': current_price,
+            'current_volume': volume_decline.get('current_volume', 0),
+            'previous_volume': volume_decline.get('avg_volume_24h', 0),
+            'volume_change_abs': volume_decline.get('current_volume', 0) - volume_decline.get('avg_volume_24h', 0) if volume_decline.get('avg_volume_24h', 0) > 0 else 0
         }
     
     def _predict_with_limited_data(self, symbol: str, klines_1m: List, klines_15m: List, current_price: float) -> Optional[Dict]:
@@ -2457,7 +2461,11 @@ class MarketAnalyzer:
             'divergence_detected': price_momentum > 0.5 and volume_decline['decline_pct'] < -25,
             'historical_cycles': len(cycles),
             'session_factor': session_factor,
-            'volatility_factor': volatility_factor
+            'volatility_factor': volatility_factor,
+            'current_price': current_price,
+            'current_volume': volume_decline.get('current_volume', 0),
+            'previous_volume': volume_decline.get('avg_volume', 0),
+            'volume_change_abs': volume_decline.get('current_volume', 0) - volume_decline.get('avg_volume', 0) if volume_decline.get('avg_volume', 0) > 0 else 0
         }
     @staticmethod
     def get_position_limits(total_capital):
