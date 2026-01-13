@@ -1916,18 +1916,11 @@ class MarketAnalyzer:
     def rank_cryptos(self, bot, trading_pairs, stuck_positions):
         """Classe toutes les cryptos et retourne les meilleures"""
         # Calculer limites dynamiques selon capital
-        try:
-            if hasattr(bot, 'capital_manager'):
-                total_capital = bot.capital_manager.get_total_capital()
-            else:
-                balance = bot.balance_manager.get_balance()
-                total_capital = balance.get('USDT', {}).get('free', 0)
-            
-            limits = self.get_position_limits(total_capital)
-            self.max_tradeable = limits['max_tradeable_cryptos']
-        except Exception as e:
-            print(f"{e}")
-            self.max_tradeable = 4  # Fallback
+        balance = bot.balance_manager.get_balance()
+        total_capital = balance.get('USDT', {}).get('free', 0)
+        
+        limits = self.get_position_limits(total_capital)
+        self.max_tradeable = limits['max_tradeable_cryptos']
         
         balance = bot.balance_manager.get_balance()
         usdt_available = balance.get('USDT', {}).get('free', 0)
