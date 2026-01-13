@@ -955,13 +955,13 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Calcul base selon volatilité - NIVEAU PROFESSIONNEL
                 if volatility >= 4.0:
-                    base_interval = 0.5     # Très volatil = 2s
+                    base_interval = 0.1     # Très volatil = 0.1s
                 elif volatility >= 3.0:
-                    base_interval = 2     # Volatil = 5s
+                    base_interval = 1     # Volatil = 1s
                 elif volatility >= 2.0:
-                    base_interval = 5    # Moyen = 10s
+                    base_interval = 2    # Moyen = 2s
                 else:
-                    base_interval = 10    # Calme = 15s
+                    base_interval = 3    # Calme = 3s
                 
                 # Ajustements professionnels
                 if has_position:
