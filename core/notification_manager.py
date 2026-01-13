@@ -181,11 +181,11 @@ class NotificationManager:
         if current_volume and previous_volume:
             volume_change_abs = current_volume - previous_volume
             if abs(volume_change_abs) >= 1000000:
-                volume_display = f"{decline_pct:.1f}% ({volume_change_abs/1000000:+.1f}M)"
+                volume_display = f"{decline_pct:.1f}% ({previous_volume/1000000:.1f}M → {current_volume/1000000:.1f}M)"
             elif abs(volume_change_abs) >= 1000:
-                volume_display = f"{decline_pct:.1f}% ({volume_change_abs/1000:+.0f}K)"
+                volume_display = f"{decline_pct:.1f}% ({previous_volume/1000:.0f}K → {current_volume/1000:.0f}K)"
             else:
-                volume_display = f"{decline_pct:.1f}% ({volume_change_abs:+.0f})"
+                volume_display = f"{decline_pct:.1f}% ({previous_volume:.0f} → {current_volume:.0f})"
         else:
             volume_display = f"{decline_pct:.1f}%"
         
