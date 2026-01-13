@@ -207,7 +207,7 @@ class NotificationManager:
         
         # Formater les volumes
         current_volume = prediction.get('current_volume', 0)
-        avg_volume = prediction.get('avg_volume', 0)
+        avg_volume = prediction.get('previous_volume', 0)
         
         def format_volume(vol):
             if vol >= 1000000:
