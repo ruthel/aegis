@@ -175,17 +175,30 @@ class TradingMixin:
             return None
     
     def sell_limit(self, symbol, amount, price=None):
-        """Ordre limite de vente avec prix cible intelligent"""
+        """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS"""
         try:
             # Si pas de prix spécifié, utiliser la prédiction professionnelle
             if price is None:
                 current_price = self.get_price(symbol)
+                
+                # Calculer profit minimum avec frais (0.6% profit + 0.2% frais = 0.8% minimum)
+                min_profit_with_fees = 0.8  # Garantit profit réel après frais
+                
                 prediction = self.market_analyzer.predict_price_target_with_probability(
-                    self, symbol, current_price, min_profit_pct=0.6
+                    self, symbol, current_price, min_profit_pct=min_profit_with_fees
                 )
                 
                 if prediction:
                     price = prediction['target_price']
+                    
+                    # Vérification finale : prix cible > prix achat + frais
+                    buy_price = self.get_real_buy_price(symbol)
+                    if buy_price:
+                        min_sell_price = buy_price * (1 + min_profit_with_fees / 100)
+                        if price < min_sell_price:
+                            price = min_sell_price
+                            print(f"⚠️ {symbol.split('/')[0]} → Prix ajusté pour garantir profit: {price:.6f}")
+                    
                     print(f"🎯 {symbol.split('/')[0]} → Target: {price:.6f} ({prediction['method_used']}) | "
                           f"Probabilité: {prediction['probability']}% | {prediction['time_horizon']}")
                     
@@ -195,9 +208,9 @@ class TradingMixin:
                             symbol, amount, price, profit_pct, prediction
                         )
                 else:
-                    # Fallback: prix actuel + profit minimum
-                    price = current_price * 1.006  # +0.6%
-                    print(f"⚠️ {symbol.split('/')[0]} → Fallback target: {price:.6f} (+0.6%)")
+                    # Fallback: prix actuel + profit minimum avec frais
+                    price = current_price * (1 + min_profit_with_fees / 100)
+                    print(f"⚠️ {symbol.split('/')[0]} → Fallback target: {price:.6f} (+{min_profit_with_fees}% avec frais)")
             
             if self.paper_trading:
                 order = {'id': f'limit_sell_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}

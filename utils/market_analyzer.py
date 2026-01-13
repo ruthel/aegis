@@ -550,7 +550,11 @@ class MarketAnalyzer:
         return factors
     
     def _calculate_professional_target(self, klines_4h, klines_1h, current_price, min_profit_pct):
-        """Calcule prix cible selon méthode professionnelle (ordre de priorité)"""
+        """Calcule prix cible selon méthode professionnelle (ordre de priorité) + FRAIS"""
+        
+        # FRAIS DE TRADING (achat + vente) = 0.1% * 2 = 0.2% minimum
+        trading_fees_pct = 0.2  # 0.2% pour couvrir achat + vente
+        min_profit_with_fees = min_profit_pct + trading_fees_pct
         
         # 1. RÉSISTANCE TECHNIQUE (Priorité absolue)
         resistance = self._find_nearest_resistance(klines_4h, current_price)
@@ -571,12 +575,12 @@ class MarketAnalyzer:
         
         # 4. PROFIT MINIMUM (Dernier recours)
         else:
-            target = current_price * (1 + min_profit_pct / 100)
+            target = current_price * (1 + min_profit_with_fees / 100)
             method = 'fallback'
         
-        # FILTRE FINAL : Respecter profit minimum
-        min_target = current_price * (1 + min_profit_pct / 100)
-        final_target = max(target, min_target)
+        # FILTRE FINAL : Respecter profit minimum + FRAIS
+        min_target_with_fees = current_price * (1 + min_profit_with_fees / 100)
+        final_target = max(target, min_target_with_fees)
         
         return {
             'target_price': final_target,
@@ -1921,8 +1925,9 @@ class MarketAnalyzer:
             
             limits = self.get_position_limits(total_capital)
             self.max_tradeable = limits['max_tradeable_cryptos']
-        except:
-            self.max_tradeable = 2  # Fallback
+        except Exception as e:
+            print(f"{e}")
+            self.max_tradeable = 4  # Fallback
         
         balance = bot.balance_manager.get_balance()
         usdt_available = balance.get('USDT', {}).get('free', 0)
@@ -2003,7 +2008,11 @@ class MarketAnalyzer:
         # STOCKER le seuil calculé pour intelligent_strategy()
         self.last_dynamic_threshold = dynamic_min_score
         
-        tradeable = [c['symbol'] for c in scores[:self.max_tradeable] if c['score'] >= dynamic_min_score]
+        # Prendre TOUTES les cryptos qui passent le seuil, jusqu'à max_tradeable
+        tradeable = []
+        for c in scores:
+            if c['score'] >= dynamic_min_score and len(tradeable) < self.max_tradeable:
+                tradeable.append(c['symbol'])
         
         if tradeable:
             top_display = []
