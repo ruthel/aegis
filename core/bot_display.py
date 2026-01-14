@@ -239,7 +239,7 @@ class DisplayMixin:
         """Affiche l'en-tête du bot"""
         mode = "PAPER" if self.paper_trading else "LIVE"
         realtime = "⚡ TEMPS RÉEL" if self.realtime_trading else "🔄 CYCLIQUE"
-        cryptos = ', '.join([p.replace('USDT', '') for p in trading_pairs])
+        cryptos = ', '.join([p.split('/')[0] if '/' in p else p.replace('USDT', '') for p in trading_pairs])
         earn_status = "Earn ON" if os.getenv('TIRELIRE_MODE', 'False') == 'True' else "Earn OFF"
         
         # Ajouter statut Double Investment
@@ -249,10 +249,10 @@ class DisplayMixin:
                 # Compter positions réelles + simulées
                 real_positions = self.double_investment_manager.get_dual_investment_positions_from_api()
                 total_positions = len(real_positions) + len(self.double_investment_manager.positions)
-                dual_status = f"DualInv ON ({total_positions})"
+                dual_status = f"DualInv ON ({total_positions})" if total_positions > 0 else "DualInv ON"
         
         print(f"🤖 TETANIS | {mode} {realtime} | {active_positions} positions")
-        print(f"📊 {cryptos} | Min dynamique/paire | Seuil 70% | {earn_status} | {dual_status}")
+        print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | {earn_status} | {dual_status}")
         print("🛑 Ctrl+C pour arrêter")
     
     def show_tradable_pairs(self, tradable_pairs, usdt_available):
