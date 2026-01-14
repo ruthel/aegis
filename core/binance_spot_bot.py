@@ -647,6 +647,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # Prévisions d'achat seulement pour cryptos tradables
                 buy_predictions = []
                 for symbol in tradable_pairs:
+                    print("je suis ici ${symbol}")
                     prediction = self.predict_next_buy_opportunity(symbol)
                     crypto = symbol.split('/')[0]
                     if prediction and prediction['status'] in ['READY', 'WAITING']:
