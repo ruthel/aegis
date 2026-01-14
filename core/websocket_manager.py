@@ -16,6 +16,7 @@ class WebSocketManager:
         self.symbols = symbols
         self.prices = {}
         self.last_prices = {}  # Pour filtrage précoce
+        self.last_analysis_count = {symbol: 0 for symbol in symbols}  # Compteur updates
         self.klines = {symbol: deque(maxlen=100) for symbol in symbols}
         self.ws = None
         self.ws_user = None
@@ -97,20 +98,31 @@ class WebSocketManager:
                 # Mise à jour prix
                 self.prices[symbol] = current_price
                 
-                # Filtrage précoce : skip si variation < 0.05%
+                # Filtrage intelligent adaptatif
+                should_analyze = False
                 last_price = self.last_prices.get(symbol, 0)
-                if last_price > 0:
+                
+                if last_price == 0:
+                    # Première fois : toujours analyser
+                    should_analyze = True
+                else:
+                    # Incrémenter compteur
+                    self.last_analysis_count[symbol] += 1
+                    
+                    # Analyser si variation > 0.05% OU toutes les 10 updates
                     variation = abs((current_price - last_price) / last_price)
-                    if variation < 0.0005:  # 0.05%
-                        return
+                    if variation >= 0.0005 or self.last_analysis_count[symbol] >= 10:
+                        should_analyze = True
+                        self.last_analysis_count[symbol] = 0
                 
-                self.last_prices[symbol] = current_price
-                
-                # Queue asynchrone non-bloquante
-                try:
-                    self.analysis_queue.put_nowait((symbol, current_price))
-                except:
-                    pass  # Queue pleine, skip
+                if should_analyze:
+                    self.last_prices[symbol] = current_price
+                    
+                    # Queue asynchrone non-bloquante
+                    try:
+                        self.analysis_queue.put_nowait((symbol, current_price))
+                    except:
+                        pass  # Queue pleine, skip
                 
                 # Kline fermée : sauvegarde optimisée
                 if kline['x']:
