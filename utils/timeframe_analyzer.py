@@ -10,70 +10,14 @@ class TimeframeAnalyzer:
         self.data_cache = {}  # Cache des données par timeframe
         self.signal_history = deque(maxlen=10)
     
-    # ========== MÉTHODES FUSIONNÉES DE TIMEFRAME_MANAGER ==========
-    
-    def get_main_timeframe(self, symbol, strategy_type='intelligent', bot=None, volatility=2.5):
+    def get_main_timeframe(self, symbol, volatility=2.5):
         """Timeframe principal adaptatif pour le trading"""
-        
-        if strategy_type == 'scalping':
-            if volatility >= 4.0:
-                return '1m'    # Très volatil = ultra réactif
-            elif volatility >= 3.0:
-                return '5m'    # Volatil = réactif
-            else:
-                return '15m'   # Normal = standard
-        
-        elif strategy_type == 'swing':
-            if volatility >= 3.0:
-                return '15m'   # Volatil = moyen terme
-            else:
-                return '1h'    # Calme = long terme
-        
-        else:  # intelligent/adaptive (défaut)
-            if volatility >= 4.0:
-                return '5m'    # Très volatil
-            elif volatility >= 2.5:
-                return '15m'   # Moyen (actuel)
-            else:
-                return '1h'    # Calme
-    
-    def get_analysis_timeframe(self, symbol, analysis_type, bot=None, volatility=2.5):
-        """Timeframe pour analyses spécifiques"""
-        
-        if analysis_type == 'ema_analysis':
-            if volatility >= 4.0:
-                return '5m'    # Très volatil = plus réactif
-            elif volatility >= 2.0:
-                return '15m'   # Moyen
-            else:
-                return '1h'    # Calme = tendance stable
-        
-        elif analysis_type == 'volume_analysis':
-            if volatility >= 3.0:
-                return '15m'   # Volatil = volume change vite
-            else:
-                return '1h'    # Stable = volume stable
-        
-        elif analysis_type == 'momentum_analysis':
-            if volatility >= 3.5:
-                return '5m'    # Très volatil = momentum rapide
-            elif volatility >= 2.0:
-                return '15m'   # Moyen
-            else:
-                return '1h'    # Calme
-    
-    def get_volatility_thresholds(self, symbol):
-        """Seuils de volatilité adaptatifs selon crypto"""
-        # Seuils différents selon type de crypto
-        if symbol in ['BTC/USDT', 'ETH/USDT']:
-            # Cryptos stables = seuils plus bas
-            return {'low': 0.10, 'medium': 0.25, 'high': 0.50, 'extreme': 1.00}
-        elif 'USDT' in symbol:
-            # Altcoins = seuils standards
-            return {'low': 0.15, 'medium': 0.30, 'high': 0.60, 'extreme': 1.20}
+        if volatility >= 4.0:
+            return '5m'
+        elif volatility >= 2.5:
+            return '15m'
         else:
-            # Autres paires = seuils élevés
-            return {'low': 0.20, 'medium': 0.40, 'high': 0.80, 'extreme': 1.50}
+            return '1h'
     
     def get_ema_periods(self, symbol, timeframe, bot=None, volatility=2.5):
         """Périodes EMA adaptatives selon timeframe et volatilité"""

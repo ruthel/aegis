@@ -305,7 +305,8 @@ class RiskManager:
             try:
                 from utils.timeframe_analyzer import TimeframeAnalyzer
                 analyzer = TimeframeAnalyzer()
-                thresholds = analyzer.get_volatility_thresholds(symbol)
+                from utils.market_analyzer import MarketAnalyzer
+                thresholds = MarketAnalyzer.get_volatility_thresholds(symbol)
                 volatility_threshold = thresholds['extreme'] * 100
             except:
                 volatility_threshold = 8

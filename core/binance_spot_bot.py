@@ -401,7 +401,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 from utils.market_analyzer import MarketAnalyzer
                 analyzer = TimeframeAnalyzer()
                 volatility = MarketAnalyzer.get_volatility(self, symbol)
-                timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', self, volatility)
+                timeframe = analyzer.get_main_timeframe(symbol, volatility)
             except:
                 timeframe = os.getenv('MAIN_TIMEFRAME', '15m')  # Fallback
         

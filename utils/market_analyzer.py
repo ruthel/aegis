@@ -81,7 +81,7 @@ class MarketAnalyzer:
                 volatility_hourly = atr_vol
             
             # AMÉLIORATION 3: Seuils adaptatifs selon crypto
-            thresholds = cls._get_volatility_thresholds(symbol)
+            thresholds = cls.get_volatility_thresholds(symbol)
             
             # Mapper vers score 1-5 avec seuils adaptatifs
             if volatility_hourly < thresholds['very_low']:
@@ -169,7 +169,7 @@ class MarketAnalyzer:
         return ewma
     
     @classmethod
-    def _get_volatility_thresholds(cls, symbol):
+    def get_volatility_thresholds(cls, symbol):
         """AMÉLIORATION 3: Seuils adaptatifs par crypto"""
         # Seuils basés sur données historiques réelles
         crypto_thresholds = {
@@ -1379,7 +1379,7 @@ class MarketAnalyzer:
         """Récupère volatilité du symbole - MÉTHODE CENTRALISÉE"""
         try:
             if bot:
-                klines = bot.get_klines(symbol, 20, '15m')
+                klines = bot.get_klines(symbol, 20, '15m')  # Timeframe fixe pour calcul volatilité
                 if len(klines) >= 10:
                     return MarketAnalyzer.calculate_volatility(klines, symbol)
             return 2.5
@@ -1511,7 +1511,8 @@ class MarketAnalyzer:
     def score_crypto(self, bot, symbol, stuck_positions, websocket_manager=None, volatility=None):
         """Calcule le score total d'une crypto (0-100) - Version professionnelle 7j"""
         try:
-            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, 'intelligent', bot)
+            volatility = MarketAnalyzer.get_volatility(bot, symbol)
+            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, volatility)
             klines_7d = bot.get_klines(symbol, 672, '15m')
             klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
             current_price = bot.get_price(symbol)
@@ -1627,7 +1628,7 @@ class MarketAnalyzer:
                 if (crypto_balance * price) < min_cost:
                     continue
             
-            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, 'intelligent', bot)
+            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, MarketAnalyzer.get_volatility(bot, symbol))
             
             klines = bot.get_klines(symbol, 20, optimal_timeframe)
             
@@ -1812,7 +1813,8 @@ class MarketAnalyzer:
         try:
             # Calculer le score professionnel pondéré
             final_score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
-            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, 'intelligent', bot)
+            volatility = MarketAnalyzer.get_volatility(bot, symbol)
+            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, volatility)
             
             klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
             klines_long = bot.get_klines(symbol, 96, '15m')

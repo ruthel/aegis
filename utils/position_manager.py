@@ -47,28 +47,25 @@ class PositionManager:
     
     def get_recovery_strategy(self, symbol, loss_percent, current_price, buy_price):
         """Détermine la stratégie de récupération"""
-        
-        # STRATÉGIE 1: DCA Agressif (perte -5% à -10%)
+        # Moyenner à la baisse (perte -5% à -10%)
         if -10 < loss_percent <= -5:
             return {
-                'strategy': 'dca_aggressive',
+                'strategy': 'average_down_aggressive',
                 'action': 'buy_more',
-                'amount_multiplier': 1.5,  # Acheter 1.5x le montant initial
+                'amount_multiplier': 1.5,
                 'reason': 'Moyenner à la baisse pour réduire prix moyen',
-                'target_profit': 2.0  # Viser 2% de profit
+                'target_profit': 2.0
             }
-        
-        # STRATÉGIE 2: DCA Modéré (perte -10% à -15%)
+        # Accumulation progressive (perte -10% à -15%)
         elif -15 < loss_percent <= -10:
             return {
-                'strategy': 'dca_moderate',
+                'strategy': 'average_down_moderate',
                 'action': 'buy_more',
-                'amount_multiplier': 1.0,  # Acheter montant égal
+                'amount_multiplier': 1.0,
                 'reason': 'Accumulation progressive',
-                'target_profit': 1.0  # Viser 1% de profit
+                'target_profit': 1.0
             }
-        
-        # STRATÉGIE 3: Stop Loss d'urgence (perte > -15%)
+        # Stop Loss d'urgence (perte > -15%)
         elif loss_percent <= -15:
             return {
                 'strategy': 'emergency_exit',
@@ -76,14 +73,13 @@ class PositionManager:
                 'reason': f'Perte critique {loss_percent:.1f}% - Limiter dégâts',
                 'force': True
             }
-        
-        # STRATÉGIE 4: Attente rebond (perte -3% à -5%)
+        # Attente rebond (perte -3% à -5%)
         else:
             return {
                 'strategy': 'wait_bounce',
                 'action': 'hold',
                 'reason': 'Attendre rebond technique',
-                'sell_target': buy_price * 1.005  # Vendre à +0.5%
+                'sell_target': buy_price * 1.005
             }
     
     def execute_recovery(self, bot, symbol, current_price):
@@ -108,19 +104,18 @@ class PositionManager:
         
         # Exécuter l'action
         if strategy['action'] == 'buy_more':
-            # DCA pour moyenner
+            # Moyenner à la baisse
             import os
             base_amount = float(os.getenv('TRADE_AMOUNT', '8'))
-            dca_amount = base_amount * strategy['amount_multiplier']
+            average_amount = base_amount * strategy['amount_multiplier']
             
-            print(f"🔄 DCA: Achat {dca_amount:.2f} USDT pour moyenner")
-            trade_amount = dca_amount / current_price
+            print(f"🔄 Moyenner: Achat {average_amount:.2f} USDT")
+            trade_amount = average_amount / current_price
             result = bot.buy_market(symbol, trade_amount)
             
             if result:
                 stuck_data['recovery_attempts'] += 1
-                # Recalculer prix moyen
-                print(f"✅ DCA exécuté - Tentative #{stuck_data['recovery_attempts']}")
+                print(f"✅ Moyennage exécuté - Tentative #{stuck_data['recovery_attempts']}")
                 return True
         
         elif strategy['action'] == 'sell_all':
