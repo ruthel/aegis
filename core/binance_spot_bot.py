@@ -356,13 +356,13 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return True
     
     def get_price(self, symbol, force_refresh=False):
-        # WebSocket temps réel - AUCUN cache
-        if self.websocket.is_connected():
+        # WebSocket temps réel - PRIORITÉ ABSOLUE
+        if hasattr(self, 'websocket') and self.websocket.is_connected():
             ws_price = self.websocket.get_price(symbol)
             if ws_price is not None:
                 return ws_price
         
-        # Fallback API REST
+        # Fallback API REST si WebSocket déconnecté
         try:
             ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
             return ticker['last']

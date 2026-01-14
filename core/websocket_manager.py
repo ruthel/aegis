@@ -64,7 +64,7 @@ class WebSocketManager:
                 price = float(data['c'])
                 self.prices[symbol] = price
                 
-                # Déclencher analyse temps réel sur CHAQUE changement de prix
+                # Déclencher analyse temps réel
                 self.trigger_realtime_analysis(symbol, price)
                 
             # Données kline pour indicateurs
@@ -83,7 +83,7 @@ class WebSocketManager:
                     self.klines[symbol].append(candle)
                     
         except Exception as e:
-            pass  # Silencieux
+            print(f"⚠️ WS Error: {e}")  # Debug
     
     def trigger_realtime_analysis(self, symbol, price):
         """Déclenche l'analyse temps réel"""
