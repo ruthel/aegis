@@ -398,8 +398,10 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if timeframe is None:
             try:
                 from utils.timeframe_analyzer import TimeframeAnalyzer
+                from utils.market_analyzer import MarketAnalyzer
                 analyzer = TimeframeAnalyzer()
-                timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', self)
+                volatility = MarketAnalyzer.get_volatility(self, symbol)
+                timeframe = analyzer.get_main_timeframe(symbol, 'intelligent', self, volatility)
             except:
                 timeframe = os.getenv('MAIN_TIMEFRAME', '15m')  # Fallback
         

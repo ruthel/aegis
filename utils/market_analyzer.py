@@ -10,7 +10,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from utils.timeframe_analyzer import TimeframeAnalyzer
-from utils.macro_event import MacroEventManager
+from utils.event_manager import MacroEventManager
 
 class MarketAnalyzer:
     """Calculs de marché centralisés - Tout-en-un"""
@@ -1373,6 +1373,18 @@ class MarketAnalyzer:
             return 'DECREASING'
         else:
             return 'STABLE'
+    
+    @staticmethod
+    def get_volatility(bot, symbol):
+        """Récupère volatilité du symbole - MÉTHODE CENTRALISÉE"""
+        try:
+            if bot:
+                klines = bot.get_klines(symbol, 20, '15m')
+                if len(klines) >= 10:
+                    return MarketAnalyzer.calculate_volatility(klines, symbol)
+            return 2.5
+        except:
+            return 2.5
     
     @staticmethod
     def get_crypto_profile(volatility):

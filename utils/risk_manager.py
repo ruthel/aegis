@@ -177,7 +177,7 @@ class RiskManager:
         try:
             from utils.timeframe_analyzer import TimeframeAnalyzer
             analyzer = TimeframeAnalyzer()
-            return analyzer.get_confidence_threshold(symbol or 'BTC/USDT', volatility)
+            return analyzer.get_confidence_threshold(symbol or 'BTC/USDT', volatility, None, None)
         except:
             if volatility >= 4.0:
                 return 25

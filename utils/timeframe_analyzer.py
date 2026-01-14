@@ -12,9 +12,8 @@ class TimeframeAnalyzer:
     
     # ========== MÉTHODES FUSIONNÉES DE TIMEFRAME_MANAGER ==========
     
-    def get_main_timeframe(self, symbol, strategy_type='intelligent', bot=None):
+    def get_main_timeframe(self, symbol, strategy_type='intelligent', bot=None, volatility=2.5):
         """Timeframe principal adaptatif pour le trading"""
-        volatility = self._get_volatility(symbol, bot)
         
         if strategy_type == 'scalping':
             if volatility >= 4.0:
@@ -38,9 +37,8 @@ class TimeframeAnalyzer:
             else:
                 return '1h'    # Calme
     
-    def get_analysis_timeframe(self, symbol, analysis_type, bot=None):
+    def get_analysis_timeframe(self, symbol, analysis_type, bot=None, volatility=2.5):
         """Timeframe pour analyses spécifiques"""
-        volatility = self._get_volatility(symbol, bot)
         
         if analysis_type == 'ema_analysis':
             if volatility >= 4.0:
@@ -77,9 +75,8 @@ class TimeframeAnalyzer:
             # Autres paires = seuils élevés
             return {'low': 0.20, 'medium': 0.40, 'high': 0.80, 'extreme': 1.50}
     
-    def get_ema_periods(self, symbol, timeframe, bot=None):
+    def get_ema_periods(self, symbol, timeframe, bot=None, volatility=2.5):
         """Périodes EMA adaptatives selon timeframe et volatilité"""
-        volatility = self._get_volatility(symbol, bot)
         
         if timeframe in ['1m', '5m']:
             if volatility >= 4.0:
@@ -99,10 +96,8 @@ class TimeframeAnalyzer:
         else:
             return {'short': 7, 'medium': 25, 'long': 99}  # Défaut
     
-    def get_confidence_threshold(self, symbol, volatility=None, bot=None, balance=None):
+    def get_confidence_threshold(self, symbol, volatility=2.5, bot=None, balance=None):
         """Seuil de confiance adaptatif - LOGIQUE PROFESSIONNELLE"""
-        if volatility is None:
-            volatility = self._get_volatility(symbol, bot)
         
         # STRATÉGIE PROFESSIONNELLE selon taille de compte
         if balance and balance < 50:  # Petit compte
@@ -129,17 +124,7 @@ class TimeframeAnalyzer:
             elif volatility <= 1.5:
                 return min(60, base_threshold + 10)  # Très sélectif si calme
             return base_threshold
-    def _get_volatility(self, symbol, bot=None):
-        """Récupère volatilité du symbole"""
-        try:
-            if bot:
-                klines = bot.get_klines(symbol, 20, '15m')
-                if len(klines) >= 10:
-                    return bot.market_analyzer.calculate_volatility(klines, symbol)
-            return 2.5  # Volatilité moyenne par défaut
-        except:
-            return 2.5
-    
+
     # ========== MÉTHODES EXISTANTES ==========
         
     def get_klines_for_timeframe(self, bot, symbol, timeframe, limit=50):
