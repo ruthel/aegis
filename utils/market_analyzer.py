@@ -5,6 +5,7 @@ Fusion de crypto_scorer, volatility_calculator et volume_predictor
 import time
 import math
 import os
+import numpy as np
 
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional

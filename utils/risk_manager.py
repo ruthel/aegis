@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from config import TRADING_PAIRS
 import statistics
+import numpy as np
 
 class RiskManager:
     def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500):

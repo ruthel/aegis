@@ -1,5 +1,6 @@
 import time
 import json
+import ccxt
 import os
 import threading
 from queue import Queue
@@ -222,7 +223,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.logger = logging.getLogger(__name__)
     
     def connect(self):
-        import ccxt
         self.exchange = ccxt.binance({
             'apiKey': self.api_key,
             'secret': self.api_secret,
