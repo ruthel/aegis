@@ -2467,7 +2467,9 @@ class MarketAnalyzer:
             'volatility_factor': volatility_factor,
             'current_price': current_price,
             'current_volume': volume_decline.get('current_volume', 0),
-            'previous_volume': volume_decline.get('avg_volume', 0),
+            'previous_volume': volume_decline.get('avg_volume', 0),  # CORRECTION: utiliser avg_volume pour fallback
+            'avg_volume_24h': volume_decline.get('avg_volume', 0),   # AJOUT: pour cohérence avec notification
+            'estimated_vol_15m': volume_decline.get('current_volume', 0),  # AJOUT: volume actuel comme estimation
             'volume_change_abs': volume_decline.get('current_volume', 0) - volume_decline.get('avg_volume', 0) if volume_decline.get('avg_volume', 0) > 0 else 0
         }
     @staticmethod
