@@ -1012,7 +1012,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return 1.0
     
     def can_open_position(self, symbol):
-        """Vérifie si on peut ouvrir une position - UTILISE LES VRAIES POSITIONS BINANCE"""
+        """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE (DUST)"""
         from utils.market_analyzer import MarketAnalyzer
         
         # Calculer max_positions selon capital
@@ -1023,9 +1023,8 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except:
             max_positions = 4  # Fallback par défaut
         
-        # NOUVELLE APPROCHE: Utiliser les vraies positions depuis Binance
+        # Utiliser les vraies positions depuis Binance
         try:
-            # Vérifier la balance réelle sur Binance
             balance = self.balance_manager.get_balance(force_refresh=True)
             crypto = symbol.split('/')[0]
             
@@ -1034,22 +1033,18 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             locked_amount = balance.get(crypto, {}).get('used', 0)
             total_holding = free_amount + locked_amount
             
-            # Calculer la valeur en USDT
-            if total_holding > 0.00001:
-                current_price = self.get_price(symbol)
-                position_value = total_holding * current_price
-                min_cost = self.get_min_amount(symbol)['min_cost']
-                
-                # Compter comme position ouverte si valeur > minimum
-                real_open_positions = 1 if position_value >= min_cost else 0
-            else:
-                real_open_positions = 0
+            # IGNORER LA POUSSIÈRE: Compter SEULEMENT si valeur >= minimum tradable
+            current_price = self.get_price(symbol)
+            position_value = total_holding * current_price
+            min_cost = self.get_min_amount(symbol)['min_cost']
+            
+            # Position ouverte = valeur >= minimum (ignore dust < minimum)
+            real_open_positions = 1 if position_value >= min_cost else 0
             
             return real_open_positions < max_positions
             
         except Exception as e:
             print(f"⚠️ Erreur vérification position {symbol}: {e}")
-            # Fallback: autoriser l'ouverture en cas d'erreur
             return True
     
     def get_entry_signal(self, symbol, current_price):
