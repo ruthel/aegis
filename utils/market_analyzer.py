@@ -1696,33 +1696,39 @@ class MarketAnalyzer:
             top_display = []
             for c in scores[:self.max_tradeable]:
                 if c['score'] >= dynamic_min_score:
+                    crypto = c['symbol'].replace('/USDT', '')
+                    score = int(c['score'])
                     vol_score = c.get('volatility', 0)
+                    
+                    # Volatilité simplifiée
                     if vol_score >= 30:
-                        vol_display = 4.0
+                        vol_icon = "🔥"
                     elif vol_score >= 25:
-                        vol_display = 3.0
+                        vol_icon = "⚡"
                     elif vol_score >= 20:
-                        vol_display = 2.0
+                        vol_icon = "📊"
                     else:
-                        vol_display = 1.0
-                    top_display.append(f"{c['symbol'].replace('/USDT', '')} {c['score']:.0f} (V{vol_display:.1f} L{c.get('volume', 0)} M{int(c['min_cost'])})")
+                        vol_icon = "💤"
+                    
+                    top_display.append(f"{crypto} {score}{vol_icon}")
             
             if top_display:
-                adjustments = []
+                # Raisons ajustement (concis)
+                reasons = []
                 if usdt_available < 20:
-                    adjustments.append("Capital-15")
+                    reasons.append("💰-15")
                 if market_conditions['avg_volatility'] < 1.5:
-                    adjustments.append("Volatilité-10")
+                    reasons.append("📉-10")
                 if len(scores) < 2:
-                    adjustments.append("Options-15")
+                    reasons.append("🎯-15")
                 
-                adj_text = f" ({', '.join(adjustments)})" if adjustments else ""
-                print(f"🎯 TOP: {' | '.join(top_display)} → TRADING (Seuil adaptatif: {dynamic_min_score}{adj_text})")
+                reason_text = f" ({' '.join(reasons)})" if reasons else ""
+                print(f"🎯 {' | '.join(top_display)} → Seuil {dynamic_min_score}{reason_text}")
             else:
-                print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usdt_available:.2f} USDT")
         else:
             if usdt_available > 0:
-                print(f"⚠️ Aucune crypto ≥{dynamic_min_score}/100 (Balance: {usdt_available:.2f} USDT)")
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usdt_available:.2f} USDT")
         
         return tradeable
     
