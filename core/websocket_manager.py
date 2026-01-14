@@ -62,12 +62,10 @@ class WebSocketManager:
             if 'c' in data:  # Prix de clôture
                 symbol = data['s']  # BTCUSDT
                 price = float(data['c'])
-                old_price = self.prices.get(symbol, price)
                 self.prices[symbol] = price
                 
                 # Déclencher analyse temps réel sur CHAQUE changement de prix
-                if price != old_price:  # Tout changement déclenche l'analyse
-                    self.trigger_realtime_analysis(symbol, price)
+                self.trigger_realtime_analysis(symbol, price)
                 
             # Données kline pour indicateurs
             elif 'k' in data:
@@ -83,11 +81,9 @@ class WebSocketManager:
                         'volume': float(kline['v'])
                     }
                     self.klines[symbol].append(candle)
-                    # Déclencher analyse sur nouvelle bougie
-                    self.trigger_realtime_analysis(symbol, float(kline['c']))
                     
         except Exception as e:
-            print(f"Erreur traitement message: {e}")
+            pass  # Silencieux
     
     def trigger_realtime_analysis(self, symbol, price):
         """Déclenche l'analyse temps réel"""
@@ -254,7 +250,12 @@ class WebSocketManager:
     
     def is_connected(self):
         """Vérifie si WebSocket est connecté"""
-        return self.running and len(self.prices) > 0
+        # Vérifier que le WebSocket tourne ET qu'on a reçu des prix
+        has_prices = len(self.prices) > 0
+        is_running = self.running
+        ws_alive = self.ws is not None
+        
+        return is_running and ws_alive and has_prices
     
     def stop(self):
         """Arrête la connexion WebSocket"""

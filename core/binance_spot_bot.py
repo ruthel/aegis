@@ -362,13 +362,12 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if ws_price is not None:
                 return ws_price
         
-        # TOUJOURS utiliser les vraies données Binance (même en paper trading)
+        # Fallback API REST
         try:
             ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
             return ticker['last']
         except Exception as e:
             print(f"❌ Erreur prix {symbol}: {e}")
-            # Fallback seulement en cas d'erreur critique
             if self.paper_trading:
                 fallback_prices = {'BTC': 50000, 'ETH': 3000, 'SOL': 100, 'BNB': 300}
                 crypto = symbol.split('/')[0]
