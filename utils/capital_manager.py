@@ -51,7 +51,7 @@ class CapitalManager:
         # Récupérer les montants minimums de l'API Binance
         min_amounts = self._get_binance_min_amounts()
         
-        # Obtenir les limites de positions
+        # Obtenir les limites de positions 
         from utils.market_analyzer import MarketAnalyzer
         limits = MarketAnalyzer.get_position_limits(total_balance_usdt)
         
