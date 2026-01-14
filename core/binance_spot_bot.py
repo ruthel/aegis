@@ -609,7 +609,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Utiliser le market_analyzer pour filtrer les cryptos tradables
                 stuck_positions = []
-                print(f"paire de trading {trading_pairs}")
                 tradable_pairs = self.market_analyzer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
                 # NOUVEAU: Calculer intervalle adaptatif multi-pairs (TOUTES les cryptos)
@@ -793,7 +792,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
         
         # Utiliser le seuil déjà calculé par rank_cryptos() - Source unique
-        dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 25)
+        dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 10)
         
         # REJET si score insuffisant
         if crypto_score < dynamic_min_score:
