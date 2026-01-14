@@ -1,34 +1,65 @@
 import time
-import json
 import threading
 from collections import deque
+from queue import Queue
 import websocket
+
+try:
+    import orjson as json
+    JSON_LOADS = lambda x: json.loads(x)
+except ImportError:
+    import json
+    JSON_LOADS = json.loads
 
 class WebSocketManager:
     def __init__(self, symbols=['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT']):
         self.symbols = symbols
         self.prices = {}
-        self.klines = {symbol: deque(maxlen=100) for symbol in symbols}  # 100 dernières bougies
+        self.last_prices = {}  # Pour filtrage précoce
+        self.klines = {symbol: deque(maxlen=100) for symbol in symbols}
         self.ws = None
-        self.ws_user = None  # WebSocket User Data Stream
+        self.ws_user = None
         self.running = False
         self.reconnect_attempts = 0
         self.max_reconnect = 5
         self.balance_callback = None
         self.listen_key = None
         
+        # Queue asynchrone pour callbacks non-bloquants
+        self.analysis_queue = Queue(maxsize=100)
+        self.worker_thread = None
+        
+        # Pré-allocation mémoire pour candles
+        self._candle_template = {
+            'timestamp': 0, 'open': 0.0, 'high': 0.0,
+            'low': 0.0, 'close': 0.0, 'volume': 0.0
+        }
+        
     def start(self):
         """Démarre la connexion WebSocket"""
         self.running = True
+        self._start_worker()
         self.connect()
+    
+    def _start_worker(self):
+        """Démarre le worker thread pour analyses asynchrones"""
+        def worker():
+            while self.running:
+                try:
+                    symbol, price = self.analysis_queue.get(timeout=1)
+                    if hasattr(self, 'bot_callback') and self.bot_callback:
+                        self.bot_callback(symbol, price)
+                except:
+                    pass
+        
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
         
     def connect(self):
         """Établit la connexion WebSocket"""
         try:
-            # Stream pour les prix en temps réel
-            streams = [f"{symbol.lower()}@ticker" for symbol in self.symbols]
-            # Ajouter les klines 1m pour les indicateurs
-            streams.extend([f"{symbol.lower()}@kline_1m" for symbol in self.symbols])
+            # Klines 1m uniquement (prix + OHLCV) - @ticker redondant supprimé
+            streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
             
             url = f"wss://stream.binance.com:9443/ws/{'/'.join(streams)}"
             
@@ -54,50 +85,50 @@ class WebSocketManager:
         self.reconnect_attempts = 0
     
     def on_message(self, ws, message):
-        """Traite les messages reçus"""
+        """Traite les messages reçus (optimisé)"""
         try:
-            data = json.loads(message)
+            data = JSON_LOADS(message)
             
-            # Prix en temps réel (ticker)
-            if 'c' in data:  # Prix de clôture
-                symbol = data['s']  # BTCUSDT
-                price = float(data['c'])
-                self.prices[symbol] = price
-                
-                # Déclencher analyse temps réel
-                self.trigger_realtime_analysis(symbol, price)
-                
-            # Données kline pour indicateurs
-            elif 'k' in data:
+            if 'k' in data:
                 kline = data['k']
                 symbol = kline['s']
-                
-                # Mettre à jour prix en temps réel avec kline en cours
                 current_price = float(kline['c'])
+                
+                # Mise à jour prix
                 self.prices[symbol] = current_price
                 
-                # Sauvegarder kline fermée seulement
-                if kline['x']:  # Kline fermée
-                    candle = {
+                # Filtrage précoce : skip si variation < 0.05%
+                last_price = self.last_prices.get(symbol, 0)
+                if last_price > 0:
+                    variation = abs((current_price - last_price) / last_price)
+                    if variation < 0.0005:  # 0.05%
+                        return
+                
+                self.last_prices[symbol] = current_price
+                
+                # Queue asynchrone non-bloquante
+                try:
+                    self.analysis_queue.put_nowait((symbol, current_price))
+                except:
+                    pass  # Queue pleine, skip
+                
+                # Kline fermée : sauvegarde optimisée
+                if kline['x']:
+                    candle = self._candle_template.copy()
+                    candle.update({
                         'timestamp': kline['t'],
                         'open': float(kline['o']),
                         'high': float(kline['h']),
                         'low': float(kline['l']),
-                        'close': float(kline['c']),
+                        'close': current_price,
                         'volume': float(kline['v'])
-                    }
+                    })
                     self.klines[symbol].append(candle)
                     
-        except Exception as e:
-            print(f"⚠️ WS Error: {e}")  # Debug
+        except:
+            pass  # Silencieux pour performance
     
-    def trigger_realtime_analysis(self, symbol, price):
-        """Déclenche l'analyse temps réel"""
-        if hasattr(self, 'bot_callback') and self.bot_callback:
-            try:
-                self.bot_callback(symbol, price)
-            except Exception as e:
-                print(f"Erreur callback temps réel: {e}")
+
     
     def set_bot_callback(self, callback):
         """Définit le callback pour le bot"""
@@ -154,7 +185,7 @@ class WebSocketManager:
     def on_user_message(self, ws, message):
         """Traite les messages User Data (solde, ordres, etc.)"""
         try:
-            data = json.loads(message)
+            data = JSON_LOADS(message)
             event_type = data.get('e')
             
             print(f"📨 User Data reçu: {event_type}")
