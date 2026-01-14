@@ -10,6 +10,8 @@ class BalanceManager:
     
     def __init__(self, bot):
         self.bot = bot
+        self._balance_cache = {}
+        self._cache_timestamp = 0
         
     def _get_allowed_assets(self):
         """Récupère la liste des cryptos autorisées depuis TRADING_PAIRS"""
@@ -25,6 +27,29 @@ class BalanceManager:
         
         return allowed_assets
     
+    def update_balance_from_websocket(self, balances_data):
+        """Met à jour le cache depuis le WebSocket User Data Stream"""
+        try:
+            allowed_assets = self._get_allowed_assets()
+            
+            # Format Binance WebSocket: liste de balances
+            if isinstance(balances_data, list):
+                for balance in balances_data:
+                    asset = balance.get('a')  # asset
+                    free = float(balance.get('f', 0))  # free
+                    locked = float(balance.get('l', 0))  # locked
+                    
+                    if asset in allowed_assets:
+                        self._balance_cache[asset] = {
+                            'free': free,
+                            'used': locked,
+                            'total': free + locked
+                        }
+            
+            self._cache_timestamp = time.time()
+        except Exception as e:
+            pass  # Silencieux
+    
     def get_balance(self, force_refresh=False):
         """Récupère le solde SPOT temps réel via WebSocket (limité aux TRADING_PAIRS)"""
         if self.bot.paper_trading:
@@ -32,22 +57,21 @@ class BalanceManager:
         
         allowed_assets = self._get_allowed_assets()
         
-        # WebSocket User Data Stream pour balances temps réel
-        if hasattr(self.bot, 'websocket') and self.bot.websocket.is_connected():
-            ws_balance = self.bot.websocket.get_balance()
-            if ws_balance is not None:
-                # Filtrer seulement les cryptos autorisées
-                filtered_balance = {asset: data for asset, data in ws_balance.items() if asset in allowed_assets}
-                return filtered_balance
+        # Utiliser cache WebSocket si disponible et récent (< 30s)
+        if not force_refresh and self._balance_cache and (time.time() - self._cache_timestamp) < 30:
+            return self._balance_cache
         
-        # Fallback API REST direct (WebSocket déconnecté)
+        # Fallback API REST si cache vide ou force_refresh
         if hasattr(self.bot, 'exchange') and self.bot.exchange:
             full_balance = self.bot.safe_request(self.bot.exchange.fetch_balance)
-            # Filtrer seulement les cryptos autorisées
             filtered_balance = {asset: data for asset, data in full_balance.items() if asset in allowed_assets}
+            
+            # Mettre à jour le cache
+            self._balance_cache = filtered_balance
+            self._cache_timestamp = time.time()
+            
             return filtered_balance
         else:
-            # Fallback paper trading si pas d'exchange
             return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
     
     def get_funding_balance(self):
