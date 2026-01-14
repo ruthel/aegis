@@ -255,37 +255,7 @@ class DisplayMixin:
         print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | {earn_status} | {dual_status}")
         print("🛑 Ctrl+C pour arrêter")
     
-    def show_tradable_pairs(self, tradable_pairs, usdt_available):
-        """Affiche les paires tradables (déjà filtrées par le crypto scorer)"""
-        if self.paper_trading or not tradable_pairs:
-            return
-        
-        balance = self.balance_manager.get_balance()
-        tradable_display = []
-        
-        # Utiliser directement la liste filtrée par le crypto scorer
-        for symbol in tradable_pairs:
-            base = symbol.split('/')[0]
-            free = balance.get(base, {}).get('free', 0)
-            min_cost = self.get_min_amount(symbol)['min_cost']
-            
-            # Déterminer type d'action possible
-            can_buy = usdt_available >= min_cost
-            can_sell = free > 0.00001 and (free * self.get_price(symbol)) >= min_cost
-            
-            if can_buy and can_sell:
-                tradable_display.append(f"{base} (A/V)")
-            elif can_buy:
-                tradable_display.append(f"{base} (A)")
-            elif can_sell:
-                tradable_display.append(f"{base} (V)")
-            else:
-                # Crypto dans la liste mais pas tradable actuellement
-                tradable_display.append(f"{base} (-)")
-        
-        if tradable_display:
-            print(f"🔍 Tradable: {tradable_display} | USDT: {usdt_available:.2f}")
-    
+
     def show_top_cryptos(self, best_cryptos):
         """Affiche les meilleures cryptos selon le scoring"""
         if best_cryptos:

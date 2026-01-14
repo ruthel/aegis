@@ -678,8 +678,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 else:
                     self.last_balance_sync = time.time()
                 
-                self.show_tradable_pairs(tradable_pairs, usdt_available)
-                
                 # Vérifier optimisation positions existantes seulement pour cryptos tradables
                 optimized_any = False
                 for symbol in tradable_pairs:
