@@ -771,13 +771,12 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # 1. Vérifier position existante
         if not self.can_open_position(symbol):
-            print(f"❌ {crypto}: Positions max atteintes")
-            return
+            return  # Silencieux - trop fréquent
         
         # 2. SUPPORT TOUCH EN PREMIER (OVERRIDE TOUT)
         support_check = self.check_support_touch(symbol, current_price)
         if support_check['is_support_touch']:
-            print(f"🎯 {crypto}: SUPPORT TOUCH PRO - {support_check['reason']}")
+            print(f"🎯 {crypto}: SUPPORT TOUCH PRO - {support_check['reason']}")  # SYNC - Important
             signal_strength = support_check['confidence']
             account_balance = self.get_account_balance()
             position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
@@ -793,8 +792,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 10)
         
         if crypto_score < dynamic_min_score:
-            print(f"❌ {crypto}: Score insuffisant {crypto_score:.2f}% < {dynamic_min_score}")
-            return
+            return  # Silencieux - trop fréquent
         
         # 4. SIGNAL TECHNIQUE
         try:
@@ -806,28 +804,20 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # REJET si signal insuffisant (seulement si pas de support touch)
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
                    global_signal['confidence'] >= adaptive_threshold):
-                if global_signal['action'] not in ['BUY', 'STRONG_BUY']:
-                    print(f"❌ {crypto}: Action non favorable ({global_signal['action']})")
-                else:
-                    print(f"❌ {crypto}: Signal insuffisant {global_signal['confidence']:.0f}% < {adaptive_threshold:.0f}%")
-                return
+                return  # Silencieux - trop fréquent
                 
         except Exception as e:
-            # Fallback - REJET si erreur
-            print(f"❌ {crypto}: Erreur analyse technique")
-            return
+            return  # Silencieux - trop fréquent
         
         # 4. CONTEXTE MARCHÉ (Troisième filtre)
         if not self.check_htf_bias(symbol):
-            print(f"❌ {crypto}: Contexte marché défavorable")
-            return
+            return  # Silencieux - trop fréquent
         
         # 5. TIMING OPTIMAL (Quatrième filtre)
         if not self._is_optimal_trading_time():
-            print(f"❌ {crypto}: Session trading non optimale")
-            return
+            return  # Silencieux - trop fréquent
         
-        # ✅ TOUS LES CRITÈRES PASSÉS - LOG COMPLET DE SUCCÈS
+        # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
         
         # 6. Calculer position sizing optimal (COMBIEN)
@@ -838,7 +828,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
             optimal_order_type = self.capital_manager.optimize_order_type(symbol, 'normal')
-            print(f"💰 Ordre optimisé: {optimal_order_type} (frais réduits)")
+            print(f"💰 Ordre optimisé: {optimal_order_type} (frais réduits)")  # SYNC - Important
         except:
             optimal_order_type = 'market'
         
