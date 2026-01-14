@@ -230,32 +230,8 @@ class WebSocketManager:
             if self.running:
                 self.connect()
     
-    def stop(self):
-        """Arrête les connexions WebSocket"""
-        self.running = False
-        if self.ws:
-            self.ws.close()
-        if self.ws_user:
-            self.ws_user.close()
-    
-    def is_connected(self):
-        """Vérifie si WebSocket connecté"""
-        return self.ws is not None and hasattr(self.ws, 'sock') and self.ws.sock
-    
-    def get_price(self, symbol):
-        """Récupère prix depuis WebSocket"""
-        return self.prices.get(symbol)
-    
-    def get_ticker(self, symbol):
-        """Récupère ticker depuis WebSocket"""
-        price = self.prices.get(symbol)
-        if price:
-            return {'last': price, 'symbol': symbol}
-        return None
-    
     def get_price(self, symbol):
         """Récupère le prix en temps réel"""
-        # Convertir BTC/USDT -> BTCUSDT
         ws_symbol = symbol.replace('/', '')
         return self.prices.get(ws_symbol, None)
     
