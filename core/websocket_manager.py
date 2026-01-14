@@ -253,29 +253,6 @@ class WebSocketManager:
             return {'last': price, 'symbol': symbol}
         return None
     
-    def get_klines(self, symbol, count):
-        """Récupère klines depuis WebSocket"""
-        klines = list(self.klines.get(symbol, []))
-        return klines[-count:] if len(klines) >= count else klinesion #toutes les 60 secondes
-    
-    def start_reconnect_loop(self):
-        """Boucle de reconnexion en arrière-plan"""
-        def reconnect_task():
-            while self.running:
-                time.sleep(60)  # Attendre 60 secondes
-                if not self.is_connected():
-                    try:
-                        self.connect()
-                        if self.is_connected():
-                            print("✅ WebSocket reconnecté")
-                            break
-                    except:
-                        pass
-        
-        thread = threading.Thread(target=reconnect_task)
-        thread.daemon = True
-        thread.start()
-    
     def get_price(self, symbol):
         """Récupère le prix en temps réel"""
         # Convertir BTC/USDT -> BTCUSDT
@@ -284,22 +261,13 @@ class WebSocketManager:
     
     def get_ticker(self, symbol):
         """Récupère les données ticker depuis WebSocket"""
-        ws_symbol = symbol.replace('/', '')
-        
-        # Calculer change 24h depuis les klines si disponibles
-        klines = self.get_klines(symbol, 1440)  # 24h de données
         current_price = self.get_price(symbol)
-        
-        if len(klines) >= 2 and current_price:
-            price_24h_ago = klines[0]['close']
-            change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
-            
+        if current_price:
             return {
                 'last': current_price,
-                'percentage': change_24h,
+                'percentage': 0,
                 'symbol': symbol
             }
-        
         return None
     
     def get_klines(self, symbol, count=50):
@@ -307,12 +275,6 @@ class WebSocketManager:
         ws_symbol = symbol.replace('/', '')
         klines = list(self.klines.get(ws_symbol, []))
         return klines[-count:] if len(klines) >= count else klines
-    
-    def get_balance(self):
-        """Récupère les balances temps réel (WebSocket User Data)"""
-        # Les balances sont mises à jour via User Data Stream
-        # Pour l'instant, retourner None pour forcer fallback API
-        return None
     
     def is_connected(self):
         """Vérifie si WebSocket est connecté"""
