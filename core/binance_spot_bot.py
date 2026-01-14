@@ -634,7 +634,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
                 if tradable_pairs:
-                    self.show_dynamic_levels(tradable_pairs[:2])  # Top 2 cryptos tradables
+                    self.show_dynamic_levels(tradable_pairs)  # Top 2 cryptos tradables
                 
                 # Prévisions de vente seulement pour cryptos tradables
                 sell_predictions = []
