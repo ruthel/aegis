@@ -201,6 +201,12 @@ class NotificationManager:
         estimated_vol = prediction.get('estimated_vol_15m', 0)  # Volume actuel 15min
         avg_vol_24h = prediction.get('avg_volume_24h', 0)       # Moyenne 24h (volume par 15min)
         
+        # RECALCULER le pourcentage basé sur les valeurs AFFICHÉES pour cohérence
+        if avg_vol_24h > 0:
+            decline_pct_display = ((estimated_vol - avg_vol_24h) / avg_vol_24h) * 100
+        else:
+            decline_pct_display = decline_pct  # Fallback sur valeur originale
+        
         def format_volume(vol):
             if vol >= 1000000:
                 return f"{vol/1000000:.1f}M"
@@ -212,7 +218,7 @@ class NotificationManager:
         # Pour une BAISSE: afficher moyenne → volume actuel (ordre chronologique)
         volume_display = f"({format_volume(avg_vol_24h)} → {format_volume(estimated_vol)})"
         
-        msg += f"├─ Intensité: {decline_pct:.1f}% {volume_display}\n"
+        msg += f"├─ Intensité: {decline_pct_display:.1f}% {volume_display}\n"
         msg += f"└─ Prix: {current_price:.2f} USDT ({trend_emoji} {price_momentum:+.1f}%)"
         
         if divergence:
