@@ -705,7 +705,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # NOUVEAU: Optimisations quotidiennes automatiques
                 self.run_daily_optimizations()
                 
-                time.sleep(2)
+                time.sleep(0.5)
                 
         except KeyboardInterrupt:
             print("\n🛑 Arrêt du bot...")
