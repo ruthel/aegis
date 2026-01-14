@@ -193,18 +193,13 @@ class AnalysisMixin:
     def predict_next_buy_opportunity(self, symbol):
         """Prédit quand le prochain achat sera possible"""
         try:
-            print(f"🔍 [BUY_PRED] Début pour {symbol}")
-            
             current_price = self.get_price(symbol)
-            print(f"🔍 [BUY_PRED] Prix actuel: {current_price}")
-            
             balance = self.balance_manager.get_balance()
             usdt_available = balance.get('USDT', {}).get('free', 0)
             base_currency = symbol.split('/')[0]
             crypto_free = balance.get(base_currency, {}).get('free', 0)
             crypto_locked = balance.get(base_currency, {}).get('used', 0)
             crypto_total = crypto_free + crypto_locked
-            print(f"🔍 [BUY_PRED] Balance: USDT={usdt_available:.2f}, {base_currency}={crypto_total:.6f}")
             
             if crypto_total > 0:
                 position_value = crypto_total * current_price
@@ -215,22 +210,151 @@ class AnalysisMixin:
                         for order in self.pending_orders.values()
                     )
                     if has_pending_order:
-                        print(f"🔍 [BUY_PRED] BLOCKED: Ordre limite actif")
                         return {'status': 'BLOCKED', 'time_estimate': 'Ordre limite actif', 'reason': 'Attente exécution vente'}
                     else:
-                        print(f"🔍 [BUY_PRED] BLOCKED: Position ouverte")
                         return {'status': 'BLOCKED', 'time_estimate': 'Position ouverte', 'reason': 'Attente vente'}
             
             trade_amount = float(os.getenv('TRADE_AMOUNT', '8'))
             if usdt_available < trade_amount:
-                print(f"🔍 [BUY_PRED] NO_FUNDS: {usdt_available:.2f} < {trade_amount}")
                 return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usdt_available:.2f} USDT disponible'}
             
-            print(f"🔍 [BUY_PRED] Analyse technique...")
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
             vol_value = analysis.get('volatility', 2.0)
             min_conf = MarketAnalyzer.get_min_confidence(vol_value)
+            
+            can_buy_now = (
+                signal['action'] in ['BUY', 'STRONG_BUY'] and
+                signal['confidence'] >= min_conf and
+                self.correlation_manager.can_open_position(symbol, self)
+            )
+            
+            if can_buy_now:
+                return {
+                    'status': 'READY',
+                    'time_estimate': 'Maintenant',
+                    'confidence': signal['confidence'],
+                    'target_price': current_price,
+                    'min_confidence': min_conf,
+                    'reason': f"Signal {signal['action']}"
+                }
+            
+            # CORRECTION CRITIQUE: Vérifier si prix touche support
+            support_check = self.check_support_touch(symbol, current_price)
+            if support_check['is_support_touch']:
+                return {
+                    'status': 'READY',
+                    'time_estimate': 'Maintenant',
+                    'confidence': support_check['confidence'],
+                    'target_price': current_price,
+                    'reason': f"Support touch {support_check['support_price']:.2f}"
+                }
+            
+            # AMÉLIORATION: Prédiction précise avec données 1m temps réel
+            confidence_gap = max(0, min_conf - signal['confidence'])
+            
+            # 1. VITESSE TEMPS RÉEL (1m au lieu de 15m)
+            klines_1m = self.get_klines(symbol, 10, '1m')
+            klines_15m = self.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+            
+            if len(klines_1m) >= 5 and len(klines_15m) >= 10:
+                # Vitesse réelle sur 1m (plus précise)
+                recent_changes = []
+                for i in range(1, len(klines_1m)):
+                    change_pct = abs(klines_1m[i]['close'] - klines_1m[i-1]['close']) / klines_1m[i-1]['close'] * 100
+                    recent_changes.append(change_pct)
+                
+                real_speed = sum(recent_changes) / len(recent_changes) if recent_changes else 0.1
+                
+                # 2. FACTEURS TEMPS RÉEL
+                # Volume instantané vs moyenne
+                current_vol = klines_1m[-1]['volume']
+                avg_vol = sum(k['volume'] for k in klines_1m[:-1]) / (len(klines_1m) - 1) if len(klines_1m) > 1 else 1
+                vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
+                
+                volume_factor = 0.6 if vol_ratio > 2 else 0.8 if vol_ratio > 1.5 else 1.4 if vol_ratio < 0.5 else 1.0
+                
+                # Momentum 1m
+                prices_1m = [k['close'] for k in klines_1m[-5:]]
+                momentum_1m = (prices_1m[-1] - prices_1m[0]) / prices_1m[0] * 100 if len(prices_1m) >= 2 else 0
+                momentum_factor = 0.7 if abs(momentum_1m) > 1 else 0.85 if abs(momentum_1m) > 0.5 else 1.2
+                
+                # 3. SUPPORT/RÉSISTANCE pour cible précise
+                support_factor = 1.0
+                if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
+                    try:
+                        sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
+                        all_levels = sr_levels.get('support_levels', []) + sr_levels.get('resistance_levels', [])
+                        for level in all_levels:
+                            distance = abs(level['price'] - current_price) / current_price * 100
+                            if distance < 0.3:  # Très proche d'un niveau
+                                support_factor = 0.8 if level['strength'] > 3 else 1.1
+                                break
+                    except:
+                        pass
+                
+                # 4. CALCUL PRÉCIS
+                if confidence_gap < 5:
+                    base_time = max(2, confidence_gap)
+                elif confidence_gap < 10:
+                    base_time = confidence_gap
+                elif confidence_gap < 15:
+                    base_time = confidence_gap * 1.2
+                else:
+                    base_time = min(60, confidence_gap * 2)
+                
+                # Distance au target avec S/R
+                if signal['action'] == 'HOLD':
+                    target_distance = 2  # 2% de baisse attendue
+                else:
+                    target_distance = confidence_gap / 10  # Distance proportionnelle
+                
+                # Temps basé sur vitesse réelle
+                if real_speed > 0:
+                    time_from_speed = target_distance / real_speed
+                else:
+                    time_from_speed = base_time
+                
+                # Combinaison facteurs
+                final_time = (time_from_speed + base_time) / 2 * momentum_factor * volume_factor * support_factor
+                final_time = max(1, min(final_time, 120))  # 1min à 2h max
+                
+                # 5. FORMATAGE INTELLIGENT
+                if final_time < 2:
+                    time_estimate = f"{int(final_time)}min"
+                elif final_time < 5:
+                    margin = max(1, int(final_time * 0.3))
+                    time_estimate = f"{int(final_time-margin)}-{int(final_time+margin)}min"
+                elif final_time < 15:
+                    margin = max(1, int(final_time * 0.4))
+                    time_estimate = f"{int(final_time-margin)}-{int(final_time+margin)}min"
+                elif final_time < 60:
+                    margin = max(2, int(final_time * 0.5))
+                    time_estimate = f"{int(final_time-margin)}-{int(final_time+margin)}min"
+                else:
+                    hours = final_time / 60
+                    time_estimate = f"{hours:.1f}h"
+            else:
+                time_estimate = "Indéterminé"
+            
+            # CORRECTION: Ne plus prédire baisse sur HOLD, attendre signal positif
+            if signal['action'] in ['SELL', 'STRONG_SELL']:
+                target_price = current_price * 0.95
+                reason = f"Retournement attendu"
+            else:
+                target_price = current_price
+                reason = f"Signal {signal['confidence']:.0f}%→{min_conf}%"
+            
+            return {
+                'status': 'WAITING',
+                'time_estimate': time_estimate,
+                'target_price': target_price,
+                'current_confidence': signal['confidence'],
+                'current_price': current_price,
+                'reason': reason
+            }
+        except Exception as e:
+            return {'status': 'ERROR', 'time_estimate': 'Erreur', 'reason': str(e)}.get_min_confidence(vol_value)
             print(f"🔍 [BUY_PRED] Signal: {signal['action']} {signal['confidence']:.0f}% (min: {min_conf}%)")
             
             can_buy_now = (
