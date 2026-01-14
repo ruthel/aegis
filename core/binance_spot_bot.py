@@ -609,6 +609,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Utiliser le market_analyzer pour filtrer les cryptos tradables
                 stuck_positions = []
+                print(f"paire de trading {trading_pairs}")
                 tradable_pairs = self.market_analyzer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
                 # NOUVEAU: Calculer intervalle adaptatif multi-pairs (TOUTES les cryptos)
@@ -647,7 +648,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # Prévisions d'achat seulement pour cryptos tradables
                 buy_predictions = []
                 for symbol in tradable_pairs:
-                    print("je suis ici ${symbol}")
+                    print(f"je suis ici ${symbol}")
                     prediction = self.predict_next_buy_opportunity(symbol)
                     crypto = symbol.split('/')[0]
                     if prediction and prediction['status'] in ['READY', 'WAITING']:
