@@ -730,7 +730,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
         # Afficher seulement si protections actives
         if protections:
-            print(f"🛡️ PROTECTIONS: {' | '.join(protections[:3])}")  # Max 3
+            self.async_print(f"🛡️ PROTECTIONS: {' | '.join(protections[:3])}")  # Max 3
     
     def show_debug_commands(self):
         """Affiche les commandes de debug"""
@@ -751,7 +751,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if entry_opportunities:
                     crypto = symbol.split('/')[0]
                     best_entry = entry_opportunities[0]
-                    print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
+                    self.async_print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
                     
                     # Envoyer notification si niveau très proche (< 2%) et pas déjà envoyée
                     if abs(best_entry['distance']) < 2.0 and self.notify_trades and hasattr(self, 'notifier'):
@@ -763,7 +763,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                             self.notifier.notify_dynamic_level(symbol, best_entry['type'], best_entry['price'], best_entry['distance'])
                             self.last_dynamic_notifications[notification_key] = time.time()
         except Exception as e:
-            print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
+            pass  # Silencieux
     
     def intelligent_strategy(self, symbol, amount, current_price):
         """Stratégie intelligente - Support touch PRIORITAIRE"""
@@ -874,7 +874,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             # Frais dynamiques
             fees_summary = self.capital_manager.get_fees_summary()
-            print(f"💰 FRAIS: {fees_summary['vip_level']} | BNB: {fees_summary['bnb_discount']} | Optimal: {fees_summary['optimal_fee']}")
+            self.async_print(f"💰 FRAIS: {fees_summary['vip_level']} | BNB: {fees_summary['bnb_discount']} | Optimal: {fees_summary['optimal_fee']}")
             
             # Seuils adaptatifs pour cryptos tradables
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
@@ -884,7 +884,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 if symbol in self.risk_manager.adaptive_thresholds:
                     threshold_summary = self.risk_manager.get_threshold_summary(symbol)
-                    print(f"🎯 {crypto}: Seuil {threshold_summary['threshold_final']} (Perf: {threshold_summary['performance_adj']}, Market: {threshold_summary['market_adj']})")
+                    self.async_print(f"🎯 {crypto}: Seuil {threshold_summary['threshold_final']} (Perf: {threshold_summary['performance_adj']}, Market: {threshold_summary['market_adj']})")
         
         except Exception as e:
             pass  # Silencieux si erreur

@@ -49,7 +49,7 @@ class DisplayMixin:
         """Affiche tous les soldes Spot (free + locked) sur une ligne"""
         if self.paper_trading:
             # CORRECTION: Afficher paper_balance au lieu de balance_manager
-            print(f"💳 SPOT: USDT {self.paper_balance:.2f}")
+            self.async_print(f"💳 SPOT: USDT {self.paper_balance:.2f}")
             return
         
         balance = self.balance_manager.get_balance()
@@ -77,9 +77,9 @@ class DisplayMixin:
                     balances.append(f"{crypto} {free:.6f}")
         
         if balances:
-            print(f"💳 SPOT: {' | '.join(balances)}")
+            self.async_print(f"💳 SPOT: {' | '.join(balances)}")
         else:
-            print(f"💳 SPOT: Vide")
+            self.async_print(f"💳 SPOT: Vide")
     
     def show_performance(self):
         """Affiche les performances et positions ouvertes"""
@@ -87,15 +87,15 @@ class DisplayMixin:
             return
         
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
-        print(f"\n📊 {self.daily_pnl:+.2f} | {self.total_trades} trades ({win_rate:.0f}% win)")
+        self.async_print(f"\n📊 {self.daily_pnl:+.2f} | {self.total_trades} trades ({win_rate:.0f}% win)")
         
         # Afficher résumé Double Investment si activé
         if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
             dual_summary = self.double_investment_manager.get_positions_summary()
             if dual_summary != "Aucune position":
-                print(f"💎 Double Investment: {dual_summary}")
+                self.async_print(f"💎 Double Investment: {dual_summary}")
             else:
-                print(f"💎 Double Investment: Aucune position")
+                self.async_print(f"💎 Double Investment: Aucune position")
         
         # CORRECTION: Utiliser les positions du state pour paper trading
         if self.paper_trading:
@@ -103,7 +103,7 @@ class DisplayMixin:
                               if p['side'] == 'buy']
             
             if not active_positions:
-                print(f"⏳ Aucune position")
+                self.async_print(f"⏳ Aucune position")
                 return
             
             # Afficher positions paper trading
@@ -118,9 +118,9 @@ class DisplayMixin:
                 position_value = amount * current_price
                 
                 if pnl_pct >= 0:
-                    print(f"🟢 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
+                    self.async_print(f"🟢 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
                 else:
-                    print(f"🔴 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
+                    self.async_print(f"🔴 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
             return
         
         # MODE RÉEL - Utiliser balance_manager
@@ -209,7 +209,7 @@ class DisplayMixin:
                 self.async_print(f"⏳ {base_currency} {current_holding:.6f} @ {buy_price:.2f} → {target_price:.2f} ({pnl_pct:+.2f}%/+{target_pct:.2f}%) [{progress}%]")
         
         if not has_positions:
-            print(f"⏳ Aucune position")
+            self.async_print(f"⏳ Aucune position")
         
         self.stuck_manager.show_stuck_positions()
     
@@ -259,23 +259,23 @@ class DisplayMixin:
     def show_top_cryptos(self, best_cryptos):
         """Affiche les meilleures cryptos selon le scoring"""
         if best_cryptos:
-            print(f"\n🎯 TOP SCORES: {', '.join([s.split('/')[0] for s in best_cryptos])}")
+            self.async_print(f"\n🎯 TOP SCORES: {', '.join([s.split('/')[0] for s in best_cryptos])}")
     
     def show_sell_predictions(self, sell_predictions):
         """Affiche les prévisions de vente"""
         if sell_predictions:
-            print("\n🔮 PRÉVISIONS VENTES:")
+            self.async_print("\n🔮 PRÉVISIONS VENTES:")
             for symbol, pred in sell_predictions:
                 crypto = symbol.split('/')[0]
-                print(f"🟢 {crypto}: Ordre @ {pred['target_price']:.2f} USDT")
-                print(f"   📍 Actuel: {pred['current_price']:.2f} (+{pred['distance_pct']:.1f}% à atteindre)")
-                print(f"   ⏱️ Estimation: {pred['time_estimate']} | 🎯 Probabilité: {pred['probability']}%")
-                print(f"   💡 {pred['reason']} (Vol: {pred['volatility']:.1f}/5, Mom: {pred['momentum']:+.1f}%)")
+                self.async_print(f"🟢 {crypto}: Ordre @ {pred['target_price']:.2f} USDT")
+                self.async_print(f"   📍 Actuel: {pred['current_price']:.2f} (+{pred['distance_pct']:.1f}% à atteindre)")
+                self.async_print(f"   ⏱️ Estimation: {pred['time_estimate']} | 🎯 Probabilité: {pred['probability']}%")
+                self.async_print(f"   💡 {pred['reason']} (Vol: {pred['volatility']:.1f}/5, Mom: {pred['momentum']:+.1f}%)")
     
     def show_buy_predictions(self, buy_predictions):
         """Affiche les prévisions d'achat avec Support/Résistance"""
         if buy_predictions:
-            print("\n🔮 PRÉVISIONS ACHATS:")
+            self.async_print("\n🔮 PRÉVISIONS ACHATS:")
             for crypto, prediction in buy_predictions:
                 symbol = f"{crypto}/USDT"
                 
@@ -296,9 +296,9 @@ class DisplayMixin:
                 
                 if prediction['status'] == 'READY':
                     min_conf = prediction.get('min_confidence', 60)
-                    print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}{sr_info}")
+                    self.async_print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}{sr_info}")
                 elif prediction['status'] == 'WAITING':
-                    print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}{sr_info}")
+                    self.async_print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}{sr_info}")
     
     def show_strategy_execution(self, symbol, price, change_24h, vol_display):
         """Affiche l'exécution d'une stratégie"""

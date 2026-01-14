@@ -31,7 +31,6 @@ def clear_python_cache():
                     os.remove(file_path)
                 except:
                     pass
-    print(f"🧹 Cache supprimé")
 
 def clean_bot_states():
     """Nettoie les états du bot selon le mode (paper/live)"""
@@ -46,10 +45,8 @@ def clean_bot_states():
             'data/paper_temp_state.json',
             'data/paper_positions.json'
         ]
-        print("🧹 Mode PAPER - Nettoyage fichiers paper trading")
     else:
         # En trading réel, ne PAS nettoyer les fichiers (préserver l'état)
-        print("💰 Mode LIVE - Conservation des états existants")
         return
     
     cleaned = 0
@@ -57,15 +54,10 @@ def clean_bot_states():
         if os.path.exists(state_file):
             try:
                 os.remove(state_file)
-                print(f"🧹 État nettoyé: {state_file}")
                 cleaned += 1
             except Exception as e:
                 print(f"⚠️ Erreur nettoyage {state_file}: {e}")
     
-    if cleaned > 0:
-        print(f"✅ {cleaned} état(s) paper nettoyé(s)")
-    else:
-        print("ℹ️ Aucun état paper à nettoyer")
 
 # Vider le terminal au démarrage
 os.system('cls' if os.name == 'nt' else 'clear')

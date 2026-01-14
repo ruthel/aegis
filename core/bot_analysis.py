@@ -152,7 +152,7 @@ class AnalysisMixin:
                         # SEUL FILTRE: SUPPORT DE QUALITÉ (≥3 rebonds)
                         rebounds = support.get('strength', 1)
                         if rebounds < 3:
-                            print(f"❌ Support faible ({rebounds} rebonds)")
+                            self.async_print(f"❌ Support faible ({rebounds} rebonds)")
                             continue
                         
                         # ✅ SUPPORT VALIDE
