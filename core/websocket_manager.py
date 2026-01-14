@@ -1,6 +1,8 @@
 import time
 import json
+import threading
 from collections import deque
+import websocket
 import websocket
 
 class WebSocketManager:
@@ -18,14 +20,11 @@ class WebSocketManager:
         
     def start(self):
         """Démarre la connexion WebSocket"""
-        import threading
         self.running = True
         self.connect()
         
     def connect(self):
         """Établit la connexion WebSocket"""
-        import websocket
-        import threading
         try:
             # Stream pour les prix en temps réel
             streams = [f"{symbol.lower()}@ticker" for symbol in self.symbols]
@@ -189,7 +188,6 @@ class WebSocketManager:
     
     def start_keepalive(self, bot):
         """Maintient le listen key actif"""
-        import threading
         def keepalive():
             while self.running:
                 try:

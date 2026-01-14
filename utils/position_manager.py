@@ -1,5 +1,6 @@
 import time
 import json
+import numpy as np
 from datetime import datetime, timedelta
 from utils.market_analyzer import MarketAnalyzer
 
