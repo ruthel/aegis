@@ -232,12 +232,9 @@ class NotificationManager:
         if divergence and confidence >= 70:
             msg += f"🎯 Action: Patience - Opportunité proche\n"
         elif confidence >= 60:
-            msg += f"⏳ Action: Attendre récupération volume\n"
+            msg += f"⏳ Action: Attendre récupération\n"
         else:
             msg += f"👀 Action: Surveiller évolution\n"
-        
-        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
-        
         return self.notify(msg, "")
     
     def notify_dynamic_level(self, symbol, level_type, price, distance_pct, current_price=None):
