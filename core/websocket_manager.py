@@ -3,7 +3,6 @@ import json
 import threading
 from collections import deque
 import websocket
-import websocket
 
 class WebSocketManager:
     def __init__(self, symbols=['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT']):
@@ -71,8 +70,14 @@ class WebSocketManager:
             # Données kline pour indicateurs
             elif 'k' in data:
                 kline = data['k']
+                symbol = kline['s']
+                
+                # Mettre à jour prix en temps réel avec kline en cours
+                current_price = float(kline['c'])
+                self.prices[symbol] = current_price
+                
+                # Sauvegarder kline fermée seulement
                 if kline['x']:  # Kline fermée
-                    symbol = kline['s']
                     candle = {
                         'timestamp': kline['t'],
                         'open': float(kline['o']),
