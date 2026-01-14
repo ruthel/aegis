@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timedelta
 from config import TRADING_PAIRS
 import statistics
-import numpy as np
 
 class RiskManager:
     def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500):
@@ -296,7 +295,7 @@ class RiskManager:
             ema_20_daily = self._calculate_ema(daily_closes, 20)
             ema_50_daily = self._calculate_ema(daily_closes, 50)
             
-            recent_volatility = np.std([
+            recent_volatility = self._calculate_std_volatility([
                 (hourly_closes[i] - hourly_closes[i-1]) / hourly_closes[i-1] 
                 for i in range(1, min(50, len(hourly_closes)))
             ]) * 100
@@ -329,6 +328,14 @@ class RiskManager:
                 return 'SIDEWAYS'
         except:
             return 'UNKNOWN'
+    
+    def _calculate_std_volatility(self, returns):
+        """Calcule écart-type sans numpy"""
+        if not returns:
+            return 0
+        mean = sum(returns) / len(returns)
+        variance = sum((x - mean) ** 2 for x in returns) / len(returns)
+        return variance ** 0.5
     
     def _calculate_ema(self, prices, period):
         """Calcule EMA"""

@@ -5,12 +5,9 @@ Fusion de crypto_scorer, volatility_calculator et volume_predictor
 import time
 import math
 import os
-import numpy as np
 
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from utils.timeframe_analyzer import TimeframeAnalyzer
-from utils.event_manager import MacroEventManager
 
 class MarketAnalyzer:
     """Calculs de marché centralisés - Tout-en-un"""
@@ -18,7 +15,7 @@ class MarketAnalyzer:
     def __init__(self, min_score=40):
         """Initialise le MarketAnalyzer avec les paramètres de scoring"""
         # Configuration scoring crypto
-        self.analyzer = TimeframeAnalyzer()
+        self.analyzer = None  # Lazy load
         self.base_min_score = min_score
         self.max_tradeable = 2  # Valeur par défaut, sera mise à jour dynamiquement
         self.blacklist = {}
@@ -31,7 +28,7 @@ class MarketAnalyzer:
         self.last_predictions = {}
         
         # Macro Event Manager
-        self.macro_manager = MacroEventManager()
+        self.macro_manager = None  # Lazy load
     
     def _get_default_weights(self):
         """Retourne les poids par défaut pour le scoring"""
@@ -41,6 +38,20 @@ class MarketAnalyzer:
             'momentum': 0.25,
             'liquidity': 0.2
         }
+    
+    def _get_analyzer(self):
+        """Lazy load TimeframeAnalyzer"""
+        if self.analyzer is None:
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            self.analyzer = TimeframeAnalyzer()
+        return self.analyzer
+    
+    def _get_macro_manager(self):
+        """Lazy load MacroEventManager"""
+        if self.macro_manager is None:
+            from utils.event_manager import MacroEventManager
+            self.macro_manager = MacroEventManager()
+        return self.macro_manager
     
     @classmethod
     def calculate_volatility(cls, klines, symbol='', websocket_manager=None):
@@ -1519,7 +1530,7 @@ class MarketAnalyzer:
         """Calcule le score total d'une crypto (0-100) - Version professionnelle 7j"""
         try:
             volatility = MarketAnalyzer.get_volatility(bot, symbol)
-            optimal_timeframe = self.analyzer.get_main_timeframe(symbol, volatility)
+            optimal_timeframe = self._get_analyzer().get_main_timeframe(symbol, volatility)
             klines_7d = bot.get_klines(symbol, 672, '15m')
             klines_short = bot.get_klines(symbol, 20, optimal_timeframe)
             current_price = bot.get_price(symbol)
@@ -1673,7 +1684,7 @@ class MarketAnalyzer:
         }
         
         # DÉTECTION MACRO EVENT
-        current_macro_event = self.macro_manager.detect_macro_event(market_conditions)
+        current_macro_event = self._get_macro_manager().detect_macro_event(market_conditions)
         
         dynamic_min_score = self._get_dynamic_min_score(
             available_count=len(scores),
@@ -1984,10 +1995,11 @@ class MarketAnalyzer:
             base_min = self._apply_regime_adjustment(base_min, market_conditions)
         
         # 3. AJUSTEMENTS MACRO EVENT
-        if hasattr(self, 'macro_manager') and self.macro_manager.current_event:
-            adjustments = self.macro_manager.get_adjustments()
+        macro_mgr = self._get_macro_manager()
+        if macro_mgr.current_event:
+            adjustments = macro_mgr.get_adjustments()
             base_min -= adjustments.get('threshold_reduction', 0)
-            print(f"   🎯 Ajustement macro: -{adjustments.get('threshold_reduction', 0)} (Événement: {self.macro_manager.current_event})")
+            print(f"   🎯 Ajustement macro: -{adjustments.get('threshold_reduction', 0)} (Événement: {macro_mgr.current_event})")
         
         # 4. Disponibilité cryptos
         if available_count < 2:

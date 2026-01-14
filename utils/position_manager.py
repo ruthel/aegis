@@ -2,7 +2,6 @@ import time
 import json
 from datetime import datetime, timedelta
 from utils.market_analyzer import MarketAnalyzer
-import numpy as np
 
 class PositionManager:
     def __init__(self, bot, max_loss_percent=15, stuck_threshold_hours=24):

@@ -1,4 +1,3 @@
-import numpy as np
 from collections import deque
 import sys
 import os
@@ -612,13 +611,14 @@ class TimeframeAnalyzer:
         """Calcule le RSI (Relative Strength Index)"""
         if len(prices) < period + 1:
             return None
-            
-        deltas = np.diff(prices)
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
         
-        avg_gain = np.mean(gains[:period])
-        avg_loss = np.mean(losses[:period])
+        # Calcul sans numpy
+        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
         
         if avg_loss == 0:
             return 100
@@ -657,12 +657,12 @@ class TimeframeAnalyzer:
         """Calcule l'EMA (Exponential Moving Average)"""
         if len(prices) < period:
             return None
-            
-        prices = np.array(prices)
+        
+        # Calcul sans numpy
         multiplier = 2 / (period + 1)
         
         # Première valeur = SMA
-        ema = np.mean(prices[:period])
+        ema = sum(prices[:period]) / period
         
         # Calcul EMA pour le reste
         for price in prices[period:]:
@@ -674,14 +674,13 @@ class TimeframeAnalyzer:
         """Calcule les Bollinger Bands"""
         if len(prices) < period:
             return None, None, None
-            
-        prices = np.array(prices)
         
         # Moyenne mobile simple
-        sma = np.mean(prices[-period:])
+        sma = sum(prices[-period:]) / period
         
-        # Écart-type
-        std = np.std(prices[-period:])
+        # Écart-type sans numpy
+        variance = sum((p - sma) ** 2 for p in prices[-period:]) / period
+        std = variance ** 0.5
         
         # Bandes
         upper_band = sma + (std * std_dev)
@@ -695,7 +694,7 @@ class TimeframeAnalyzer:
             return {'trend': 'neutral', 'strength': 0}
             
         volumes = [k['volume'] for k in klines[-10:]]
-        avg_volume = np.mean(volumes)
+        avg_volume = sum(volumes) / len(volumes)
         current_volume = volumes[-1]
         
         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1

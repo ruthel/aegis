@@ -1,6 +1,5 @@
 """Module d'analyse et prévisions pour le bot de trading"""
 from datetime import datetime
-from utils.market_analyzer import MarketAnalyzer
 
 import time
 import os
@@ -48,6 +47,7 @@ class AnalysisMixin:
     
     def predict_next_sell_execution(self, symbol):
         """Prédit quand l'ordre de vente sera exécuté"""
+        from utils.market_analyzer import MarketAnalyzer
         try:
             balance = self.balance_manager.get_balance()
             base_currency = symbol.split('/')[0]
