@@ -3,7 +3,6 @@ from collections import deque
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.market_analyzer import MarketAnalyzer
 
 class TimeframeAnalyzer:
     def __init__(self):
@@ -347,6 +346,9 @@ class TimeframeAnalyzer:
     def calculate_volatility(self, bot, symbol):
         """Calcule la volatilité réelle - MÉTHODE CENTRALISÉE avec WebSocket"""
         try:
+            # Import local pour éviter circularité
+            from utils.market_analyzer import MarketAnalyzer
+            
             # Utiliser WebSocket si disponible
             if hasattr(bot, 'websocket') and bot.websocket.is_connected():
                 return MarketAnalyzer.calculate_volatility_from_websocket(bot.websocket, symbol)
@@ -359,6 +361,8 @@ class TimeframeAnalyzer:
     
     def get_crypto_profile(self, symbol, volatility):
         """Retourne le profil adaptatif selon crypto et volatilité"""
+        # Import local pour éviter circularité
+        from utils.market_analyzer import MarketAnalyzer
         return MarketAnalyzer.get_crypto_profile(volatility)
     
     def analyze_all_timeframes(self, bot, symbol, current_price):
