@@ -2,6 +2,7 @@ import json
 import time
 import os
 from datetime import datetime, timedelta
+from config import TRADING_PAIRS
 import statistics
 import numpy as np
 
@@ -16,6 +17,7 @@ class RiskManager:
         self.daily_stats = self.load_daily_stats()
         # Adaptive Thresholds integration
         self.performance_history = []
+        self.trading_pairs = TRADING_PAIRS
         self.market_regimes = {}
         self.adaptive_thresholds = {}
         self.last_optimization = 0
@@ -453,13 +455,8 @@ class RiskManager:
         now = time.time()
         
         try:
-            if hasattr(self, 'bot') and self.bot:
-                bot = self.bot
-                trading_pairs = bot.crypto_scorer.rank_cryptos(bot, bot.get_trading_pairs(), [])
-                current_check_interval = bot.get_optimal_check_interval(trading_pairs)
-                optimization_interval = current_check_interval * self.base_multiplier
-            else:
-                optimization_interval = 3600
+            current_check_interval = self.bot.get_optimal_check_interval(self.trading_pairs)
+            optimization_interval = current_check_interval * self.base_multiplier
         except:
             optimization_interval = 3600
         
@@ -467,10 +464,6 @@ class RiskManager:
             return
         
         performance_metrics = self._analyze_threshold_performance()
-        
-        if performance_metrics['needs_adjustment']:
-            self._adjust_threshold_parameters(performance_metrics)
-            print(f"✅ Seuils optimisés - Win rate: {performance_metrics['win_rate']:.1%}")
         
         self.last_optimization = now
     
@@ -481,10 +474,6 @@ class RiskManager:
             'profit_factor': 1.3,
             'needs_adjustment': False
         }
-    
-    def _adjust_threshold_parameters(self, metrics):
-        """Ajuste paramètres selon performance"""
-        pass
     
     def get_threshold_summary(self, symbol):
         """Résumé des seuils pour monitoring"""

@@ -611,14 +611,14 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 stuck_positions = []
                 tradable_pairs = self.market_analyzer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
-                # NOUVEAU: Calculer intervalle adaptatif multi-pairs
-                check_interval = self.get_optimal_check_interval(tradable_pairs)
+                # NOUVEAU: Calculer intervalle adaptatif multi-pairs (TOUTES les cryptos)
+                check_interval = self.get_optimal_check_interval(trading_pairs)
                 
-                # Affichage avec intervalle dynamique
+                # Affichage avec intervalle dynamique (toutes les cryptos surveillées)
                 if tradable_pairs:
                     # Afficher intervalle adaptatif
-                    volatilities = [self.get_pair_volatility(symbol) for symbol in tradable_pairs[:2]]
-                    vol_display = ", ".join([f"{tradable_pairs[i].split('/')[0]}:{vol:.1f}" for i, vol in enumerate(volatilities)])
+                    volatilities = [self.get_pair_volatility(p if '/' in p else f"{p[:3]}/{p[3:]}") for p in trading_pairs]
+                    vol_display = ", ".join([f"{trading_pairs[i].replace('USDT','').replace('/USDT','')}:{vol:.1f}" for i, vol in enumerate(volatilities)])
                     print(f"🔄 Intervalle: {check_interval}s ({vol_display})")
                     
                     self.show_spot_balances(tradable_pairs)
@@ -629,6 +629,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     self.show_professional_metrics()
                 else:
                     self.earn_manager.show_earn_performance()
+                    print(f"🔄 Intervalle: {check_interval}s (Surveillance: {len(trading_pairs)} cryptos)")
                     print("⚠️ Aucune crypto tradable - Attente...")
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
@@ -911,23 +912,21 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             # Optimiser seuils adaptatifs
             self.risk_manager.optimize_thresholds_daily()
-            
-            # Refresh frais si nécessaire
             self.capital_manager.get_real_trading_fees('BTC/USDT')  # Force refresh
             
         except Exception as e:
             pass  # Silencieux si erreur
     
-    def get_optimal_check_interval(self, tradable_pairs):
-        """Calcule intervalle optimal selon volatilité multi-pairs - Niveau Professionnel"""
-        if not tradable_pairs:
-            return 2  # Fallback par défaut 2s
+    def get_optimal_check_interval(self, all_pairs):
+        """Calcule intervalle optimal selon volatilité multi-pairs - TOUTES les cryptos"""
+        if not all_pairs:
+            return 2
         
         try:
             intervals = []
             
-            for symbol in tradable_pairs:
-
+            for pair in all_pairs:
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                 volatility = self.get_pair_volatility(symbol)
                 has_position = self.has_active_position(symbol)
                 hour = datetime.now().hour
@@ -938,11 +937,11 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if volatility >= 4.0:
                     base_interval = 0.1     # Très volatil = 0.1s
                 elif volatility >= 3.0:
-                    base_interval = 1     # Volatil = 1s
+                    base_interval = 0.5     # Volatil = 1s
                 elif volatility >= 2.0:
-                    base_interval = 2    # Moyen = 2s
+                    base_interval = 1    # Moyen = 2s
                 else:
-                    base_interval = 3    # Calme = 3s
+                    base_interval = 2    # Calme = 3s
                 
                 # Ajustements professionnels
                 if has_position:
@@ -962,11 +961,11 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             optimal_interval = min(intervals)
             
             # Contraintes de sécurité - NIVEAU PROFESSIONNEL
-            return max(2, min(optimal_interval, 60))  # 2s à 1min
+            return max(0.1, min(optimal_interval, 60))  # 2s à 1min
             
         except Exception as e:
             print(f"⚠️ Erreur calcul intervalle: {e}")
-            return 2  # Fallback par défaut 2s
+            return 0.1  # Fallback par défaut 2s
     
     def get_pair_volatility(self, symbol):
         """Récupère volatilité pour une crypto spécifique"""
