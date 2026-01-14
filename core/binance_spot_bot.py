@@ -611,16 +611,8 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 stuck_positions = []
                 tradable_pairs = self.market_analyzer.rank_cryptos(self, trading_pairs, stuck_positions)
                 
-                # NOUVEAU: Calculer intervalle adaptatif multi-pairs (TOUTES les cryptos)
-                check_interval = self.get_optimal_check_interval(trading_pairs)
-                
-                # Affichage avec intervalle dynamique (toutes les cryptos surveillées)
+                # Affichage (toutes les cryptos surveillées)
                 if tradable_pairs:
-                    # Afficher intervalle adaptatif
-                    volatilities = [self.get_pair_volatility(p if '/' in p else f"{p[:3]}/{p[3:]}") for p in trading_pairs]
-                    vol_display = ", ".join([f"{trading_pairs[i].replace('USDT','').replace('/USDT','')}:{vol:.1f}" for i, vol in enumerate(volatilities)])
-                    print(f"🔄 Intervalle: {check_interval}s ({vol_display})")
-                    
                     self.show_spot_balances(tradable_pairs)
                     self.earn_manager.show_earn_performance()
                     self.show_realtime_prices(tradable_pairs)
@@ -629,7 +621,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     self.show_professional_metrics()
                 else:
                     self.earn_manager.show_earn_performance()
-                    print(f"🔄 Intervalle: {check_interval}s (Surveillance: {len(trading_pairs)} cryptos)")
                     print("⚠️ Aucune crypto tradable - Attente...")
                 
                 # Afficher niveaux dynamiques seulement pour cryptos tradables
@@ -707,8 +698,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                                 break  # Une optimisation à la fois
                 
                 if optimized_any:
-                    print(f"🔄 Position optimisée - Nouvelle analyse dans 10s")
-                    time.sleep(10)
                     continue
                 
                 # Envoyer status périodique Telegram
@@ -717,9 +706,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # NOUVEAU: Optimisations quotidiennes automatiques
                 self.run_daily_optimizations()
-                
-                # Plus besoin de vérifier manuellement - timer automatique
-                time.sleep(check_interval)
         except KeyboardInterrupt:
             print("\n🛑 Arrêt du bot...")
             if self.notify_trades:
