@@ -779,7 +779,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
     def intelligent_strategy(self, symbol, amount, current_price):
-        """Stratégie intelligente - Validation en cascade professionnelle"""
+        """Stratégie intelligente - Support touch PRIORITAIRE"""
         crypto = symbol.split('/')[0]
         
         # 1. Vérifier position existante
@@ -787,39 +787,34 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"❌ {crypto}: Positions max atteintes")
             return
         
-        # 2. SCORING PROFESSIONNEL EN PREMIER (Fail Fast)
+        # 2. SUPPORT TOUCH EN PREMIER (OVERRIDE TOUT)
+        support_check = self.check_support_touch(symbol, current_price)
+        if support_check['is_support_touch']:
+            print(f"🎯 {crypto}: SUPPORT TOUCH PRO - {support_check['reason']}")
+            signal_strength = support_check['confidence']
+            account_balance = self.get_account_balance()
+            position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
+            position_data['target_price'] = support_check['target_price']
+            position_data['stop_loss_price'] = support_check['stop_loss']
+            reason = f"Support PRO {support_check['support_price']:.2f} - {support_check['reason']}"
+            self.execute_optimized_buy(symbol, position_data, current_price, reason)
+            return
+        
+        # 3. SCORING PROFESSIONNEL (si pas de support touch)
         websocket_manager = getattr(self, 'websocket', None)
         crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
-        
-        # Utiliser le seuil déjà calculé par rank_cryptos() - Source unique
         dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 10)
         
-        # REJET si score insuffisant
         if crypto_score < dynamic_min_score:
             print(f"❌ {crypto}: Score insuffisant {crypto_score:.2f}% < {dynamic_min_score}")
             return
         
-        # 3. SIGNAL TECHNIQUE + SUPPORT TOUCH OVERRIDE
+        # 4. SIGNAL TECHNIQUE
         try:
             analysis = self.get_cached_analysis(symbol, current_price)
             volatility = analysis.get('volatility', 2.0)
             adaptive_threshold = self.risk_manager.get_adaptive_confidence_threshold(symbol, volatility)
             global_signal = analysis['global_signal']
-            
-            # OVERRIDE: Vérifier support touch AVANT rejet signal
-            support_check = self.check_support_touch(symbol, current_price)
-            if support_check['is_support_touch']:
-                print(f"🎯 {crypto}: SUPPORT TOUCH PRO - {support_check['reason']}")
-                # Exécution avec target ajusté
-                signal_strength = support_check['confidence']
-                account_balance = self.get_account_balance()
-                position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
-                # Ajuster target selon analyse professionnelle
-                position_data['target_price'] = support_check['target_price']
-                position_data['stop_loss_price'] = support_check['stop_loss']
-                reason = f"Support PRO {support_check['support_price']:.2f} - {support_check['reason']}"
-                self.execute_optimized_buy(symbol, position_data, current_price, reason)
-                return
             
             # REJET si signal insuffisant (seulement si pas de support touch)
             if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
