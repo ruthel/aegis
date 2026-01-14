@@ -376,8 +376,32 @@ class TradingMixin:
         if total_amount <= 0.00001:
             return False
         
-        # Si tout est libre (pas d'ordre actif), placer un ordre de vente intelligent
-        if locked_holding <= 0.00001:
+        # CORRECTION: Annuler ordre existant si moyennage détecté
+        if free_holding > 0.00001 and locked_holding > 0.00001:
+            print(f"🔄 {base_currency}: Moyennage détecté - Annulation ordre existant")
+            if not self.paper_trading:
+                try:
+                    open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                    for order in open_orders:
+                        if order['side'] == 'sell':
+                            self.safe_request(self.exchange.cancel_order, order['id'], symbol)
+                            print(f"   ❌ Ordre annulé: {order['amount']:.6f} {base_currency} @ {order['price']:.2f}")
+                except Exception as e:
+                    print(f"   ⚠️ Erreur annulation: {e}")
+            
+            # Attendre que l'annulation soit effective
+            import time
+            time.sleep(1)
+            
+            # Rafraîchir balance après annulation
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            free_holding = balance.get(base_currency, {}).get('free', 0)
+            locked_holding = balance.get(base_currency, {}).get('used', 0)
+            total_amount = free_holding + locked_holding
+            print(f"   ✅ Balance mise à jour: {total_amount:.6f} {base_currency} libre")
+        
+        # Placer ordre avec TOUTE la position disponible
+        if locked_holding <= 0.00001 and free_holding > 0.00001:
             avg_buy_price = self.get_real_buy_price(symbol)
             if avg_buy_price:
                 current_price = self.get_price(symbol)
@@ -400,7 +424,7 @@ class TradingMixin:
                 sell_order = self.sell_limit(symbol, free_holding, sell_price)
                 if sell_order:
                     profit_pct = ((sell_price - avg_buy_price) / avg_buy_price) * 100
-                    print(f"💰 Ordre de vente placé: {free_holding:.6f} {base_currency} @ {sell_price:.6f} (+{profit_pct:.1f}%)")
+                    print(f"✅ Ordre placé: {free_holding:.6f} {base_currency} @ {sell_price:.6f} (+{profit_pct:.1f}%)")
                     return True
             return False
         

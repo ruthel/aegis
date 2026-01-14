@@ -188,34 +188,7 @@ class AnalysisMixin:
         
         return ema
     
-    def predict_volume_recovery_time(self, symbol):
-        """Prédit quand le volume va récupérer avec notification"""
-        try:
-            # Initialiser le prédicteur si nécessaire
-            if not hasattr(self, 'volume_predictor'):
-                self.volume_predictor = self.market_analyzer
-            
-            # Récupérer données temps réel
-            klines_1m = self.get_klines(symbol, 60, '1m')
-            klines_15m = self.get_klines(symbol, 100, '15m')
-            current_price = self.get_price(symbol)
-            
-            # Calculer prédiction
-            prediction = self.volume_predictor.predict_volume_recovery(
-                symbol, klines_1m, klines_15m, current_price
-            )
-            
-            if prediction and self.volume_predictor.should_notify(symbol, prediction):
-                # Envoyer notification Telegram SEULEMENT
-                if hasattr(self, 'notification_manager'):
-                    self.notification_manager.notify_volume_prediction(symbol, prediction)
-                
-                # PAS de log console ici (éviter doublon)
-            
-            return prediction
-            
-        except Exception as e:
-            return None
+
     
     def predict_next_buy_opportunity(self, symbol):
         """Prédit quand le prochain achat sera possible"""

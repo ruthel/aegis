@@ -633,21 +633,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if tradable_pairs:
                     self.show_dynamic_levels(tradable_pairs[:2])  # Top 2 cryptos tradables
                 
-                print()
-                # NOUVEAU: Prédiction récupération volume (TOUTES les cryptos configurées)
-                for pair in trading_pairs:
-                    symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
-                    volume_prediction = self.predict_volume_recovery_time(symbol)
-                    if volume_prediction:
-                        crypto = symbol.split('/')[0]
-                        recovery_time = volume_prediction['recovery_time_str']
-                        confidence = volume_prediction['confidence']
-                        print(f"📉 {crypto}: Volume baisse - Récupération {recovery_time} ({confidence}%)")
-                        
-                        # Envoyer notification Telegram avec anti-spam intégré
-                        if self.notify_trades and hasattr(self, 'notifier'):
-                            self.notifier.notify_volume_prediction(symbol, volume_prediction)
-                
                 # Prévisions de vente seulement pour cryptos tradables
                 sell_predictions = []
                 for symbol in tradable_pairs:
