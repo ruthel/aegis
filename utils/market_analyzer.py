@@ -752,8 +752,15 @@ class MarketAnalyzer:
         Returns:
             int: Seuil de confiance minimum (%)
         """
-        # Utiliser le gestionnaire centralisé
-        return self.analyzer.get_confidence_threshold(symbol or 'BTC/USDT', volatility)
+        # Seuils adaptatifs selon volatilité (sans dépendance à self)
+        if volatility >= 4.0:
+            return 45  # Très volatil
+        elif volatility >= 3.0:
+            return 50  # Volatil
+        elif volatility >= 2.0:
+            return 55  # Moyen
+        else:
+            return 60  # Calme
       
     
     def calculate_rsi_score(self, klines):
