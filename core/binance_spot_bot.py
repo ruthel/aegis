@@ -940,17 +940,11 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             intervals = []
             
             for symbol in tradable_pairs:
-                # 1. Volatilité de la crypto
+
                 volatility = self.get_pair_volatility(symbol)
-                
-                # 2. Position existante (surveillance renforcée)
                 has_position = self.has_active_position(symbol)
-                
-                # 3. Heure de la journée (sessions actives)
                 hour = datetime.now().hour
                 is_active_session = 8 <= hour <= 22  # Sessions EU/US
-                
-                # 4. Volume relatif
                 volume_ratio = self.get_volume_ratio(symbol)
                 
                 # Calcul base selon volatilité - NIVEAU PROFESSIONNEL
@@ -1000,9 +994,9 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def has_active_position(self, symbol):
         """Vérifie si position active sur cette crypto"""
         try:
+            
             balance = self.balance_manager.get_balance()
             crypto = symbol.split('/')[0]
-            
             free = balance.get(crypto, {}).get('free', 0)
             locked = balance.get(crypto, {}).get('used', 0)
             total = free + locked

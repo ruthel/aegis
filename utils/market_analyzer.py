@@ -772,24 +772,22 @@ class MarketAnalyzer:
         if len(klines_1m) < 60 or len(klines_15m) < 672:
             return None
         
-        # 1. ANALYSE COURT TERME (1 minute) - Convertir en volume par 15min
-        volumes_1m = [k['volume'] for k in klines_1m]
-        
-        # Convertir volumes 1m en équivalent 15m pour comparaison cohérente
-        # Prendre les 10 dernières minutes et multiplier par 15 pour avoir l'équivalent 15m
-        recent_vol_1m = sum(volumes_1m[-10:])  # Volume des 10 dernières minutes
-        estimated_vol_15m = recent_vol_1m * 1.5  # Estimation volume sur 15min
+        # 1. ANALYSE COURT TERME - Utiliser directement les klines 15m
+        volumes_15m = [k['volume'] for k in klines_15m]
+        current_vol_15m = volumes_15m[-1]  # Dernière période 15m (volume réel)
         
         # 2. ANALYSE MOYEN TERME (15 minutes sur 7 jours)
-        volumes_15m = [k['volume'] for k in klines_15m]
         sma_96_15m = sum(volumes_15m[-96:]) / 96    # Moyenne 24h (en volume par 15min)
         sma_336_15m = sum(volumes_15m[-336:]) / 336  # 3.5 jours
         sma_672_15m = sum(volumes_15m) / len(volumes_15m)  # 7 jours complets
         
-        # 3. CALCULS PROFESSIONNELS (maintenant cohérents)
-        # Comparer volume estimé 15m avec moyenne 15m
-        decline_1m_vs_24h = ((estimated_vol_15m - sma_96_15m) / sma_96_15m) * 100 if sma_96_15m > 0 else 0
+        # 3. CALCULS PROFESSIONNELS (maintenant VRAIMENT cohérents)
+        # Comparer dernière période 15m avec moyenne 15m
+        decline_1m_vs_24h = ((current_vol_15m - sma_96_15m) / sma_96_15m) * 100 if sma_96_15m > 0 else 0
         decline_24h_vs_7d = ((sma_96_15m - sma_672_15m) / sma_672_15m) * 100 if sma_672_15m > 0 else 0
+        
+        # Volume 1m pour info (pas utilisé dans calcul)
+        volumes_1m = [k['volume'] for k in klines_1m]
         
         # Seuil professionnel avec contexte 7 jours
         if decline_1m_vs_24h < -20 or decline_24h_vs_7d < -15:
@@ -808,10 +806,10 @@ class MarketAnalyzer:
                 'decline_pct': decline_1m_vs_24h,
                 'decline_7d_pct': decline_24h_vs_7d,
                 'decline_duration_min': decline_start,
-                'current_volume': volumes_1m[-1],      # Volume réel 1m actuel
+                'current_volume': volumes_1m[-1],      # Volume réel 1m actuel (info)
                 'avg_volume_24h': sma_96_15m,          # Moyenne 24h (volume par 15min)
                 'avg_volume_7d': sma_672_15m,
-                'estimated_vol_15m': estimated_vol_15m, # Volume estimé sur 15min
+                'estimated_vol_15m': current_vol_15m,  # Volume réel dernière période 15m
                 'volume_trend': trend,
                 'context_7d': True
             }
