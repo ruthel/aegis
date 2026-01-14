@@ -3,9 +3,7 @@ Pattern Recognition System
 Détecte Head & Shoulders, Double Top/Bottom, Triangles + Support/Résistance + Dynamic Levels
 """
 
-import numpy as np
 from typing import Dict, List, Optional, Tuple
-from scipy.signal import find_peaks
 from collections import defaultdict
 import logging
 import time
@@ -28,6 +26,9 @@ class PatternAnalyzer:
         """Détecte tous les patterns dans les klines"""
         if len(klines) < self.min_pattern_length:
             return {'patterns': [], 'bearish_detected': False, 'bullish_patterns': [], 'strongest_pattern': None}
+        
+        # Lazy load numpy et scipy
+        import numpy as np
         
         closes = np.array([k['close'] for k in klines])
         highs = np.array([k['high'] for k in klines])
@@ -69,9 +70,13 @@ class PatternAnalyzer:
             'strongest_pattern': max(patterns, key=lambda x: x['confidence']) if patterns else None
         }
     
-    def _detect_head_shoulders(self, highs: np.ndarray, closes: np.ndarray) -> Optional[Dict]:
+    def _detect_head_shoulders(self, highs, closes) -> Optional[Dict]:
         """Détecte pattern Head & Shoulders"""
         try:
+            # Lazy load scipy
+            from scipy.signal import find_peaks
+            import numpy as np
+            
             peaks, _ = find_peaks(highs, distance=5, prominence=np.std(highs) * 0.3)
             
             if len(peaks) < 3:
@@ -110,9 +115,13 @@ class PatternAnalyzer:
         
         return None
     
-    def _detect_double_top_bottom(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Optional[Dict]:
+    def _detect_double_top_bottom(self, highs, lows, closes) -> Optional[Dict]:
         """Détecte Double Top/Bottom"""
         try:
+            # Lazy load scipy
+            from scipy.signal import find_peaks
+            import numpy as np
+            
             # Double Top
             peaks, _ = find_peaks(highs, distance=8, prominence=np.std(highs) * 0.3)
             if len(peaks) >= 2:
@@ -145,11 +154,14 @@ class PatternAnalyzer:
         
         return None
     
-    def _detect_triangles(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Optional[Dict]:
+    def _detect_triangles(self, highs, lows, closes) -> Optional[Dict]:
         """Détecte triangles (ascending, descending, symmetrical)"""
         try:
             if len(highs) < 20:
                 return None
+            
+            # Lazy load numpy
+            import numpy as np
             
             recent_highs = highs[-20:]
             recent_lows = lows[-20:]
@@ -168,11 +180,14 @@ class PatternAnalyzer:
             pass
         return None
     
-    def _detect_flags_pennants(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> Optional[Dict]:
+    def _detect_flags_pennants(self, highs, lows, closes, volumes) -> Optional[Dict]:
         """Détecte flags et pennants"""
         try:
             if len(closes) < 15:
                 return None
+            
+            # Lazy load numpy
+            import numpy as np
             
             initial_move = (closes[-1] - closes[-10]) / closes[-10]
             if abs(initial_move) < 0.03:
@@ -227,11 +242,14 @@ class PatternAnalyzer:
             pass
         return None
     
-    def _detect_wedges(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Optional[Dict]:
+    def _detect_wedges(self, highs, lows, closes) -> Optional[Dict]:
         """Détecte wedges"""
         try:
             if len(highs) < 15:
                 return None
+            
+            # Lazy load numpy
+            import numpy as np
             
             recent_highs = highs[-15:]
             recent_lows = lows[-15:]
@@ -248,11 +266,14 @@ class PatternAnalyzer:
             pass
         return None
     
-    def _detect_cup_handle(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Optional[Dict]:
+    def _detect_cup_handle(self, highs, lows, closes) -> Optional[Dict]:
         """Détecte Cup & Handle pattern"""
         try:
             if len(closes) < 30:
                 return None
+            
+            # Lazy load numpy
+            import numpy as np
             
             # Cup: U-shape dans les 20 dernières bougies
             cup_data = closes[-20:]
@@ -280,11 +301,14 @@ class PatternAnalyzer:
             pass
         return None
     
-    def _detect_breakout_patterns(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> Optional[Dict]:
+    def _detect_breakout_patterns(self, highs, lows, closes, volumes) -> Optional[Dict]:
         """Détecte patterns de breakout"""
         try:
             if len(closes) < 15:
                 return None
+            
+            # Lazy load numpy
+            import numpy as np
             
             # Consolidation suivie de breakout
             recent_range = np.max(highs[-10:]) - np.min(lows[-10:])
@@ -575,6 +599,9 @@ class PatternAnalyzer:
         """Trouve les niveaux significatifs par clustering"""
         if len(prices) < 10:
             return []
+        
+        # Lazy load numpy
+        import numpy as np
         
         prices_array = np.array(prices)
         levels = []

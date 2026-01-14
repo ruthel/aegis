@@ -425,6 +425,8 @@ class RiskManager:
             symbol_returns = [(symbol_klines[i]['close'] - symbol_klines[i-1]['close']) / symbol_klines[i-1]['close'] 
                              for i in range(1, len(symbol_klines))]
             
+            # Lazy load numpy pour corrélation
+            import numpy as np
             correlation = np.corrcoef(btc_returns, symbol_returns)[0, 1]
             return correlation if not np.isnan(correlation) else 0.5
         except:

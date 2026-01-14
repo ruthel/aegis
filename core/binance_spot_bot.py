@@ -7,18 +7,8 @@ from queue import Queue
 from datetime import datetime
 from core.websocket_manager import WebSocketManager
 from core.notification_manager import NotificationManager
-from core.earn_manager import BinanceEarnManager
-from core.double_investment_manager import DoubleInvestmentManager
 from core.balance_manager import BalanceManager
 from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
-from utils.timeframe_analyzer import TimeframeAnalyzer
-from utils.position_manager import PositionManager
-
-from utils.pattern_analyzer import PatternAnalyzer
-
-from utils.market_analyzer import MarketAnalyzer
-
-from utils.capital_manager import CapitalManager
 
 
 
@@ -103,30 +93,19 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.trailing_stop_manager = TrailingStopManager(float(os.getenv('TRAILING_STOP_PERCENT', '3')))
         self.correlation_manager = CorrelationManager()
         
-        # NOUVEAUX DÉTECTEURS CRITIQUES
-
-        self.multi_tf_analyzer = TimeframeAnalyzer()
-
-        self.earn_manager = BinanceEarnManager(self)
-        self.double_investment_manager = DoubleInvestmentManager(self)
-        self.stuck_manager = PositionManager(
-            self,
-            max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
-            stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
-        )
-        self.market_analyzer = MarketAnalyzer(
-            min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40'))
-        )
-
-
-        self.pattern_analyzer = PatternAnalyzer(self)
-        self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
+        # LAZY LOADING - Gestionnaires chargés à la demande
+        self._multi_tf_analyzer = None
+        self._earn_manager = None
+        self._double_investment_manager = None
+        self._stuck_manager = None
+        self._market_analyzer = None
+        self._pattern_analyzer = None
+        self._capital_manager = None
         
-        # Gestionnaire de balance centralisé
+        self.price_change_threshold = 0.002
+        
+        # Gestionnaire de balance centralisé (toujours chargé)
         self.balance_manager = BalanceManager(self)
-        
-        # Gestionnaire de capital automatique
-        self.capital_manager = CapitalManager(self)
         
 
         
@@ -161,15 +140,13 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             except Exception as e:
                 print(f"⚠️ Erreur sync initiale: {e}")
         
-        # Ajustement automatique selon le capital
+        # Ajustement automatique selon le capital (lazy load)
         self.capital_manager.auto_adjust_bot()
-        print()  # Ligne vide après l'analyse du capital
+        print()
         
-        # Gestion automatique Double Investment
-        if hasattr(self, 'double_investment_manager'):
-            # Test d'intégration
-            if self.double_investment_manager.test_integration():
-                self.double_investment_manager.auto_manage_positions()
+        # Gestion automatique Double Investment (lazy load)
+        if self.double_investment_manager.test_integration():
+            self.double_investment_manager.auto_manage_positions()
         
         # Notification de démarrage
         if self.notify_trades and hasattr(self, 'notifier'):
@@ -178,16 +155,71 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # Envoyer status initial
             self.notifier.send_status_update()
     
+    # === LAZY LOADING PROPERTIES ===
+    
+    @property
+    def multi_tf_analyzer(self):
+        if self._multi_tf_analyzer is None:
+            from utils.timeframe_analyzer import TimeframeAnalyzer
+            self._multi_tf_analyzer = TimeframeAnalyzer()
+        return self._multi_tf_analyzer
+    
+    @property
+    def earn_manager(self):
+        if self._earn_manager is None:
+            from core.earn_manager import BinanceEarnManager
+            self._earn_manager = BinanceEarnManager(self)
+        return self._earn_manager
+    
+    @property
+    def double_investment_manager(self):
+        if self._double_investment_manager is None:
+            from core.double_investment_manager import DoubleInvestmentManager
+            self._double_investment_manager = DoubleInvestmentManager(self)
+        return self._double_investment_manager
+    
+    @property
+    def stuck_manager(self):
+        if self._stuck_manager is None:
+            from utils.position_manager import PositionManager
+            self._stuck_manager = PositionManager(
+                self,
+                max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
+                stuck_threshold_hours=int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
+            )
+        return self._stuck_manager
+    
+    @property
+    def market_analyzer(self):
+        if self._market_analyzer is None:
+            from utils.market_analyzer import MarketAnalyzer
+            self._market_analyzer = MarketAnalyzer(
+                min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40'))
+            )
+        return self._market_analyzer
+    
+    @property
+    def pattern_analyzer(self):
+        if self._pattern_analyzer is None:
+            from utils.pattern_analyzer import PatternAnalyzer
+            self._pattern_analyzer = PatternAnalyzer(self)
+        return self._pattern_analyzer
+    
+    @property
+    def capital_manager(self):
+        if self._capital_manager is None:
+            from utils.capital_manager import CapitalManager
+            self._capital_manager = CapitalManager(self)
+        return self._capital_manager
+    
+    # === END LAZY LOADING ===
+    
     def manage_double_investment_cycle(self):
         """Gère le cycle Double Investment (appelé périodiquement)"""
         try:
-            if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
-                # Vérifier les expirations
+            if self.double_investment_manager.enabled:
                 self.double_investment_manager.check_expirations()
-                
-                # Gérer les nouvelles positions si nécessaire
                 self.double_investment_manager.auto_manage_positions()
-                
         except Exception as e:
             print(f"⚠️ Erreur cycle Double Investment: {e}")
     

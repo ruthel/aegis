@@ -5,8 +5,6 @@ Fusion de crypto_scorer, volatility_calculator et volume_predictor
 import time
 import math
 import os
-import numpy as np
-
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -1297,7 +1295,7 @@ class MarketAnalyzer:
         if len(klines) < 10:
             return 0
         
-        prices = np.array([k['close'] for k in klines[-10:]])
+        prices = [k['close'] for k in klines[-10:]]
         return (prices[-1] - prices[0]) / prices[0] * 100
     
     @staticmethod
@@ -1306,8 +1304,8 @@ class MarketAnalyzer:
         if len(klines) < periods:
             return 0
         
-        volumes = np.array([k['volume'] for k in klines[-periods:]])
-        return volumes.mean()
+        volumes = [k['volume'] for k in klines[-periods:]]
+        return sum(volumes) / len(volumes)
         
     
     @staticmethod
