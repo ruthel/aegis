@@ -137,8 +137,22 @@ class AnalysisMixin:
             return None
     
     def check_support_touch(self, symbol, current_price):
-        """Support touch simplifié - Seul le support de qualité compte"""
+        """Support touch simplifié - Seul le support de qualité compte + IGNORE POUSSIÈRE"""
         try:
+            # NOUVEAU: Vérifier si position existante est une poussière
+            balance = self.balance_manager.get_balance()
+            crypto = symbol.split('/')[0]
+            free_amount = balance.get(crypto, {}).get('free', 0)
+            locked_amount = balance.get(crypto, {}).get('used', 0)
+            total_holding = free_amount + locked_amount
+            
+            # Si position existe ET >= minimum tradable, bloquer
+            if total_holding > 0.00001:
+                position_value = total_holding * current_price
+                min_cost = self.get_min_amount(symbol)['min_cost']
+                if position_value >= min_cost:
+                    return {'is_support_touch': False}  # Position réelle existe
+            
             klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
             if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
                 sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
