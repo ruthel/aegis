@@ -206,10 +206,27 @@ class TradingMixin:
                 available = balance.get(base_currency, {}).get('free', 0)
                 
                 if amount > available:
+                    print(f"❌ Pas assez de {base_currency} libre: {amount:.6f} > {available:.6f}")
                     return None
                 
                 order = self.safe_request(self.exchange.create_limit_sell_order, symbol, amount, price)
-                if order and self.notify_trades:
+                
+                # VÉRIFIER si ordre créé AVANT de notifier
+                if not order:
+                    print(f"❌ Échec création ordre limite pour {symbol}")
+                    return None
+                
+                # AJOUTER à pending_orders immédiatement (pas attendre detect_order_modifications)
+                self.pending_orders[str(order['id'])] = {
+                    'order': order,
+                    'timestamp': time.time(),
+                    'symbol': symbol,
+                    'side': 'sell',
+                    'source': 'bot'
+                }
+                
+                # Ordre créé avec succès
+                if self.notify_trades:
                     estimation = self.predict_next_sell_execution(symbol)
                     profit_pct = ((price - self.get_real_buy_price(symbol)) / self.get_real_buy_price(symbol)) * 100
                     self.notifier.notify_limit_order(symbol, amount, price, profit_pct, estimation)
