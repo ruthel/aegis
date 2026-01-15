@@ -226,10 +226,13 @@ class TradingMixin:
                 }
                 
                 # Ordre créé avec succès
-                if self.notify_trades:
-                    estimation = self.predict_next_sell_execution(symbol)
-                    profit_pct = ((price - self.get_real_buy_price(symbol)) / self.get_real_buy_price(symbol)) * 100
-                    self.notifier.notify_limit_order(symbol, amount, price, profit_pct, estimation)
+                if self.notify_trades and hasattr(self.notifier, 'notify_smart_limit_order'):
+                    buy_price = self.get_real_buy_price(symbol)
+                    if buy_price:
+                        profit_pct = ((price - buy_price) / buy_price) * 100
+                        # Utiliser notify_smart_limit_order si disponible
+                        if prediction:
+                            self.notifier.notify_smart_limit_order(symbol, amount, price, profit_pct, prediction)
                 
                 return order
         except Exception as e:
