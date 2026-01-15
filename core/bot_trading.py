@@ -135,26 +135,7 @@ class TradingMixin:
         except Exception as e:
             print(f"Erreur vente: {e}")
             return None
-    
-    def buy_limit(self, symbol, amount, price):
-        if not self.validate_order(symbol, amount, price):
-            return None
-        
-        try:
-            if self.paper_trading:
-                order = {'id': f'limit_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'buy'}
-                self.pending_orders[order['id']] = {'order': order, 'timestamp': time.time(), 'symbol': symbol}
-                print(f"🧪 PAPER - Ordre limite ACHAT: {amount:.6f} {symbol} @ {price:.6f}")
-                return order
-            else:
-                order = self.safe_request(self.exchange.create_limit_buy_order, symbol, amount, price)
-                if order:
-                    self.pending_orders[order['id']] = {'order': order, 'timestamp': time.time(), 'symbol': symbol}
-                return order
-        except Exception as e:
-            print(f"❌ Erreur ordre limite: {e}")
-            return None
-    
+  
     def sell_limit(self, symbol, amount, price=None):
         """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS"""
         try:

@@ -825,7 +825,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             position_data['target_price'] = support_check['target_price']
             position_data['stop_loss_price'] = support_check['stop_loss']
             reason = f"Support PRO {support_check['support_price']:.2f} - {support_check['reason']}"
-            self.execute_optimized_buy(symbol, position_data, current_price, reason)
+            self.execute_buy(symbol, position_data, current_price, reason)
             return
         
         # 3. SCORING PROFESSIONNEL (si pas de support touch)
@@ -876,7 +876,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # 8. Exécuter achat avec données optimisées
         reason = f"Validation complète - Score {crypto_score}/100"
-        self.execute_optimized_buy(symbol, position_data, current_price, reason)
+        self.execute_buy(symbol, position_data, current_price, reason)
     
     def get_real_trading_fee(self, symbol, order_type='market'):
         """Récupère frais réels au lieu des frais statiques"""
@@ -1025,7 +1025,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return 1.0
     
     def can_open_position(self, symbol):
-        """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE (DUST)"""
+        """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE + vérifie capital"""
         from utils.market_analyzer import MarketAnalyzer
         
         # Calculer max_positions selon capital
@@ -1059,8 +1059,14 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # Position réelle détectée, vérifier limite
                 return False  # Position déjà ouverte, bloquer
             
-            # Aucune position = autorisé
-            return True
+            # NOUVEAU: Vérifier capital USDT disponible
+            usdt_available = balance.get('USDT', {}).get('free', 0)
+            min_cost = self.get_min_amount(symbol)['min_cost']
+            
+            if usdt_available < min_cost:
+                return False  # Capital insuffisant
+            
+            return True  # OK pour ouvrir
             
         except Exception as e:
             print(f"⚠️ Erreur vérification position {symbol}: {e}")
@@ -1274,23 +1280,23 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except:
             return 100  # Fallback
     
-    def execute_optimized_buy(self, symbol, position_data, current_price, reason):
+    def execute_buy(self, symbol, position_data, current_price, reason):
         """Exécute l'achat avec données optimisées"""
         crypto = symbol.split('/')[0]
         existing_positions = [p for p in self.state.get('positions', []) 
                             if p['symbol'] == symbol and p['side'] == 'buy']
         position_count = len(existing_positions)
-        
-        # Affichage amélioré
-        print(f"🚀 ACHAT OPTIMISÉ {crypto}: {position_data['position_size_usdt']:.1f} USDT (Position #{position_count + 1})")
-        print(f"   💡 Raison: {reason}")
-        print(f"   💰 Prix: {current_price:.2f} | Stop: {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%)")
-        print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
-        
+             
         # Exécuter
         result = self.buy_market(symbol, position_data['position_size_crypto'])
         
         if result:
+            # Affichage amélioré
+            print(f"✅ ACHAT {crypto}: {position_data['position_size_usdt']:.1f} USDT (Position #{position_count + 1})")
+            print(f"   💡 Raison: {reason}")
+            print(f"   💰 Prix: {current_price:.2f} | Stop: {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%)")
+            print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
+   
             print(f"✅ Achat exécuté avec succès")
             # Ajouter trailing stop avec prix optimisé
             if hasattr(self, 'trailing_stop_manager'):
