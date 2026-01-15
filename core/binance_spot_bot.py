@@ -1008,14 +1008,20 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             total_holding = free_amount + locked_amount
             
             # IGNORER LA POUSSIÈRE: Compter SEULEMENT si valeur >= minimum tradable
-            current_price = self.get_price(symbol)
-            position_value = total_holding * current_price
-            min_cost = self.get_min_amount(symbol)['min_cost']
+            if total_holding > 0.00001:
+                current_price = self.get_price(symbol)
+                position_value = total_holding * current_price
+                min_cost = self.get_min_amount(symbol)['min_cost']
+                
+                # Si valeur < minimum = poussière = ignorer complètement
+                if position_value < min_cost:
+                    return True  # Poussière ignorée, position autorisée
+                
+                # Position réelle détectée, vérifier limite
+                return False  # Position déjà ouverte, bloquer
             
-            # Position ouverte = valeur >= minimum (ignore dust < minimum)
-            real_open_positions = 1 if position_value >= min_cost else 0
-            
-            return real_open_positions < max_positions
+            # Aucune position = autorisé
+            return True
             
         except Exception as e:
             print(f"⚠️ Erreur vérification position {symbol}: {e}")
