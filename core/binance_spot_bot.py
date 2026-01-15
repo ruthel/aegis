@@ -399,14 +399,14 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Timeframe adaptatif au lieu de statique
         if timeframe is None:
             try:
-                if hasattr(self, 'multi_tf_analyzer') and self.multi_tf_analyzer:
+                if self.multi_tf_analyzer:
                     from utils.market_analyzer import MarketAnalyzer
                     volatility = MarketAnalyzer.get_volatility(self, symbol)
                     timeframe = self.multi_tf_analyzer.get_main_timeframe(symbol, volatility)
                 else:
                     timeframe = os.getenv('MAIN_TIMEFRAME', '15m')
             except:
-                timeframe = os.getenv('MAIN_TIMEFRAME', '15m')  # Fallback
+                timeframe = os.getenv('MAIN_TIMEFRAME', '15m')
         
         if self.websocket.is_connected():
             klines = self.websocket.get_klines(symbol, count)
