@@ -158,6 +158,8 @@ class TradingMixin:
     def sell_limit(self, symbol, amount, price=None):
         """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS"""
         try:
+            prediction = None  # Initialiser au début
+            
             # Si pas de prix spécifié, utiliser la prédiction professionnelle
             if price is None:
                 current_price = self.get_price(symbol)
@@ -225,14 +227,12 @@ class TradingMixin:
                     'source': 'bot'
                 }
                 
-                # Ordre créé avec succès
-                if self.notify_trades and hasattr(self.notifier, 'notify_smart_limit_order'):
+                # Ordre créé avec succès - notification seulement si prediction existe
+                if self.notify_trades and hasattr(self.notifier, 'notify_smart_limit_order') and prediction:
                     buy_price = self.get_real_buy_price(symbol)
                     if buy_price:
                         profit_pct = ((price - buy_price) / buy_price) * 100
-                        # Utiliser notify_smart_limit_order si disponible
-                        if prediction:
-                            self.notifier.notify_smart_limit_order(symbol, amount, price, profit_pct, prediction)
+                        self.notifier.notify_smart_limit_order(symbol, amount, price, profit_pct, prediction)
                 
                 return order
         except Exception as e:
