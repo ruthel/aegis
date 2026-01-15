@@ -85,6 +85,9 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.cumulative_tracker = {}  # {symbol: {'direction': 1/-1, 'count': 0, 'start_price': 0}}
         self.last_dynamic_notifications = {}  # Éviter notifications consécutives identiques
         
+        # NOUVEAU: Cache centralisé support touch (approche institutionnelle)
+        self.support_touch_cache = {}  # {symbol: {'result': {...}, 'timestamp': float}}
+        
         # NOUVEAU: Cache de décisions unifié - Niveau Institutionnel
         self.decision_cache = {}  # {symbol: {'decision': bool, 'reason': str, 'timestamp': float}}
         self._last_decision = {}  # Anti-spam logs

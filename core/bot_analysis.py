@@ -138,67 +138,66 @@ class AnalysisMixin:
             return None
     
     def check_support_touch(self, symbol, current_price):
-        """Support touch simplifié - Seul le support de qualité compte + IGNORE POUSSIÈRE"""
+        """Support touch avec cache centralisé - Approche institutionnelle"""
         try:
             crypto = symbol.split('/')[0]
-            # NOUVEAU: Vérifier si position existante est une poussière
+            now = time.time()
+            
+            # Vérifier cache (TTL 10 secondes)
+            if symbol in self.support_touch_cache:
+                cached = self.support_touch_cache[symbol]
+                if now - cached['timestamp'] < 10:
+                    return cached['result']
+            
+            # Vérifier si position existante est une poussière
             balance = self.balance_manager.get_balance()
             free_amount = balance.get(crypto, {}).get('free', 0)
             locked_amount = balance.get(crypto, {}).get('used', 0)
             total_holding = free_amount + locked_amount
             
-            # Si position existe ET >= minimum tradable, bloquer
             if total_holding > 0.00001:
                 position_value = total_holding * current_price
                 min_cost = self.get_min_amount(symbol)['min_cost']
                 if position_value >= min_cost:
-                    print(f"🔍 DEBUG {crypto}: Support check SKIP - Position réelle existe ({position_value:.2f} USDT)")
-                    return {'is_support_touch': False}  # Position réelle existe
+                    result = {'is_support_touch': False}
+                    self.support_touch_cache[symbol] = {'result': result, 'timestamp': now}
+                    return result
             
             klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
             if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
                 sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
                 support_levels = sr_levels.get('support_levels', [])
                 
-                print(f"🔍 DEBUG {crypto}: {len(support_levels)} supports trouvés")
-                
-                for i, support in enumerate(support_levels[:3]):  # Top 3 supports
+                for support in support_levels[:3]:
                     support_price = support['price']
-                    rebounds = support.get('strength', 1)
-                    distance_pct = abs(current_price - support_price) / current_price * 100
-                    
-                    print(f"🔍 DEBUG {crypto}: Support #{i+1} @ {support_price:.2f} ({rebounds} rebonds) distance={distance_pct:.2f}%")
-                    
-                    # BUY si prix <= support * 1.001 (±0.1%)
                     if current_price <= support_price * 1.001:
-                        print(f"🔍 DEBUG {crypto}: Prix touche support #{i+1}!")
+                        rebounds = support.get('strength', 1)
                         
-                        # SEUL FILTRE: SUPPORT DE QUALITÉ (≥3 rebonds)
-                        if rebounds < 3:
-                            print(f"🔍 DEBUG {crypto}: Support #{i+1} REJETÉ - Seulement {rebounds} rebonds (min 3)")
-                            continue
-                        
-                        # ✅ SUPPORT VALIDE
-                        confidence = 75 if rebounds >= 5 else 70 if rebounds >= 4 else 65
-                        
-                        # Targets simples
-                        stop_loss_price = current_price * 0.99   # -1% stop
-                        target_price = current_price * 1.015     # +1.5% target
-                        
-                        print(f"🔍 DEBUG {crypto}: ✅ SUPPORT VALIDE - {rebounds} rebonds, conf={confidence}%")
-                        
-                        return {
-                            'is_support_touch': True,
-                            'support_price': support_price,
-                            'confidence': confidence,
-                            'target_price': target_price,
-                            'stop_loss': stop_loss_price,
-                            'reason': f'Support {rebounds} rebonds @ {support_price:.2f}'
-                        }
-                        
-            return {'is_support_touch': False}
+                        # Standard pro: 2+ rebonds avec pondération
+                        if rebounds >= 2:
+                            confidence = 60 + (rebounds - 2) * 10
+                            confidence = min(confidence, 85)
+                            
+                            stop_loss_price = current_price * 0.99
+                            target_price = current_price * 1.015
+                            
+                            result = {
+                                'is_support_touch': True,
+                                'support_price': support_price,
+                                'confidence': confidence,
+                                'target_price': target_price,
+                                'stop_loss': stop_loss_price,
+                                'reason': f'Support {rebounds} rebonds @ {support_price:.2f}'
+                            }
+                            
+                            self.support_touch_cache[symbol] = {'result': result, 'timestamp': now}
+                            return result
+            
+            result = {'is_support_touch': False}
+            self.support_touch_cache[symbol] = {'result': result, 'timestamp': now}
+            return result
+            
         except Exception as e:
-            print(f"🔍 DEBUG {crypto}: ERROR support check - {str(e)}")
             return {'is_support_touch': False}
     
     def _calculate_ema(self, prices, period):
@@ -279,9 +278,7 @@ class AnalysisMixin:
             
             # CORRECTION CRITIQUE: Vérifier si prix touche support
             support_check = self.check_support_touch(symbol, current_price)
-            print(f"🔍 DEBUG {base_currency}: support_touch={support_check['is_support_touch']}")
             if support_check['is_support_touch']:
-                print(f"🔍 DEBUG {base_currency}: READY - Support touch détecté")
                 return {
                     'status': 'READY',
                     'time_estimate': 'Maintenant',
