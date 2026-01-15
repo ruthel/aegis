@@ -1,5 +1,6 @@
 """Module d'analyse et prévisions pour le bot de trading"""
 from datetime import datetime
+from utils.market_analyzer import MarketAnalyzer
 
 import time
 import os
