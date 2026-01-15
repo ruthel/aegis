@@ -485,6 +485,7 @@ class NotificationManager:
                     order_prefix = "   └─" if is_last else "│  └─"
                     msg += f"{order_prefix} 🤖 Ordre actif\n"
         
+        msg += f"\n"
         msg += f"📈 Performance\n"
         msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
         msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
