@@ -1,5 +1,5 @@
 """Module de trading - Gestion des ordres d'achat/vente"""
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import os
 
@@ -539,3 +539,108 @@ class TradingMixin:
         except Exception as e:
             print(f"   ❌ Erreur optimisation partielle: {e}")
             return False
+    
+    def calculate_winrate_30d(self):
+        """Calcule le win rate global sur les 30 derniers jours depuis Binance"""
+        if self.paper_trading:
+            return None
+        
+        try:
+            # Timestamp 30 jours avant
+            since = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
+            
+            all_cycles = []
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            
+            for pair in trading_pairs:
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                
+                # Récupérer tous les trades des 30 derniers jours
+                trades = self.safe_request(self.exchange.fetch_my_trades, symbol, since=since)
+                if not trades:
+                    continue
+                
+                # Trier par timestamp
+                trades.sort(key=lambda x: x['timestamp'])
+                
+                # Analyser cycles achat/vente
+                buy_stack = []  # Stack des achats en attente
+                
+                for trade in trades:
+                    if trade['side'] == 'buy':
+                        buy_stack.append({
+                            'price': trade['price'],
+                            'amount': trade['amount'],
+                            'timestamp': trade['timestamp']
+                        })
+                    elif trade['side'] == 'sell' and buy_stack:
+                        # Vente : matcher avec achats
+                        sell_amount = trade['amount']
+                        sell_price = trade['price']
+                        
+                        while sell_amount > 0.00001 and buy_stack:
+                            buy = buy_stack[0]
+                            matched_amount = min(sell_amount, buy['amount'])
+                            
+                            # Calculer P&L du cycle avec frais
+                            buy_cost = buy['price'] * matched_amount * (1 + self.trading_fee)
+                            sell_revenue = sell_price * matched_amount * (1 - self.trading_fee)
+                            pnl = sell_revenue - buy_cost
+                            
+                            all_cycles.append({
+                                'symbol': symbol,
+                                'pnl': pnl,
+                                'buy_price': buy['price'],
+                                'sell_price': sell_price,
+                                'amount': matched_amount,
+                                'profitable': pnl > 0
+                            })
+                            
+                            # Mettre à jour les quantités
+                            sell_amount -= matched_amount
+                            buy['amount'] -= matched_amount
+                            
+                            if buy['amount'] <= 0.00001:
+                                buy_stack.pop(0)
+            
+            # Calculer statistiques
+            if not all_cycles:
+                return {
+                    'winrate': 0,
+                    'total_cycles': 0,
+                    'winning_cycles': 0,
+                    'losing_cycles': 0,
+                    'total_pnl': 0,
+                    'best_trade': 0,
+                    'worst_trade': 0,
+                    'period_start': datetime.fromtimestamp(since / 1000).isoformat(),
+                    'last_calculated': datetime.now().isoformat()
+                }
+            
+            winning_cycles = [c for c in all_cycles if c['profitable']]
+            losing_cycles = [c for c in all_cycles if not c['profitable']]
+            total_pnl = sum(c['pnl'] for c in all_cycles)
+            
+            stats = {
+                'winrate': (len(winning_cycles) / len(all_cycles) * 100) if all_cycles else 0,
+                'total_cycles': len(all_cycles),
+                'winning_cycles': len(winning_cycles),
+                'losing_cycles': len(losing_cycles),
+                'total_pnl': total_pnl,
+                'best_trade': max(c['pnl'] for c in all_cycles) if all_cycles else 0,
+                'worst_trade': min(c['pnl'] for c in all_cycles) if all_cycles else 0,
+                'period_start': datetime.fromtimestamp(since / 1000).isoformat(),
+                'last_calculated': datetime.now().isoformat()
+            }
+            
+            # Sauvegarder dans state
+            self.state['global_stats_30d'] = stats
+            self.save_state()
+            
+            print(f"📊 Win Rate (30j): {stats['winrate']:.1f}% | {stats['total_cycles']} cycles | {stats['total_pnl']:+.2f} USDT")
+            
+            return stats
+            
+        except Exception as e:
+            print(f"⚠️ Erreur calcul win rate 30j: {e}")
+            return None

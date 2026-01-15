@@ -375,9 +375,17 @@ class NotificationManager:
         return self.notify(message)
     
     def send_status_update(self):
-        """Envoie status périodique"""
+        """Envoie status périodique synchronisé sur XX:00 et XX:30"""
+        # Vérifier si on est à une heure ronde (XX:00 ou XX:30)
+        current_minute = datetime.now().minute
+        
+        # Tolérance de ±1 minute pour éviter de rater l'heure
+        if current_minute not in [0, 1, 29, 30, 31]:
+            return  # Pas l'heure, skip
+        
+        # Anti-spam : éviter envois multiples dans la même minute
         now = time.time()
-        if now - self.last_status_time < self.periodic_interval:
+        if now - self.last_status_time < 50:  # 50 secondes minimum entre envois
             return
         
         self.last_status_time = now
@@ -488,12 +496,22 @@ class NotificationManager:
         msg += f"\n"
         msg += f"📈 Performance\n"
         msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
-        msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
         
-        if bot.total_trades > 0:
-            msg += f"└─ Meilleur: N/A\n\n"
+        # Utiliser win rate global 30j si disponible
+        if hasattr(bot, 'global_stats_30d') and bot.global_stats_30d:
+            stats = bot.global_stats_30d
+            msg += f"├─ Trades: {stats['total_cycles']} ({stats['winrate']:.0f}% win) [30j]\n"
+            if stats['best_trade'] > 0:
+                msg += f"└─ Meilleur: +{stats['best_trade']:.2f} USDT\n\n"
+            else:
+                msg += f"└─ Aucun trade\n\n"
         else:
-            msg += f"└─ Aucun trade\n\n"
+            win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
+            msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
+            if bot.total_trades > 0:
+                msg += f"└─ Meilleur: N/A\n\n"
+            else:
+                msg += f"└─ Aucun trade\n\n"
         
         # Double Investment Stats (réelles + simulées)
         if hasattr(bot, 'double_investment_manager'):

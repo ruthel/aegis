@@ -86,8 +86,20 @@ class DisplayMixin:
         if os.getenv('SHOW_PERFORMANCE', 'True') != 'True':
             return
         
-        win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
-        self.async_print(f"\n📊 {self.daily_pnl:+.2f} | {self.total_trades} trades ({win_rate:.0f}% win)")
+        # Utiliser win rate global 30j si disponible, sinon win rate du bot
+        if hasattr(self, 'global_stats_30d') and self.global_stats_30d:
+            stats = self.global_stats_30d
+            win_rate = stats['winrate']
+            total_trades = stats['total_cycles']
+            pnl_display = f"{stats['total_pnl']:+.2f}"
+            period_info = " (30j)"
+        else:
+            win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
+            total_trades = self.total_trades
+            pnl_display = f"{self.daily_pnl:+.2f}"
+            period_info = ""
+        
+        self.async_print(f"\n📊 {pnl_display} | {total_trades} trades ({win_rate:.0f}% win){period_info}")
         
         # Afficher résumé Double Investment si activé
         if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
@@ -251,7 +263,12 @@ class DisplayMixin:
                 total_positions = len(real_positions) + len(self.double_investment_manager.positions)
                 dual_status = f"DualInv ON ({total_positions})" if total_positions > 0 else "DualInv ON"
         
-        print(f"🤖 TETANIS | {mode} {realtime} | {active_positions} positions")
+        # Afficher win rate global si disponible
+        winrate_info = ""
+        if hasattr(self, 'global_stats_30d') and self.global_stats_30d and not self.paper_trading:
+            winrate_info = f" | WR: {self.global_stats_30d['winrate']:.0f}% (30j)"
+        
+        print(f"🤖 TETANIS | {mode} {realtime} | {active_positions} positions{winrate_info}")
         print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | {earn_status} | {dual_status}")
         print("🛑 Ctrl+C pour arrêter")
     

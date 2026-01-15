@@ -63,6 +63,8 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.daily_pnl = 0
         self.total_trades = 0
         self.winning_trades = 0
+        self.global_stats_30d = None  # Win rate global 30 jours
+        self.last_winrate_calculation = 0  # Timestamp dernier calcul
         
         self.setup_logging()
         
@@ -167,6 +169,12 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Ajustement automatique selon le capital
         self.capital_manager.auto_adjust_bot()
         print()  # Ligne vide après l'analyse du capital
+        
+        # Calculer win rate global 30 jours au démarrage
+        if not self.paper_trading:
+            print("📊 Calcul win rate global (30 derniers jours)...")
+            self.global_stats_30d = self.calculate_winrate_30d()
+            print()
         
         # Gestion automatique Double Investment
         if hasattr(self, 'double_investment_manager'):
@@ -755,6 +763,13 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # Envoyer status périodique Telegram
                 if self.notify_trades and hasattr(self, 'notifier'):
                     self.notifier.send_status_update()
+                
+                # Recalculer win rate global toutes les heures
+                if not self.paper_trading:
+                    now = time.time()
+                    if now - self.last_winrate_calculation > 3600:  # 1 heure
+                        self.global_stats_30d = self.calculate_winrate_30d()
+                        self.last_winrate_calculation = now
                 
                 # NOUVEAU: Optimisations quotidiennes automatiques
                 self.run_daily_optimizations()
