@@ -149,19 +149,11 @@ class AnalysisMixin:
                 if now - cached['timestamp'] < 10:
                     return cached['result']
             
-            # Vérifier si position existante est une poussière
-            balance = self.balance_manager.get_balance()
-            free_amount = balance.get(crypto, {}).get('free', 0)
-            locked_amount = balance.get(crypto, {}).get('used', 0)
-            total_holding = free_amount + locked_amount
-            
-            if total_holding > 0.00001:
-                position_value = total_holding * current_price
-                min_cost = self.get_min_amount(symbol)['min_cost']
-                if position_value >= min_cost:
-                    result = {'is_support_touch': False}
-                    self.support_touch_cache[symbol] = {'result': result, 'timestamp': now}
-                    return result
+            # Vérifier si on peut ouvrir position (inclut poussière)
+            if not self.can_open_position(symbol):
+                result = {'is_support_touch': False}
+                self.support_touch_cache[symbol] = {'result': result, 'timestamp': now}
+                return result
             
             klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
             if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
