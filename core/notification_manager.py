@@ -380,7 +380,7 @@ class NotificationManager:
         current_minute = datetime.now().minute
         
         # Tolérance de ±1 minute pour éviter de rater l'heure
-        if current_minute not in [0, 1, 29, 30, 31]:
+        if current_minute not in [0, 30]:
             return  # Pas l'heure, skip
         
         # Anti-spam : éviter envois multiples dans la même minute
