@@ -14,29 +14,10 @@ class TradingMixin:
                 print(f"❌ Limite quotidienne atteinte: {self.total_trades}/{self.max_daily_trades}")
                 return None
         
-        # VÉRIFICATION 2: Position existante (sauf moyennage)
-        if not allow_averaging:
-            existing_positions = [p for p in self.state.get('positions', []) 
-                                if p['symbol'] == symbol and p['side'] == 'buy']
-            if existing_positions:
-                print(f"❌ Position déjà ouverte sur {symbol} - Limite atteinte")
-                return None
-        
-        if self.paper_trading:
-            # En paper trading, utiliser paper_balance au lieu de balance_manager
-            current_holding = 0  # Pas de holdings en paper trading simple
-        else:
-            balance = self.balance_manager.get_balance()
-            base_currency = symbol.split('/')[0]
-            current_holding = balance.get(base_currency, {}).get('free', 0)
-        
-        if current_holding > 0.00001 and not allow_averaging:
-            position_value = current_holding * self.get_price(symbol)
-            min_trade_value = self.get_min_amount(symbol)['min_cost']
-            
-            if position_value >= min_trade_value:
-                print(f"⚠️ {symbol.split('/')[0]} déjà détenu ({position_value:.2f} USDT) - Limite atteinte")
-                return None
+        # VÉRIFICATION 2: Position existante via can_open_position (VRAIE VÉRIFICATION)
+        if not allow_averaging and not self.can_open_position(symbol):
+            print(f"❌ Position déjà ouverte sur {symbol} - Limite atteinte")
+            return None
         
         if not self.validate_order(symbol, amount):
             print(f"❌ Validation échouée pour {symbol}")
