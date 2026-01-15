@@ -140,9 +140,9 @@ class AnalysisMixin:
     def check_support_touch(self, symbol, current_price):
         """Support touch simplifié - Seul le support de qualité compte + IGNORE POUSSIÈRE"""
         try:
+            crypto = symbol.split('/')[0]
             # NOUVEAU: Vérifier si position existante est une poussière
             balance = self.balance_manager.get_balance()
-            crypto = symbol.split('/')[0]
             free_amount = balance.get(crypto, {}).get('free', 0)
             locked_amount = balance.get(crypto, {}).get('used', 0)
             total_holding = free_amount + locked_amount
@@ -152,6 +152,7 @@ class AnalysisMixin:
                 position_value = total_holding * current_price
                 min_cost = self.get_min_amount(symbol)['min_cost']
                 if position_value >= min_cost:
+                    print(f"🔍 DEBUG {crypto}: Support check SKIP - Position réelle existe ({position_value:.2f} USDT)")
                     return {'is_support_touch': False}  # Position réelle existe
             
             klines_15m = self.get_klines(symbol, 50, os.getenv('MAIN_TIMEFRAME', '15m'))
@@ -159,15 +160,23 @@ class AnalysisMixin:
                 sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
                 support_levels = sr_levels.get('support_levels', [])
                 
-                for support in support_levels[:3]:  # Top 3 supports
+                print(f"🔍 DEBUG {crypto}: {len(support_levels)} supports trouvés")
+                
+                for i, support in enumerate(support_levels[:3]):  # Top 3 supports
                     support_price = support['price']
+                    rebounds = support.get('strength', 1)
+                    distance_pct = abs(current_price - support_price) / current_price * 100
+                    
+                    print(f"🔍 DEBUG {crypto}: Support #{i+1} @ {support_price:.2f} ({rebounds} rebonds) distance={distance_pct:.2f}%")
+                    
                     # BUY si prix <= support * 1.001 (±0.1%)
                     if current_price <= support_price * 1.001:
+                        print(f"🔍 DEBUG {crypto}: Prix touche support #{i+1}!")
                         
                         # SEUL FILTRE: SUPPORT DE QUALITÉ (≥3 rebonds)
-                        rebounds = support.get('strength', 1)
                         if rebounds < 3:
-                            continue  # Silencieux - trop fréquent
+                            print(f"🔍 DEBUG {crypto}: Support #{i+1} REJETÉ - Seulement {rebounds} rebonds (min 3)")
+                            continue
                         
                         # ✅ SUPPORT VALIDE
                         confidence = 75 if rebounds >= 5 else 70 if rebounds >= 4 else 65
@@ -175,6 +184,8 @@ class AnalysisMixin:
                         # Targets simples
                         stop_loss_price = current_price * 0.99   # -1% stop
                         target_price = current_price * 1.015     # +1.5% target
+                        
+                        print(f"🔍 DEBUG {crypto}: ✅ SUPPORT VALIDE - {rebounds} rebonds, conf={confidence}%")
                         
                         return {
                             'is_support_touch': True,
@@ -186,7 +197,8 @@ class AnalysisMixin:
                         }
                         
             return {'is_support_touch': False}
-        except:
+        except Exception as e:
+            print(f"🔍 DEBUG {crypto}: ERROR support check - {str(e)}")
             return {'is_support_touch': False}
     
     def _calculate_ema(self, prices, period):
