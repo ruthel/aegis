@@ -174,12 +174,51 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if self.double_investment_manager.test_integration():
                 self.double_investment_manager.auto_manage_positions()
         
+        # NOUVEAU: Placer automatiquement les cryptos disponibles en mode vente au démarrage
+        print("\n🔍 Vérification positions existantes...")
+        self._optimize_all_positions_at_startup()
+        
         # Notification de démarrage
         if self.notify_trades and hasattr(self, 'notifier'):
             mode = "PAPER" if self.paper_trading else "LIVE"
             self.notifier.notify(f"🤖 Bot démarré - {mode}")
             # Envoyer status initial
             self.notifier.send_status_update()
+    
+    def _optimize_all_positions_at_startup(self):
+        """Optimise TOUTES les positions existantes au démarrage du bot"""
+        try:
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            
+            optimized_count = 0
+            for pair in trading_pairs:
+                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                base_currency = symbol.split('/')[0]
+                
+                # Vérifier si crypto disponible
+                free_holding = balance.get(base_currency, {}).get('free', 0)
+                locked_holding = balance.get(base_currency, {}).get('used', 0)
+                total_holding = free_holding + locked_holding
+                
+                if total_holding > 0.00001:
+                    position_value = total_holding * self.get_price(symbol)
+                    min_cost = self.get_min_amount(symbol)['min_cost']
+                    
+                    # Si position valide, optimiser
+                    if position_value >= min_cost:
+                        print(f"   📊 {base_currency}: {total_holding:.6f} détecté (Libre: {free_holding:.6f}, Verrouillé: {locked_holding:.6f})")
+                        
+                        if self.optimize_existing_position(symbol):
+                            optimized_count += 1
+            
+            if optimized_count > 0:
+                print(f"✅ {optimized_count} position(s) optimisée(s) au démarrage\n")
+            else:
+                print("✅ Aucune position à optimiser\n")
+                
+        except Exception as e:
+            print(f"⚠️ Erreur optimisation démarrage: {e}\n")
     
     def manage_double_investment_cycle(self):
         """Gère le cycle Double Investment (appelé périodiquement)"""
