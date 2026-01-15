@@ -561,8 +561,8 @@ class MarketAnalyzer:
         # 1. RÉSISTANCE TECHNIQUE (Priorité absolue)
         resistance = self._find_nearest_resistance(klines_4h, current_price)
         if resistance:
-            target = self._calculate_resistance_based_target(resistance, current_price)
-            method = 'resistance_based'
+            target = self._calculate_resistance_based_target(resistance, current_price, klines_1h)
+            method = 'resistance_adaptive'
         
         # 2. FIBONACCI EXTENSION (Si pas de résistance claire)
         elif self._has_fibonacci_setup(klines_4h):
@@ -604,18 +604,61 @@ class MarketAnalyzer:
             return min(resistance_levels)  # La plus proche
         return None
     
-    def _calculate_resistance_based_target(self, resistance, current_price):
-        """Calcule target SOUS la résistance (stratégie professionnelle)"""
-        distance_to_resistance = (resistance - current_price) / current_price
-        
-        if distance_to_resistance > 0.05:      # >5% de distance
-            safety_margin = 0.03  # 3% sous la résistance
-        elif distance_to_resistance > 0.02:    # 2-5% de distance  
-            safety_margin = 0.02  # 2% sous la résistance
-        else:                                  # <2% de distance
-            safety_margin = 0.01  # 1% sous la résistance
+    def _calculate_resistance_based_target(self, resistance, current_price, klines_1h=None):
+        """Calcule target SOUS la résistance - MARGE ADAPTATIVE PROFESSIONNELLE"""
+        # Marge adaptative basée sur volatilité, volume et distance
+        safety_margin = self._calculate_adaptive_margin(resistance, current_price, klines_1h)
         
         return resistance * (1 - safety_margin)
+    
+    def _calculate_adaptive_margin(self, resistance, current_price, klines_1h):
+        """Calcule marge de sécurité adaptative (0.05%-0.5%)"""
+        base_margin = 0.001  # 0.1% base
+        
+        # 1. AJUSTEMENT VOLATILITÉ (facteur principal)
+        if klines_1h and len(klines_1h) >= 10:
+            volatility = self.calculate_volatility(klines_1h)
+            if volatility >= 4.0:      # Très volatil
+                vol_adj = 0.003        # +0.3%
+            elif volatility >= 3.0:    # Volatil
+                vol_adj = 0.002        # +0.2%
+            elif volatility >= 2.0:    # Moyen
+                vol_adj = 0.001        # +0.1%
+            else:                      # Calme
+                vol_adj = 0.0005       # +0.05%
+        else:
+            vol_adj = 0.001
+        
+        # 2. AJUSTEMENT DISTANCE À RÉSISTANCE
+        distance_pct = (resistance - current_price) / current_price
+        if distance_pct > 0.05:        # Résistance loin (>5%)
+            dist_adj = 0.002           # +0.2% (plus de marge)
+        elif distance_pct > 0.03:      # Résistance modérée (3-5%)
+            dist_adj = 0.001           # +0.1%
+        elif distance_pct > 0.01:      # Résistance proche (1-3%)
+            dist_adj = 0.0005          # +0.05%
+        else:                          # Résistance très proche (<1%)
+            dist_adj = 0.0002          # +0.02% (marge minimale)
+        
+        # 3. AJUSTEMENT VOLUME (confirmation)
+        if klines_1h and len(klines_1h) >= 5:
+            volumes = [k['volume'] for k in klines_1h[-5:]]
+            avg_vol = sum(volumes[:-1]) / len(volumes[:-1]) if len(volumes) > 1 else volumes[0]
+            current_vol = volumes[-1]
+            vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
+            
+            if vol_ratio > 1.5:        # Volume fort (confirmation)
+                vol_ratio_adj = -0.0003  # -0.03% (réduire marge)
+            elif vol_ratio < 0.7:      # Volume faible (incertitude)
+                vol_ratio_adj = 0.0005   # +0.05% (augmenter marge)
+            else:
+                vol_ratio_adj = 0
+        else:
+            vol_ratio_adj = 0
+        
+        # MARGE FINALE (limitée 0.05%-0.5%)
+        final_margin = base_margin + vol_adj + dist_adj + vol_ratio_adj
+        return max(0.0005, min(0.005, final_margin))
     
     def _has_fibonacci_setup(self, klines):
         """Vérifie si setup Fibonacci valide"""
