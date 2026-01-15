@@ -347,7 +347,8 @@ class TradingMixin:
     
     def optimize_existing_position(self, symbol):
         """Optimise une position existante avec prix cible intelligent"""
-        balance = self.balance_manager.get_balance()
+        # TOUJOURS rafraîchir depuis Binance (pas de cache)
+        balance = self.balance_manager.get_balance(force_refresh=True)
         base_currency = symbol.split('/')[0]
         free_holding = balance.get(base_currency, {}).get('free', 0)
         locked_holding = balance.get(base_currency, {}).get('used', 0)
@@ -383,6 +384,16 @@ class TradingMixin:
         
         # Placer ordre avec TOUTE la position disponible
         if locked_holding <= 0.00001 and free_holding > 0.00001:
+            # VÉRIFIER sur Binance si ordre existe vraiment (pas juste le cache)
+            if not self.paper_trading:
+                try:
+                    open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                    if open_orders:
+                        print(f"⚠️ {base_currency}: Ordre déjà existant sur Binance - Skip")
+                        return False
+                except Exception as e:
+                    print(f"⚠️ Erreur vérification ordres: {e}")
+            
             avg_buy_price = self.get_real_buy_price(symbol)
             if avg_buy_price:
                 current_price = self.get_price(symbol)
