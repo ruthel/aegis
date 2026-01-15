@@ -186,12 +186,14 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.notifier.send_status_update()
     
     def _optimize_all_positions_at_startup(self):
-        """Optimise TOUTES les positions existantes au démarrage du bot"""
+        """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
         try:
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
             balance = self.balance_manager.get_balance(force_refresh=True)
             
             optimized_count = 0
+            skipped_count = 0
+            
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
                 base_currency = symbol.split('/')[0]
@@ -205,17 +207,27 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     position_value = total_holding * self.get_price(symbol)
                     min_cost = self.get_min_amount(symbol)['min_cost']
                     
-                    # Si position valide, optimiser
+                    # Si position valide
                     if position_value >= min_cost:
                         print(f"   📊 {base_currency}: {total_holding:.6f} détecté (Libre: {free_holding:.6f}, Verrouillé: {locked_holding:.6f})")
                         
+                        # CRITIQUE: Vérifier si ordre existe déjà AVANT d'optimiser
+                        if locked_holding > 0.00001:
+                            print(f"   ✅ {base_currency}: Ordre déjà actif - Conservé")
+                            skipped_count += 1
+                            continue
+                        
+                        # Optimiser seulement si pas d'ordre actif
                         if self.optimize_existing_position(symbol):
                             optimized_count += 1
             
             if optimized_count > 0:
-                print(f"✅ {optimized_count} position(s) optimisée(s) au démarrage\n")
-            else:
-                print("✅ Aucune position à optimiser\n")
+                print(f"✅ {optimized_count} position(s) optimisée(s) au démarrage")
+            if skipped_count > 0:
+                print(f"⏭️ {skipped_count} position(s) déjà optimisée(s) - Conservées")
+            if optimized_count == 0 and skipped_count == 0:
+                print("✅ Aucune position à optimiser")
+            print()  # Ligne vide finale
                 
         except Exception as e:
             print(f"⚠️ Erreur optimisation démarrage: {e}\n")
