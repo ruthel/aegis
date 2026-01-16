@@ -302,7 +302,6 @@ class BalanceManager:
             print(f"⚠️ Erreur affichage résumé: {e}")
     
     def force_balance_sync(self):
-        """Force la synchronisation manuelle des balances (pour debug)"""
         print(f"🔄 Synchronisation manuelle des balances...")
         self.get_balance(force_refresh=True)
         

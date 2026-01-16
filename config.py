@@ -22,7 +22,6 @@ MAX_BALANCE_PER_TRADE = float(os.getenv('MAX_BALANCE_PER_TRADE', '50'))  # % max
 MAX_DAILY_LOSS = float(os.getenv('MAX_DAILY_LOSS', '200'))
 STOP_LOSS_PERCENT = float(os.getenv('STOP_LOSS_PERCENT', '5'))
 TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '3'))
-MAX_POSITION_SIZE = float(os.getenv('MAX_POSITION_SIZE', '50'))
 MAX_DAILY_TRADES = int(os.getenv('MAX_DAILY_TRADES', '100'))
 EMERGENCY_STOP_LOSS = float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
 TRADING_FEE_PERCENT = float(os.getenv('TRADING_FEE_PERCENT', '0.1'))

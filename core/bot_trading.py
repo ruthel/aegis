@@ -142,12 +142,8 @@ class TradingMixin:
             prediction = None  # Initialiser au début
             crypto = symbol.split('/')[0]
             
-            # DEBUG: Afficher le prix reçu
-            print(f"🔍 DEBUG sell_limit {crypto}: Prix reçu en paramètre = {price}")
-            
             # Si pas de prix spécifié, utiliser la prédiction professionnelle
             if price is None:
-                print(f"🔍 DEBUG sell_limit {crypto}: Prix=None, calcul automatique...")
                 current_price = self.get_price(symbol)
                 
                 # Calculer profit minimum avec frais (0.6% profit + 0.2% frais = 0.8% minimum)
@@ -159,15 +155,12 @@ class TradingMixin:
                 
                 if prediction:
                     price = prediction['target_price']
-                    print(f"🔍 DEBUG sell_limit {crypto}: Prix prédit = {price:.6f}")
                     
                     # Vérification finale : prix cible > prix achat + frais
                     buy_price = self.get_real_buy_price(symbol)
                     if buy_price:
                         min_sell_price = buy_price * (1 + min_profit_with_fees / 100)
-                        print(f"🔍 DEBUG sell_limit {crypto}: Prix min requis = {min_sell_price:.6f}")
                         if price < min_sell_price:
-                            print(f"🔍 DEBUG sell_limit {crypto}: Ajustement {price:.6f} → {min_sell_price:.6f}")
                             price = min_sell_price
                             print(f"⚠️ {crypto} → Prix ajusté pour garantir profit: {price:.6f}")
                     
@@ -182,10 +175,7 @@ class TradingMixin:
                 else:
                     # Fallback: prix actuel + profit minimum avec frais
                     price = current_price * (1 + min_profit_with_fees / 100)
-                    print(f"🔍 DEBUG sell_limit {crypto}: Fallback prix = {price:.6f}")
                     print(f"⚠️ {crypto} → Fallback target: {price:.6f} (+{min_profit_with_fees}% avec frais)")
-            else:
-                print(f"🔍 DEBUG sell_limit {crypto}: Utilisation prix fourni = {price:.6f}")
             
             if self.paper_trading:
                 order = {'id': f'limit_sell_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}
@@ -203,18 +193,12 @@ class TradingMixin:
                     print(f"❌ Pas assez de {base_currency} libre: {amount:.6f} > {available:.6f}")
                     return None
                 
-                # DEBUG: Afficher le prix final avant création ordre
-                print(f"🔍 DEBUG sell_limit {crypto}: Création ordre Binance avec prix FINAL = {price:.6f}")
-                
                 order = self.safe_request(self.exchange.create_limit_sell_order, symbol, amount, price)
                 
                 # VÉRIFIER si ordre créé AVANT de notifier
                 if not order:
                     print(f"❌ Échec création ordre limite pour {symbol}")
                     return None
-                
-                # DEBUG: Afficher le prix de l'ordre créé
-                print(f"🔍 DEBUG sell_limit {crypto}: Ordre créé sur Binance avec prix = {order.get('price', 'N/A')}")
                 
                 # AJOUTER à pending_orders immédiatement (pas attendre detect_order_modifications)
                 self.pending_orders[str(order['id'])] = {
@@ -235,8 +219,6 @@ class TradingMixin:
                 return order
         except Exception as e:
             print(f"❌ Erreur vente limite: {e}")
-            import traceback
-            print(f"🔍 DEBUG Traceback: {traceback.format_exc()}")
             return None
     
     def get_real_buy_price(self, symbol):
@@ -431,32 +413,21 @@ class TradingMixin:
             if avg_buy_price:
                 current_price = self.get_price(symbol)
                 
-                # DEBUG: Afficher les paramètres d'entrée
-                print(f"🔍 DEBUG {base_currency}: Prix achat={avg_buy_price:.6f}, Prix actuel={current_price:.6f}")
-                
                 # Utiliser la prédiction intelligente pour le prix cible
-                print(f"🔍 DEBUG {base_currency}: Appel predict_price_target_with_probability()...")
                 prediction = self.market_analyzer.predict_price_target_with_probability(
                     self, symbol, current_price, min_profit_pct=0.6
                 )
                 
-                # DEBUG: Afficher le résultat de la prédiction
                 if prediction:
-                    print(f"🔍 DEBUG {base_currency}: Prédiction reçue = {prediction}")
                     sell_price = prediction['target_price']
-                    print(f"🔍 DEBUG {base_currency}: Prix cible extrait = {sell_price:.6f}")
                     print(f"💰 Optimisation {base_currency}: Target intelligent {sell_price:.6f} "
                           f"({prediction['method_used']}, {prediction['probability']}%)")
                 else:
-                    print(f"⚠️ DEBUG {base_currency}: Prédiction = None, utilisation fallback")
                     # Fallback: méthode traditionnelle
                     min_profit = self.min_profit_threshold + (2 * self.trading_fee)
                     sell_price = avg_buy_price * (1 + min_profit)
-                    print(f"🔍 DEBUG {base_currency}: Prix fallback calculé = {sell_price:.6f}")
                     print(f"💰 Optimisation {base_currency}: Target fallback {sell_price:.6f}")
                 
-                # DEBUG: Afficher le prix avant appel sell_limit
-                print(f"🔍 DEBUG {base_currency}: Appel sell_limit() avec prix={sell_price:.6f}")
                 sell_order = self.sell_limit(symbol, free_holding, sell_price)
                 if sell_order:
                     profit_pct = ((sell_price - avg_buy_price) / avg_buy_price) * 100

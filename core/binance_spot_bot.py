@@ -799,14 +799,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if protections:
             self.async_print(f"🛡️ PROTECTIONS: {' | '.join(protections[:3])}")  # Max 3
     
-    def show_debug_commands(self):
-        """Affiche les commandes de debug"""
-        print("\n🔧 COMMANDES DEBUG:")
-        print("  bot.balance_manager.force_balance_sync()  # Forcer sync balances")
-        print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
-        print("  bot.pattern_analyzer.display_levels('BTC/USDT')  # Niveaux dynamiques")
-        print("  bot.exchange.fetch_balance()  # Test API direct")
-    
     def show_dynamic_levels(self, tradable_pairs):
         """Affiche les niveaux dynamiques pour les cryptos tradables uniquement"""
         try:

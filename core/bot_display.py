@@ -321,12 +321,6 @@ class DisplayMixin:
         """Affiche l'exécution d'une stratégie"""
         self.async_print(f"\n⚡ {symbol} {price:.2f} ({change_24h:+.2f}%) | Vol {vol_display:.1f}/5")
     
-    def show_debug_commands(self):
-        """Affiche les commandes de debug"""
-        print("\n🔧 COMMANDES DEBUG:")
-        print("  bot.force_balance_sync()  # Forcer sync balances")
-        print("  bot.balance_manager.get_balance(True)  # Rafraîchir balances")
-    
     def get_tradable_pairs(self, trading_pairs, usdt_available):
         """Retourne la liste des paires réellement tradables via le crypto scorer"""
         stuck_positions = []

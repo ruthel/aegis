@@ -105,7 +105,6 @@ TRADE_AMOUNT=5                    # Montant par trade
 MAX_DAILY_LOSS=200               # Perte max par jour
 STOP_LOSS_PERCENT=5              # Stop-loss à 5%
 TRAILING_STOP_PERCENT=3          # Trailing stop à 3%
-MAX_POSITION_SIZE=50             # Taille max position
 KELLY_MULTIPLIER=0.25            # Multiplicateur Kelly (conservateur)
 MAX_RISK_PER_TRADE=1            # Risque max par trade (%)
 MIN_RISK_REWARD_RATIO=2          # Ratio R/R minimum

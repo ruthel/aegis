@@ -218,38 +218,27 @@ class AnalysisMixin:
             crypto_locked = balance.get(base_currency, {}).get('used', 0)
             crypto_total = crypto_free + crypto_locked
             
-            print(f"🔍 DEBUG {base_currency}: free={crypto_free:.6f} locked={crypto_locked:.6f} total={crypto_total:.6f}")
-            
             if crypto_total > 0:
                 position_value = crypto_total * current_price
                 min_trade_value = self.get_min_amount(symbol)['min_cost']
-                print(f"🔍 DEBUG {base_currency}: value={position_value:.2f} USDT, min={min_trade_value:.2f} USDT")
                 if position_value >= min_trade_value:
                     has_pending_order = any(
                         order['symbol'] == symbol and order['side'] == 'sell'
                         for order in self.pending_orders.values()
                     )
                     if has_pending_order:
-                        print(f"🔍 DEBUG {base_currency}: BLOCKED - Ordre limite actif")
                         return {'status': 'BLOCKED', 'time_estimate': 'Ordre limite actif', 'reason': 'Attente exécution vente'}
                     else:
-                        print(f"🔍 DEBUG {base_currency}: BLOCKED - Position ouverte")
                         return {'status': 'BLOCKED', 'time_estimate': 'Position ouverte', 'reason': 'Attente vente'}
-                else:
-                    print(f"🔍 DEBUG {base_currency}: Position = poussière (ignorée)")
             
             trade_amount = float(os.getenv('TRADE_AMOUNT', '8'))
-            print(f"🔍 DEBUG {base_currency}: USDT={usdt_available:.2f}, trade_amount={trade_amount:.2f}")
             if usdt_available < trade_amount:
-                print(f"🔍 DEBUG {base_currency}: NO_FUNDS - Insuffisant")
                 return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usdt_available:.2f} USDT disponible'}
             
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
             vol_value = analysis.get('volatility', 2.0)
             min_conf = MarketAnalyzer.get_min_confidence(vol_value)
-            
-            print(f"🔍 DEBUG {base_currency}: signal={signal['action']} conf={signal['confidence']:.0f}% min={min_conf:.0f}%")
             
             can_buy_now = (
                 signal['action'] in ['BUY', 'STRONG_BUY'] and
@@ -258,7 +247,6 @@ class AnalysisMixin:
             )
             
             if can_buy_now:
-                print(f"🔍 DEBUG {base_currency}: READY - Achat possible maintenant")
                 return {
                     'status': 'READY',
                     'time_estimate': 'Maintenant',
@@ -374,7 +362,6 @@ class AnalysisMixin:
                 target_price = current_price
                 reason = f"Signal {signal['confidence']:.0f}%→{min_conf}%"
             
-            print(f"🔍 DEBUG {base_currency}: WAITING - time={time_estimate} reason={reason}")
             return {
                 'status': 'WAITING',
                 'time_estimate': time_estimate,
@@ -384,5 +371,4 @@ class AnalysisMixin:
                 'reason': reason
             }
         except Exception as e:
-            print(f"🔍 DEBUG {base_currency}: ERROR - {str(e)}")
             return {'status': 'ERROR', 'time_estimate': 'Erreur', 'reason': str(e)}

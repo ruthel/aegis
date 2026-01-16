@@ -2088,19 +2088,7 @@ class MarketAnalyzer:
 
     @staticmethod
     def get_position_limits(total_capital):
-        """
-        Calcule les limites de positions selon le capital total
-        
-        Args:
-            total_capital (float): Capital total en USDT
-            
-        Returns:
-            dict: {
-                'max_positions_per_crypto': int,
-                'max_tradeable_cryptos': int,
-                'total_max_positions': int
-            }
-        """
+        """Limites de positions dynamiques selon capital total (USDT)"""
         if total_capital <= 10:
             return {
                 'max_positions_per_crypto': 1,

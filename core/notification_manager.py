@@ -454,9 +454,9 @@ class NotificationManager:
         # Afficher chaque crypto avec détail des ordres
         for i, item in enumerate(portfolio_items):
             is_last = (i == len(portfolio_items) - 1)
-            prefix = "└─" if is_last else "├─"
+            prefix = " └─" if is_last else "├─"
             
-            msg += f"{prefix} {item['crypto']}: {item['amount']:.6f} • {item['value']:.2f} USDT{item['pnl_display']}\n"
+            msg += f"{prefix} {item['crypto']}: {item['amount']:.3f} • {item['value']:.2f} USDT{item['pnl_display']}\n"
             
             # Détail des ordres pour cette crypto
             if item['has_orders']:
@@ -466,7 +466,7 @@ class NotificationManager:
                     if open_orders:
                         for j, order in enumerate(open_orders):
                             is_last_order = (j == len(open_orders) - 1)
-                            order_prefix = "   └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
+                            order_prefix = "    └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
                             
                             # Déterminer source de l'ordre
                             source = "🤖" if order.get('clientOrderId', '').startswith('bot_') else "👤"
@@ -486,7 +486,7 @@ class NotificationManager:
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
-                            msg += f"{order_prefix} {source} Limite: {float(order['amount']):.3f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
+                            msg += f"{order_prefix} {source} Lim. : {float(order['amount']):.3f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
                     else:
                         # Pas d'ordres trouvés mais balance locked > 0
                         order_prefix = "   └─" if is_last else "│  └─"
@@ -646,7 +646,8 @@ class NotificationManager:
                 else:
                     msg += f"└─ Positions actives\n\n"
             else:
-                msg += f"💎 Double Investment: Aucune position\n\n"
+                msg += f"💎 Double Investment\n"
+                msg += f"└─ Aucune position\n\n"
         
         # Opportunités - LIMITER AUX TRADABLE PAIRS
         msg += f"🔮 Opportunités\n"
