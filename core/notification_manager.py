@@ -679,6 +679,4 @@ class NotificationManager:
         else:
             msg += "└─ Aucune\n"
         
-        msg += f"\n⏰ Prochain: {self.periodic_interval//60}min"
-        
         return msg

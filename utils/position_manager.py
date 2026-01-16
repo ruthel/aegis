@@ -130,8 +130,7 @@ class PositionManager:
                 if result:
                     del self.stuck_positions[symbol]
                     print(f"✅ Position liquidée - Perte acceptée")
-                    if bot.notify_trades:
-                        bot.notifier.notify(f"🚨 STOP LOSS: {symbol} vendu à {loss_percent:.1f}%")
+                    bot.notifier.notify(f"🚨 STOP LOSS: {symbol} vendu à {loss_percent:.1f}%")
                     return True
         
         elif strategy['action'] == 'hold':

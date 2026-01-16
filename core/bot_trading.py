@@ -335,6 +335,19 @@ class TradingMixin:
                     # Calculer P&L
                     pnl = self.calculate_pnl(symbol, 'sell', amount, current_price)
                     
+                    # Envoyer notification Telegram
+                    if self.notify_trades and pnl is not None:
+                        buy_price = self.get_real_buy_price(symbol)
+                        buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+                        hold_time = "N/A"
+                        if buy_positions:
+                            buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
+                            delta = datetime.now() - buy_time
+                            hours = delta.total_seconds() / 3600
+                            hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
+                        
+                        self.notifier.notify_trade_sell(symbol, amount, current_price, amount * current_price, buy_price or current_price, pnl, hold_time)
+                    
                     # Enregistrer la vente
                     position = {
                         'symbol': symbol, 'side': 'sell', 'amount': amount,
@@ -454,7 +467,7 @@ class TradingMixin:
         return False
     
     def detect_order_modifications(self):
-        """Synchronise TOUS les ordres ouverts depuis Binance (bot + manuels)"""
+        """Synchronise TOUS les ordres ouverts depuis Binance (bot + manuels) + Détecte exécutions"""
         if self.paper_trading:
             return
         
@@ -462,6 +475,9 @@ class TradingMixin:
             import os
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
             all_open_orders = {}
+            
+            # Sauvegarder les ordres précédents pour détecter les exécutions
+            previous_orders = dict(self.pending_orders)
             
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
@@ -485,6 +501,46 @@ class TradingMixin:
                         'side': order['side'],
                         'source': 'manual' if order_id not in self.pending_orders else 'bot'
                     }
+            
+            # Détecter ordres exécutés (présents avant, absents maintenant)
+            for order_id, order_data in previous_orders.items():
+                if order_id not in all_open_orders:
+                    # Ordre disparu = exécuté
+                    symbol = order_data['symbol']
+                    side = order_data['side']
+                    order = order_data['order']
+                    
+                    if side == 'sell':
+                        # Ordre de vente exécuté - Envoyer notification
+                        amount = order.get('amount', 0)
+                        price = order.get('price', 0)
+                        
+                        # Calculer P&L
+                        pnl = self.calculate_pnl(symbol, 'sell', amount, price)
+                        
+                        if self.notify_trades and pnl is not None:
+                            buy_price = self.get_real_buy_price(symbol)
+                            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+                            hold_time = "N/A"
+                            if buy_positions:
+                                buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
+                                delta = datetime.now() - buy_time
+                                hours = delta.total_seconds() / 3600
+                                hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
+                            
+                            self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl, hold_time)
+                        
+                        # Enregistrer la vente dans l'état
+                        position = {
+                            'symbol': symbol, 'side': 'sell', 'amount': amount,
+                            'price': price, 'timestamp': datetime.now().isoformat(),
+                            'order_id': order_id, 'source': 'bot', 'paper': False
+                        }
+                        self.state['positions'].append(position)
+                        self.save_state()
+                        
+                        crypto = symbol.split('/')[0]
+                        print(f"✅ Ordre limite VENTE exécuté: {amount:.6f} {crypto} @ {price:.2f}")
             
             # Remplacer par tous les ordres synchronisés
             self.pending_orders = all_open_orders
