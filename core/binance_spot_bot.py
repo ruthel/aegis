@@ -190,8 +190,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if self.notify_trades and hasattr(self, 'notifier'):
             mode = "PAPER" if self.paper_trading else "LIVE"
             self.notifier.notify(f"🤖 Bot démarré - {mode}")
-            # Envoyer status initial
-            self.notifier.send_status_update()
     
     def _optimize_all_positions_at_startup(self):
         """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
