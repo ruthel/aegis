@@ -376,16 +376,19 @@ class NotificationManager:
     
     def send_status_update(self):
         """Envoie status périodique synchronisé sur XX:00 et XX:30"""
-        # Vérifier si on est à une heure ronde (XX:00 ou XX:30)
-        current_minute = datetime.now().minute
+        from datetime import datetime, timezone
         
-        # Tolérance de ±1 minute pour éviter de rater l'heure
+        # Utiliser l'heure UTC pour cohérence
+        now_utc = datetime.now(timezone.utc)
+        current_minute = now_utc.minute
+        
+        # Vérifier si on est à une heure ronde (XX:00 ou XX:30)
         if current_minute not in [0, 30]:
             return  # Pas l'heure, skip
         
-        # Anti-spam : éviter envois multiples dans la même minute
+        # Anti-spam RENFORCÉ : éviter envois multiples dans la même minute
         now = time.time()
-        if now - self.last_status_time < 50:  # 50 secondes minimum entre envois
+        if now - self.last_status_time < 60:  # 55 secondes minimum entre envois
             return
         
         self.last_status_time = now
