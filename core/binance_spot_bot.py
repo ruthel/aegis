@@ -742,8 +742,11 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 optimized_any = False
                 for symbol in tradable_pairs:
                     base_currency = symbol.split('/')[0]
-                    free_holding = balance.get(base_currency, {}).get('free', 0)
-                    locked_holding = balance.get(base_currency, {}).get('used', 0)
+                    
+                    # CORRECTION: Force refresh balance pour détecter nouvelles positions
+                    balance_fresh = self.balance_manager.get_balance(force_refresh=True)
+                    free_holding = balance_fresh.get(base_currency, {}).get('free', 0)
+                    locked_holding = balance_fresh.get(base_currency, {}).get('used', 0)
                     total_holding = free_holding + locked_holding
                     
                     # Optimiser si position existe (libre ou verrouillée)
@@ -1318,6 +1321,15 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # Ajouter trailing stop avec prix optimisé
             if hasattr(self, 'trailing_stop_manager'):
                 self.trailing_stop_manager.add_position(symbol, current_price)
+            
+            # CORRECTION: Placer immédiatement l'ordre de vente après l'achat
+            print(f"🔄 Placement ordre de vente automatique...")
+            import time
+            time.sleep(1)  # Attendre que Binance synchronise la balance
+            if self.optimize_existing_position(symbol):
+                print(f"✅ Ordre de vente placé avec succès")
+            else:
+                print(f"⚠️ Ordre de vente sera placé au prochain cycle")
         else:
             print(f"❌ Échec de l'achat")
     
