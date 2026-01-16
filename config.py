@@ -35,7 +35,6 @@ PAPER_TRADING = os.getenv('PAPER_TRADING', 'False').lower() == 'true'
 PAPER_BALANCE = float(os.getenv('PAPER_BALANCE', '1000'))
 
 # ===== BINANCE EARN (TIRELIRE) =====
-TIRELIRE_MODE = os.getenv('TIRELIRE_MODE', 'True').lower() == 'true'
 ENABLE_EARN = os.getenv('ENABLE_EARN', 'True').lower() == 'true'
 MIN_TRADING_BALANCE = float(os.getenv('MIN_TRADING_BALANCE', '5'))
 EARN_ALLOCATION_PERCENT = float(os.getenv('EARN_ALLOCATION_PERCENT', '100'))
@@ -59,7 +58,6 @@ TELEGRAM_STATUS_INTERVAL = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '1800'))
 # ===== MONITORING =====
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 SAVE_LOGS = os.getenv('SAVE_LOGS', 'True').lower() == 'true'
-SHOW_PERFORMANCE = os.getenv('SHOW_PERFORMANCE', 'True').lower() == 'true'
 
 # ===== COMPATIBILITÉ (anciens noms) =====
 BINANCE_MAINNET_API_KEY = BINANCE_API_KEY
