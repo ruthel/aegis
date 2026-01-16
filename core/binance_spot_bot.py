@@ -727,8 +727,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 self.sync_positions_from_exchange()
                 self.detect_order_modifications()
                 # Rafraîchir les balances selon configuration
-                from config import FORCE_BALANCE_REFRESH
-                balance = self.balance_manager.get_balance(force_refresh=FORCE_BALANCE_REFRESH)
+                balance = self.balance_manager.get_balance(force_refresh=True)
                 
                 # Sync périodique supplémentaire toutes les 30 secondes
                 if hasattr(self, 'last_balance_sync'):

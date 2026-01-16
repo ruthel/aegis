@@ -61,11 +61,6 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 SAVE_LOGS = os.getenv('SAVE_LOGS', 'True').lower() == 'true'
 SHOW_PERFORMANCE = os.getenv('SHOW_PERFORMANCE', 'True').lower() == 'true'
 
-# ===== SYNCHRONISATION =====
-FORCE_BALANCE_REFRESH = os.getenv('FORCE_BALANCE_REFRESH', 'True').lower() == 'true'
-
-
-
 # ===== COMPATIBILITÉ (anciens noms) =====
 BINANCE_MAINNET_API_KEY = BINANCE_API_KEY
 BINANCE_MAINNET_API_SECRET = BINANCE_API_SECRET
