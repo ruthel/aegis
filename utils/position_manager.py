@@ -382,6 +382,12 @@ class PositionManager:
             signal_adj = self._get_signal_adjustment(signal_strength)
             size_usdt *= volatility_adj * signal_adj
             
+            # NOUVEAU: Si reste < 5 USDT après position, utiliser tout
+            remaining = account_balance - size_usdt
+            if 0 < remaining < 5.0:
+                size_usdt = account_balance
+                print(f"💰 Reste < 5 USDT → Utilisation totale: {size_usdt:.2f} USDT")
+            
             # Recalculer crypto amount
             current_price = position_size['current_price']
             size_crypto = size_usdt / current_price if current_price > 0 else 0
