@@ -471,10 +471,23 @@ class NotificationManager:
                             # Déterminer source de l'ordre
                             source = "🤖" if order.get('clientOrderId', '').startswith('bot_') else "👤"
                             
-                            # Calculer profit potentiel
-                            current_price = bot.get_price(f"{item['crypto']}/USDT")
+                            # Calculer profit réel (prix vente - prix achat - frais)
                             order_price = float(order['price'])
-                            profit_pct = ((order_price - current_price) / current_price) * 100
+                            try:
+                                avg_buy_price = bot.position_manager.get_average_buy_price(item['crypto'])
+                                if avg_buy_price > 0:
+                                    # Profit brut
+                                    gross_profit_pct = ((order_price - avg_buy_price) / avg_buy_price) * 100
+                                    # Soustraire frais (0.1% achat + 0.1% vente = 0.2%)
+                                    profit_pct = gross_profit_pct - 0.2
+                                else:
+                                    # Fallback: distance au prix actuel
+                                    current_price = bot.get_price(f"{item['crypto']}/USDT")
+                                    profit_pct = ((order_price - current_price) / current_price) * 100
+                            except:
+                                # Fallback: distance au prix actuel
+                                current_price = bot.get_price(f"{item['crypto']}/USDT")
+                                profit_pct = ((order_price - current_price) / current_price) * 100
                             
                             # Calculer temps depuis création
                             order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
@@ -486,7 +499,12 @@ class NotificationManager:
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
-                            msg += f"{order_prefix} {source} Lim. : {float(order['amount']):.3f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
+                            msg += f"{order_prefix} {source} Lim. {float(order['amount']):.3f} @ {order_price:.2f}\n"
+                            # Ajouter ligne de détails (profit + durée)
+                            detail_prefix = "     │  ├─" if (is_last and not is_last_order) else "        ├─" if is_last else "│  │  ├─" if not is_last_order else "│     ├─"
+                            msg += f"{detail_prefix} Profit: +{profit_pct:.1f}%\n"
+                            detail_prefix2 = "     │  └─" if (is_last and not is_last_order) else "        └─" if is_last else "│  │  └─" if not is_last_order else "│     └─"
+                            msg += f"{detail_prefix2} Durée: {time_display}\n"
                     else:
                         # Pas d'ordres trouvés mais balance locked > 0
                         order_prefix = "   └─" if is_last else "│  └─"
