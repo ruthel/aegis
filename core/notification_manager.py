@@ -492,10 +492,15 @@ class NotificationManager:
                             # Calculer temps depuis création
                             order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
                             time_diff = datetime.now() - order_time
+                            
+                            # Format durée avec jours + heures
                             if time_diff.days > 0:
-                                time_display = f"{time_diff.days}j"
-                            elif time_diff.seconds > 3600:
-                                time_display = f"{time_diff.seconds // 3600}h"
+                                hours = time_diff.seconds // 3600
+                                time_display = f"{time_diff.days}j {hours}h"
+                            elif time_diff.seconds >= 3600:
+                                hours = time_diff.seconds // 3600
+                                minutes = (time_diff.seconds % 3600) // 60
+                                time_display = f"{hours}h {minutes}min"
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
