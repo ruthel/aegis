@@ -404,6 +404,19 @@ class NotificationManager:
     
     def _build_status_message(self):
         """Construit message status ultra-compact"""
+        
+        def format_amount(amount, crypto):
+            """Formate la quantité avec décimales adaptatives"""
+            # Cryptos chères (BTC, etc.) : plus de décimales
+            if amount < 0.001:
+                return f"{amount:.8f}".rstrip('0').rstrip('.')
+            elif amount < 0.01:
+                return f"{amount:.6f}".rstrip('0').rstrip('.')
+            elif amount < 1:
+                return f"{amount:.4f}".rstrip('0').rstrip('.')
+            else:
+                return f"{amount:.3f}".rstrip('0').rstrip('.')
+        
         bot = self.bot_ref
         balance = bot.balance_manager.get_balance()
         usdt = balance.get('USDT', {}).get('free', 0)
@@ -456,7 +469,7 @@ class NotificationManager:
             is_last = (i == len(portfolio_items) - 1)
             prefix = "└─" if is_last else "├─"
             
-            msg += f"{prefix} {item['crypto']}: {item['amount']:.3f} • {item['value']:.2f} USDT{item['pnl_display']}\n"
+            msg += f"{prefix} {item['crypto']}: {format_amount(item['amount'], item['crypto'])} • {item['value']:.2f} USDT{item['pnl_display']}\n"
             
             # Détail des ordres pour cette crypto
             if item['has_orders']:
@@ -504,7 +517,7 @@ class NotificationManager:
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
-                            msg += f"{order_prefix} {source} Lim. {float(order['amount']):.3f} @ {order_price:.2f}\n"
+                            msg += f"{order_prefix} {source} Lim. {format_amount(float(order['amount']), item['crypto'])} @ {order_price:.2f}\n"
                             # Ajouter ligne de détails (profit + durée)
                             detail_prefix = "     │  ├─" if (is_last and not is_last_order) else "        ├─" if is_last else "│  │  ├─" if not is_last_order else "│     ├─"
                             msg += f"{detail_prefix} Profit: +{profit_pct:.1f}%\n"
