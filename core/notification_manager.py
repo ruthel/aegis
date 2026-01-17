@@ -40,10 +40,10 @@ class NotificationManager:
     def notify_trade_buy(self, symbol, amount, price, total, signal_data):
         """Notification achat avec contexte"""
         crypto = symbol.split('/')[0]
-        msg = f"🟢 <b>ACHAT {crypto}</b>\n\n"
-        msg += f"💰 Montant: <b>{amount:.6f} {crypto}</b>\n"
-        msg += f"💵 Prix: <b>{price:.2f} USDT</b>\n"
-        msg += f"📊 Total: <b>{total:.2f} USDT</b>\n\n"
+        msg = f"🟢 ACHAT {crypto}\n\n"
+        msg += f"💰 Montant: {amount:.6f} {crypto}\n"
+        msg += f"💵 Prix: {price:.2f} USDT\n"
+        msg += f"📊 Total: {total:.2f} USDT\n\n"
         msg += f"📈 Signal: {signal_data.get('trend', 'N/A')} {signal_data.get('confidence', 0):.0f}%\n"
         msg += f"⚡ Vol: {signal_data.get('volatility', 0):.1f}/5 | Conf: {signal_data.get('confidence', 0):.0f}%\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
@@ -55,11 +55,11 @@ class NotificationManager:
         pnl_pct = ((price - buy_price) / buy_price) * 100
         emoji = "🟢" if pnl > 0 else "🔴"
         
-        msg = f"🔴 <b>VENTE {crypto}</b>\n\n"
-        msg += f"💰 Montant: <b>{amount:.6f} {crypto}</b>\n"
-        msg += f"💵 Prix: <b>{price:.2f} USDT</b>\n"
-        msg += f"📊 Total: <b>{total:.2f} USDT</b>\n\n"
-        msg += f"💸 P&L: {emoji} <b>{pnl:+.2f} USDT ({pnl_pct:+.1f}%)</b>\n"
+        msg = f"🔴 VENTE {crypto}\n\n"
+        msg += f"💰 Montant: {amount:.6f} {crypto}\n"
+        msg += f"💵 Prix: {price:.2f} USDT\n"
+        msg += f"📊 Total: {total:.2f} USDT\n\n"
+        msg += f"💸 P&L: {emoji} {pnl:+.2f} USDT ({pnl_pct:+.1f}%)\n"
         msg += f"⏱️ Détention: {hold_time}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
@@ -460,9 +460,9 @@ class NotificationManager:
         # Stats
         win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
         
-        msg = f"🤖 <b>{BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}</b>\n\n"
-        msg += f"💼 <b>Portfolio ({total_value:.2f} USDT)</b>\n"
-        msg += f"├─ USDT: <b>{usdt:.2f}</b>\n"
+        msg = f"🤖 {BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}\n\n"
+        msg += f"💼 Portfolio ({total_value:.2f} USDT)\n"
+        msg += f"├─ USDT: {usdt:.2f}\n"
         
         # Afficher chaque crypto avec détail des ordres
         for i, item in enumerate(portfolio_items):
@@ -514,7 +514,7 @@ class NotificationManager:
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
-                            msg += f"{detail_prefix} Limite: {format_amount(float(order['amount']), item['crypto'])} @ {order_price:.2f}\n"
+                            msg += f"{order_prefix} Limite: {format_amount(float(order['amount']), item['crypto'])} @ {order_price:.2f}\n"
                             # Ajouter ligne de détails (profit + durée)
                             detail_prefix = "     │  ├─" if (is_last and not is_last_order) else "        ├─" if is_last else "│  │  ├─" if not is_last_order else "│     ├─"
                             msg += f"{detail_prefix} Profit: +{profit_pct:.1f}%\n"
@@ -530,7 +530,7 @@ class NotificationManager:
                     msg += f"{order_prefix} 🤖 Ordre actif\n"
         
         msg += f"\n"
-        msg += f"📈 <b>Performance</b>\n"
+        msg += f"📈 Performance\n"
         
         # Utiliser stats 30j si disponibles (P&L + trades + winrate cohérents)
         if hasattr(bot, 'global_stats_30d') and bot.global_stats_30d:
@@ -560,7 +560,7 @@ class NotificationManager:
             total_positions = len(real_positions) + len(simulated_positions)
             
             if total_positions > 0:
-                msg += f"💎 <b>Double Investment</b>\n"
+                msg += f"💎 Double Investment\n"
                 msg += f"├─ Positions: {total_positions}\n"
                 
                 # Calculer montants investis
@@ -681,11 +681,11 @@ class NotificationManager:
                 else:
                     msg += f"└─ Positions actives\n\n"
             else:
-                msg += f"💎 <b>Double Investment</b>\n"
+                msg += f"💎 Double Investment\n"
                 msg += f"└─ Aucun \n\n"
         
         # Opportunités - LIMITER AUX TRADABLE PAIRS
-        msg += f"🔮 <b>Opportunités</b>\n"
+        msg += f"🔮 Opportunités\n"
         opps = []
         
         # Récupérer les cryptos tradables du bot
