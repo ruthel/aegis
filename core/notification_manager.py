@@ -498,17 +498,19 @@ class NotificationManager:
         
         msg += f"\n"
         msg += f"📈 Performance\n"
-        msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
         
-        # Utiliser win rate global 30j si disponible
+        # Utiliser stats 30j si disponibles (P&L + trades + winrate cohérents)
         if hasattr(bot, 'global_stats_30d') and bot.global_stats_30d:
             stats = bot.global_stats_30d
+            msg += f"├─ P&L: {stats['total_pnl']:+.2f} USDT\n"
             msg += f"├─ Trades: {stats['total_cycles']} ({stats['winrate']:.0f}% win) [30j]\n"
             if stats['best_trade'] > 0:
                 msg += f"└─ Meilleur: +{stats['best_trade']:.2f} USDT\n\n"
             else:
                 msg += f"└─ Aucun trade\n\n"
         else:
+            # Fallback sur stats journalières
+            msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
             win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
             msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
             if bot.total_trades > 0:

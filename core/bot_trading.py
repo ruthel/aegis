@@ -119,17 +119,16 @@ class TradingMixin:
                 
                 pnl = self.calculate_pnl(symbol, 'sell', amount, price)
                 
-                if self.notify_trades and pnl is not None:
-                    buy_price = self.get_real_buy_price(symbol)
-                    buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-                    hold_time = "N/A"
-                    if buy_positions:
-                        buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
-                        delta = datetime.now() - buy_time
-                        hours = delta.total_seconds() / 3600
-                        hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
-                    
-                    self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl, hold_time)
+                buy_price = self.get_real_buy_price(symbol)
+                buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+                hold_time = "N/A"
+                if buy_positions:
+                    buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
+                    delta = datetime.now() - buy_time
+                    hours = delta.total_seconds() / 3600
+                    hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
+                
+                self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
             
             return order
         except Exception as e:
@@ -318,7 +317,7 @@ class TradingMixin:
                     pnl = self.calculate_pnl(symbol, 'sell', amount, current_price)
                     
                     # Envoyer notification Telegram
-                    if self.notify_trades and pnl is not None:
+                    if self.notify_trades:
                         buy_price = self.get_real_buy_price(symbol)
                         buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
                         hold_time = "N/A"
@@ -328,7 +327,7 @@ class TradingMixin:
                             hours = delta.total_seconds() / 3600
                             hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                         
-                        self.notifier.notify_trade_sell(symbol, amount, current_price, amount * current_price, buy_price or current_price, pnl, hold_time)
+                        self.notifier.notify_trade_sell(symbol, amount, current_price, amount * current_price, buy_price or current_price, pnl or 0, hold_time)
                     
                     # Enregistrer la vente
                     position = {
@@ -489,7 +488,7 @@ class TradingMixin:
                         # Calculer P&L
                         pnl = self.calculate_pnl(symbol, 'sell', amount, price)
                         
-                        if self.notify_trades and pnl is not None:
+                        if self.notify_trades:
                             buy_price = self.get_real_buy_price(symbol)
                             buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
                             hold_time = "N/A"
@@ -499,7 +498,7 @@ class TradingMixin:
                                 hours = delta.total_seconds() / 3600
                                 hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                             
-                            self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl, hold_time)
+                            self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
                         
                         # Enregistrer la vente dans l'état
                         position = {
