@@ -71,7 +71,7 @@ class TradingMixin:
                 else:
                     self.total_trades = 1
                 
-                if self.notify_trades:
+                if hasattr(self, 'notifier'):
                     analysis = self.get_cached_analysis(symbol, price)
                     signal_data = {
                         'trend': analysis['global_signal'].get('dominant_trend', 'N/A'),
@@ -83,7 +83,7 @@ class TradingMixin:
             return order
         except Exception as e:
             print(f"❌ Erreur achat: {e}")
-            if self.notify_trades and 'insufficient balance' in str(e).lower():
+            if hasattr(self, 'notifier') and 'insufficient balance' in str(e).lower():
                 self.notifier.notify_error("Fonds insuffisants", str(e))
             return None
     
@@ -128,7 +128,8 @@ class TradingMixin:
                     hours = delta.total_seconds() / 3600
                     hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                 
-                self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+                if hasattr(self, 'notifier'):
+                    self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
             
             return order
         except Exception as e:
@@ -166,7 +167,7 @@ class TradingMixin:
                     print(f"🎯 {symbol.split('/')[0]} → Target: {price:.6f} ({prediction['method_used']}) | "
                           f"Probabilité: {prediction['probability']}% | {prediction['time_horizon']}")
                     
-                    if self.notify_trades:
+                    if hasattr(self, 'notifier'):
                         profit_pct = prediction['profit_potential']
                         self.notifier.notify_smart_limit_order(
                             symbol, amount, price, profit_pct, prediction
@@ -209,7 +210,7 @@ class TradingMixin:
                 }
                 
                 # Ordre créé avec succès - notification seulement si prediction existe
-                if self.notify_trades and hasattr(self.notifier, 'notify_smart_limit_order') and prediction:
+                if hasattr(self, 'notifier') and hasattr(self.notifier, 'notify_smart_limit_order') and prediction:
                     buy_price = self.get_real_buy_price(symbol)
                     if buy_price:
                         profit_pct = ((price - buy_price) / buy_price) * 100
@@ -317,7 +318,7 @@ class TradingMixin:
                     pnl = self.calculate_pnl(symbol, 'sell', amount, current_price)
                     
                     # Envoyer notification Telegram
-                    if self.notify_trades:
+                    if hasattr(self, 'notifier'):
                         buy_price = self.get_real_buy_price(symbol)
                         buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
                         hold_time = "N/A"
@@ -480,6 +481,8 @@ class TradingMixin:
                     side = order_data['side']
                     order = order_data['order']
                     
+                    print(f"🔔 ORDRE EXÉCUTÉ DÉTECTÉ: {side} {symbol}")  # DEBUG
+                    
                     if side == 'sell':
                         # Ordre de vente exécuté - Envoyer notification
                         amount = order.get('amount', 0)
@@ -488,7 +491,7 @@ class TradingMixin:
                         # Calculer P&L
                         pnl = self.calculate_pnl(symbol, 'sell', amount, price)
                         
-                        if self.notify_trades:
+                        if hasattr(self, 'notifier'):
                             buy_price = self.get_real_buy_price(symbol)
                             buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
                             hold_time = "N/A"
@@ -498,7 +501,11 @@ class TradingMixin:
                                 hours = delta.total_seconds() / 3600
                                 hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                             
+                            print(f"📤 Envoi notification Telegram vente...")  # DEBUG
                             self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+                            print(f"✅ Notification envoyée")  # DEBUG
+                        else:
+                            print(f"⚠️ Notification NON envoyée - has_notifier={hasattr(self, 'notifier')}")  # DEBUG
                         
                         # Enregistrer la vente dans l'état
                         position = {
