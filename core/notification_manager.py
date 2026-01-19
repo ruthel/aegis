@@ -404,6 +404,19 @@ class NotificationManager:
     
     def _build_status_message(self):
         """Construit message status ultra-compact"""
+        
+        def format_amount(amount, crypto):
+            """Formate la quantité avec décimales adaptatives"""
+            # Cryptos chères (BTC, etc.) : plus de décimales
+            if amount < 0.001:
+                return f"{amount:.8f}".rstrip('0').rstrip('.')
+            elif amount < 0.01:
+                return f"{amount:.6f}".rstrip('0').rstrip('.')
+            elif amount < 1:
+                return f"{amount:.4f}".rstrip('0').rstrip('.')
+            else:
+                return f"{amount:.3f}".rstrip('0').rstrip('.')
+        
         bot = self.bot_ref
         balance = bot.balance_manager.get_balance()
         usdt = balance.get('USDT', {}).get('free', 0)
@@ -456,7 +469,7 @@ class NotificationManager:
             is_last = (i == len(portfolio_items) - 1)
             prefix = "└─" if is_last else "├─"
             
-            msg += f"{prefix} {item['crypto']}: {item['amount']:.3f} • {item['value']:.2f} USDT{item['pnl_display']}\n"
+            msg += f"{prefix} {item['crypto']}: {format_amount(item['amount'], item['crypto'])} • {item['value']:.2f} USDT{item['pnl_display']}\n"
             
             # Détail des ordres pour cette crypto
             if item['has_orders']:
@@ -468,25 +481,45 @@ class NotificationManager:
                             is_last_order = (j == len(open_orders) - 1)
                             order_prefix = "     └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
                             
-                            # Déterminer source de l'ordre
-                            source = "🤖" if order.get('clientOrderId', '').startswith('bot_') else "👤"
-                            
-                            # Calculer profit potentiel
-                            current_price = bot.get_price(f"{item['crypto']}/USDT")
+                            # Calculer profit réel (prix vente - prix achat - frais)
                             order_price = float(order['price'])
-                            profit_pct = ((order_price - current_price) / current_price) * 100
+                            try:
+                                avg_buy_price = bot.position_manager.get_average_buy_price(item['crypto'])
+                                if avg_buy_price > 0:
+                                    # Profit brut
+                                    gross_profit_pct = ((order_price - avg_buy_price) / avg_buy_price) * 100
+                                    # Soustraire frais (0.1% achat + 0.1% vente = 0.2%)
+                                    profit_pct = gross_profit_pct - 0.2
+                                else:
+                                    # Fallback: distance au prix actuel
+                                    current_price = bot.get_price(f"{item['crypto']}/USDT")
+                                    profit_pct = ((order_price - current_price) / current_price) * 100
+                            except:
+                                # Fallback: distance au prix actuel
+                                current_price = bot.get_price(f"{item['crypto']}/USDT")
+                                profit_pct = ((order_price - current_price) / current_price) * 100
                             
                             # Calculer temps depuis création
                             order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
                             time_diff = datetime.now() - order_time
+                            
+                            # Format durée avec jours + heures
                             if time_diff.days > 0:
-                                time_display = f"{time_diff.days}j"
-                            elif time_diff.seconds > 3600:
-                                time_display = f"{time_diff.seconds // 3600}h"
+                                hours = time_diff.seconds // 3600
+                                time_display = f"{time_diff.days}j {hours}h"
+                            elif time_diff.seconds >= 3600:
+                                hours = time_diff.seconds // 3600
+                                minutes = (time_diff.seconds % 3600) // 60
+                                time_display = f"{hours}h {minutes}min"
                             else:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
-                            msg += f"{order_prefix} {source} Lim. : {float(order['amount']):.3f} @ {order_price:.2f} • +{profit_pct:.1f}% • {time_display}\n"
+                            msg += f"{order_prefix} Limite: {format_amount(float(order['amount']), item['crypto'])} @ {order_price:.2f}\n"
+                            # Ajouter ligne de détails (profit + durée)
+                            detail_prefix = "     │  ├─" if (is_last and not is_last_order) else "        ├─" if is_last else "│  │  ├─" if not is_last_order else "│     ├─"
+                            msg += f"{detail_prefix} Profit: +{profit_pct:.1f}%\n"
+                            detail_prefix2 = "     │  └─" if (is_last and not is_last_order) else "        └─" if is_last else "│  │  └─" if not is_last_order else "│     └─"
+                            msg += f"{detail_prefix2} Durée: {time_display}\n"
                     else:
                         # Pas d'ordres trouvés mais balance locked > 0
                         order_prefix = "   └─" if is_last else "│  └─"
@@ -498,17 +531,19 @@ class NotificationManager:
         
         msg += f"\n"
         msg += f"📈 Performance\n"
-        msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
         
-        # Utiliser win rate global 30j si disponible
+        # Utiliser stats 30j si disponibles (P&L + trades + winrate cohérents)
         if hasattr(bot, 'global_stats_30d') and bot.global_stats_30d:
             stats = bot.global_stats_30d
+            msg += f"├─ P&L: {stats['total_pnl']:+.2f} USDT\n"
             msg += f"├─ Trades: {stats['total_cycles']} ({stats['winrate']:.0f}% win) [30j]\n"
             if stats['best_trade'] > 0:
                 msg += f"└─ Meilleur: +{stats['best_trade']:.2f} USDT\n\n"
             else:
                 msg += f"└─ Aucun trade\n\n"
         else:
+            # Fallback sur stats journalières
+            msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
             win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
             msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
             if bot.total_trades > 0:

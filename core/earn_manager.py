@@ -546,7 +546,7 @@ class BinanceEarnManager:
                 self.save_earn_positions()
                 print(f"🐷 {earn_balance:.2f} → Spot ✅")
                 print()  # Ligne vide après succès
-                if self.bot.notify_trades:
+                if hasattr(self.bot, 'notifier'):
                     self.bot.notifier.notify(f"🐷 Tirelire: {earn_balance:.2f} USDT → Spot")
             else:
                 print(f"🐷 {earn_balance:.2f} → Spot ❌ Erreur retrait")

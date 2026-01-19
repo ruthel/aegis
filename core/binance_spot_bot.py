@@ -52,7 +52,6 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.paper_balance = float(os.getenv('PAPER_BALANCE', '1000'))
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSS', '100'))
         self.stop_loss_percent = float(os.getenv('STOP_LOSS_PERCENT', '5'))
-        self.notify_trades = os.getenv('NOTIFY_TRADES', 'True') == 'True'
         self.save_logs = os.getenv('SAVE_LOGS', 'True') == 'True'
         
         # Frais dynamiques (remplace frais statiques)
@@ -68,10 +67,9 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         self.setup_logging()
         
-        # Notifications
-        if self.notify_trades:
-            self.notifier = NotificationManager()
-            self.notifier.set_bot(self)
+        # Notifications TOUJOURS activées
+        self.notifier = NotificationManager()
+        self.notifier.set_bot(self)
         
         # WebSocket
         self.websocket = WebSocketManager()
@@ -187,9 +185,8 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self._optimize_all_positions_at_startup()
         
         # Notification de démarrage
-        if self.notify_trades and hasattr(self, 'notifier'):
-            mode = "PAPER" if self.paper_trading else "LIVE"
-            self.notifier.notify(f"🤖 Bot démarré - {mode}")
+        mode = "PAPER" if self.paper_trading else "LIVE"
+        self.notifier.notify(f"🤖 Bot démarré - {mode}")
     
     def _optimize_all_positions_at_startup(self):
         """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
@@ -550,7 +547,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 print(f"📊 {symbol}: Tendance cumulative détectée! {tracker['count']}x {direction_text} = {total_change_pct:.2f}%")
                 
                 # Envoyer notification Telegram
-                if self.notify_trades and hasattr(self, 'notifier'):
+                if hasattr(self, 'notifier'):
                     self.notifier.notify_cumulative_trend(symbol, tracker['direction'], tracker['count'], total_change_pct, current_price)
                 
                 # Reset après alerte
@@ -761,7 +758,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     continue
                 
                 # Envoyer status périodique Telegram
-                if self.notify_trades and hasattr(self, 'notifier'):
+                if hasattr(self, 'notifier'):
                     self.notifier.send_status_update()
                 
                 # Recalculer win rate global toutes les heures
@@ -778,9 +775,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
         except KeyboardInterrupt:
             print("\n🛑 Arrêt du bot...")
-            if self.notify_trades:
-                self.notifier.notify("🛑 Bot arrêté")
-                self.notifier.stop_hourly_notifications()
+            self.notifier.notify("🛑 Bot arrêté")
             if hasattr(self, 'websocket'):
                 self.websocket.stop()
             self.save_state()
@@ -815,7 +810,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     self.async_print(f"📊 {crypto}: Meilleur niveau {best_entry['price']:.2f} ({best_entry['type']}) - {best_entry['distance']:.1f}%")
                     
                     # Envoyer notification si niveau très proche (< 2%) et pas déjà envoyée
-                    if abs(best_entry['distance']) < 2.0 and self.notify_trades and hasattr(self, 'notifier'):
+                    if abs(best_entry['distance']) < 2.0 and hasattr(self, 'notifier'):
                         notification_key = f"{symbol}_{best_entry['type']}_{best_entry['price']:.2f}"
                         last_notification = self.last_dynamic_notifications.get(notification_key)
                         
