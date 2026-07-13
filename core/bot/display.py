@@ -83,10 +83,7 @@ class DisplayMixin:
     
     def show_performance(self):
         """Affiche les performances et positions ouvertes"""
-        if os.getenv('SHOW_PERFORMANCE', 'True') != 'True':
-            return
-        
-        # Utiliser win rate global 30j si disponible, sinon win rate du bot
+
         if hasattr(self, 'global_stats_30d') and self.global_stats_30d:
             stats = self.global_stats_30d
             win_rate = stats['winrate']
@@ -252,7 +249,6 @@ class DisplayMixin:
         mode = "PAPER" if self.paper_trading else "LIVE"
         realtime = "⚡ TEMPS RÉEL" if self.realtime_trading else "🔄 CYCLIQUE"
         cryptos = ', '.join([p.split('/')[0] if '/' in p else p.replace('USDT', '') for p in trading_pairs])
-        earn_status = "Earn ON" if os.getenv('TIRELIRE_MODE', 'False') == 'True' else "Earn OFF"
         
         # Ajouter statut Double Investment
         dual_status = "DualInv OFF"
