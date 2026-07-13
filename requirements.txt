@@ -1,7 +1,10 @@
 ccxt>=4.2.25
+cryptography==44.0.2
 python-dotenv>=1.0.0
+Flask>=3.0.0
 requests>=2.31.0
 numpy>=1.26.0
+orjson>=3.10.0
 scipy>=1.11.0
 websocket-client>=1.6.4
 python-telegram-bot>=20.7

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aegis Dashboard</title>
+  <link rel="icon" href="{{ url_for('static', filename='brand/favicon.ico') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/aegis-mark-192.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <img src="{{ url_for('static', filename='brand/aegis-mark-transparent-512.png') }}" alt="" class="brand-mark">
+        <div>
+          <h1 id="botName">Aegis</h1>
+          <p id="lastUpdate">Chargement...</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="botProcessBadge" class="badge neutral">bot --</span>
+        <button id="restartBotButton" type="button">Redémarrer bot</button>
+        <span id="modeBadge" class="badge neutral">mode</span>
+        <span id="exchangeBadge" class="badge neutral">exchange</span>
+        <button id="refreshButton" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <nav class="app-tabs" aria-label="Navigation dashboard">
+      <button type="button" class="tab-button active" data-view="live">Live</button>
+      <button type="button" class="tab-button" data-view="console">Console</button>
+      <button type="button" class="tab-button" data-view="config">Configuration</button>
+    </nav>
+
+    <section id="viewLive" class="view active">
+      <section class="metrics">
+        <article>
+          <span>Solde Paper</span>
+          <strong id="paperBalance">--</strong>
+        </article>
+        <article>
+          <span>Positions</span>
+          <strong id="positionCount">--</strong>
+        </article>
+        <article>
+          <span>Cooldowns</span>
+          <strong id="cooldownCount">--</strong>
+        </article>
+        <article>
+          <span>Support Touch</span>
+          <strong id="supportSummary">--</strong>
+        </article>
+        <article>
+          <span>WebSocket</span>
+          <strong id="wsSummary">--</strong>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel span-12">
+          <div class="panel-head">
+            <h2>WebSocket Live</h2>
+            <span id="wsLastUpdate" class="muted"></span>
+          </div>
+          <div id="wsMeta" class="live-meta"></div>
+          <div id="wsGrid" class="support-grid"></div>
+        </article>
+
+        <article class="panel span-7">
+          <div class="panel-head">
+            <h2>Positions</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbole</th>
+                  <th>Quantité</th>
+                  <th>Prix moyen</th>
+                  <th>Valeur entrée</th>
+                </tr>
+              </thead>
+              <tbody id="positionsBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel span-5">
+          <div class="panel-head">
+            <h2>Cooldowns</h2>
+          </div>
+          <div id="cooldownsList" class="list"></div>
+        </article>
+
+        <article class="panel span-12">
+          <div class="panel-head">
+            <h2>Support Touch Pro</h2>
+            <span id="supportLastRun" class="muted"></span>
+          </div>
+          <div id="supportGrid" class="support-grid"></div>
+        </article>
+
+        <article class="panel span-12">
+          <div class="panel-head">
+            <h2>Régime Marché</h2>
+          </div>
+          <div id="marketContextGrid" class="support-grid"></div>
+        </article>
+
+        <article class="panel span-7">
+          <div class="panel-head">
+            <h2>Décisions</h2>
+          </div>
+          <div id="decisionsList" class="timeline"></div>
+        </article>
+
+        <article class="panel span-5">
+          <div class="panel-head">
+            <h2>Alertes</h2>
+          </div>
+          <div id="logsList" class="logs"></div>
+        </article>
+      </section>
+    </section>
+
+    <section id="viewConsole" class="view">
+      <article class="panel span-12">
+        <div class="panel-head">
+          <h2>Console Bot</h2>
+          <div>
+            <button id="consoleClearButton" type="button">Clear</button>
+            <span id="consoleStatus" class="muted">--</span>
+          </div>
+        </div>
+        <pre id="consoleOutput" class="console-output"></pre>
+      </article>
+    </section>
+
+    <section id="viewConfig" class="view">
+      <article class="panel span-12">
+        <div class="panel-head">
+          <div>
+            <h2>Configuration</h2>
+            <span id="configHint" class="muted"></span>
+          </div>
+          <button id="saveConfigButton" type="button">Sauver</button>
+        </div>
+        <form id="configForm" class="config-form"></form>
+        <div id="configStatus" class="config-status"></div>
+      </article>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

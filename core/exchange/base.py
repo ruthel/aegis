@@ -61,11 +61,6 @@ class ExchangeBase(ABC):
         pass
 
     @abstractmethod
-    def transfer(self, asset, amount, from_account, to_account):
-        """Transfère des fonds entre portefeuilles"""
-        pass
-
-    @abstractmethod
     def get_ws_url(self):
         """Retourne l'URL WebSocket pour les prix temps réel"""
         pass

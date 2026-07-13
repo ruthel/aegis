@@ -98,14 +98,6 @@ class DisplayMixin:
         
         self.async_print(f"\n📊 {pnl_display} | {total_trades} trades ({win_rate:.0f}% win){period_info}")
         
-        # Afficher résumé Double Investment si activé
-        if hasattr(self, 'double_investment_manager') and self.double_investment_manager.enabled:
-            dual_summary = self.double_investment_manager.get_positions_summary()
-            if dual_summary != "Aucune position":
-                self.async_print(f"💎 Double Investment: {dual_summary}")
-            else:
-                self.async_print(f"💎 Double Investment: Aucune position")
-        
         # CORRECTION: Utiliser les positions du state pour paper trading
         if self.paper_trading:
             active_positions = [p for p in self.state.get('positions', []) 
@@ -157,7 +149,7 @@ class DisplayMixin:
             
             buy_positions = [p for p in self.state['positions'] 
                            if p['symbol'] == symbol and p['side'] == 'buy' 
-                           and p.get('source') != 'binance_history']
+                           and p.get('source') not in ['binance_history', 'exchange_history']]
             
             if not buy_positions:
                 buy_positions = [p for p in self.state['positions'] 
@@ -250,15 +242,6 @@ class DisplayMixin:
         realtime = "⚡ TEMPS RÉEL" if self.realtime_trading else "🔄 CYCLIQUE"
         cryptos = ', '.join([p.split('/')[0] if '/' in p else p.replace('USDT', '') for p in trading_pairs])
         
-        # Ajouter statut Double Investment
-        dual_status = "DualInv OFF"
-        if hasattr(self, 'double_investment_manager'):
-            if self.double_investment_manager.enabled:
-                # Compter positions réelles + simulées
-                real_positions = self.double_investment_manager.get_dual_investment_positions_from_api()
-                total_positions = len(real_positions) + len(self.double_investment_manager.positions)
-                dual_status = f"DualInv ON ({total_positions})" if total_positions > 0 else "DualInv ON"
-        
         # Afficher win rate global si disponible
         winrate_info = ""
         if hasattr(self, 'global_stats_30d') and self.global_stats_30d and not self.paper_trading:
@@ -266,7 +249,7 @@ class DisplayMixin:
         
         from config import BOT_NAME
         print(f"🤖 {BOT_NAME} | {mode} {realtime} | {active_positions} positions{winrate_info}")
-        print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | {earn_status} | {dual_status}")
+        print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | Spot multi-exchange")
         print("🛑 Ctrl+C pour arrêter")
     
 

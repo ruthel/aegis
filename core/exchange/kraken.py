@@ -41,10 +41,6 @@ class KrakenClient(ExchangeBase):
         self._exchange.load_markets()
 
     def fetch_balance(self, params=None):
-        # Kraken n'a pas de portefeuille "funding" séparé
-        # On ignore le param type=funding silencieusement
-        if params and params.get('type') == 'funding':
-            return {}
         return self._exchange.fetch_balance(params or {})
 
     def fetch_ticker(self, symbol):
@@ -80,11 +76,6 @@ class KrakenClient(ExchangeBase):
     def load_markets(self):
         self._exchange.load_markets()
         self._markets = self._exchange.markets
-
-    def transfer(self, asset, amount, from_account, to_account):
-        # Kraken n'a pas de transfert interne (pas de funding wallet)
-        # Retourner silencieusement
-        return {'id': None}
 
     def get_ws_url(self):
         return "wss://ws.kraken.com"
@@ -175,20 +166,3 @@ class KrakenClient(ExchangeBase):
             'BNB/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
         }
         return fallback.get(symbol, {'min_amount': 0.001, 'min_cost': 0.5})
-
-    # Méthodes spécifiques Kraken (pas de User Data Stream comme Binance)
-    def sapi_post_user_data_stream(self):
-        """Kraken n'a pas de User Data Stream - utilise WebSocket privé"""
-        # Retourner un token pour le WS privé Kraken
-        try:
-            response = self._exchange.private_post_get_websockets_token()
-            return {'listenKey': response.get('result', {}).get('token', '')}
-        except:
-            return {'listenKey': ''}
-
-    def sapi_put_user_data_stream(self, params):
-        """Kraken n'a pas besoin de keepalive pour le WS token"""
-        pass
-
-    def get_user_data_ws_url(self, listen_key):
-        return "wss://ws-auth.kraken.com"

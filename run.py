@@ -59,8 +59,15 @@ def clean_bot_states():
                 print(f"⚠️ Erreur nettoyage {state_file}: {e}")
     
 
-# Vider le terminal au démarrage
-os.system('cls' if os.name == 'nt' else 'clear')
+# Vider le terminal au démarrage (seulement si terminal disponible)
+if sys.stdout and sys.stdout.isatty():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+# Forcer UTF-8 si pas de terminal (mode background)
+if not sys.stdout or not sys.stdout.isatty():
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace') if sys.stdout else open(os.devnull, 'w')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace') if sys.stderr else open(os.devnull, 'w')
 
 # Vider les caches Python
 clear_python_cache()
@@ -70,8 +77,10 @@ def main():
     """Point d'entrée principal"""
     print("🚀 Démarrage du bot Aegis...")
     
-    # Forcer le rechargement de la configuration
+    # Charger la configuration locale en dernier pour les secrets non versionnés.
     load_dotenv(override=True)
+    load_dotenv('.env.local', override=True)
+    load_dotenv('.env.dashboard', override=True)
     
     # Import du bot (après vérification config)
     try:

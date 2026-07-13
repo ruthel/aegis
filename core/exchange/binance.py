@@ -57,9 +57,6 @@ class BinanceClient(ExchangeBase):
         self._exchange.load_markets()
         self._markets = self._exchange.markets
 
-    def transfer(self, asset, amount, from_account, to_account):
-        return self._exchange.transfer(asset, amount, from_account, to_account)
-
     def get_ws_url(self):
         return "wss://stream.binance.com:9443/ws"
 
@@ -106,13 +103,3 @@ class BinanceClient(ExchangeBase):
         except:
             pass
         return None
-
-    # Méthodes spécifiques Binance (User Data Stream)
-    def sapi_post_user_data_stream(self):
-        return self._exchange.sapiPostUserDataStream()
-
-    def sapi_put_user_data_stream(self, params):
-        return self._exchange.sapiPutUserDataStream(params)
-
-    def get_user_data_ws_url(self, listen_key):
-        return f"wss://stream.binance.com:9443/ws/{listen_key}"

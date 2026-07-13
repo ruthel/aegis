@@ -1,6 +1,6 @@
 # 🤖 Aegis Trading Bot v2
 
-Bot de trading automatique professionnel pour Binance avec stratégies intelligentes, revenus passifs et optimisations ultra-rapides.
+Bot de trading spot multi-exchange avec stratégies intelligentes, risk management et optimisations temps réel.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -13,10 +13,10 @@ pip install -r requirements.txt
 
 ### 2. Configuration
 ```bash
-# Copier le template
-copy .env.example .env
+# Copier le template local non versionné
+copy .env.example .env.local
 
-# Modifier UNIQUEMENT les clés API dans .env
+# Modifier UNIQUEMENT les clés API dans .env.local
 BINANCE_API_KEY=votre_cle_api_ici
 BINANCE_API_SECRET=votre_cle_secrete_ici
 ```
@@ -30,7 +30,7 @@ python run.py
 ## ⚡ Fonctionnalités Principales
 
 ### 🎯 Trading Intelligent
-- **EMA Binance 7/25/99** : Détection automatique des 6 cas de configuration
+- **EMA 7/25/99** : Détection automatique des configurations de tendance
 - **Scalping Pullback** : Ordres limite ACHAT sur Cas 3 (stratégie institutionnelle!)
 - **Sélection Auto Stratégie** : Choix intelligent Pullback/Momentum/DCA
 - **Timeframes Adaptatifs** : Sélection automatique 4H/1H/15M ou 15M/5M/1M selon volatilité
@@ -43,12 +43,11 @@ python run.py
 - **Edge Detection** : Identification automatique des avantages statistiques
 
 ### 💰 Capital Manager Automatique (8+ USDT)
-- **Détection Auto Capital** : Analyse automatique Spot + Funding + Earn
+- **Détection Auto Capital** : Analyse automatique du capital spot
 - **Adaptation Intelligente** : Configuration selon capital disponible
-- **Minimums API Binance** : Respect automatique des montants minimums
+- **Minimums Exchange** : Respect automatique des montants minimums via CCXT
 - **Progression Naturelle** : Évolution automatique des stratégies
 - **Support Micro-Capital** : Dès 8 USDT avec stratégies adaptées
-- **Double Investment Auto** : Activé automatiquement à partir de 20 USDT
 
 ### 🛡️ Sécurité Professionnelle
 - **Gestion Risques Avancée** : Circuit breakers, limites journalières
@@ -77,15 +76,11 @@ BTC/USDT 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 ### 🖥️ Interface Optimisée
 ```
 🤖 Aegis | LIVE ⚡ TEMPS RÉEL | 0 positions
-📊 BTC, ETH, SOL, BNB | 5.0 USDT/trade | Seuil 40% | Earn ON | DualInv ON (2)
+📊 BTC, ETH, SOL, BNB | Min dynamique | Seuil adaptatif | Spot multi-exchange
 🛑 Ctrl+C pour arrêter
 
 📊 +1.45 USDT | 3 trades (67% win)
-💎 2 positions Double Investment:
-   📞 Call ETH @ 4050.00
-   📉 PUT BTC @ 66500.00
 💳 SPOT: USDT 95.23 | BTC 0.001234 | ETH 0.0012
-💰 Earn: 15.67 USDT (+0.02 rewards)
 
 ⚡ 12:34:56 | BTC 111.6K | ETH 3.98K | SOL 194 | BNB 1.20K
 
@@ -131,42 +126,22 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 # Aucune configuration manuelle nécessaire !
 
 8-20 USDT   : Mode Micro-Capital (100% Spot, croissance rapide)
-20-50 USDT  : Mode Croissance (95% Spot + 5% Double Investment)
-50-200 USDT : Mode Équilibré (75% Spot + 20% Double Investment)
-200+ USDT   : Mode Professionnel (60% Spot + 25% Double Investment + 15% Cash)
+20-50 USDT  : Mode Croissance (100% Spot)
+50-200 USDT : Mode Équilibré (95% Spot + 5% Cash)
+200+ USDT   : Mode Professionnel (85% Spot + 15% Cash)
 ```
 
 ### Adaptation Intelligente
-| Capital | Trade Amount | Stop Loss | Stratégie | Double Investment |
-|---------|--------------|-----------|----------|-------------------|
-| 8-20 USDT | 15% capital | 3% | Scalping agressif | Désactivé |
-| 20-50 USDT | 12% capital | 4% | Croissance + revenus | 1 position (5%) |
-| 50-200 USDT | 8% capital | 5% | Équilibré | 2-3 positions (20%) |
-| 200+ USDT | 5% capital | 5% | Professionnel | Stratégie complète (25%) |
-
-### Stratégies Double Investment par Capital
-
-#### 20-50 USDT : Mode Conservateur
-- **1 position maximum** (5-10 USDT)
-- **Covered Call** sur positions en perte prioritaire
-- **PUT conservateur** sur BTC/ETH sinon
-- **Durée** : 1 semaine maximum
-
-#### 50-200 USDT : Mode Équilibré
-- **2-3 positions** (10-20 USDT chacune)
-- **50% Covered Calls** sur positions existantes
-- **50% PUT stratégiques** pour acheter dips
-- **Diversification** : BTC + ETH
-
-#### 200+ USDT : Mode Professionnel
-- **Stratégie complète** diversifiée
-- **40% Covered Calls** (revenus sur positions)
-- **35% PUT stratégiques** (achats programmés)
-- **25% Jeux volatilité** (strangles avancés)
+| Capital | Trade Amount | Stop Loss | Allocation | Stratégie |
+|---------|--------------|-----------|------------|----------|
+| 8-20 USDT | 15% capital | 3% | 100% Spot | Scalping agressif |
+| 20-50 USDT | 12% capital | 4% | 100% Spot | Croissance |
+| 50-200 USDT | 8% capital | 5% | 95% Spot / 5% Cash | Équilibré |
+| 200+ USDT | 5% capital | 5% | 85% Spot / 15% Cash | Professionnel |
 
 ### Fonctionnalités Automatiques
-- **Détection Capital** : Analyse Spot + Funding + Earn en temps réel
-- **Minimums API** : Respect automatique des montants minimums Binance
+- **Détection Capital** : Analyse Spot en temps réel
+- **Minimums API** : Respect automatique des montants minimums exchange
 - **Progression Naturelle** : Évolution automatique vers stratégies sophistiquées
 - **Compound Intelligent** : Réinvestissement adapté au niveau de capital
 - **Cryptos Adaptées** : Sélection selon profil de risque du capital
@@ -176,15 +151,13 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 ```
 aegis/
 ├── core/                        # Cœur du bot (pattern Mixin)
-│   ├── binance_spot_bot.py     # Bot principal (350 lignes vs 2500)
-│   ├── bot_trading.py          # TradingMixin - Ordres & exécution
-│   ├── bot_strategies.py       # StrategiesMixin - Scalping/DCA/Intelligent
-│   ├── bot_sync.py             # SyncMixin - Synchronisation Binance
-│   ├── bot_analysis.py         # AnalysisMixin - Analyses & prévisions
-│   ├── bot_display.py          # DisplayMixin - Affichage optimisé
-│   ├── earn_manager.py         # Binance Earn intégré (API + gestion)
-│   ├── double_investment_manager.py # Double Investment automatique
-│   └── websocket_manager.py    # WebSocket temps réel
+│   ├── trading_bot.py          # Bot principal multi-exchange
+│   ├── bot/trading.py          # TradingMixin - Ordres & exécution
+│   ├── bot/sync.py             # SyncMixin - Synchronisation exchange
+│   ├── bot/analysis.py         # AnalysisMixin - Analyses & prévisions
+│   ├── bot/display.py          # DisplayMixin - Affichage optimisé
+│   ├── exchange/               # Clients spot CCXT
+│   └── websocket.py            # WebSocket temps réel
 ├── utils/                       # Utilitaires spécialisés
 │   ├── risk_manager.py         # Gestion risques + seuils adaptatifs
 │   ├── timeframe_analyzer.py   # Timeframes adaptatifs intelligents
@@ -228,8 +201,8 @@ aegis/
 
 ### 🔐 **Sécurité IP Statique**
 ```bash
-# Configuration Binance API
-1. Binance → API Management → Edit API
+# Configuration API exchange
+1. Exchange → API Management → Edit API
 2. IP Access Restriction → Restrict access to trusted IPs only
 3. Ajouter votre IP AWS Elastic : xxx.xxx.xxx.xxx
 4. Permissions requises :
@@ -257,7 +230,7 @@ aegis/
 ```bash
 # Avantages : IP statique gratuite + latence optimale EU
 Région : Frankfurt (eu-central-1)
-Latence : 15-30ms vers Binance
+Latence : 15-40ms vers les principaux exchanges
 Coût : Gratuit 12 mois
 ```
 
@@ -291,7 +264,7 @@ TELEGRAM_STATUS_INTERVAL=300     # Status toutes les 5min
 ### Logs & Données
 - **Logs temps réel** : `tail -f bot.log`
 - **État bot** : `data/bot_state.json`
-- **Historique** : Binance → Orders → Trade History
+- **Historique** : section Orders / Trade History de votre exchange
 
 ## 🖥️ Hébergement Cloud Recommandé
 
@@ -300,7 +273,7 @@ TELEGRAM_STATUS_INTERVAL=300     # Status toutes les 5min
 - **Instance** : t2.micro (1 vCPU, 1GB RAM)
 - **IP statique** : Elastic IP gratuite
 - **Stockage** : 30GB EBS gratuit
-- **Latence** : 15-30ms vers Binance
+- **Latence** : 15-40ms vers les principaux exchanges
 - **Coût** : Gratuit 12 mois
 - **Avantages** : Fiabilité AWS + IP fixe EU
 
@@ -315,10 +288,10 @@ sudo yum install python3 python3-pip git -y
 git clone https://github.com/votre-repo/aegis.git
 cd aegis
 pip3 install -r requirements.txt
-cp .env.example .env
+cp .env.example .env.local
 
 # Configuration clés API
-nano .env  # Ajouter vos clés Binance
+nano .env.local  # Ajouter vos clés API
 
 # Démarrage
 python3 run.py
@@ -333,7 +306,7 @@ python3 run.py
 
 # Elastic IP
 - Associer une IP statique
-- Ajouter cette IP dans Binance API restrictions
+- Ajouter cette IP dans les restrictions API de votre exchange
 
 # Monitoring CloudWatch
 - CPU, RAM, Network
@@ -347,7 +320,7 @@ python3 run.py
 - **Hetzner** : €3/mois (Allemagne) - Payant mais excellent
 
 ### 📊 **Comparaison Latence Europe**
-| Provider | Région | Latence Binance | IP Statique | Coût |
+| Provider | Région | Latence Exchange | IP Statique | Coût |
 |----------|--------|-----------------|-------------|------|
 | AWS | Frankfurt | 15-30ms | ✅ Gratuite | Gratuit 12m |
 | Oracle | Frankfurt | 20-35ms | ✅ Gratuite | Gratuit à vie |
@@ -552,7 +525,7 @@ python -m cProfile -o profile.stats run.py
 ## 📚 Documentation Complète
 
 ### Guides Spécialisés
-- **[EMA Trading Guide](docs/EMA_TRADING_GUIDE.md)** - Les 6 cas Binance + Scalping Pullback
+- **[EMA Trading Guide](docs/EMA_TRADING_GUIDE.md)** - Configurations EMA + Scalping Pullback
 - **[Timeframes Adaptatifs](docs/ADAPTIVE_TIMEFRAMES.md)** - Stratégie professionnelle multi-timeframes
 - **[Détection Tendances Cumulatives](docs/CUMULATIVE_TREND_DETECTION.md)** - Capture variations progressives
 - **[Optimisations Latence](docs/QUICK_START_OPTIMIZATIONS.md)** - Guide 2min réduction 98%
@@ -563,7 +536,7 @@ python -m cProfile -o profile.stats run.py
 ### Centralisation Code Niveau Pro
 - **Modules consolidés** : -500 lignes de code redondant éliminées
 - **Classes unifiées** : RiskManager, CapitalManager, PatternAnalyzer, PositionManager
-- **API intégrée** : EarnManager avec API Earn intégrée
+- **API exchange** : trading spot via CCXT
 - **Maintenance simplifiée** : Une source de vérité par fonctionnalité
 - **Performance optimisée** : Moins d'indirection, cache partagé, imports réduits
 
@@ -590,7 +563,7 @@ python -m cProfile -o profile.stats run.py
 - **Tests Obligatoires** : Paper trading 24-48h minimum
 - **Surveillance** : Monitorer régulièrement le bot
 - **Limites** : Configurez MAX_DAILY_LOSS strictement
-- **Bot Externe** : N'apparaît pas dans section "Bots" Binance (API externe)
+- **Bot Externe** : N'apparaît pas dans les sections de bots natifs des exchanges
 
 ## 📞 Support
 
@@ -605,5 +578,5 @@ python -m cProfile -o profile.stats run.py
 **Performance** : Intervalle adaptatif + sessions optimisées  
 **Déploiement** : AWS EU + Render + Local  
 **Latence** : 10-30ms (optimisé Europe)  
-**Revenus** : Trading + Binance Earn intégré  
+**Revenus** : Trading spot
 **Sécurité** : IP statique + CloudWatch

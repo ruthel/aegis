@@ -4,37 +4,13 @@ import os
 import time
 
 class SyncMixin:
-    """Mixin pour la synchronisation avec Binance"""
-    
-    def transfer_funding_to_spot(self):
-        """Transfère automatiquement les fonds du Funding vers Spot"""
-        if self.paper_trading:
-            return
+    """Mixin pour la synchronisation avec l'exchange spot."""
 
-        # Kraken n'a pas de funding wallet séparé
-        if hasattr(self, 'exchange') and self.exchange.name == 'kraken':
-            return
-
-        try:
-            funding_balance = self.safe_request(self.exchange.fetch_balance, {'type': 'funding'})
-            if not funding_balance:
-                return
-
-            usdt_funding = funding_balance.get('USDT', {}).get('free', 0)
-            if usdt_funding > 1:
-                print(f"💸 Transfert {usdt_funding:.2f} USDT: Funding → Spot...")
-                self.exchange.transfer('USDT', usdt_funding, 'funding', 'spot')
-                print(f"✅ Transfert réussi: {usdt_funding:.2f} USDT disponible en SPOT")
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Erreur transfert Funding→Spot: {e}")
-    
     def sync_positions_from_exchange(self):
         if self.paper_trading:
             return
         
         try:
-            self.transfer_funding_to_spot()  # Transfert auto avant sync
             self.sync_open_orders()
             self.sync_trade_history()
             
@@ -70,12 +46,12 @@ class SyncMixin:
                             active_buy_positions.append({
                                 'symbol': symbol, 'side': 'buy', 'amount': available,
                                 'price': current_price, 'timestamp': datetime.now().isoformat(),
-                                'order_id': 'synced', 'source': 'binance_manual', 'paper': False
+                                'order_id': 'synced', 'source': 'exchange_manual', 'paper': False
                             })
                         changed = True
             
             if changed:
-                history = [p for p in all_positions if p['side'] == 'sell' or p.get('source') == 'binance_history']
+                history = [p for p in all_positions if p['side'] == 'sell' or p.get('source') in ['binance_history', 'exchange_history']]
                 self.state['positions'] = history + active_buy_positions
                 self.save_state()
         except Exception as e:
@@ -103,10 +79,13 @@ class SyncMixin:
                             'symbol': symbol, 'side': order['side']
                         }
             
-            # Supprimer les ordres qui n'existent plus sur Binance
+            # Supprimer les ordres qui n'existent plus sur l'exchange
             local_order_ids = list(self.pending_orders.keys())
             for order_id in local_order_ids:
                 if order_id not in all_open_order_ids:
+                    order_data = self.pending_orders.get(order_id)
+                    if order_data and hasattr(self, '_handle_disappeared_order'):
+                        self._handle_disappeared_order(order_id, order_data)
                     del self.pending_orders[order_id]
                     
         except Exception as e:
@@ -116,7 +95,11 @@ class SyncMixin:
         try:
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
             new_trades = []
-            existing_order_ids = {p.get('order_id') for p in self.state.get('positions', []) if p.get('order_id')}
+            existing_order_ids = set()
+            for position in self.state.get('positions', []):
+                if position.get('order_id'):
+                    existing_order_ids.add(str(position.get('order_id')))
+                existing_order_ids.update(str(trade_id) for trade_id in position.get('trade_ids', []))
             
             for pair in trading_pairs:
                 symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
@@ -131,7 +114,7 @@ class SyncMixin:
                         'symbol': symbol, 'side': trade['side'], 'amount': trade['amount'],
                         'price': trade['price'], 
                         'timestamp': datetime.fromtimestamp(trade['timestamp']/1000).isoformat(),
-                        'order_id': trade_id, 'source': 'binance_history',
+                        'order_id': trade_id, 'source': 'exchange_history',
                         'fee': trade.get('fee', {}).get('cost', 0), 'paper': False
                     }
                     new_trades.append(position)
@@ -146,7 +129,7 @@ class SyncMixin:
     
     def get_last_buy_from_history(self, symbol):
         buys = [p for p in self.state.get('positions', []) 
-               if p['symbol'] == symbol and p['side'] == 'buy' and p.get('source') == 'binance_history']
+               if p['symbol'] == symbol and p['side'] == 'buy' and p.get('source') in ['binance_history', 'exchange_history']]
         return buys[-1] if buys else None
     
     def manage_pending_orders(self):

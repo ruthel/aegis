@@ -928,7 +928,7 @@ class MarketAnalyzer:
             if current_price <= 0:
                 return 10
             
-            # Estimation spread selon crypto (données réelles Binance)
+            # Estimation spread selon crypto (données de marché)
             if symbol in ['BTC/USDT', 'ETH/USDT']:
                 estimated_spread = 0.01  # 0.01%
             elif symbol in ['BNB/USDT', 'SOL/USDT']:
@@ -1451,7 +1451,7 @@ class MarketAnalyzer:
     
     @staticmethod
     def get_crypto_profile(volatility):
-        """Profil adaptatif selon volatilité (échelle Binance 1-5)"""
+        """Profil adaptatif selon volatilité (échelle 1-5)"""
         if volatility >= 4.0:
             return {
                 'min_confidence': 45,

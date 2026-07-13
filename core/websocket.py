@@ -2,26 +2,29 @@ import time
 import os
 import threading
 from collections import deque
+from datetime import datetime
 from queue import Queue
 import websocket
 
 try:
     import orjson as json
     JSON_LOADS = lambda x: json.loads(x)
+    JSON_DUMPS = lambda x: json.dumps(x)
 except ImportError:
     import json
     JSON_LOADS = json.loads
+    JSON_DUMPS = lambda x: json.dumps(x).encode('utf-8')
 
 
 class WebSocketManager:
     def __init__(self, symbols=None):
         if symbols is None:
             symbols = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT,SOLUSDT').split(',')
-        self.symbols = symbols
+        self.symbols = [self._normalize_symbol(symbol) for symbol in symbols if symbol.strip()]
         self.prices = {}
         self.last_prices = {}
-        self.last_analysis_count = {symbol: 0 for symbol in symbols}
-        self.klines = {symbol: deque(maxlen=100) for symbol in symbols}
+        self.last_analysis_count = {symbol: 0 for symbol in self.symbols}
+        self.klines = {symbol: deque(maxlen=100) for symbol in self.symbols}
         self.ws = None
         self.ws_user = None
         self.running = False
@@ -30,6 +33,13 @@ class WebSocketManager:
         self.balance_callback = None
         self.listen_key = None
         self.exchange_client = None  # Référence au client exchange
+        self.tick_counts = {symbol: 0 for symbol in self.symbols}
+        self.last_tick_ts = {}
+        self.last_analysis_ts = {}
+        self.market_meta = {}
+        self.live_status_file = os.getenv('LIVE_STATUS_FILE', 'data/live_status.json')
+        self.live_status_interval = float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '1'))
+        self._last_live_status_write = 0
         
         # Queue asynchrone pour callbacks non-bloquants
         self.analysis_queue = Queue(maxsize=100)
@@ -40,6 +50,9 @@ class WebSocketManager:
             'timestamp': 0, 'open': 0.0, 'high': 0.0,
             'low': 0.0, 'close': 0.0, 'volume': 0.0
         }
+
+    def _normalize_symbol(self, symbol):
+        return str(symbol).strip().replace('/', '').upper()
 
     def set_exchange_client(self, client):
         """Configure le client exchange pour adapter le WebSocket"""
@@ -98,6 +111,7 @@ class WebSocketManager:
 
     def _connect_kraken(self):
         """Connexion WebSocket Kraken"""
+        print(f"WS Kraken: connexion wss://ws.kraken.com avec {self.symbols}")
         url = "wss://ws.kraken.com"
 
         self.ws = websocket.WebSocketApp(
@@ -116,6 +130,7 @@ class WebSocketManager:
         """Souscription aux channels Kraken à l'ouverture"""
         import json as std_json
         self.reconnect_attempts = 0
+        print("WS Kraken: connexion ouverte, souscription...")
 
         # Convertir symboles en format Kraken
         pairs = []
@@ -163,6 +178,17 @@ class WebSocketManager:
             if 'ticker' in channel:
                 ticker_data = data[1]
                 current_price = float(ticker_data['c'][0])  # last trade close price
+                bid = float(ticker_data['b'][0]) if ticker_data.get('b') else None
+                ask = float(ticker_data['a'][0]) if ticker_data.get('a') else None
+                volume_24h = float(ticker_data['v'][1]) if ticker_data.get('v') and len(ticker_data['v']) > 1 else None
+                self.market_meta[symbol] = {
+                    'source': 'ticker',
+                    'bid': bid,
+                    'ask': ask,
+                    'spread': (ask - bid) if bid and ask else None,
+                    'spread_percent': ((ask - bid) / current_price * 100) if bid and ask and current_price else None,
+                    'volume_24h': volume_24h,
+                }
                 self.prices[symbol] = current_price
                 self._process_price_update(symbol, current_price)
 
@@ -170,6 +196,9 @@ class WebSocketManager:
                 ohlc_data = data[1]
                 current_price = float(ohlc_data[5])  # close
                 self.prices[symbol] = current_price
+                if not self.prices.get(symbol + "_logged"):
+                    print(f"WS Kraken: premier prix {symbol} = {current_price}")
+                    self.prices[symbol + "_logged"] = True
                 self._process_price_update(symbol, current_price)
 
                 # Stocker kline
@@ -184,6 +213,15 @@ class WebSocketManager:
                 })
                 if symbol in self.klines:
                     self.klines[symbol].append(candle)
+                self.market_meta[symbol] = {
+                    **self.market_meta.get(symbol, {}),
+                    'source': 'ohlc',
+                    'candle_open': candle['open'],
+                    'candle_high': candle['high'],
+                    'candle_low': candle['low'],
+                    'candle_volume': candle['volume'],
+                    'candle_timestamp': candle['timestamp'],
+                }
 
         except:
             pass
@@ -203,6 +241,15 @@ class WebSocketManager:
                 current_price = float(kline['c'])
 
                 self.prices[symbol] = current_price
+                self.market_meta[symbol] = {
+                    'source': 'kline',
+                    'candle_open': float(kline['o']),
+                    'candle_high': float(kline['h']),
+                    'candle_low': float(kline['l']),
+                    'candle_volume': float(kline['v']),
+                    'candle_closed': bool(kline['x']),
+                    'candle_timestamp': kline['t'],
+                }
                 self._process_price_update(symbol, current_price)
 
                 # Kline fermée : sauvegarde
@@ -223,8 +270,12 @@ class WebSocketManager:
 
     def _process_price_update(self, symbol, current_price):
         """Logique commune de filtrage et dispatch des prix"""
+        symbol = self._normalize_symbol(symbol)
         should_analyze = False
         last_price = self.last_prices.get(symbol, 0)
+        now = time.time()
+        self.tick_counts[symbol] = self.tick_counts.get(symbol, 0) + 1
+        self.last_tick_ts[symbol] = now
 
         if last_price == 0:
             should_analyze = True
@@ -237,10 +288,70 @@ class WebSocketManager:
 
         if should_analyze:
             self.last_prices[symbol] = current_price
+            self.last_analysis_ts[symbol] = now
             try:
                 self.analysis_queue.put_nowait((symbol, current_price))
             except:
                 pass
+        self._write_live_status_throttled()
+
+    def _write_live_status_throttled(self):
+        now = time.time()
+        if now - self._last_live_status_write < self.live_status_interval:
+            return
+        self._last_live_status_write = now
+        self.write_live_status()
+
+    def write_live_status(self):
+        """Écrit une télémétrie WebSocket légère pour le dashboard."""
+        try:
+            status = {
+                'timestamp': datetime.now().isoformat(),
+                'exchange': os.getenv('EXCHANGE', 'binance').lower(),
+                'connected': self.is_connected(),
+                'running': self.running,
+                'mode': 'websocket' if self.is_connected() else 'rest_fallback',
+                'reconnect_attempts': self.reconnect_attempts,
+                'queue_size': self.analysis_queue.qsize(),
+                'queue_maxsize': self.analysis_queue.maxsize,
+                'worker_alive': bool(self.worker_thread and self.worker_thread.is_alive()),
+                'ws_thread_alive': bool(getattr(self, 'ws_thread', None) and self.ws_thread.is_alive()),
+                'subscribed_symbols': [symbol.replace('/', '') for symbol in self.symbols],
+                'symbols': {}
+            }
+            now = time.time()
+            for symbol in sorted(set(self.symbols) | set(self.prices.keys())):
+                ws_symbol = symbol.replace('/', '')
+                price = self.prices.get(ws_symbol)
+                last_tick = self.last_tick_ts.get(ws_symbol)
+                last_analysis = self.last_analysis_ts.get(ws_symbol)
+                analysis_price = self.last_prices.get(ws_symbol)
+                price_change_since_analysis = None
+                if price is not None and analysis_price:
+                    price_change_since_analysis = ((price - analysis_price) / analysis_price) * 100
+                meta = self.market_meta.get(ws_symbol, {})
+                status['symbols'][ws_symbol] = {
+                    'price': price,
+                    'tick_count': self.tick_counts.get(ws_symbol, 0),
+                    'kline_count': len(self.klines.get(ws_symbol, [])),
+                    'analysis_trigger_countdown': self.last_analysis_count.get(ws_symbol, 0),
+                    'price_change_since_analysis_percent': price_change_since_analysis,
+                    'last_tick': datetime.fromtimestamp(last_tick).isoformat() if last_tick else None,
+                    'last_tick_age_seconds': round(now - last_tick, 2) if last_tick else None,
+                    'last_analysis': datetime.fromtimestamp(last_analysis).isoformat() if last_analysis else None,
+                    'last_analysis_age_seconds': round(now - last_analysis, 2) if last_analysis else None,
+                    **meta,
+                }
+
+            directory = os.path.dirname(self.live_status_file)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            temp_file = f"{self.live_status_file}.tmp"
+            with open(temp_file, 'wb') as f:
+                f.write(JSON_DUMPS(status))
+            os.replace(temp_file, self.live_status_file)
+        except Exception:
+            pass
     
 
     
@@ -252,164 +363,9 @@ class WebSocketManager:
         """Définit le callback pour les changements de solde"""
         self.balance_callback = callback
     
-    def start_user_data_stream(self, bot):
-        """Démarre le User Data Stream (adapté selon exchange)"""
-        if bot.paper_trading:
-            print("📝 Paper trading - WebSocket User Data désactivé")
-            return
-
-        exchange_name = os.getenv('EXCHANGE', 'binance').lower()
-
-        if exchange_name == 'kraken':
-            self._start_user_data_kraken(bot)
-        else:
-            self._start_user_data_binance(bot)
-
-    def _start_user_data_binance(self, bot):
-        """User Data Stream Binance"""
-        try:
-            response = bot.safe_request(bot.exchange.sapi_post_user_data_stream)
-            self.listen_key = response.get('listenKey')
-
-            if not self.listen_key:
-                print("❌ Impossible d'obtenir listen key")
-                return
-
-            url = f"wss://stream.binance.com:9443/ws/{self.listen_key}"
-
-            self.ws_user = websocket.WebSocketApp(
-                url,
-                on_message=self.on_user_message,
-                on_error=self.on_user_error,
-                on_close=self.on_user_close,
-            )
-
-            self.ws_user_thread = threading.Thread(target=self.ws_user.run_forever)
-            self.ws_user_thread.daemon = True
-            self.ws_user_thread.start()
-
-            self.start_keepalive(bot)
-
-        except Exception as e:
-            print(f"❌ Erreur User Data Stream: {e}")
-
-    def _start_user_data_kraken(self, bot):
-        """User Data Stream Kraken (WebSocket privé)"""
-        try:
-            response = bot.safe_request(bot.exchange.sapi_post_user_data_stream)
-            token = response.get('listenKey', '')
-
-            if not token:
-                print("⚠️ Kraken: WebSocket privé non disponible - Mode polling")
-                return
-
-            url = "wss://ws-auth.kraken.com"
-
-            self.ws_user = websocket.WebSocketApp(
-                url,
-                on_message=self.on_user_message_kraken,
-                on_error=self.on_user_error,
-                on_close=self.on_user_close,
-                on_open=lambda ws: self._subscribe_kraken_private(ws, token)
-            )
-
-            self.ws_user_thread = threading.Thread(target=self.ws_user.run_forever)
-            self.ws_user_thread.daemon = True
-            self.ws_user_thread.start()
-
-        except Exception as e:
-            print(f"⚠️ Kraken User Data: {e}")
-
-    def _subscribe_kraken_private(self, ws, token):
-        """Souscription aux channels privés Kraken"""
-        import json as std_json
-        subscribe_msg = std_json.dumps({
-            "event": "subscribe",
-            "subscription": {"name": "openOrders", "token": token}
-        })
-        ws.send(subscribe_msg)
-
-    def on_user_message_kraken(self, ws, message):
-        """Traite les messages privés Kraken"""
-        try:
-            data = JSON_LOADS(message)
-            if isinstance(data, list) and len(data) >= 2:
-                # Changement d'ordres détecté
-                if self.balance_callback:
-                    self.balance_callback(data)
-        except:
-            pass
-    
-    def on_user_error(self, ws, error):
-        # Silencieux - erreurs de connexion normales
-        pass
-    
-    def on_user_close(self, ws, close_status_code, close_msg):
-        # Silencieux - fermetures de connexion normales
-        pass
-    
-    def on_user_message(self, ws, message):
-        """Traite les messages User Data (solde, ordres, etc.)"""
-        try:
-            data = JSON_LOADS(message)
-            event_type = data.get('e')
-            
-            print(f"📨 User Data reçu: {event_type}")
-            
-            # Mise à jour solde
-            if event_type == 'outboundAccountPosition':
-                print("💰 Changement de solde détecté")
-                if self.balance_callback:
-                    self.balance_callback(data)
-            
-            # Exécution ordre
-            elif event_type == 'executionReport':
-                order_status = data.get('X')  # Order status
-                if order_status == 'CANCELED':
-                    print("❌ Ordre annulé détecté")
-                elif order_status == 'NEW':
-                    symbol = data.get('s', '')
-                    side = data.get('S', '')
-                    price = data.get('p', '0')
-                    print(f"✅ Nouvel ordre: {symbol} {side} @ {price}")
-                elif order_status == 'REPLACED':
-                    symbol = data.get('s', '')
-                    price = data.get('p', '0')
-                    print(f"🔄 {symbol}: Ordre modifié instantanément @ {price}")
-                
-                if self.balance_callback:
-                    self.balance_callback(data)
-            
-            # Autres événements
-            else:
-                print(f"📊 Événement User Data: {event_type}")
-                    
-        except Exception as e:
-            print(f"⚠️ Erreur traitement user message: {e}")
-            print(f"📄 Message brut: {message[:200]}...")
-    
-    def start_keepalive(self, bot):
-        """Maintient le listen key actif (Binance uniquement)"""
-        exchange_name = os.getenv('EXCHANGE', 'binance').lower()
-        if exchange_name != 'binance':
-            return  # Kraken n'a pas besoin de keepalive
-
-        def keepalive():
-            while self.running:
-                try:
-                    time.sleep(1800)  # 30 minutes
-                    if self.listen_key:
-                        bot.safe_request(bot.exchange.sapi_put_user_data_stream, {'listenKey': self.listen_key})
-                except Exception as e:
-                    pass
-
-        keepalive_thread = threading.Thread(target=keepalive)
-        keepalive_thread.daemon = True
-        keepalive_thread.start()
-    
     def on_error(self, ws, error):
-        """Gère les erreurs WebSocket (silencieux)"""
-        pass
+        """Gere les erreurs WebSocket"""
+        print(f"WS erreur: {error}")
     
     def on_close(self, ws, close_status_code, close_msg):
         """Gère la fermeture de connexion (silencieux)"""
@@ -465,6 +421,7 @@ class WebSocketManager:
     def stop(self):
         """Arrête la connexion WebSocket"""
         self.running = False
+        self.write_live_status()
         if self.ws:
             self.ws.close()
         if self.ws_user:

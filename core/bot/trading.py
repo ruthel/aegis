@@ -36,9 +36,7 @@ class TradingMixin:
             balance = self.balance_manager.get_balance()
             available = balance.get('USDT', {}).get('free', 0)
             if cost > available:
-                shortage = cost - available
-                if not self.earn_manager.withdraw_from_flexible(shortage):
-                    return None
+                return None
         
         try:
             if self.paper_trading:
@@ -65,6 +63,7 @@ class TradingMixin:
                 if 'positions' not in self.state:
                     self.state['positions'] = []
                 self.state['positions'].append(position)
+                position['avg_entry_price'] = self.get_real_buy_price(symbol)
                 self.save_state()
                 
                 # Incrémenter compteur trades
@@ -93,6 +92,7 @@ class TradingMixin:
     
     def sell_market(self, symbol, amount):
         price = self.get_price(symbol)
+        buy_price = self.get_real_buy_price(symbol)
         
         try:
             if self.paper_trading:
@@ -115,13 +115,14 @@ class TradingMixin:
                 position = {
                     'symbol': symbol, 'side': 'sell', 'amount': amount,
                     'price': order.get('price', price), 'timestamp': datetime.now().isoformat(),
-                    'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading
+                    'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
+                    'avg_entry_price': buy_price
                 }
                 self.state['positions'].append(position)
                 self.save_state()
                 self.total_trades += 1
                 
-                pnl = self.calculate_pnl(symbol, 'sell', amount, price)
+                pnl = self.calculate_pnl(symbol, 'sell', amount, price, buy_price=buy_price)
                 if hasattr(self, 'risk_manager') and pnl is not None:
                     self.risk_manager.record_trade(pnl)
                 
@@ -136,6 +137,9 @@ class TradingMixin:
                 
                 if hasattr(self, 'notifier'):
                     self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+
+                if hasattr(self, 'set_symbol_cooldown'):
+                    self.set_symbol_cooldown(symbol, reason='sell_executed')
             
             return order
         except Exception as e:
@@ -249,15 +253,49 @@ class TradingMixin:
             print(f"❌ Erreur vente limite: {e}")
             return None
     
-    def get_real_buy_price(self, symbol):
-        # En paper trading, utiliser uniquement l'état des positions
-        if self.paper_trading:
-            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-            if buy_positions:
-                return buy_positions[-1]['price']
+    def _calculate_weighted_average_from_events(self, events):
+        """Calcule le prix moyen pondéré de la position restante."""
+        total_amount = 0.0
+        total_cost = 0.0
+
+        for event in events:
+            side = event.get('side')
+            amount = float(event.get('amount') or 0)
+            price = float(event.get('price') or 0)
+            if amount <= 0 or price <= 0:
+                continue
+
+            if side == 'buy':
+                total_amount += amount
+                total_cost += amount * price
+            elif side == 'sell' and total_amount > 0:
+                sold_amount = min(amount, total_amount)
+                average_cost = total_cost / total_amount
+                total_amount -= sold_amount
+                total_cost -= sold_amount * average_cost
+
+                if total_amount <= 0.00000001:
+                    total_amount = 0.0
+                    total_cost = 0.0
+
+        if total_amount <= 0.00000001:
             return None
-            
-        # Mode réel - utiliser l'API Binance
+        return total_cost / total_amount
+
+    def _get_state_weighted_average_buy_price(self, symbol):
+        events = [
+            p for p in self.state.get('positions', [])
+            if p.get('symbol') == symbol and p.get('side') in ['buy', 'sell']
+        ]
+        events.sort(key=lambda p: p.get('timestamp', ''))
+        return self._calculate_weighted_average_from_events(events)
+
+    def get_real_buy_price(self, symbol):
+        # En paper trading, utiliser le prix moyen pondéré du state.
+        if self.paper_trading:
+            return self._get_state_weighted_average_buy_price(symbol)
+
+        # Mode réel - utiliser l'historique de l'exchange
         try:
             balance = self.balance_manager.get_balance()
             base_currency = symbol.split('/')[0]
@@ -267,33 +305,19 @@ class TradingMixin:
                 return None
             
             trades = self.safe_request(self.exchange.fetch_my_trades, symbol, limit=100)
-            net_amount = 0
-            weighted_price = 0
-            
-            for trade in reversed(trades):
-                if trade['side'] == 'buy':
-                    net_amount += trade['amount']
-                    weighted_price += trade['price'] * trade['amount']
-                else:
-                    net_amount -= trade['amount']
-                
-                if net_amount >= current_amount:
-                    break
-            
-            if net_amount > 0:
-                return weighted_price / net_amount
-        except:
+            events = sorted(trades or [], key=lambda trade: trade.get('timestamp') or 0)
+            weighted_price = self._calculate_weighted_average_from_events(events)
+            if weighted_price:
+                return weighted_price
+        except Exception:
             pass
         
         # Fallback sur l'état des positions
-        buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-        if buy_positions:
-            return buy_positions[-1]['price']
-        return None
+        return self._get_state_weighted_average_buy_price(symbol)
     
-    def calculate_pnl(self, symbol, side, amount, price):
+    def calculate_pnl(self, symbol, side, amount, price, buy_price=None):
         if side == 'sell':
-            real_buy_price = self.get_real_buy_price(symbol)
+            real_buy_price = buy_price or self.get_real_buy_price(symbol)
             if real_buy_price:
                 # Coûts avec frais INCLUS
                 buy_cost = real_buy_price * amount * (1 + self.trading_fee)
@@ -343,18 +367,18 @@ class TradingMixin:
             if should_execute:
                 # Exécuter l'ordre
                 if side == 'sell':
+                    buy_price = self.get_real_buy_price(symbol)
                     revenue = amount * current_price
                     self.paper_balance += revenue
                     print(f"✅ PAPER - Ordre limite VENTE exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
                     
                     # Calculer P&L
-                    pnl = self.calculate_pnl(symbol, 'sell', amount, current_price)
+                    pnl = self.calculate_pnl(symbol, 'sell', amount, current_price, buy_price=buy_price)
                     if hasattr(self, 'risk_manager') and pnl is not None:
                         self.risk_manager.record_trade(pnl)
                     
                     # Envoyer notification Telegram
                     if hasattr(self, 'notifier'):
-                        buy_price = self.get_real_buy_price(symbol)
                         buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
                         hold_time = "N/A"
                         if buy_positions:
@@ -369,9 +393,12 @@ class TradingMixin:
                     position = {
                         'symbol': symbol, 'side': 'sell', 'amount': amount,
                         'price': current_price, 'timestamp': datetime.now().isoformat(),
-                        'order_id': order_id, 'source': 'bot', 'paper': True
+                        'order_id': order_id, 'source': 'bot', 'paper': True,
+                        'avg_entry_price': buy_price
                     }
                     self.state['positions'].append(position)
+                    if hasattr(self, 'set_symbol_cooldown'):
+                        self.set_symbol_cooldown(symbol, reason='paper_limit_sell_executed')
                     
                 elif side == 'buy':
                     cost = amount * current_price
@@ -385,6 +412,9 @@ class TradingMixin:
                         'order_id': order_id, 'source': 'bot', 'paper': True
                     }
                     self.state['positions'].append(position)
+                    position['avg_entry_price'] = self.get_real_buy_price(symbol)
+                    if hasattr(self, 'set_symbol_cooldown'):
+                        self.set_symbol_cooldown(symbol, reason='paper_limit_buy_executed')
                 
                 executed_orders.append(order_id)
         
@@ -397,7 +427,7 @@ class TradingMixin:
     
     def optimize_existing_position(self, symbol):
         """Optimise une position existante avec prix cible intelligent"""
-        # TOUJOURS rafraîchir depuis Binance (pas de cache)
+        # TOUJOURS rafraîchir depuis l'exchange (pas de cache)
         balance = self.balance_manager.get_balance(force_refresh=True)
         base_currency = symbol.split('/')[0]
         free_holding = balance.get(base_currency, {}).get('free', 0)
@@ -434,12 +464,12 @@ class TradingMixin:
         
         # Placer ordre avec TOUTE la position disponible
         if locked_holding <= 0.00001 and free_holding > 0.00001:
-            # VÉRIFIER sur Binance si ordre existe vraiment (pas juste le cache)
+            # VÉRIFIER sur l'exchange si ordre existe vraiment (pas juste le cache)
             if not self.paper_trading:
                 try:
                     open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                     if open_orders:
-                        print(f"⚠️ {base_currency}: Ordre déjà existant sur Binance - Skip")
+                        print(f"⚠️ {base_currency}: Ordre déjà existant sur l'exchange - Skip")
                         return False
                 except Exception as e:
                     print(f"⚠️ Erreur vérification ordres: {e}")
@@ -472,9 +502,141 @@ class TradingMixin:
             return False
         
         return False
+
+    def _get_trade_order_id(self, trade):
+        """Extrait l'id d'ordre depuis un trade CCXT, selon l'exchange."""
+        info = trade.get('info') or {}
+        return str(
+            trade.get('order')
+            or trade.get('orderId')
+            or info.get('orderId')
+            or info.get('ordertxid')
+            or info.get('order_txid')
+            or ''
+        )
+
+    def _trade_matches_order(self, trade, order_id, order_data):
+        order = order_data.get('order', {})
+        trade_order_id = self._get_trade_order_id(trade)
+        if trade_order_id and trade_order_id == str(order_id):
+            return True
+
+        if trade.get('side') != order_data.get('side'):
+            return False
+
+        order_amount = float(order.get('amount') or 0)
+        order_price = float(order.get('price') or 0)
+        trade_amount = float(trade.get('amount') or 0)
+        trade_price = float(trade.get('price') or 0)
+        if order_amount <= 0 or order_price <= 0 or trade_amount <= 0 or trade_price <= 0:
+            return False
+
+        amount_close = abs(trade_amount - order_amount) <= max(1e-8, order_amount * 0.01)
+        price_close = abs(trade_price - order_price) <= max(1e-8, order_price * 0.02)
+        return amount_close and price_close
+
+    def _confirm_order_execution(self, order_id, order_data):
+        """Confirme qu'un ordre disparu a vraiment généré des trades."""
+        try:
+            symbol = order_data.get('symbol')
+            since = None
+            if order_data.get('timestamp'):
+                since = int(max(0, order_data['timestamp'] - 60) * 1000)
+
+            trades = self.safe_request(self.exchange.fetch_my_trades, symbol, since, 100)
+            matches = [
+                trade for trade in trades
+                if self._trade_matches_order(trade, order_id, order_data)
+            ]
+            if not matches:
+                return None
+
+            total_amount = sum(float(trade.get('amount') or 0) for trade in matches)
+            if total_amount <= 0:
+                return None
+
+            total_value = sum(
+                float(trade.get('amount') or 0) * float(trade.get('price') or 0)
+                for trade in matches
+            )
+            latest_timestamp = max(trade.get('timestamp') or 0 for trade in matches)
+
+            return {
+                'symbol': symbol,
+                'side': order_data.get('side'),
+                'amount': total_amount,
+                'price': total_value / total_amount,
+                'timestamp': latest_timestamp,
+                'trade_ids': [str(trade.get('id')) for trade in matches if trade.get('id')],
+                'fee': sum(float((trade.get('fee') or {}).get('cost') or 0) for trade in matches)
+            }
+        except Exception as e:
+            print(f"⚠️ Confirmation ordre impossible {order_id}: {e}")
+            return None
+
+    def _record_confirmed_order_execution(self, order_id, order_data, execution):
+        """Enregistre et notifie seulement une exécution confirmée par l'historique."""
+        trade_ids = set(execution.get('trade_ids') or [])
+        existing_ids = set()
+        for position in self.state.get('positions', []):
+            if position.get('order_id'):
+                existing_ids.add(str(position.get('order_id')))
+            existing_ids.update(str(trade_id) for trade_id in position.get('trade_ids', []))
+
+        if str(order_id) in existing_ids or (trade_ids and trade_ids.intersection(existing_ids)):
+            return True
+
+        symbol = execution['symbol']
+        side = execution['side']
+        amount = execution['amount']
+        price = execution['price']
+        timestamp = execution.get('timestamp') or int(time.time() * 1000)
+
+        if side == 'sell':
+            buy_price = self.get_real_buy_price(symbol)
+            pnl = self.calculate_pnl(symbol, 'sell', amount, price, buy_price=buy_price)
+            if hasattr(self, 'risk_manager') and pnl is not None:
+                self.risk_manager.record_trade(pnl)
+
+            if hasattr(self, 'notifier'):
+                buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
+                hold_time = "N/A"
+                if buy_positions:
+                    buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
+                    delta = datetime.now() - buy_time
+                    hours = delta.total_seconds() / 3600
+                    hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
+                self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+
+            position = {
+                'symbol': symbol, 'side': 'sell', 'amount': amount,
+                'price': price, 'timestamp': datetime.fromtimestamp(timestamp / 1000).isoformat(),
+                'order_id': execution['trade_ids'][0] if execution.get('trade_ids') else str(order_id),
+                'exchange_order_id': str(order_id), 'trade_ids': execution.get('trade_ids', []),
+                'source': 'bot_confirmed', 'paper': False,
+                'fee': execution.get('fee', 0),
+                'avg_entry_price': buy_price
+            }
+            self.state['positions'].append(position)
+            self.save_state()
+            print(f"✅ Ordre limite VENTE confirmé: {amount:.6f} {symbol.split('/')[0]} @ {price:.2f}")
+            return True
+
+        return False
+
+    def _handle_disappeared_order(self, order_id, order_data):
+        """Classe un ordre disparu comme exécuté seulement si les trades le confirment."""
+        execution = self._confirm_order_execution(order_id, order_data)
+        if execution:
+            return self._record_confirmed_order_execution(order_id, order_data, execution)
+
+        symbol = order_data.get('symbol', 'UNKNOWN')
+        side = order_data.get('side', 'UNKNOWN')
+        print(f"ℹ️ Ordre disparu sans trade confirmé: {side} {symbol} ({order_id}) - traité comme annulé/inconnu")
+        return False
     
     def detect_order_modifications(self):
-        """Synchronise TOUS les ordres ouverts depuis Binance (bot + manuels) + Détecte exécutions"""
+        """Synchronise TOUS les ordres ouverts depuis l'exchange (bot + manuels) + détecte exécutions."""
         if self.paper_trading:
             return
         
@@ -513,48 +675,7 @@ class TradingMixin:
             # Détecter ordres exécutés (présents avant, absents maintenant)
             for order_id, order_data in previous_orders.items():
                 if order_id not in all_open_orders:
-                    # Ordre disparu = exécuté
-                    symbol = order_data['symbol']
-                    side = order_data['side']
-                    order = order_data['order']
-                    
-                    print(f"🔔 ORDRE EXÉCUTÉ DÉTECTÉ: {side} {symbol}")  # DEBUG
-                    
-                    if side == 'sell':
-                        # Ordre de vente exécuté - Envoyer notification
-                        amount = order.get('amount', 0)
-                        price = order.get('price', 0)
-                        
-                        # Calculer P&L
-                        pnl = self.calculate_pnl(symbol, 'sell', amount, price)
-                        
-                        if hasattr(self, 'notifier'):
-                            buy_price = self.get_real_buy_price(symbol)
-                            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-                            hold_time = "N/A"
-                            if buy_positions:
-                                buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
-                                delta = datetime.now() - buy_time
-                                hours = delta.total_seconds() / 3600
-                                hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
-                            
-                            print(f"📤 Envoi notification Telegram vente...")  # DEBUG
-                            self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
-                            print(f"✅ Notification envoyée")  # DEBUG
-                        else:
-                            print(f"⚠️ Notification NON envoyée - has_notifier={hasattr(self, 'notifier')}")  # DEBUG
-                        
-                        # Enregistrer la vente dans l'état
-                        position = {
-                            'symbol': symbol, 'side': 'sell', 'amount': amount,
-                            'price': price, 'timestamp': datetime.now().isoformat(),
-                            'order_id': order_id, 'source': 'bot', 'paper': False
-                        }
-                        self.state['positions'].append(position)
-                        self.save_state()
-                        
-                        crypto = symbol.split('/')[0]
-                        print(f"✅ Ordre limite VENTE exécuté: {amount:.6f} {crypto} @ {price:.2f}")
+                    self._handle_disappeared_order(order_id, order_data)
             
             # Remplacer par tous les ordres synchronisés
             self.pending_orders = all_open_orders
@@ -611,7 +732,7 @@ class TradingMixin:
             return False
     
     def calculate_winrate_30d(self):
-        """Calcule le win rate global sur les 30 derniers jours depuis Binance"""
+        """Calcule le win rate global sur les 30 derniers jours depuis l'exchange."""
         if self.paper_trading:
             return None
         

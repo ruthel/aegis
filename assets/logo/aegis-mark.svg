@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Aegis mark</title>
+  <desc id="desc">A shield mark with a market signal line.</desc>
+  <defs>
+    <linearGradient id="shieldGradient" x1="86" y1="28" x2="236" y2="286" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="0.52" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="edgeGradient" x1="68" y1="24" x2="254" y2="288" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9ff7ec"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="320" height="320" rx="64" fill="#101214"/>
+  <path d="M160 30L254 66V141C254 204 218 250 160 286C102 250 66 204 66 141V66L160 30Z" fill="#111827"/>
+  <path d="M160 43L241 74V140C241 194 210 233 160 265C110 233 79 194 79 140V74L160 43Z" fill="url(#shieldGradient)"/>
+  <path d="M160 58L227 83V138C227 181 202 215 160 242C118 215 93 181 93 138V83L160 58Z" fill="#101214" opacity="0.9"/>
+  <path d="M104 160H130L147 122L168 192L189 100L207 160H224" fill="none" stroke="#2dd4bf" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M160 43L241 74V140C241 194 210 233 160 265C110 233 79 194 79 140V74L160 43Z" fill="none" stroke="url(#edgeGradient)" stroke-width="5"/>
+</svg>

@@ -7,9 +7,9 @@ from config import BOT_NAME
 
 class NotificationManager:
     def __init__(self):
-        self.telegram_token = "8048049962:AAGUNfTjlkADCRZEVKieM-t9Nvn8oTPzKpI"
+        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        self.enabled = bool(self.chat_id)
+        self.enabled = bool(self.telegram_token and self.chat_id)
         self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
         self.last_status_time = 0
         self.bot_ref = None
@@ -550,139 +550,6 @@ class NotificationManager:
                 msg += f"└─ Meilleur: N/A\n\n"
             else:
                 msg += f"└─ Aucun trade\n\n"
-        
-        # Double Investment Stats (réelles + simulées)
-        if hasattr(bot, 'double_investment_manager'):
-            # Récupérer positions réelles de l'API
-            real_positions = bot.double_investment_manager.get_dual_investment_positions_from_api()
-            simulated_positions = bot.double_investment_manager.positions
-            
-            total_positions = len(real_positions) + len(simulated_positions)
-            
-            if total_positions > 0:
-                msg += f"💎 Double Investment\n"
-                msg += f"├─ Positions: {total_positions}\n"
-                
-                # Calculer montants investis
-                real_invested = sum(float(p.get('subscriptionAmount', 0)) for p in real_positions)
-                sim_invested = sum(p.get('amount', 0) for p in simulated_positions if p.get('status', 'active') == 'active')
-                total_invested = real_invested + sim_invested
-                
-                if total_invested > 0:
-                    msg += f"├─ Investi: {total_invested:.2f} USDT\n"
-                
-                # Détail par type (réelles)
-                real_calls = [p for p in real_positions if p.get('productType') == 'CALL']
-                real_puts = [p for p in real_positions if p.get('productType') == 'PUT']
-                
-                # Détail par type (simulées)
-                sim_calls = [p for p in simulated_positions if p.get('type') == 'covered_call' and p.get('status', 'active') == 'active']
-                sim_puts = [p for p in simulated_positions if p.get('type') == 'cash_secured_put' and p.get('status', 'active') == 'active']
-                
-                total_calls = len(real_calls) + len(sim_calls)
-                total_puts = len(real_puts) + len(sim_puts)
-                
-                if total_calls > 0:
-                    calls_amount = sum(float(p.get('subscriptionAmount', 0)) for p in real_calls) + sum(p.get('amount', 0) for p in sim_calls)
-                    msg += f"├─ Calls: {total_calls} ({calls_amount:.1f} USDT)\n"
-                if total_puts > 0:
-                    puts_amount = sum(float(p.get('subscriptionAmount', 0)) for p in real_puts) + sum(p.get('amount', 0) for p in sim_puts)
-                    msg += f"├─ Puts: {total_puts} ({puts_amount:.1f} USDT)\n"
-                
-                # Détail des positions actives avec structure hiérarchique par type
-                position_details = []
-                
-                # Grouper par type d'option
-                calls_positions = []
-                puts_positions = []
-                
-                # Positions réelles
-                for p in real_positions:
-                    invest_coin = p.get('investCoin', 'UNKNOWN')
-                    exercised_coin = p.get('exercisedCoin', 'UNKNOWN')
-                    option_type = p.get('optionType', 'UNKNOWN')
-                    amount = float(p.get('subscriptionAmount', 0))
-                    apr = float(p.get('apr', 0))
-                    duration = p.get('duration', 0)
-                    
-                    # CORRECTION: APR vient comme 1.05 (pas 105%), donc pas besoin de /100
-                    potential_gain_usdt = amount * apr * (duration / 365)
-                    
-                    # Calculer temps restant
-                    settle_date = p.get('settleDate', 0)
-                    if settle_date:
-                        settle_datetime = datetime.fromtimestamp(settle_date / 1000)
-                        time_remaining = settle_datetime - datetime.now()
-                        total_seconds = time_remaining.total_seconds()
-                        
-                        if total_seconds <= 0:
-                            time_display = "Expiré"
-                        elif total_seconds < 3600:  # < 1 heure
-                            minutes = int(total_seconds // 60)
-                            time_display = f"{minutes}min"
-                        elif total_seconds < 86400:  # < 24 heures
-                            hours = int(total_seconds // 3600)
-                            time_display = f"{hours}h"
-                        else:  # >= 24 heures
-                            days = int(total_seconds // 86400)
-                            time_display = f"{days}j"
-                    else:
-                        time_display = f"{duration}j"
-                    
-                    gain_display = f"+{potential_gain_usdt:.3f} (+{apr*100:.1f}%) • {time_display}"
-                    
-                    position_info = f"{exercised_coin} • {amount:.2f} USDT • {gain_display}"
-                    
-                    if option_type == 'CALL':
-                        calls_positions.append(position_info)
-                    elif option_type == 'PUT':
-                        puts_positions.append(position_info)
-                
-                # Positions simulées
-                for p in simulated_positions:
-                    if p.get('status', 'active') == 'active':
-                        crypto = p.get('symbol', 'N/A').replace('USDT', '')
-                        ptype = 'CALL' if p.get('type') == 'covered_call' else 'PUT'
-                        amount = p.get('amount', 0)
-                        position_info = f"{crypto} • {amount:.1f} USDT"
-                        
-                        if ptype == 'CALL':
-                            calls_positions.append(position_info)
-                        else:
-                            puts_positions.append(position_info)
-                
-                # Affichage hiérarchique par type
-                if puts_positions or calls_positions:
-                    # Afficher PUT en premier
-                    if puts_positions:
-                        if calls_positions:  # Il y a aussi des CALL après
-                            msg += f"├─ 📉 PUT ({len(puts_positions)} position{'s' if len(puts_positions) > 1 else ''})\n"
-                        else:  # Seulement des PUT
-                            msg += f"└─ 📉 PUT ({len(puts_positions)} position{'s' if len(puts_positions) > 1 else ''})\n"
-                        
-                        for i, pos in enumerate(puts_positions):
-                            is_last_put = (i == len(puts_positions) - 1)
-                            if calls_positions:  # Il y a des CALL après
-                                prefix = "│  ├─" if not is_last_put else "│  └─"
-                            else:  # Pas de CALL après
-                                prefix = "   ├─" if not is_last_put else "   └─"
-                            msg += f"{prefix} {pos}\n"
-                    
-                    # Afficher CALL en second
-                    if calls_positions:
-                        msg += f"└─ 📞 CALL ({len(calls_positions)} position{'s' if len(calls_positions) > 1 else ''})\n"
-                        
-                        for i, pos in enumerate(calls_positions):
-                            is_last_call = (i == len(calls_positions) - 1)
-                            prefix = "   ├─" if not is_last_call else "   └─"
-                            msg += f"{prefix} {pos}\n"
-                    
-                    msg += "\n"
-                else:
-                    msg += f"└─ Positions actives\n\n"
-            else:
-                msg += f"💎 Double Investment\n"
-                msg += f"└─ Aucun \n\n"
         
         # Opportunités - LIMITER AUX TRADABLE PAIRS
         msg += f"🔮 Opportunités\n"

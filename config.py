@@ -1,8 +1,10 @@
-"""Configuration centralisée du bot - Toutes les variables depuis .env"""
+"""Configuration centralisée du bot - variables système + fichiers locaux."""
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+load_dotenv('.env.local', override=True)
+load_dotenv('.env.dashboard', override=True)
 
 # ===== EXCHANGE =====
 EXCHANGE = os.getenv('EXCHANGE', 'binance').lower()  # binance ou kraken
@@ -49,14 +51,6 @@ RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '2'))
 # ===== PAPER TRADING =====
 PAPER_TRADING = os.getenv('PAPER_TRADING', 'False').lower() == 'true'
 PAPER_BALANCE = float(os.getenv('PAPER_BALANCE', '1000'))
-
-# ===== BINANCE EARN (TIRELIRE) =====
-ENABLE_EARN = os.getenv('ENABLE_EARN', 'True').lower() == 'true'
-MIN_TRADING_BALANCE = float(os.getenv('MIN_TRADING_BALANCE', '5'))
-EARN_ALLOCATION_PERCENT = float(os.getenv('EARN_ALLOCATION_PERCENT', '100'))
-FLEXIBLE_SAVINGS_THRESHOLD = float(os.getenv('FLEXIBLE_SAVINGS_THRESHOLD', '5'))
-LOCKED_STAKING_THRESHOLD = float(os.getenv('LOCKED_STAKING_THRESHOLD', '50'))
-EARN_WITHDRAW_THRESHOLD = float(os.getenv('EARN_WITHDRAW_THRESHOLD', '5'))
 
 # ===== POSITIONS BLOQUÉES =====
 MAX_STUCK_LOSS = float(os.getenv('MAX_STUCK_LOSS', '15'))

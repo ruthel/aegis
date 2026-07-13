@@ -413,12 +413,26 @@ class PositionManager:
             fees_to_pay = size_usdt - net_usdt
             size_crypto_raw = net_usdt / current_price
             
-            # Arrondir au stepSize Binance
+            # Arrondir au step size de l'exchange
             size_crypto = self.round_quantity(symbol, size_crypto_raw)
+            filters = self.get_symbol_filters(symbol)
+            step_size = filters['stepSize']
+            min_amount = max(
+                float(filters.get('minQty') or 0),
+                float(self.bot.get_min_amount(symbol).get('min_amount') or 0)
+            )
             
-            if size_crypto == 0:
-                print(f"⚠️ Quantité trop petite après arrondi: {size_crypto_raw:.8f}")
-                return self._get_zero_position_size()
+            if size_crypto < min_amount:
+                import math
+                adjusted_crypto = math.ceil(min_amount / step_size) * step_size
+                adjusted_total_usdt = adjusted_crypto * current_price * (1 + fee_rate)
+
+                if adjusted_total_usdt > account_balance:
+                    print(f"⚠️ Quantité minimum {adjusted_crypto:.8f} coûte {adjusted_total_usdt:.2f} USDT > capital {account_balance:.2f} USDT")
+                    return self._get_zero_position_size()
+
+                size_crypto = adjusted_crypto
+                print(f"✅ Quantité ajustée au minimum exchange: {size_crypto:.8f}")
             
             # Recalculer USDT basé sur quantité arrondie + frais
             net_usdt_adjusted = size_crypto * current_price
@@ -436,8 +450,6 @@ class PositionManager:
                 min_crypto_needed = min_net_usdt / current_price
                 
                 # Arrondir vers le HAUT cette fois
-                filters = self.get_symbol_filters(symbol)
-                step_size = filters['stepSize']
                 import math
                 size_crypto = math.ceil(min_crypto_needed / step_size) * step_size
                 
@@ -451,7 +463,7 @@ class PositionManager:
                     print(f"⚠️ Montant ajusté {total_usdt_adjusted:.2f} USDT > capital {account_balance:.2f} USDT")
                     return self._get_zero_position_size()
                 
-                print(f"✅ Ajusté à {total_usdt_adjusted:.2f} USDT pour respecter minimum Binance")
+                print(f"✅ Ajusté à {total_usdt_adjusted:.2f} USDT pour respecter le minimum exchange")
             
             print(f"💰 Trade: {total_usdt_adjusted:.2f} USDT → {size_crypto:.8f} crypto (frais: {fees_adjusted:.4f} USDT)")
             
@@ -499,9 +511,8 @@ class PositionManager:
             return 0.85
     
     def _get_fee_rate(self):
-        """Retourne le taux de frais Binance"""
-        use_bnb = getattr(self.bot, 'use_bnb_for_fees', False)
-        return 0.00075 if use_bnb else 0.001
+        """Retourne un taux de frais spot fallback."""
+        return 0.001
     
     def get_symbol_filters(self, symbol):
         """Récupère filtres LOT_SIZE depuis l'exchange"""
@@ -537,7 +548,7 @@ class PositionManager:
             return {'minQty': 0.0001, 'stepSize': 0.0001}
     
     def round_quantity(self, symbol, quantity):
-        """Arrondit quantité au stepSize Binance (vers le BAS)"""
+        """Arrondit quantité au step size exchange (vers le BAS)"""
         import math
         
         filters = self.get_symbol_filters(symbol)
@@ -547,7 +558,7 @@ class PositionManager:
         # Arrondir vers le BAS pour éviter dust
         rounded = math.floor(quantity / step_size) * step_size
         
-        # Vérifier minimum Binance
+        # Vérifier minimum exchange
         if rounded < min_qty:
             return 0
         

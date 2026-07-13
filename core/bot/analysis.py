@@ -57,7 +57,7 @@ class AnalysisMixin:
             if crypto_locked <= 0.00001:
                 return None
             
-            # Récupérer le prix réel de l'ordre sur Binance
+            # Récupérer le prix réel de l'ordre sur l'exchange
             target_price = None
             if not self.paper_trading:
                 try:
