@@ -7,6 +7,8 @@ class TradingMixin:
     """Mixin pour les opérations de trading"""
     
     def buy_market(self, symbol, amount, allow_averaging=False):
+        if hasattr(self, 'risk_manager') and not self.risk_manager.can_trade():
+            return None
         
         # VÉRIFICATION 1: Limite quotidienne de trades
         if hasattr(self, 'total_trades') and hasattr(self, 'max_daily_trades'):
@@ -70,6 +72,8 @@ class TradingMixin:
                     self.total_trades += 1
                 else:
                     self.total_trades = 1
+                if hasattr(self, 'risk_manager'):
+                    self.risk_manager.record_trade(0)
                 
                 if hasattr(self, 'notifier'):
                     analysis = self.get_cached_analysis(symbol, price)
@@ -118,6 +122,8 @@ class TradingMixin:
                 self.total_trades += 1
                 
                 pnl = self.calculate_pnl(symbol, 'sell', amount, price)
+                if hasattr(self, 'risk_manager') and pnl is not None:
+                    self.risk_manager.record_trade(pnl)
                 
                 buy_price = self.get_real_buy_price(symbol)
                 buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
@@ -177,9 +183,9 @@ class TradingMixin:
                     price = current_price * (1 + min_profit_with_fees / 100)
                     print(f"⚠️ {crypto} → Fallback target: {price:.6f} (+{min_profit_with_fees}% avec frais)")
             
-            # 🔥 CRITIQUE : Vérifier minimum 5 USDT
+            # Vérifier le minimum de l'exchange pour ce symbole
             notional_value = amount * price
-            MIN_NOTIONAL = 5.0
+            MIN_NOTIONAL = self.get_min_amount(symbol)['min_cost']
             
             if notional_value < MIN_NOTIONAL:
                 print(f"❌ Montant vente {notional_value:.2f} USDT < minimum {MIN_NOTIONAL} USDT")
@@ -343,6 +349,8 @@ class TradingMixin:
                     
                     # Calculer P&L
                     pnl = self.calculate_pnl(symbol, 'sell', amount, current_price)
+                    if hasattr(self, 'risk_manager') and pnl is not None:
+                        self.risk_manager.record_trade(pnl)
                     
                     # Envoyer notification Telegram
                     if hasattr(self, 'notifier'):
@@ -493,9 +501,10 @@ class TradingMixin:
                             print(f"🔄 {crypto}: Ordre modifié {old_price:.2f} → {order['price']:.2f}")
                     
                     # Synchroniser TOUS les ordres (bot + manuels)
+                    order_timestamp = order.get('timestamp')
                     all_open_orders[order_id] = {
                         'order': order, 
-                        'timestamp': order['timestamp'] / 1000, 
+                        'timestamp': order_timestamp / 1000 if order_timestamp else time.time(), 
                         'symbol': symbol, 
                         'side': order['side'],
                         'source': 'manual' if order_id not in self.pending_orders else 'bot'

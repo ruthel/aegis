@@ -16,7 +16,8 @@ class MarketAnalyzer:
     def __init__(self, min_score=40):
         """Initialise le MarketAnalyzer avec les paramètres de scoring"""
         # Configuration scoring crypto
-        self.analyzer = None  # Lazy load
+        from utils.timeframe_analyzer import TimeframeAnalyzer
+        self.analyzer = TimeframeAnalyzer()
         self.base_min_score = min_score
         self.max_tradeable = 2  # Valeur par défaut, sera mise à jour dynamiquement
         self.blacklist = {}

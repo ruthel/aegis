@@ -1,37 +1,39 @@
 import time
 import json
-import ccxt
 import os
 import threading
+import logging
 from queue import Queue
 from datetime import datetime
-from core.websocket_manager import WebSocketManager
-from core.notification_manager import NotificationManager
-from core.earn_manager import BinanceEarnManager
-from core.double_investment_manager import DoubleInvestmentManager
-from core.balance_manager import BalanceManager
+
+# Exchange
+from core.exchange.factory import create_exchange_client
+
+# Managers
+from core.managers.notification import NotificationManager
+from core.managers.earn import EarnManager
+from core.managers.double_investment import DoubleInvestmentManager
+from core.managers.balance import BalanceManager
+
+# WebSocket
+from core.websocket import WebSocketManager
+
+# Utils
 from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
 from utils.timeframe_analyzer import TimeframeAnalyzer
 from utils.position_manager import PositionManager
-
 from utils.pattern_analyzer import PatternAnalyzer
-
 from utils.market_analyzer import MarketAnalyzer
-
 from utils.capital_manager import CapitalManager
 
+# Mixins
+from core.bot.trading import TradingMixin
+from core.bot.sync import SyncMixin
+from core.bot.analysis import AnalysisMixin
+from core.bot.display import DisplayMixin
 
-
-import logging
-
-# Import des mixins
-from core.bot_trading import TradingMixin
-from core.bot_sync import SyncMixin
-from core.bot_analysis import AnalysisMixin
-from core.bot_display import DisplayMixin
-
-class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
-    """Bot de trading Binance Spot avec stratégies avancées"""
+class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
+    """Bot de trading multi-exchange avec stratégies avancées"""
     
     def __init__(self, api_key, api_secret, testnet=False):
         self.api_key = api_key
@@ -51,6 +53,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.state_file = 'data/bot_state.json'
         self.paper_balance = float(os.getenv('PAPER_BALANCE', '1000'))
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSS', '100'))
+        self.max_daily_trades = int(os.getenv('MAX_DAILY_TRADES', '50'))
         self.stop_loss_percent = float(os.getenv('STOP_LOSS_PERCENT', '5'))
         self.save_logs = os.getenv('SAVE_LOGS', 'True') == 'True'
         
@@ -98,7 +101,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # Gestionnaires (nommage cohérent)
         self.risk_manager = RiskManager(
-            max_daily_trades=int(os.getenv('MAX_DAILY_TRADES', '50')),
+            max_daily_trades=self.max_daily_trades,
             max_daily_loss=self.max_daily_loss,
             emergency_stop_loss=float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
         )
@@ -110,7 +113,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         self.multi_tf_analyzer = TimeframeAnalyzer()
 
-        self.earn_manager = BinanceEarnManager(self)
+        self.earn_manager = EarnManager(self)
         self.double_investment_manager = DoubleInvestmentManager(self)
         self.stuck_manager = PositionManager(
             self,
@@ -280,12 +283,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.logger = logging.getLogger(__name__)
     
     def connect(self):
-        self.exchange = ccxt.binance({
-            'apiKey': self.api_key,
-            'secret': self.api_secret,
-            'sandbox': self.testnet,
-            'enableRateLimit': True,
-        })
+        self.exchange = create_exchange_client(self.api_key, self.api_secret, self.testnet)
     
     def reconnect(self):
         for attempt in range(self.max_retries):
@@ -318,11 +316,57 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             try:
                 with open(self.state_file, 'r') as f:
                     self.state = json.load(f)
+                if self.paper_trading:
+                    self._restore_paper_balance()
+                self._restore_trailing_stops_from_state()
             except Exception as e:
                 print(f"⚠️ Erreur chargement: {e}")
                 self.state = {'positions': [], 'last_update': None}
         else:
             self.state = {'positions': [], 'last_update': None}
+
+    def _restore_paper_balance(self):
+        """Restaure l'USDT paper depuis le state, ou le reconstruit pour les anciens fichiers."""
+        saved_balance = self.state.get('paper_balance')
+        if saved_balance is not None:
+            self.paper_balance = float(saved_balance)
+            return
+
+        initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
+        balance = initial_balance
+        for position in self.state.get('positions', []):
+            amount = float(position.get('amount', 0) or 0)
+            price = float(position.get('price', 0) or 0)
+            value = amount * price
+            if position.get('side') == 'buy':
+                balance -= value
+            elif position.get('side') == 'sell':
+                balance += value
+
+        self.paper_balance = max(0, balance)
+
+    def _restore_trailing_stops_from_state(self):
+        """Restaure les trailing stops en mémoire pour les positions ouvertes."""
+        if not hasattr(self, 'trailing_stop_manager'):
+            return
+
+        open_positions = {}
+        for position in self.state.get('positions', []):
+            symbol = position.get('symbol')
+            amount = float(position.get('amount', 0) or 0)
+            if not symbol or amount <= 0:
+                continue
+
+            data = open_positions.setdefault(symbol, {'amount': 0, 'last_buy_price': None})
+            if position.get('side') == 'buy':
+                data['amount'] += amount
+                data['last_buy_price'] = float(position.get('price', 0) or 0)
+            elif position.get('side') == 'sell':
+                data['amount'] -= amount
+
+        for symbol, data in open_positions.items():
+            if data['amount'] > 0.00001 and data['last_buy_price']:
+                self.trailing_stop_manager.add_position(symbol, data['last_buy_price'])
     
     def save_state(self):
         try:
@@ -338,6 +382,8 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     unique_positions.append(pos)
                 unique_positions.sort(key=lambda x: x.get('timestamp', ''))
                 self.state['positions'] = unique_positions
+            if self.paper_trading:
+                self.state['paper_balance'] = self.paper_balance
             self.state['last_update'] = datetime.now().isoformat()
             with open(self.state_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
@@ -364,25 +410,40 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     else:
                         raise Exception("Markets not loaded")
                 else:
-                    min_costs = {'BTC/USDT': 15, 'ETH/USDT': 10, 'SOL/USDT': 8, 'BNB/USDT': 12}
-                    min_amounts = {'BTC/USDT': 0.00015, 'ETH/USDT': 0.003, 'SOL/USDT': 0.04, 'BNB/USDT': 0.01}
+                    exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+                    if exchange_name == 'kraken':
+                        min_costs = {'BTC/USDT': 0.5, 'ETH/USDT': 0.5, 'SOL/USDT': 0.5, 'BNB/USDT': 0.5}
+                        min_amounts = {'BTC/USDT': 0.0001, 'ETH/USDT': 0.001, 'SOL/USDT': 0.01, 'BNB/USDT': 0.01}
+                    else:
+                        min_costs = {'BTC/USDT': 15, 'ETH/USDT': 10, 'SOL/USDT': 8, 'BNB/USDT': 12}
+                        min_amounts = {'BTC/USDT': 0.00015, 'ETH/USDT': 0.003, 'SOL/USDT': 0.04, 'BNB/USDT': 0.01}
                     self.min_amounts[symbol] = {
                         'min_amount': min_amounts.get(symbol, 0.001), 
-                        'min_cost': min_costs.get(symbol, 10)
+                        'min_cost': min_costs.get(symbol, 0.5 if exchange_name == 'kraken' else 10)
                     }
             except Exception as e:
                 # Fallback avec minimums du marché (pas API)
-                fallback_minimums = {
-                    'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 15.0},
-                    'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 10.0},
-                    'SOL/USDT': {'min_amount': 0.01, 'min_cost': 8.0},
-                    'BNB/USDT': {'min_amount': 0.001, 'min_cost': 12.0},
-                    'ADA/USDT': {'min_amount': 1.0, 'min_cost': 5.0},
-                    'DOT/USDT': {'min_amount': 0.1, 'min_cost': 6.0},
-                    'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 3.0},
-                    'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 7.0}
-                }
-                self.min_amounts[symbol] = fallback_minimums.get(symbol, {'min_amount': 0.001, 'min_cost': 1.0})
+                exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+                if exchange_name == 'kraken':
+                    fallback_minimums = {
+                        'BTC/USDT': {'min_amount': 0.0001, 'min_cost': 0.5},
+                        'ETH/USDT': {'min_amount': 0.001, 'min_cost': 0.5},
+                        'SOL/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
+                        'BNB/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
+                    }
+                else:
+                    fallback_minimums = {
+                        'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 15.0},
+                        'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 10.0},
+                        'SOL/USDT': {'min_amount': 0.01, 'min_cost': 8.0},
+                        'BNB/USDT': {'min_amount': 0.001, 'min_cost': 12.0},
+                        'ADA/USDT': {'min_amount': 1.0, 'min_cost': 5.0},
+                        'DOT/USDT': {'min_amount': 0.1, 'min_cost': 6.0},
+                        'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 3.0},
+                        'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 7.0}
+                    }
+                default_min = {'min_amount': 0.001, 'min_cost': 0.5 if exchange_name == 'kraken' else 1.0}
+                self.min_amounts[symbol] = fallback_minimums.get(symbol, default_min)
         return self.min_amounts[symbol]
     
     def validate_order(self, symbol, amount, price=None):
@@ -716,6 +777,7 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Vérifier exécution ordres limite paper trading
                 self.check_paper_limit_orders()
+                self.manage_trailing_stops(tradable_pairs)
                 
                 # Vérifier avec le minimum requis (seulement cryptos tradables)
                 min_required = min(self.get_min_amount(symbol)['min_cost'] for symbol in tradable_pairs) if tradable_pairs else 10
@@ -1085,7 +1147,54 @@ class BinanceSpotBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
         except Exception as e:
             print(f"⚠️ Erreur vérification position {symbol}: {e}")
+            return False
+
+    def _cancel_sell_orders_for_symbol(self, symbol):
+        """Annule les ordres de vente actifs avant une sortie d'urgence."""
+        if self.paper_trading:
+            for order_id, order_data in list(self.pending_orders.items()):
+                if order_data.get('symbol') == symbol and order_data.get('side') == 'sell':
+                    del self.pending_orders[order_id]
             return True
+
+        try:
+            open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+            for order in open_orders:
+                if order.get('side') == 'sell':
+                    self.safe_request(self.exchange.cancel_order, order['id'], symbol)
+            return True
+        except Exception as e:
+            print(f"⚠️ Impossible d'annuler les ordres de vente {symbol}: {e}")
+            return False
+
+    def manage_trailing_stops(self, tradable_pairs):
+        """Met à jour les trailing stops et vend au marché si un stop est touché."""
+        if not hasattr(self, 'trailing_stop_manager') or not tradable_pairs:
+            return
+
+        for symbol in tradable_pairs:
+            try:
+                current_price = self.get_price(symbol)
+                if not current_price:
+                    continue
+
+                self.trailing_stop_manager.update_position(symbol, current_price)
+                if not self.trailing_stop_manager.should_stop_loss(symbol, current_price):
+                    continue
+
+                if not self._cancel_sell_orders_for_symbol(symbol):
+                    continue
+
+                balance = self.balance_manager.get_balance(force_refresh=True)
+                base_currency = symbol.split('/')[0]
+                available = balance.get(base_currency, {}).get('free', 0)
+                if available <= 0.00001:
+                    continue
+
+                if self.sell_market(symbol, available):
+                    self.trailing_stop_manager.remove_position(symbol)
+            except Exception as e:
+                print(f"⚠️ Erreur trailing stop {symbol}: {e}")
     
     def get_entry_signal(self, symbol, current_price):
         """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""

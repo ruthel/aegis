@@ -1,4 +1,5 @@
 import time
+import os
 import threading
 from collections import deque
 from queue import Queue
@@ -11,12 +12,15 @@ except ImportError:
     import json
     JSON_LOADS = json.loads
 
+
 class WebSocketManager:
-    def __init__(self, symbols=['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT']):
+    def __init__(self, symbols=None):
+        if symbols is None:
+            symbols = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT,SOLUSDT').split(',')
         self.symbols = symbols
         self.prices = {}
-        self.last_prices = {}  # Pour filtrage précoce
-        self.last_analysis_count = {symbol: 0 for symbol in symbols}  # Compteur updates
+        self.last_prices = {}
+        self.last_analysis_count = {symbol: 0 for symbol in symbols}
         self.klines = {symbol: deque(maxlen=100) for symbol in symbols}
         self.ws = None
         self.ws_user = None
@@ -25,6 +29,7 @@ class WebSocketManager:
         self.max_reconnect = 5
         self.balance_callback = None
         self.listen_key = None
+        self.exchange_client = None  # Référence au client exchange
         
         # Queue asynchrone pour callbacks non-bloquants
         self.analysis_queue = Queue(maxsize=100)
@@ -35,6 +40,10 @@ class WebSocketManager:
             'timestamp': 0, 'open': 0.0, 'high': 0.0,
             'low': 0.0, 'close': 0.0, 'volume': 0.0
         }
+
+    def set_exchange_client(self, client):
+        """Configure le client exchange pour adapter le WebSocket"""
+        self.exchange_client = client
         
     def start(self):
         """Démarre la connexion WebSocket"""
@@ -57,74 +66,146 @@ class WebSocketManager:
         self.worker_thread.start()
         
     def connect(self):
-        """Établit la connexion WebSocket"""
+        """Établit la connexion WebSocket selon l'exchange configuré"""
         try:
-            # Klines 1m uniquement (prix + OHLCV) - @ticker redondant supprimé
-            streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
-            
-            url = f"wss://stream.binance.com:9443/ws/{'/'.join(streams)}"
-            
-            self.ws = websocket.WebSocketApp(
-                url,
-                on_message=self.on_message,
-                on_error=self.on_error,
-                on_close=self.on_close,
-                on_open=self.on_open
-            )
-            
-            # Démarrer dans un thread séparé
-            self.ws_thread = threading.Thread(target=self.ws.run_forever)
-            self.ws_thread.daemon = True
-            self.ws_thread.start()
-            
+            exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+
+            if exchange_name == 'kraken':
+                self._connect_kraken()
+            else:
+                self._connect_binance()
+
         except Exception as e:
             print(f"Erreur connexion WebSocket: {e}")
             self.reconnect()
+
+    def _connect_binance(self):
+        """Connexion WebSocket Binance"""
+        streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
+        url = f"wss://stream.binance.com:9443/ws/{'/'.join(streams)}"
+
+        self.ws = websocket.WebSocketApp(
+            url,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            on_open=self.on_open
+        )
+
+        self.ws_thread = threading.Thread(target=self.ws.run_forever)
+        self.ws_thread.daemon = True
+        self.ws_thread.start()
+
+    def _connect_kraken(self):
+        """Connexion WebSocket Kraken"""
+        url = "wss://ws.kraken.com"
+
+        self.ws = websocket.WebSocketApp(
+            url,
+            on_message=self.on_message_kraken,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            on_open=self._on_open_kraken
+        )
+
+        self.ws_thread = threading.Thread(target=self.ws.run_forever)
+        self.ws_thread.daemon = True
+        self.ws_thread.start()
+
+    def _on_open_kraken(self, ws):
+        """Souscription aux channels Kraken à l'ouverture"""
+        import json as std_json
+        self.reconnect_attempts = 0
+
+        # Convertir symboles en format Kraken
+        pairs = []
+        for s in self.symbols:
+            # BTCUSDT -> XBT/USDT, ETHUSDT -> ETH/USDT
+            base = s.replace('USDT', '')
+            if base == 'BTC':
+                base = 'XBT'
+            pairs.append(f"{base}/USDT")
+
+        # Souscrire au ticker
+        subscribe_msg = std_json.dumps({
+            "event": "subscribe",
+            "pair": pairs,
+            "subscription": {"name": "ticker"}
+        })
+        ws.send(subscribe_msg)
+
+        # Souscrire aux OHLC 1min
+        subscribe_ohlc = std_json.dumps({
+            "event": "subscribe",
+            "pair": pairs,
+            "subscription": {"name": "ohlc", "interval": 1}
+        })
+        ws.send(subscribe_ohlc)
+
+    def on_message_kraken(self, ws, message):
+        """Traite les messages WebSocket Kraken"""
+        try:
+            data = JSON_LOADS(message)
+
+            # Ignorer les messages système
+            if isinstance(data, dict):
+                return  # heartbeat, systemStatus, subscriptionStatus
+
+            if not isinstance(data, list) or len(data) < 4:
+                return
+
+            channel = data[-2]
+            pair = data[-1]
+
+            # Convertir paire Kraken vers format interne
+            symbol = pair.replace('XBT', 'BTC').replace('/', '')
+
+            if 'ticker' in channel:
+                ticker_data = data[1]
+                current_price = float(ticker_data['c'][0])  # last trade close price
+                self.prices[symbol] = current_price
+                self._process_price_update(symbol, current_price)
+
+            elif 'ohlc' in channel:
+                ohlc_data = data[1]
+                current_price = float(ohlc_data[5])  # close
+                self.prices[symbol] = current_price
+                self._process_price_update(symbol, current_price)
+
+                # Stocker kline
+                candle = self._candle_template.copy()
+                candle.update({
+                    'timestamp': int(float(ohlc_data[0]) * 1000),
+                    'open': float(ohlc_data[2]),
+                    'high': float(ohlc_data[3]),
+                    'low': float(ohlc_data[4]),
+                    'close': current_price,
+                    'volume': float(ohlc_data[7])
+                })
+                if symbol in self.klines:
+                    self.klines[symbol].append(candle)
+
+        except:
+            pass
     
     def on_open(self, ws):
         """Callback à l'ouverture de la connexion"""
         self.reconnect_attempts = 0
     
     def on_message(self, ws, message):
-        """Traite les messages reçus (optimisé)"""
+        """Traite les messages Binance (optimisé)"""
         try:
             data = JSON_LOADS(message)
-            
+
             if 'k' in data:
                 kline = data['k']
                 symbol = kline['s']
                 current_price = float(kline['c'])
-                
-                # Mise à jour prix
+
                 self.prices[symbol] = current_price
-                
-                # Filtrage intelligent adaptatif
-                should_analyze = False
-                last_price = self.last_prices.get(symbol, 0)
-                
-                if last_price == 0:
-                    # Première fois : toujours analyser
-                    should_analyze = True
-                else:
-                    # Incrémenter compteur
-                    self.last_analysis_count[symbol] += 1
-                    
-                    # Analyser si variation > 0.05% OU toutes les 10 updates
-                    variation = abs((current_price - last_price) / last_price)
-                    if variation >= 0.0005 or self.last_analysis_count[symbol] >= 10:
-                        should_analyze = True
-                        self.last_analysis_count[symbol] = 0
-                
-                if should_analyze:
-                    self.last_prices[symbol] = current_price
-                    
-                    # Queue asynchrone non-bloquante
-                    try:
-                        self.analysis_queue.put_nowait((symbol, current_price))
-                    except:
-                        pass  # Queue pleine, skip
-                
-                # Kline fermée : sauvegarde optimisée
+                self._process_price_update(symbol, current_price)
+
+                # Kline fermée : sauvegarde
                 if kline['x']:
                     candle = self._candle_template.copy()
                     candle.update({
@@ -136,9 +217,30 @@ class WebSocketManager:
                         'volume': float(kline['v'])
                     })
                     self.klines[symbol].append(candle)
-                    
+
         except:
-            pass  # Silencieux pour performance
+            pass
+
+    def _process_price_update(self, symbol, current_price):
+        """Logique commune de filtrage et dispatch des prix"""
+        should_analyze = False
+        last_price = self.last_prices.get(symbol, 0)
+
+        if last_price == 0:
+            should_analyze = True
+        else:
+            self.last_analysis_count[symbol] = self.last_analysis_count.get(symbol, 0) + 1
+            variation = abs((current_price - last_price) / last_price)
+            if variation >= 0.0005 or self.last_analysis_count.get(symbol, 0) >= 10:
+                should_analyze = True
+                self.last_analysis_count[symbol] = 0
+
+        if should_analyze:
+            self.last_prices[symbol] = current_price
+            try:
+                self.analysis_queue.put_nowait((symbol, current_price))
+            except:
+                pass
     
 
     
@@ -151,40 +253,92 @@ class WebSocketManager:
         self.balance_callback = callback
     
     def start_user_data_stream(self, bot):
-        """Démarre le User Data Stream pour synchronisation temps réel"""
+        """Démarre le User Data Stream (adapté selon exchange)"""
         if bot.paper_trading:
             print("📝 Paper trading - WebSocket User Data désactivé")
             return
-        
+
+        exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+
+        if exchange_name == 'kraken':
+            self._start_user_data_kraken(bot)
+        else:
+            self._start_user_data_binance(bot)
+
+    def _start_user_data_binance(self, bot):
+        """User Data Stream Binance"""
         try:
-            # Obtenir listen key pour SPOT (pas futures)
-            response = bot.safe_request(bot.exchange.sapiPostUserDataStream)
+            response = bot.safe_request(bot.exchange.sapi_post_user_data_stream)
             self.listen_key = response.get('listenKey')
-            
+
             if not self.listen_key:
                 print("❌ Impossible d'obtenir listen key")
                 return
-            
-            # Connexion WebSocket User Data
+
             url = f"wss://stream.binance.com:9443/ws/{self.listen_key}"
-            
+
             self.ws_user = websocket.WebSocketApp(
                 url,
                 on_message=self.on_user_message,
                 on_error=self.on_user_error,
                 on_close=self.on_user_close,
             )
-            
-            # Démarrer dans un thread séparé
+
             self.ws_user_thread = threading.Thread(target=self.ws_user.run_forever)
             self.ws_user_thread.daemon = True
             self.ws_user_thread.start()
-            
-            # Keepalive toutes les 30 minutes
+
             self.start_keepalive(bot)
-            
+
         except Exception as e:
             print(f"❌ Erreur User Data Stream: {e}")
+
+    def _start_user_data_kraken(self, bot):
+        """User Data Stream Kraken (WebSocket privé)"""
+        try:
+            response = bot.safe_request(bot.exchange.sapi_post_user_data_stream)
+            token = response.get('listenKey', '')
+
+            if not token:
+                print("⚠️ Kraken: WebSocket privé non disponible - Mode polling")
+                return
+
+            url = "wss://ws-auth.kraken.com"
+
+            self.ws_user = websocket.WebSocketApp(
+                url,
+                on_message=self.on_user_message_kraken,
+                on_error=self.on_user_error,
+                on_close=self.on_user_close,
+                on_open=lambda ws: self._subscribe_kraken_private(ws, token)
+            )
+
+            self.ws_user_thread = threading.Thread(target=self.ws_user.run_forever)
+            self.ws_user_thread.daemon = True
+            self.ws_user_thread.start()
+
+        except Exception as e:
+            print(f"⚠️ Kraken User Data: {e}")
+
+    def _subscribe_kraken_private(self, ws, token):
+        """Souscription aux channels privés Kraken"""
+        import json as std_json
+        subscribe_msg = std_json.dumps({
+            "event": "subscribe",
+            "subscription": {"name": "openOrders", "token": token}
+        })
+        ws.send(subscribe_msg)
+
+    def on_user_message_kraken(self, ws, message):
+        """Traite les messages privés Kraken"""
+        try:
+            data = JSON_LOADS(message)
+            if isinstance(data, list) and len(data) >= 2:
+                # Changement d'ordres détecté
+                if self.balance_callback:
+                    self.balance_callback(data)
+        except:
+            pass
     
     def on_user_error(self, ws, error):
         # Silencieux - erreurs de connexion normales
@@ -235,18 +389,20 @@ class WebSocketManager:
             print(f"📄 Message brut: {message[:200]}...")
     
     def start_keepalive(self, bot):
-        """Maintient le listen key actif"""
+        """Maintient le listen key actif (Binance uniquement)"""
+        exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+        if exchange_name != 'binance':
+            return  # Kraken n'a pas besoin de keepalive
+
         def keepalive():
             while self.running:
                 try:
                     time.sleep(1800)  # 30 minutes
                     if self.listen_key:
-                        print("🔄 Keepalive User Data Stream...")
-                        bot.safe_request(bot.exchange.sapiPutUserDataStream, {'listenKey': self.listen_key})
-                        print("✅ Keepalive OK")
+                        bot.safe_request(bot.exchange.sapi_put_user_data_stream, {'listenKey': self.listen_key})
                 except Exception as e:
-                    print(f"⚠️ Erreur keepalive: {e}")
-        
+                    pass
+
         keepalive_thread = threading.Thread(target=keepalive)
         keepalive_thread.daemon = True
         keepalive_thread.start()

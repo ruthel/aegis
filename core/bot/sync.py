@@ -10,18 +10,22 @@ class SyncMixin:
         """Transfère automatiquement les fonds du Funding vers Spot"""
         if self.paper_trading:
             return
-        
+
+        # Kraken n'a pas de funding wallet séparé
+        if hasattr(self, 'exchange') and self.exchange.name == 'kraken':
+            return
+
         try:
             funding_balance = self.safe_request(self.exchange.fetch_balance, {'type': 'funding'})
             if not funding_balance:
                 return
-            
+
             usdt_funding = funding_balance.get('USDT', {}).get('free', 0)
-            if usdt_funding > 1:  # Minimum 1 USDT pour transférer
+            if usdt_funding > 1:
                 print(f"💸 Transfert {usdt_funding:.2f} USDT: Funding → Spot...")
                 self.exchange.transfer('USDT', usdt_funding, 'funding', 'spot')
                 print(f"✅ Transfert réussi: {usdt_funding:.2f} USDT disponible en SPOT")
-                time.sleep(1)  # Attendre confirmation
+                time.sleep(1)
         except Exception as e:
             print(f"⚠️ Erreur transfert Funding→Spot: {e}")
     
@@ -93,8 +97,9 @@ class SyncMixin:
                     all_open_order_ids.add(order_id)
                     
                     if order_id not in self.pending_orders:
+                        order_timestamp = order.get('timestamp')
                         self.pending_orders[order_id] = {
-                            'order': order, 'timestamp': order['timestamp'] / 1000,
+                            'order': order, 'timestamp': order_timestamp / 1000 if order_timestamp else time.time(),
                             'symbol': symbol, 'side': order['side']
                         }
             

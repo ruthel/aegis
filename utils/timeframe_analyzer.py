@@ -1,4 +1,5 @@
 import numpy as np
+import time
 from collections import deque
 import sys
 import os
@@ -315,7 +316,7 @@ class TimeframeAnalyzer:
             'global_signal': global_signal,
             'volatility': volatility,
             'active_timeframes': active_timeframes,
-            'timestamp': bot.exchange.milliseconds() if hasattr(bot, 'exchange') else None
+            'timestamp': int(time.time() * 1000)
         }
     
     def generate_global_signal(self, timeframe_analysis, current_price, symbol='', volatility=2.0, weights=None):

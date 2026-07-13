@@ -26,6 +26,41 @@ class BalanceManager:
             allowed_assets.add(base)
         
         return allowed_assets
+
+    def _get_paper_balance(self):
+        """Reconstruit la balance paper depuis l'USDT simulé et l'état des positions."""
+        balance = {
+            'USDT': {
+                'free': self.bot.paper_balance,
+                'used': 0,
+                'total': self.bot.paper_balance
+            }
+        }
+
+        positions = getattr(self.bot, 'state', {}).get('positions', [])
+        for position in positions:
+            symbol = position.get('symbol', '')
+            if not symbol or '/' not in symbol:
+                continue
+
+            asset = symbol.split('/')[0]
+            amount = float(position.get('amount', 0) or 0)
+            if amount <= 0:
+                continue
+
+            asset_balance = balance.setdefault(asset, {'free': 0, 'used': 0, 'total': 0})
+            if position.get('side') == 'buy':
+                asset_balance['free'] += amount
+            elif position.get('side') == 'sell':
+                asset_balance['free'] -= amount
+
+        for asset, data in balance.items():
+            if asset == 'USDT':
+                continue
+            data['free'] = max(0, data['free'])
+            data['total'] = data['free'] + data.get('used', 0)
+
+        return balance
     
     def update_balance_from_websocket(self, balances_data):
         """Met à jour le cache depuis le WebSocket User Data Stream"""
@@ -53,7 +88,7 @@ class BalanceManager:
     def get_balance(self, force_refresh=False):
         """Récupère le solde SPOT temps réel via WebSocket (limité aux TRADING_PAIRS)"""
         if self.bot.paper_trading:
-            return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
+            return self._get_paper_balance()
         
         allowed_assets = self._get_allowed_assets()
         

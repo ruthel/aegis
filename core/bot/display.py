@@ -268,7 +268,8 @@ class DisplayMixin:
         if hasattr(self, 'global_stats_30d') and self.global_stats_30d and not self.paper_trading:
             winrate_info = f" | WR: {self.global_stats_30d['winrate']:.0f}% (30j)"
         
-        print(f"🤖 TETANIS | {mode} {realtime} | {active_positions} positions{winrate_info}")
+        from config import BOT_NAME
+        print(f"🤖 {BOT_NAME} | {mode} {realtime} | {active_positions} positions{winrate_info}")
         print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | {earn_status} | {dual_status}")
         print("🛑 Ctrl+C pour arrêter")
     

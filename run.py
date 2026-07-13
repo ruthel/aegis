@@ -68,27 +68,34 @@ clear_python_cache()
 # Charger les variables d'environnement
 def main():
     """Point d'entrée principal"""
-    print("🚀 Démarrage du bot TETANIS...")
+    print("🚀 Démarrage du bot Aegis...")
     
     # Forcer le rechargement de la configuration
     load_dotenv(override=True)
     
     # Import du bot (après vérification config)
     try:
-        from core.binance_spot_bot import BinanceSpotBot
+        from core.trading_bot import TradingBot
     except ImportError as e:
         print(f"❌ Erreur import: {e}")
         print("📝 Vérifiez que tous les modules sont installés: pip install -r requirements.txt")
         sys.exit(1)
     
-    # Récupération configuration
-    api_key = os.getenv('BINANCE_API_KEY')
-    api_secret = os.getenv('BINANCE_API_SECRET')
+    # Récupération configuration selon exchange
+    exchange = os.getenv('EXCHANGE', 'binance').lower()
+    
+    if exchange == 'kraken':
+        api_key = os.getenv('KRAKEN_API_KEY')
+        api_secret = os.getenv('KRAKEN_API_SECRET')
+    else:
+        api_key = os.getenv('BINANCE_API_KEY')
+        api_secret = os.getenv('BINANCE_API_SECRET')
+    
     testnet = os.getenv('TESTNET', 'False').lower() == 'true'
     
     # Démarrage du bot
     try:
-        bot = BinanceSpotBot(api_key, api_secret, testnet)
+        bot = TradingBot(api_key, api_secret, testnet)
         bot.run()
     except KeyboardInterrupt:
         print("\n🛑 Arrêt du bot...")

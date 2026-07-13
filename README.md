@@ -1,4 +1,4 @@
-# 🤖 Bot Trading Binance TETANIS v2
+# 🤖 Aegis Trading Bot v2
 
 Bot de trading automatique professionnel pour Binance avec stratégies intelligentes, revenus passifs et optimisations ultra-rapides.
 
@@ -6,8 +6,8 @@ Bot de trading automatique professionnel pour Binance avec stratégies intellige
 
 ### 1. Installation
 ```bash
-git clone https://github.com/votre-repo/binance-bot-v2.git
-cd binance-bot-v2
+git clone https://github.com/ruthel/aegis.git
+cd aegis
 pip install -r requirements.txt
 ```
 
@@ -76,7 +76,7 @@ BTC/USDT 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 
 ### 🖥️ Interface Optimisée
 ```
-🤖 TETANIS | LIVE ⚡ TEMPS RÉEL | 0 positions
+🤖 Aegis | LIVE ⚡ TEMPS RÉEL | 0 positions
 📊 BTC, ETH, SOL, BNB | 5.0 USDT/trade | Seuil 40% | Earn ON | DualInv ON (2)
 🛑 Ctrl+C pour arrêter
 
@@ -174,7 +174,7 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 ## 📁 Architecture Modulaire
 
 ```
-binance-bot-v2/
+aegis/
 ├── core/                        # Cœur du bot (pattern Mixin)
 │   ├── binance_spot_bot.py     # Bot principal (350 lignes vs 2500)
 │   ├── bot_trading.py          # TradingMixin - Ordres & exécution
@@ -266,7 +266,7 @@ Coût : Gratuit 12 mois
 # render.yaml
 services:
   - type: web
-    name: binance-bot-v2
+    name: aegis
     env: python
     region: frankfurt
     buildCommand: pip install -r requirements.txt
@@ -312,8 +312,8 @@ ssh -i votre-cle.pem ec2-user@votre-ip-elastique
 # Installation
 sudo yum update -y
 sudo yum install python3 python3-pip git -y
-git clone https://github.com/votre-repo/binance-bot-v2.git
-cd binance-bot-v2
+git clone https://github.com/votre-repo/aegis.git
+cd aegis
 pip3 install -r requirements.txt
 cp .env.example .env
 
@@ -358,7 +358,7 @@ python3 run.py
 ```bash
 # Auto-restart si crash
 sudo crontab -e
-@reboot cd /home/ec2-user/binance-bot-v2 && python3 run.py
+@reboot cd /home/ec2-user/aegis && python3 run.py
 
 # Logs persistants
 nohup python3 run.py > bot.log 2>&1 &
@@ -563,7 +563,7 @@ python -m cProfile -o profile.stats run.py
 ### Centralisation Code Niveau Pro
 - **Modules consolidés** : -500 lignes de code redondant éliminées
 - **Classes unifiées** : RiskManager, CapitalManager, PatternAnalyzer, PositionManager
-- **API intégrée** : BinanceEarnManager avec API Binance Earn intégrée
+- **API intégrée** : EarnManager avec API Earn intégrée
 - **Maintenance simplifiée** : Une source de vérité par fonctionnalité
 - **Performance optimisée** : Moins d'indirection, cache partagé, imports réduits
 
@@ -599,7 +599,7 @@ python -m cProfile -o profile.stats run.py
 
 ---
 
-**Version** : 2.2 Professional TETANIS  
+**Version** : 2.2 Professional Aegis  
 **Architecture** : Modulaire consolidée (6 classes vs 12)  
 **Code** : -500 lignes redondantes éliminées  
 **Performance** : Intervalle adaptatif + sessions optimisées  

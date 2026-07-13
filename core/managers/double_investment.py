@@ -21,12 +21,15 @@ class DoubleInvestmentManager:
         
     def is_creation_enabled(self):
         """Vérifie si la création de nouvelles positions est activée"""
+        import os
+        if os.getenv('EXCHANGE', 'binance').lower() != 'binance':
+            return False
+
         # En paper trading, pas de création
         if self.bot.paper_trading:
             return False
         
         # Vérifier variable d'environnement
-        import os
         return os.getenv('DUAL_INVESTMENT_CREATE', 'False') == 'True'
     
     def is_enabled_for_capital(self, total_balance):
@@ -367,6 +370,9 @@ class DoubleInvestmentManager:
         """Récupère les positions réelles de Dual Investment via l'API Binance avec cache"""
         try:
             if self.bot.paper_trading:
+                return []
+            import os
+            if os.getenv('EXCHANGE', 'binance').lower() != 'binance':
                 return []
             
             # Vérifier cache

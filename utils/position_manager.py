@@ -1,5 +1,6 @@
 import time
 import json
+import os
 import numpy as np
 from datetime import datetime, timedelta
 from utils.market_analyzer import MarketAnalyzer
@@ -424,8 +425,9 @@ class PositionManager:
             total_usdt_adjusted = net_usdt_adjusted * (1 + fee_rate)
             fees_adjusted = total_usdt_adjusted - net_usdt_adjusted
             
-            # 🔥 CRITIQUE : Vérifier minimum 5 USDT APRÈS arrondi
-            MIN_NOTIONAL = 5.0
+            # Vérifier minimum notional APRÈS arrondi
+            exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+            MIN_NOTIONAL = 0.5 if exchange_name == 'kraken' else 5.0
             if total_usdt_adjusted < MIN_NOTIONAL:
                 print(f"⚠️ Montant {total_usdt_adjusted:.2f} USDT < minimum {MIN_NOTIONAL} USDT après arrondi")
                 
@@ -502,23 +504,32 @@ class PositionManager:
         return 0.00075 if use_bnb else 0.001
     
     def get_symbol_filters(self, symbol):
-        """Récupère filtres LOT_SIZE depuis Binance"""
+        """Récupère filtres LOT_SIZE depuis l'exchange"""
         if not hasattr(self, 'symbol_filters'):
             self.symbol_filters = {}
         
         if symbol in self.symbol_filters:
             return self.symbol_filters[symbol]
         
+        # Paper trading : utiliser des valeurs permissives
+        if self.bot.paper_trading:
+            filters = {'minQty': 0.00001, 'stepSize': 0.00001}
+            self.symbol_filters[symbol] = filters
+            return filters
+        
         try:
-            exchange_info = self.bot.client.get_symbol_info(symbol)
-            for filter_item in exchange_info['filters']:
-                if filter_item['filterType'] == 'LOT_SIZE':
-                    filters = {
-                        'minQty': float(filter_item['minQty']),
-                        'stepSize': float(filter_item['stepSize'])
-                    }
-                    self.symbol_filters[symbol] = filters
-                    return filters
+            self.bot.exchange.load_markets()
+            market = self.bot.exchange.markets.get(symbol)
+            if market and market.get('limits'):
+                amount_limits = market['limits'].get('amount', {})
+                precision = market.get('precision', {}).get('amount', 8)
+                step_size = 10 ** (-precision) if precision else 0.0001
+                filters = {
+                    'minQty': float(amount_limits.get('min', 0.0001)),
+                    'stepSize': step_size
+                }
+                self.symbol_filters[symbol] = filters
+                return filters
             
             return {'minQty': 0.0001, 'stepSize': 0.0001}
         except Exception as e:
@@ -546,6 +557,13 @@ class PositionManager:
     def _get_zero_position_size(self):
         """Retourne une position de taille zéro quand trading arrêté"""
         return {
+            'size_usdt': 0,
+            'size_crypto': 0,
+            'size_usdt_net': 0,
+            'fees': 0,
+            'volatility_adj': 1.0,
+            'signal_adj': 1.0,
+            'risk_reward': 0,
             'position_size_usdt': 0,
             'position_size_crypto': 0,
             'stop_loss_price': 0,

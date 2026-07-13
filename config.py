@@ -4,9 +4,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ===== CLÉS API BINANCE =====
+# ===== EXCHANGE =====
+EXCHANGE = os.getenv('EXCHANGE', 'binance').lower()  # binance ou kraken
+
+# ===== CLÉS API =====
+# Binance
 BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
 BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
+# Kraken
+KRAKEN_API_KEY = os.getenv('KRAKEN_API_KEY', '')
+KRAKEN_API_SECRET = os.getenv('KRAKEN_API_SECRET', '')
+
+# Clés actives selon exchange
+if EXCHANGE == 'kraken':
+    ACTIVE_API_KEY = KRAKEN_API_KEY
+    ACTIVE_API_SECRET = KRAKEN_API_SECRET
+else:
+    ACTIVE_API_KEY = BINANCE_API_KEY
+    ACTIVE_API_SECRET = BINANCE_API_SECRET
+
 TESTNET = os.getenv('TESTNET', 'True').lower() == 'true'
 
 # ===== TRADING =====
@@ -51,7 +67,7 @@ STUCK_THRESHOLD_HOURS = int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
 MIN_CRYPTO_SCORE = int(os.getenv('MIN_CRYPTO_SCORE', '40'))  # Adaptatif par défaut
 
 # ===== NOTIFICATIONS TELEGRAM =====
-BOT_NAME = os.getenv('BOT_NAME', 'TETANIS')
+BOT_NAME = os.getenv('BOT_NAME', 'Aegis')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 TELEGRAM_STATUS_INTERVAL = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '1800'))

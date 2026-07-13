@@ -4,7 +4,7 @@ Gestionnaire d'événements macro - Détection automatique via données crypto
 import time
 import os
 from datetime import datetime
-from core.notification_manager import NotificationManager
+from core.managers.notification import NotificationManager
 
 class MacroEventManager:
     """Détecte et gère les événements macro via analyse des patterns crypto"""

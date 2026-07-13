@@ -7,10 +7,11 @@ import hashlib
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
-class BinanceEarnManager:
+class EarnManager:
     def __init__(self, bot):
         self.bot = bot
-        self.enabled = os.getenv('ENABLE_EARN', 'True') == 'True'
+        exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+        self.enabled = os.getenv('ENABLE_EARN', 'True') == 'True' and exchange_name == 'binance'
         
         # Configuration Earn
         self.min_trading_balance = float(os.getenv('MIN_TRADING_BALANCE', '10'))
@@ -56,8 +57,9 @@ class BinanceEarnManager:
     
     def _make_request(self, method, endpoint, params=None, signed=True):
         """Effectue une requête à l'API Binance"""
-        # Skip Earn API calls if on testnet (not supported)
-        if self.testnet or self.bot.paper_trading:
+        exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+        # Skip Earn API calls if on testnet, paper trading, or non-Binance exchange.
+        if self.testnet or self.bot.paper_trading or exchange_name != 'binance':
             return None
             
         if params is None:
