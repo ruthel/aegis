@@ -20,7 +20,9 @@
       </div>
       <div class="top-actions">
         <span id="botProcessBadge" class="badge neutral">bot --</span>
-        <button id="restartBotButton" type="button">Redémarrer bot</button>
+        <button id="startBotButton" type="button">▶ Démarrer</button>
+        <button id="stopBotButton" type="button">⏹ Arrêter</button>
+        <button id="restartBotButton" type="button">↺ Redémarrer</button>
         <span id="modeBadge" class="badge neutral">mode</span>
         <span id="exchangeBadge" class="badge neutral">exchange</span>
         <button id="refreshButton" type="button">Refresh</button>
@@ -129,6 +131,12 @@
         <div class="panel-head">
           <h2>Console Bot</h2>
           <div>
+            <select id="consoleLimitSelect">
+              <option value="500" selected>500 lignes</option>
+              <option value="1500">1 500 lignes</option>
+              <option value="5000">5 000 lignes</option>
+              <option value="all">Tout voir</option>
+            </select>
             <button id="consoleClearButton" type="button">Clear</button>
             <span id="consoleStatus" class="muted">--</span>
           </div>

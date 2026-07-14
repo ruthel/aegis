@@ -5,32 +5,7 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 """
 import sys
 import os
-import shutil
 from dotenv import load_dotenv
-
-def clear_python_cache():
-    """Vider les caches Python au démarrage"""
-    cache_dirs = ['__pycache__', '.pytest_cache']
-    cache_files = ['.pyc', '.pyo', '.pyd']
-    
-    for root, dirs, files in os.walk('.'):
-        # Supprimer dossiers cache
-        for cache_dir in cache_dirs:
-            if cache_dir in dirs:
-                cache_path = os.path.join(root, cache_dir)
-                try:
-                    shutil.rmtree(cache_path)
-                except:
-                    pass
-        
-        # Supprimer fichiers cache
-        for file in files:
-            if any(file.endswith(ext) for ext in cache_files):
-                file_path = os.path.join(root, file)
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
 
 def clean_bot_states():
     """Nettoie les états du bot selon le mode (paper/live)"""
@@ -69,13 +44,13 @@ if not sys.stdout or not sys.stdout.isatty():
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace') if sys.stdout else open(os.devnull, 'w')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace') if sys.stderr else open(os.devnull, 'w')
 
-# Vider les caches Python
-clear_python_cache()
-
 # Charger les variables d'environnement
 def main():
     """Point d'entrée principal"""
     print("🚀 Démarrage du bot Aegis...")
+    import os as _os
+    _os.makedirs('data', exist_ok=True)
+    open('data/bot.pid', 'w').write(str(_os.getpid()))
     
     # Charger la configuration locale en dernier pour les secrets non versionnés.
     load_dotenv(override=True)

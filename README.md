@@ -42,12 +42,12 @@ python run.py
 - **Risk Management Pro** : Stop-loss adaptatif, trailing stop, circuit breakers
 - **Edge Detection** : Identification automatique des avantages statistiques
 
-### 💰 Capital Manager Automatique (8+ USDT)
+### 💰 Capital Manager Automatique (8+ USD)
 - **Détection Auto Capital** : Analyse automatique du capital spot
 - **Adaptation Intelligente** : Configuration selon capital disponible
 - **Minimums Exchange** : Respect automatique des montants minimums via CCXT
 - **Progression Naturelle** : Évolution automatique des stratégies
-- **Support Micro-Capital** : Dès 8 USDT avec stratégies adaptées
+- **Support Micro-Capital** : Dès 8 USD avec stratégies adaptées
 
 ### 🛡️ Sécurité Professionnelle
 - **Gestion Risques Avancée** : Circuit breakers, limites journalières
@@ -65,7 +65,7 @@ python run.py
 └──────────────────────────────────────────────────┘
 
 🎯 SIGNAUX TEMPS RÉEL
-BTC/USDT 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
+BTC/USD 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 ┌──────────────────────────────────────────────────┐
 │ Entry: 67,180 | Stop: 66,510 | Target: 68,520      │
 │ Risk: 1% | Size: 0.0149 BTC | Kelly: 12%           │
@@ -79,14 +79,14 @@ BTC/USDT 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 📊 BTC, ETH, SOL, BNB | Min dynamique | Seuil adaptatif | Spot multi-exchange
 🛑 Ctrl+C pour arrêter
 
-📊 +1.45 USDT | 3 trades (67% win)
-💳 SPOT: USDT 95.23 | BTC 0.001234 | ETH 0.0012
+📊 +1.45 USD | 3 trades (67% win)
+💳 SPOT: USD 95.23 | BTC 0.001234 | ETH 0.0012
 
 ⚡ 12:34:56 | BTC 111.6K | ETH 3.98K | SOL 194 | BNB 1.20K
 
 🎯 TOP: BTC 85 (V30 L20 M5) | ETH 72 (V25 L15 M10) → TRADING
 
-⚡ BTC/USDT 111645.23 (+2.34%) | Vol 2.1B
+⚡ BTC/USD 111645.23 (+2.34%) | Vol 2.1B
 📊 BTC 111645 | Signal: BUY | Confiance: [████████░░] ✓ 75%
 🎯 BTC → BUY_READY (Signal 75%) | Exécution: Immédiate
 ```
@@ -125,19 +125,19 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 # Le bot s'adapte automatiquement selon votre capital total
 # Aucune configuration manuelle nécessaire !
 
-8-20 USDT   : Mode Micro-Capital (100% Spot, croissance rapide)
-20-50 USDT  : Mode Croissance (100% Spot)
-50-200 USDT : Mode Équilibré (95% Spot + 5% Cash)
-200+ USDT   : Mode Professionnel (85% Spot + 15% Cash)
+8-20 USD   : Mode Micro-Capital (100% Spot, croissance rapide)
+20-50 USD  : Mode Croissance (100% Spot)
+50-200 USD : Mode Équilibré (95% Spot + 5% Cash)
+200+ USD   : Mode Professionnel (85% Spot + 15% Cash)
 ```
 
 ### Adaptation Intelligente
 | Capital | Trade Amount | Stop Loss | Allocation | Stratégie |
 |---------|--------------|-----------|------------|----------|
-| 8-20 USDT | 15% capital | 3% | 100% Spot | Scalping agressif |
-| 20-50 USDT | 12% capital | 4% | 100% Spot | Croissance |
-| 50-200 USDT | 8% capital | 5% | 95% Spot / 5% Cash | Équilibré |
-| 200+ USDT | 5% capital | 5% | 85% Spot / 15% Cash | Professionnel |
+| 8-20 USD | 15% capital | 3% | 100% Spot | Scalping agressif |
+| 20-50 USD | 12% capital | 4% | 100% Spot | Croissance |
+| 50-200 USD | 8% capital | 5% | 95% Spot / 5% Cash | Équilibré |
+| 200+ USD | 5% capital | 5% | 85% Spot / 15% Cash | Professionnel |
 
 ### Fonctionnalités Automatiques
 - **Détection Capital** : Analyse Spot en temps réel
@@ -194,7 +194,7 @@ aegis/
 ## 🛡️ Sécurité & Bonnes Pratiques
 
 ### Démarrage Sécurisé
-1. **Commencez petit** : 5-10 USDT maximum
+1. **Commencez petit** : 5-10 USD maximum
 2. **Paper Trading** : Testez 24-48h avant live
 3. **Surveillance** : Monitorer les premiers trades
 4. **Limites strictes** : Configurez MAX_DAILY_LOSS

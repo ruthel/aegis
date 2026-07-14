@@ -1,4 +1,4 @@
-"""Local dashboard for Aegis."""
+# 
 from __future__ import annotations
 
 import os
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
+from flask_sock import Sock
 
 try:
     import orjson
@@ -40,34 +41,49 @@ BOT_LOG_FILE = ROOT / 'bot.log'
 BOT_CONTROL_FILE = DATA_DIR / 'bot_process.json'
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 
+# Subprocess bot control via PID file
+BOT_PID_FILE = DATA_DIR / 'bot.pid'
+
+def _cleanup_stale_pid():
+    """Remove PID file if process no longer exists."""
+    try:
+        if BOT_PID_FILE.exists():
+            pid = int(BOT_PID_FILE.read_text().strip())
+            os.kill(pid, 0)  # process alive -> keep
+    except Exception:
+        BOT_PID_FILE.unlink(missing_ok=True)
+
+_cleanup_stale_pid()
+
 load_dotenv(ROOT / '.env', override=True)
 load_dotenv(ROOT / '.env.local', override=True)
 load_dotenv(ROOT / '.env.dashboard', override=True)
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
+sock = Sock(app)
 
 
 CONFIG_FIELDS = {
     'PAPER_TRADING': {'type': 'bool', 'label': 'Paper trading', 'section': 'Trading', 'restart': 'bot'},
-    'TRADE_AMOUNT': {'type': 'float', 'label': 'Montant trade USDT', 'section': 'Trading', 'min': 0.5, 'max': 10000, 'restart': 'bot'},
+    'TRADE_AMOUNT': {'type': 'float', 'label': 'Montant trade USD', 'section': 'Trading', 'min': 0.5, 'max': 10000, 'restart': 'bot'},
     'MAX_DAILY_TRADES': {'type': 'int', 'label': 'Trades max / jour', 'section': 'Risque', 'min': 0, 'max': 200, 'restart': 'bot'},
     'MAX_DAILY_LOSS': {'type': 'float', 'label': 'Perte max / jour', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
     'STOP_LOSS_PERCENT': {'type': 'float', 'label': 'Stop loss %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'TRAILING_STOP_PERCENT': {'type': 'float', 'label': 'Trailing stop %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'SYMBOL_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown symbole sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
-    'SYMBOL_FAILURE_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown échec sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
+    'SYMBOL_FAILURE_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown Ã©chec sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_TRADES': {'type': 'int', 'label': 'Support Touch trades min.', 'section': 'Support Touch', 'min': 1, 'max': 500, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_WINRATE': {'type': 'float', 'label': 'Support Touch win rate min.', 'section': 'Support Touch', 'min': 0, 'max': 100, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_TOTAL_PNL': {'type': 'float', 'label': 'Support Touch PnL total min.', 'section': 'Support Touch', 'min': -100, 'max': 1000, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_AVG_PNL': {'type': 'float', 'label': 'Support Touch moyenne min.', 'section': 'Support Touch', 'min': -100, 'max': 100, 'restart': 'bot'},
     'SUPPORT_TOUCH_BACKTEST_INTERVAL_HOURS': {'type': 'float', 'label': 'Intervalle backtest h', 'section': 'Support Touch', 'min': 0.25, 'max': 168, 'restart': 'bot'},
-    'MARKET_REGIME_FILTER': {'type': 'bool', 'label': 'Filtre régime marché', 'section': 'Bear Mode', 'restart': 'bot'},
+    'MARKET_REGIME_FILTER': {'type': 'bool', 'label': 'Filtre rÃ©gime marchÃ©', 'section': 'Bear Mode', 'restart': 'bot'},
     'FALLING_KNIFE_FILTER': {'type': 'bool', 'label': 'Filtre falling knife', 'section': 'Bear Mode', 'restart': 'bot'},
     'REQUIRE_REVERSAL_CONFIRMATION_IN_BEAR': {'type': 'bool', 'label': 'Retournement requis en bear', 'section': 'Bear Mode', 'restart': 'bot'},
     'BEAR_MODE_TRADE_MULTIPLIER': {'type': 'float', 'label': 'Multiplicateur bear', 'section': 'Bear Mode', 'min': 0.05, 'max': 1, 'restart': 'bot'},
     'BEAR_MODE_MIN_CONFIDENCE_BONUS': {'type': 'float', 'label': 'Bonus confiance bear', 'section': 'Bear Mode', 'min': 0, 'max': 80, 'restart': 'bot'},
     'BEAR_MODE_SUPPORT_TOUCH_OVERRIDE': {'type': 'bool', 'label': 'Support override en bear', 'section': 'Bear Mode', 'restart': 'bot'},
-    'BEAR_MODE_ALLOWED_PAIRS': {'type': 'pairs', 'label': 'Paires autorisées en bear', 'section': 'Bear Mode', 'restart': 'bot'},
+    'BEAR_MODE_ALLOWED_PAIRS': {'type': 'pairs', 'label': 'Paires autorisÃ©es en bear', 'section': 'Bear Mode', 'restart': 'bot'},
     'MIN_CRYPTO_SCORE': {'type': 'int', 'label': 'Score crypto min.', 'section': 'Scoring', 'min': 0, 'max': 100, 'restart': 'bot'},
     'DASHBOARD_PORT': {'type': 'int', 'label': 'Port dashboard', 'section': 'Dashboard', 'min': 1024, 'max': 65535, 'restart': 'dashboard'},
     'LIVE_STATUS_INTERVAL_SECONDS': {'type': 'float', 'label': 'Refresh live status sec.', 'section': 'Dashboard', 'min': 0.25, 'max': 60, 'restart': 'bot'},
@@ -82,13 +98,19 @@ SECRET_KEYS = (
 )
 
 
+# Cache pour éviter de retourner un fallback vide si le fichier est temporairement illisible
+_read_json_cache = {}
+
 def read_json(path: Path, fallback):
     try:
         if not path.exists():
             return fallback
-        return json_loads(path.read_bytes())
+        data = json_loads(path.read_bytes())
+        _read_json_cache[str(path)] = data
+        return data
     except Exception:
-        return fallback
+        # Retourner le dernier état valide si le fichier est corrompu/en cours d'écriture
+        return _read_json_cache.get(str(path), fallback)
 
 
 def read_env_file(path: Path):
@@ -120,7 +142,7 @@ def parse_bool(value):
         return True
     if normalized in ('false', '0', 'no', 'non', 'off'):
         return False
-    raise ValueError('doit être True ou False')
+    raise ValueError('doit Ãªtre True ou False')
 
 
 def normalize_pairs(value):
@@ -132,8 +154,8 @@ def normalize_pairs(value):
         pair = item.strip().upper().replace('-', '/')
         if not pair:
             continue
-        if '/' not in pair and pair.endswith('USDT'):
-            pair = f"{pair[:-4]}/USDT"
+        if '/' not in pair and pair.endswith('USD'):
+            pair = f"{pair[:-3]}/USD"
         if not re.fullmatch(r'[A-Z0-9]{2,12}/[A-Z0-9]{2,12}', pair):
             raise ValueError(f'paire invalide: {item.strip()}')
         pairs.append(pair)
@@ -150,16 +172,16 @@ def normalize_config_value(name, value):
     if kind == 'int':
         number = int(value)
         if number < meta.get('min', number) or number > meta.get('max', number):
-            raise ValueError(f"doit être entre {meta.get('min')} et {meta.get('max')}")
+            raise ValueError(f"doit Ãªtre entre {meta.get('min')} et {meta.get('max')}")
         return str(number)
     if kind == 'float':
         number = float(value)
         if number < meta.get('min', number) or number > meta.get('max', number):
-            raise ValueError(f"doit être entre {meta.get('min')} et {meta.get('max')}")
+            raise ValueError(f"doit Ãªtre entre {meta.get('min')} et {meta.get('max')}")
         return f"{number:g}"
     if kind == 'pairs':
         return normalize_pairs(value)
-    raise ValueError('type non supporté')
+    raise ValueError('type non supportÃ©')
 
 
 def write_dashboard_env(updates):
@@ -167,8 +189,8 @@ def write_dashboard_env(updates):
     current.update(updates)
 
     lines = [
-        '# Réglages modifiables depuis le dashboard Aegis.',
-        '# Ne mettez jamais de clé API ou secret dans ce fichier.',
+        '# RÃ©glages modifiables depuis le dashboard Aegis.',
+        '# Ne mettez jamais de clÃ© API ou secret dans ce fichier.',
         '',
     ]
     sections = {}
@@ -214,7 +236,7 @@ def config_payload():
         'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         'fields': fields,
         'secrets': secrets,
-        'message': 'Les changements sont écrits dans .env.dashboard. Redémarrage requis selon le champ.',
+        'message': 'Les changements sont Ã©crits dans .env.dashboard. RedÃ©marrage requis selon le champ.',
     }
 
 
@@ -230,73 +252,27 @@ def process_exists(pid):
         return False
 
 
-def discover_bot_processes():
-    """Trouve seulement les process run.py liés au dossier courant."""
-    processes = []
-    root_text = str(ROOT).lower()
-
-    if os.name == 'nt':
-        command = [
-            'powershell',
-            '-NoProfile',
-            '-Command',
-            "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.CommandLine -match 'run.py' } | "
-            "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-        ]
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=8)
-            raw = result.stdout.strip()
-            if not raw:
-                return []
-            data = json_loads(raw.encode('utf-8'))
-            if isinstance(data, dict):
-                data = [data]
-            for item in data:
-                command_line = str(item.get('CommandLine') or '')
-                if root_text in command_line.lower() or 'run.py' in command_line.lower():
-                    pid = int(item.get('ProcessId'))
-                    if pid != os.getpid():
-                        processes.append({'pid': pid, 'command': command_line})
-        except Exception:
-            return []
-    else:
-        try:
-            result = subprocess.run(['ps', '-eo', 'pid=,args='], capture_output=True, text=True, timeout=8)
-            for line in result.stdout.splitlines():
-                if 'run.py' not in line:
-                    continue
-                pid_text, command_line = line.strip().split(' ', 1)
-                if root_text in command_line.lower() or 'run.py' in command_line.lower():
-                    pid = int(pid_text)
-                    if pid != os.getpid():
-                        processes.append({'pid': pid, 'command': command_line})
-        except Exception:
-            return []
-
-    seen = set()
-    unique = []
-    for process in processes:
-        if process['pid'] in seen:
-            continue
-        seen.add(process['pid'])
-        unique.append(process)
-    return unique
+def bot_is_running():
+    try:
+        if not BOT_PID_FILE.exists():
+            return False
+        pid = int(BOT_PID_FILE.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
 
 
 def bot_status_payload(force=False):
     now = time.time()
-    if not force and BOT_STATUS_CACHE['payload'] and now - BOT_STATUS_CACHE['timestamp'] < 3:
+    if not force and BOT_STATUS_CACHE['payload'] and now - BOT_STATUS_CACHE['timestamp'] < 2:
         return BOT_STATUS_CACHE['payload']
-
-    tracked = read_bot_control_file()
-    processes = discover_bot_processes()
+    running = bot_is_running()
+    tracked = read_json(BOT_CONTROL_FILE, {})
     payload = {
-        'running': bool(processes),
-        'processes': processes,
-        'tracked_pid': tracked.get('pid'),
+        'running': running,
         'started_at': tracked.get('started_at'),
-        'command': tracked.get('command'),
+        'mode': 'subprocess',
     }
     BOT_STATUS_CACHE['timestamp'] = now
     BOT_STATUS_CACHE['payload'] = payload
@@ -304,34 +280,34 @@ def bot_status_payload(force=False):
 
 
 def stop_bot_processes():
-    processes = discover_bot_processes()
     stopped = []
-    for process in processes:
-        pid = int(process['pid'])
-        try:
+    try:
+        if BOT_PID_FILE.exists():
+            pid = int(BOT_PID_FILE.read_text().strip())
             if os.name == 'nt':
-                subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True, text=True, timeout=10)
+                subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'],
+                               capture_output=True, timeout=10)
             else:
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(1)
-                if process_exists(pid):
+                try:
                     os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
             stopped.append(pid)
-        except Exception:
-            continue
+            BOT_PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
     return stopped
 
 
 def start_bot_process():
-    existing = discover_bot_processes()
-    if existing:
-        return {'started': False, 'already_running': True, 'processes': existing}
+    if bot_is_running():
+        return {'started': False, 'already_running': True}
 
-    # Utiliser le Python du venv si disponible, sinon sys.executable
-    venv_python = ROOT / '.venv' / 'Scripts' / 'python.exe'
-    python_exe = str(venv_python) if venv_python.exists() else sys.executable
-    command = [python_exe, str(ROOT / 'run.py')]
+    command = [sys.executable, str(ROOT / 'run.py')]
     BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
     creationflags = 0
     if os.name == 'nt':
         creationflags = (
@@ -354,12 +330,14 @@ def start_bot_process():
             close_fds=True,
             env=env,
         )
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    BOT_PID_FILE.write_text(str(process.pid))
     payload = {
         'pid': process.pid,
         'started_at': datetime.now().isoformat(),
         'command': ' '.join(command),
     }
-    BOT_CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
     BOT_CONTROL_FILE.write_text(json_dumps(payload), encoding='utf-8')
     return {'started': True, 'pid': process.pid}
 
@@ -491,7 +469,7 @@ def support_touch(state):
 
 
 def important_logs():
-    keywords = ('❌', '⚠️', 'error', 'erreur', 'permission denied', 'failed', 'échou')
+    keywords = ('â', 'â ï¸', 'error', 'erreur', 'permission denied', 'failed', 'Ã©chou')
     lines = []
     for line in tail_lines(ROOT / 'bot.log', 200):
         if any(keyword in line.lower() for keyword in keywords):
@@ -520,7 +498,7 @@ def api_status():
     decisions = state.get('decision_journal') or parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 20)
     positions = weighted_positions(state.get('positions', []))
 
-    return jsonify({
+    response = jsonify({
         'bot': {
             'name': os.getenv('BOT_NAME', 'Aegis'),
             'mode': 'paper' if env_bool('PAPER_TRADING', 'True') else 'live',
@@ -543,6 +521,8 @@ def api_status():
             'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         },
     })
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.route('/api/decisions')
@@ -571,7 +551,7 @@ def api_config_update():
 
     for name, value in values.items():
         if name not in CONFIG_FIELDS:
-            errors[name] = 'champ non autorisé'
+            errors[name] = 'champ non autorisÃ©'
             continue
         if is_secret_key(name):
             errors[name] = 'secret non modifiable depuis le dashboard'
@@ -616,13 +596,49 @@ def api_bot_restart():
 
 @app.route('/api/bot/console')
 def api_bot_console():
-    """Retourne les dernières lignes du bot.log pour la console navigateur."""
-    lines_count = int(request.args.get('lines', 150))
-    after_line = int(request.args.get('after', 0))
-    lines = tail_lines(BOT_LOG_FILE, max(lines_count, after_line + 200))
-    if after_line > 0:
-        lines = lines[after_line:]
-    return jsonify({'lines': [l.rstrip() for l in lines], 'total': after_line + len(lines)})
+    lines_count = request.args.get('lines', '500')
+    if lines_count == 'all':
+        try:
+            all_lines = BOT_LOG_FILE.read_text(encoding='utf-8', errors='replace').splitlines() if BOT_LOG_FILE.exists() else []
+        except Exception:
+            all_lines = []
+        return jsonify({'lines': all_lines, 'total': len(all_lines)})
+    lines_count = int(lines_count)
+    lines = tail_lines(BOT_LOG_FILE, lines_count)
+    # Return file size as change indicator (cheap stat)
+    try:
+        file_size = BOT_LOG_FILE.stat().st_size if BOT_LOG_FILE.exists() else 0
+    except Exception:
+        file_size = 0
+    return jsonify({'lines': [l.rstrip() for l in lines], 'total': file_size})
+
+
+@app.route('/api/live')
+def api_live():
+    response = jsonify(live_status())
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@sock.route('/ws/live')
+def ws_live(ws):
+    # Push live_status.json to browser via WebSocket whenever it changes
+    import json as _json
+    path = project_path(os.getenv('LIVE_STATUS_FILE'), DATA_DIR / 'live_status.json')
+    last_mtime = 0.0
+    last_data = None
+    while True:
+        try:
+            mtime = path.stat().st_mtime if path.exists() else 0.0
+            if mtime != last_mtime:
+                last_mtime = mtime
+                raw = path.read_bytes() if path.exists() else b'{}'
+                if raw != last_data:
+                    last_data = raw
+                    ws.send(raw.decode('utf-8', errors='replace'))
+        except Exception:
+            pass
+        time.sleep(0.2)
 
 
 if __name__ == '__main__':

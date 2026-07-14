@@ -19,7 +19,7 @@ except ImportError:
 class WebSocketManager:
     def __init__(self, symbols=None):
         if symbols is None:
-            symbols = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT,SOLUSDT').split(',')
+            symbols = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD').split(',')
         self.symbols = [self._normalize_symbol(symbol) for symbol in symbols if symbol.strip()]
         self.prices = {}
         self.last_prices = {}
@@ -62,8 +62,17 @@ class WebSocketManager:
         """Démarre la connexion WebSocket"""
         self.running = True
         self._start_worker()
+        self._start_heartbeat()
         self.connect()
-    
+
+    def _start_heartbeat(self):
+        import threading as _th
+        def _hb():
+            while self.running:
+                self.write_live_status()
+                time.sleep(1)
+        _th.Thread(target=_hb, daemon=True).start()
+
     def _start_worker(self):
         """Démarre le worker thread pour analyses asynchrones"""
         def worker():
@@ -122,7 +131,10 @@ class WebSocketManager:
             on_open=self._on_open_kraken
         )
 
-        self.ws_thread = threading.Thread(target=self.ws.run_forever)
+        self.ws_thread = threading.Thread(
+            target=self.ws.run_forever,
+            kwargs={'ping_interval': 30, 'ping_timeout': 10}
+        )
         self.ws_thread.daemon = True
         self.ws_thread.start()
 
@@ -135,11 +147,8 @@ class WebSocketManager:
         # Convertir symboles en format Kraken
         pairs = []
         for s in self.symbols:
-            # BTCUSDT -> XBT/USDT, ETHUSDT -> ETH/USDT
-            base = s.replace('USDT', '')
-            if base == 'BTC':
-                base = 'XBT'
-            pairs.append(f"{base}/USDT")
+            base = s.replace('USD', '')
+            pairs.append(f"{base}/USD")
 
         # Souscrire au ticker
         subscribe_msg = std_json.dumps({
@@ -149,13 +158,9 @@ class WebSocketManager:
         })
         ws.send(subscribe_msg)
 
-        # Souscrire aux OHLC 1min
-        subscribe_ohlc = std_json.dumps({
-            "event": "subscribe",
-            "pair": pairs,
-            "subscription": {"name": "ohlc", "interval": 1}
-        })
-        ws.send(subscribe_ohlc)
+        # Souscrire aux trades (prix temps reel) et OHLC 1min (klines)
+        ws.send(std_json.dumps({"event": "subscribe", "pair": pairs, "subscription": {"name": "trade"}}))
+        ws.send(std_json.dumps({"event": "subscribe", "pair": pairs, "subscription": {"name": "ohlc", "interval": 1}}))
 
     def on_message_kraken(self, ws, message):
         """Traite les messages WebSocket Kraken"""
@@ -164,7 +169,10 @@ class WebSocketManager:
 
             # Ignorer les messages système
             if isinstance(data, dict):
-                return  # heartbeat, systemStatus, subscriptionStatus
+                event = data.get('event', '')
+                if event not in ('heartbeat', 'systemStatus', 'subscriptionStatus'):
+                    print(f"[WS SYS] {event} pair={data.get('pair','')} status={data.get('status','')} err={data.get('errorMessage','')}", flush=True)
+                return
 
             if not isinstance(data, list) or len(data) < 4:
                 return
@@ -174,32 +182,39 @@ class WebSocketManager:
 
             # Convertir paire Kraken vers format interne
             symbol = pair.replace('XBT', 'BTC').replace('/', '')
+            # Normaliser: BTCUSD reste BTCUSD
 
-            if 'ticker' in channel:
+            if 'trade' in channel:
+                # Chaque trade execute = prix temps reel le plus frais
+                for trade in data[1]:
+                    current_price = float(trade[0])
+                self.prices[symbol] = current_price
+                self.market_meta.setdefault(symbol, {})['source'] = 'trade'
+                self._process_price_update(symbol, current_price)
+
+            elif 'ticker' in channel:
                 ticker_data = data[1]
-                current_price = float(ticker_data['c'][0])  # last trade close price
                 bid = float(ticker_data['b'][0]) if ticker_data.get('b') else None
                 ask = float(ticker_data['a'][0]) if ticker_data.get('a') else None
                 volume_24h = float(ticker_data['v'][1]) if ticker_data.get('v') and len(ticker_data['v']) > 1 else None
                 self.market_meta[symbol] = {
-                    'source': 'ticker',
+                    **self.market_meta.get(symbol, {}),
                     'bid': bid,
                     'ask': ask,
                     'spread': (ask - bid) if bid and ask else None,
-                    'spread_percent': ((ask - bid) / current_price * 100) if bid and ask and current_price else None,
+                    'spread_percent': ((ask - bid) / self.prices.get(symbol, 1) * 100) if bid and ask else None,
                     'volume_24h': volume_24h,
                 }
-                self.prices[symbol] = current_price
-                self._process_price_update(symbol, current_price)
+                # ticker met a jour le prix seulement si pas de trade recus
+                if self.market_meta.get(symbol, {}).get('source') != 'trade':
+                    current_price = float(ticker_data['c'][0])
+                    self.prices[symbol] = current_price
+                    self._process_price_update(symbol, current_price)
 
             elif 'ohlc' in channel:
                 ohlc_data = data[1]
                 current_price = float(ohlc_data[5])  # close
-                self.prices[symbol] = current_price
-                if not self.prices.get(symbol + "_logged"):
-                    print(f"WS Kraken: premier prix {symbol} = {current_price}")
-                    self.prices[symbol + "_logged"] = True
-                self._process_price_update(symbol, current_price)
+                # ohlc ne met PAS a jour self.prices (trade/ticker sont plus frais)
 
                 # Stocker kline
                 candle = self._candle_template.copy()
@@ -212,10 +227,13 @@ class WebSocketManager:
                     'volume': float(ohlc_data[7])
                 })
                 if symbol in self.klines:
-                    self.klines[symbol].append(candle)
+                    kl = self.klines[symbol]
+                    if kl and kl[-1]['timestamp'] == candle['timestamp']:
+                        kl[-1] = candle
+                    else:
+                        kl.append(candle)
                 self.market_meta[symbol] = {
                     **self.market_meta.get(symbol, {}),
-                    'source': 'ohlc',
                     'candle_open': candle['open'],
                     'candle_high': candle['high'],
                     'candle_low': candle['low'],
@@ -223,8 +241,8 @@ class WebSocketManager:
                     'candle_timestamp': candle['timestamp'],
                 }
 
-        except:
-            pass
+        except Exception as e:
+            print(f"[WS ERROR] {e}", flush=True)
     
     def on_open(self, ws):
         """Callback à l'ouverture de la connexion"""
@@ -320,7 +338,7 @@ class WebSocketManager:
                 'symbols': {}
             }
             now = time.time()
-            for symbol in sorted(set(self.symbols) | set(self.prices.keys())):
+            for symbol in sorted(set(self.symbols) | {k for k in self.prices.keys() if not k.endswith('_logged')}):
                 ws_symbol = symbol.replace('/', '')
                 price = self.prices.get(ws_symbol)
                 last_tick = self.last_tick_ts.get(ws_symbol)
@@ -372,20 +390,25 @@ class WebSocketManager:
         if self.running:
             self.reconnect()
     
+    def _preload_after_reconnect(self):
+        """Recharge les klines apres reconnexion si exchange disponible"""
+        if self.exchange_client:
+            self.preload_klines(self.exchange_client)
+
     def reconnect(self):
         """Reconnexion automatique (silencieux)"""
         if self.reconnect_attempts < self.max_reconnect:
             self.reconnect_attempts += 1
             time.sleep(2 ** self.reconnect_attempts)  # Backoff exponentiel
             self.connect()
+            self._preload_after_reconnect()
         else:
             print("❌ WebSocket déconnecté - Mode REST")
-            # Ne pas arrêter, continuer en mode REST
             self.reconnect_attempts = 0
-            # Tenter reconnexion après délai
             time.sleep(30)
             if self.running:
                 self.connect()
+                self._preload_after_reconnect()
     
     def get_price(self, symbol):
         """Récupère le prix en temps réel"""
@@ -403,6 +426,31 @@ class WebSocketManager:
             }
         return None
     
+    def preload_klines(self, exchange, timeframe='1m', count=100):
+        """Charge l'historique REST au demarrage pour eviter d'attendre le WS"""
+        import os as _os
+        exchange_name = _os.getenv('EXCHANGE', 'binance').lower()
+        for symbol in self.symbols:
+            try:
+                # Convertir format interne (BTCUSD) vers format CCXT (BTC/USD)
+                # BTCUSD->BTC/USD, ETHUSD->ETH/USD (enlever suffixe USD)
+                if symbol.endswith('USD'):
+                    base = symbol[:-3]
+                else:
+                    base = symbol
+                ccxt_symbol = f'{base}/USD'
+                ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=count)
+                candles = [
+                    {'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]}
+                    for c in ohlcv if c[4]
+                ]
+                if candles:
+                    self.klines[symbol] = deque(candles, maxlen=100)
+                    self.prices[symbol] = candles[-1]['close']
+                    print(f'WS preload: {symbol} {len(candles)} bougies @ {candles[-1]["close"]}')
+            except Exception as e:
+                print(f'WS preload erreur {symbol}: {e}')
+
     def get_klines(self, symbol, count=50):
         """Récupère les dernières bougies"""
         ws_symbol = symbol.replace('/', '')
@@ -411,12 +459,8 @@ class WebSocketManager:
     
     def is_connected(self):
         """Vérifie si WebSocket est connecté"""
-        # Vérifier que le WebSocket tourne ET qu'on a reçu des prix
-        has_prices = len(self.prices) > 0
-        is_running = self.running
-        ws_alive = self.ws is not None
-        
-        return is_running and ws_alive and has_prices
+        ws_thread_alive = getattr(self, 'ws_thread', None) and self.ws_thread.is_alive()
+        return bool(self.running and self.ws is not None and ws_thread_alive)
     
     def stop(self):
         """Arrête la connexion WebSocket"""

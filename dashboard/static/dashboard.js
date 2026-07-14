@@ -289,8 +289,11 @@ async function saveConfig() {
 
 function renderBotProcess(control) {
   const running = Boolean(control?.running);
-  const count = control?.processes?.length || 0;
-  setBadge($('botProcessBadge'), running ? `bot ON (${count})` : 'bot OFF', running ? 'badge good' : 'badge bad');
+  setBadge($('botProcessBadge'), running ? 'bot \u25cf ON' : 'bot \u25cb OFF', running ? 'badge good' : 'badge bad');
+  const startBtn = $('startBotButton');
+  const stopBtn = $('stopBotButton');
+  if (startBtn) startBtn.disabled = running;
+  if (stopBtn) stopBtn.disabled = !running;
 }
 
 async function restartBot() {
@@ -454,7 +457,7 @@ function renderPositions(positions) {
       <td><strong>${esc(position.symbol)}</strong></td>
       <td>${number(position.amount, 8)}</td>
       <td>${price(position.avg_entry_price)}</td>
-      <td>${number(position.entry_value, 2)} USDT</td>
+      <td>${number(position.entry_value, 2)} USD</td>
     </tr>
   `).join('');
 }
@@ -496,8 +499,8 @@ function renderSupportTouch(data) {
       <div class="support-stats">
         <div><span>Trades</span><strong>${item.trades ?? 0}</strong></div>
         <div><span>Win rate</span><strong>${percent(item.win_rate)}</strong></div>
-        <div><span>Total</span><strong>${percent(item.total_pnl_percent)}</strong></div>
-        <div><span>Moyenne</span><strong>${percent(item.avg_pnl_percent)}</strong></div>
+        <div><span>Total</span><strong>${signedPercent(item.total_pnl_percent, 2)}</strong></div>
+        <div><span>Moyenne</span><strong>${signedPercent(item.avg_pnl_percent, 3)}</strong></div>
       </div>
       <div class="reason-list" aria-label="Raisons">${renderReasonChips(item.reason, item, thresholds)}</div>
     </section>
@@ -557,7 +560,7 @@ function renderMarketContext(context) {
 
 function renderLive(data) {
   const symbols = data?.symbols || {};
-  const entries = Object.entries(symbols);
+  const entries = Object.entries(symbols).filter(([key]) => !key.endsWith('_logged'));
   const connected = Boolean(data?.connected);
   const totalTicks = entries.reduce((sum, [, item]) => sum + Number(item.tick_count || 0), 0);
   const queueSize = Number(data?.queue_size || 0);
@@ -590,13 +593,11 @@ function renderLive(data) {
     const deltaText = signedPercent(item.price_change_since_analysis_percent, 2);
     const deltaValue = Number(item.price_change_since_analysis_percent);
     const deltaClass = Number.isFinite(deltaValue) && deltaValue >= 0 ? 'up' : 'down';
-    const source = item.source || '--';
     return `
       <section class="support-card live-card">
         <header>
           <div>
-            <h3>${esc(symbol.replace('USDT', '/USDT'))}</h3>
-            <span class="live-source">${esc(source)}</span>
+            <h3>${esc(symbol.endsWith('USD') ? symbol.slice(0,-3)+'/USD' : symbol)}</h3>
           </div>
           <span class="${badgeClass(!stale, !connected)}">${stale ? 'stale' : 'live'}</span>
         </header>
@@ -689,7 +690,7 @@ async function refresh() {
 
   $('paperBalance').textContent = data.balance.paper_balance === null || data.balance.paper_balance === undefined
     ? '--'
-    : `${number(data.balance.paper_balance, 2)} USDT`;
+    : `${number(data.balance.paper_balance, 2)} USD`;
   $('positionCount').textContent = data.positions.length;
   $('cooldownCount').textContent = data.cooldowns.length;
 
@@ -711,41 +712,106 @@ async function safeRefresh() {
 }
 
 // Console state
-const consoleState = { lastTotal: 0, timer: null };
+const consoleState = { lastTotal: 0, pinned: true, limit: 500 };
 
-async function refreshConsole() {
+const ANSI_COLORS = {
+  '30': '#4a5568', '31': '#fc8181', '32': '#68d391', '33': '#f6e05e',
+  '34': '#63b3ed', '35': '#d6bcfa', '36': '#76e4f7', '37': '#e2e8f0',
+  '90': '#718096', '91': '#feb2b2', '92': '#9ae6b4', '93': '#faf089',
+  '94': '#90cdf4', '95': '#e9d8fd', '96': '#b2f5ea', '97': '#f7fafc',
+};
+
+function ansiToHtml(line) {
+  return esc(line).replace(/\x1b\[(\d+(?:;\d+)*)m/g, (_, codes) => {
+    const parts = codes.split(';');
+    const styles = [];
+    for (const code of parts) {
+      if (code === '0' || code === '') { return '</span>'; }
+      if (code === '1') styles.push('font-weight:bold');
+      if (ANSI_COLORS[code]) styles.push(`color:${ANSI_COLORS[code]}`);
+    }
+    return styles.length ? `<span style="${styles.join(';')}">` : '';
+  });
+}
+
+function logLineClass(line) {
+  if (/❌|error|erreur|failed|échou/i.test(line)) return 'console-error';
+  if (/⚠️|warn|warning/i.test(line)) return 'console-warn';
+  if (/✅|success|succès/i.test(line)) return 'console-ok';
+  if (/🎯|buy|achat|sell|vente/i.test(line)) return 'console-trade';
+  return '';
+}
+
+async function refreshConsole(full = false) {
   try {
-    const response = await fetch(`/api/bot/console?lines=200&after=${consoleState.lastTotal}`, { cache: 'no-store' });
+    const limit = consoleState.limit;
+    const url = `/api/bot/console?lines=${limit}`;
+    const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) return;
     const data = await response.json();
     const el = $('consoleOutput');
-    if (consoleState.lastTotal === 0) {
-      el.textContent = data.lines.join('\n');
-    } else if (data.lines.length > 0) {
-      el.textContent += '\n' + data.lines.join('\n');
+    // Only re-render if line count changed
+    if (full || data.total !== consoleState.lastTotal) {
+      el.innerHTML = data.lines.map((l) => `<span class="cl ${logLineClass(l)}">${ansiToHtml(l)}</span>`).join('\n');
+      consoleState.lastTotal = data.total;
+      if (consoleState.pinned) el.scrollTop = el.scrollHeight;
     }
-    consoleState.lastTotal = data.total;
-    $('consoleStatus').textContent = `${data.total} lignes`;
-    // Auto-scroll
-    el.scrollTop = el.scrollHeight;
+    $('consoleStatus').textContent = `${data.lines.length} lignes`;
   } catch (e) {
     $('consoleStatus').textContent = `Erreur: ${e.message}`;
   }
 }
 
+function setConsoleLimit(limit) {
+  consoleState.limit = limit;
+  consoleState.lastTotal = 0;
+  refreshConsole(true);
+}
+
 function clearConsole() {
-  $('consoleOutput').textContent = '';
+  $('consoleOutput').innerHTML = '';
   consoleState.lastTotal = 0;
 }
 
-// Console auto-refresh when visible
-setInterval(() => {
-  if (state.view === 'console') refreshConsole();
-}, 2000);
+// Auto-scroll toggle on manual scroll
+setTimeout(() => {
+  const el = $('consoleOutput');
+  if (el) el.addEventListener('scroll', () => {
+    consoleState.pinned = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+    $('consolePinButton').textContent = consoleState.pinned ? '⬇ Auto' : '⬇ Bas';
+  });
+}, 500);
+
+// Console refresh every 1s always
+setInterval(refreshConsole, 1000);
+
+// WebSocket live prices
+function connectLiveWs() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+  ws.onmessage = (event) => {
+    try { renderLive(JSON.parse(event.data)); } catch (e) {}
+  };
+  ws.onclose = () => setTimeout(connectLiveWs, 2000);
+  ws.onerror = () => ws.close();
+}
+connectLiveWs();
+
+// Slow poll for non-live data (positions, decisions, etc.) every 3s
+setInterval(safeRefresh, 3000);
 
 $('consoleClearButton').addEventListener('click', clearConsole);
+if ($('consoleLimitSelect')) $('consoleLimitSelect').addEventListener('change', (e) => setConsoleLimit(e.target.value));
 $('refreshButton').addEventListener('click', safeRefresh);
 $('saveConfigButton').addEventListener('click', saveConfig);
+$('startBotButton').addEventListener('click', async () => {
+  await fetch('/api/bot/start', { method: 'POST' });
+  await safeRefresh();
+});
+$('stopBotButton').addEventListener('click', async () => {
+  await fetch('/api/bot/stop', { method: 'POST' });
+  await safeRefresh();
+});
 $('restartBotButton').addEventListener('click', restartBot);
 document.querySelectorAll('.tab-button').forEach((button) => {
   button.addEventListener('click', () => setView(button.dataset.view));
@@ -753,4 +819,3 @@ document.querySelectorAll('.tab-button').forEach((button) => {
 window.addEventListener('hashchange', () => setView(currentHashView()));
 setView(currentHashView());
 safeRefresh();
-state.timer = setInterval(safeRefresh, 1000);

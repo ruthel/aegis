@@ -39,13 +39,13 @@ class RiskManager:
         if USE_FULL_BALANCE:
             # Mode: Utiliser tout le solde disponible (comportement actuel)
             balance = bot.balance_manager.get_balance()
-            usdt_available = balance.get('USDT', {}).get('free', 0)
+            usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
             
             # Limiter selon MAX_BALANCE_PER_TRADE (% du solde)
-            max_allowed = usdt_available * (MAX_BALANCE_PER_TRADE / 100)
-            position_size = min(usdt_available, max_allowed)
+            max_allowed = usd_available * (MAX_BALANCE_PER_TRADE / 100)
+            position_size = min(usd_available, max_allowed)
             
-            print(f"💰 {symbol}: Mode FULL_BALANCE → {position_size:.1f} USDT ({MAX_BALANCE_PER_TRADE}% max)")
+            print(f"💰 {symbol}: Mode FULL_BALANCE → {position_size:.1f} USD ({MAX_BALANCE_PER_TRADE}% max)")
             return max(base_amount, position_size)
         else:
             # Mode: Montant fixe basé sur volatilité (nouveau comportement)
@@ -57,10 +57,10 @@ class RiskManager:
             
             # Minimums spécifiques par paire
             min_notionals = {
-                'BTC/USDT': 5,
-                'ETH/USDT': 10,
-                'SOL/USDT': 8,
-                'BNB/USDT': 12
+                'BTC/USD': 5,
+                'ETH/USD': 10,
+                'SOL/USD': 8,
+                'BNB/USD': 12
             }
             min_required = min_notionals.get(symbol, 10)
             
@@ -68,7 +68,7 @@ class RiskManager:
             max_amount = getattr(bot, 'trade_amount', base_amount) * 2
             position_size = max(min_required, min(max_amount, adjusted_amount))
             
-            print(f"📊 {symbol}: Mode Fixed Amount → {position_size:.1f} USDT (vol: {volatility:.1%})")
+            print(f"📊 {symbol}: Mode Fixed Amount → {position_size:.1f} USD (vol: {volatility:.1%})")
             return position_size
     
     def load_daily_stats(self):
@@ -179,7 +179,7 @@ class RiskManager:
         try:
             from utils.timeframe_analyzer import TimeframeAnalyzer
             analyzer = TimeframeAnalyzer()
-            return analyzer.get_confidence_threshold(symbol or 'BTC/USDT', volatility, None, None)
+            return analyzer.get_confidence_threshold(symbol or 'BTC/USD', volatility, None, None)
         except:
             if volatility >= 4.0:
                 return 25
@@ -242,7 +242,7 @@ class RiskManager:
     def _calculate_correlation_adjustment(self, symbol):
         """Ajustement selon corrélation avec BTC"""
         try:
-            if symbol == 'BTC/USDT':
+            if symbol == 'BTC/USD':
                 return 0
             
             correlation = self._calculate_btc_correlation(symbol, days=30)
@@ -414,7 +414,7 @@ class RiskManager:
             volatility = self._get_symbol_volatility(symbol, bot)
             correlation_tf = self.get_optimal_timeframe(symbol, 'correlation', volatility)
             
-            btc_klines = bot.get_klines('BTC/USDT', days, correlation_tf)
+            btc_klines = bot.get_klines('BTC/USD', days, correlation_tf)
             symbol_klines = bot.get_klines(symbol, days, correlation_tf)
             
             if len(btc_klines) < days or len(symbol_klines) < days:
@@ -425,6 +425,8 @@ class RiskManager:
             symbol_returns = [(symbol_klines[i]['close'] - symbol_klines[i-1]['close']) / symbol_klines[i-1]['close'] 
                              for i in range(1, len(symbol_klines))]
             
+            if np.std(btc_returns) == 0 or np.std(symbol_returns) == 0:
+                return 0.5
             correlation = np.corrcoef(btc_returns, symbol_returns)[0, 1]
             return correlation if not np.isnan(correlation) else 0.5
         except:
@@ -446,11 +448,11 @@ class RiskManager:
                 else:
                     return 0
             
-            btc_volatility = self._get_symbol_volatility('BTC/USDT', bot)
+            btc_volatility = self._get_symbol_volatility('BTC/USD', bot)
             momentum_tf = '1h' if btc_volatility >= 3.0 else '1d'
             period = 24 if momentum_tf == '1h' else 7
             
-            btc_klines = bot.get_klines('BTC/USDT', period, momentum_tf)
+            btc_klines = bot.get_klines('BTC/USD', period, momentum_tf)
             if len(btc_klines) < period:
                 return 0
             
@@ -553,7 +555,7 @@ class RiskManager:
     
     def _get_momentum_thresholds(self, symbol, volatility):
         """Seuils momentum adaptatifs selon crypto et volatilité"""
-        if symbol in ['BTC/USDT', 'ETH/USDT']:
+        if symbol in ['BTC/USD', 'ETH/USD']:
             return {
                 'bull_strong': 0.05,
                 'bull_weak': 0,
@@ -570,9 +572,9 @@ class RiskManager:
     
     def _get_correlation_thresholds(self, symbol):
         """Seuils corrélation adaptatifs selon crypto"""
-        if symbol in ['BTC/USDT']:
+        if symbol in ['BTC/USD']:
             return {'high': 0.9, 'medium': 0.7, 'low': 0.5}
-        elif symbol in ['ETH/USDT']:
+        elif symbol in ['ETH/USD']:
             return {'high': 0.8, 'medium': 0.6, 'low': 0.4}
         else:
             return {'high': 0.7, 'medium': 0.5, 'low': 0.3}
@@ -647,8 +649,8 @@ class CorrelationManager:
     def __init__(self, max_correlated_positions=2):
         self.max_correlated_positions = max_correlated_positions
         self.crypto_groups = {
-            'major': ['BTC/USDT', 'ETH/USDT'],
-            'altcoins': ['SOL/USDT', 'BNB/USDT']
+            'major': ['BTC/USD', 'ETH/USD'],
+            'altcoins': ['SOL/USD', 'BNB/USD']
         }
         self.active_positions = set()
         self.market_sentiment = 'neutral'  # 'bullish', 'bearish', 'neutral'
@@ -660,8 +662,8 @@ class CorrelationManager:
             return
             
         try:
-            btc_price = bot.get_price('BTC/USDT')
-            eth_price = bot.get_price('ETH/USDT')
+            btc_price = bot.get_price('BTC/USD')
+            eth_price = bot.get_price('ETH/USD')
             
             # Logique simplifiée de sentiment (à améliorer avec de vrais indicateurs)
             # Pour l'instant, on reste neutre
@@ -683,7 +685,7 @@ class CorrelationManager:
             position_value = current_holding * bot.get_price(symbol)
             min_trade_value = bot.get_min_amount(symbol)['min_cost']
             if position_value >= min_trade_value:
-                print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USDT)")
+                print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USD)")
                 return False
             # else:
             #     print(f"🧹 {base_currency} poussière ignorée: {current_holding:.6f} ({position_value:.2f} < {min_trade_value:.2f})")

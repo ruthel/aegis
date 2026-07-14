@@ -59,7 +59,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # Frais dynamiques (remplace frais statiques)
         self.trading_fee = 0.001  # Fallback seulement
-        self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.3')) / 100
+        self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
         
         # Stats
         self.daily_pnl = 0
@@ -74,14 +74,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.notifier = NotificationManager()
         self.notifier.set_bot(self)
         
-        # WebSocket
+        # WebSocket (démarré après connect() et load_state())
         self.websocket = WebSocketManager()
         self.websocket.set_bot_callback(self.on_realtime_signal)
         self.websocket.set_balance_callback(self.on_balance_update)
-        self.websocket.start()
         
         # Trading temps réel (TOUJOURS activé par défaut)
-        self.realtime_trading = True
+        self.realtime_trading = False  # Activé après init complète
         self.last_analysis = {}
         
         # Détection tendance cumulative
@@ -107,13 +106,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.bear_mode_min_confidence_bonus = float(os.getenv('BEAR_MODE_MIN_CONFIDENCE_BONUS', '20'))
         self.bear_mode_support_touch_override = os.getenv('BEAR_MODE_SUPPORT_TOUCH_OVERRIDE', 'False').lower() == 'true'
         self.bear_mode_allowed_pairs = {
-            pair.strip() for pair in os.getenv('BEAR_MODE_ALLOWED_PAIRS', 'BTC/USDT,ETH/USDT').split(',')
+            pair.strip() for pair in os.getenv('BEAR_MODE_ALLOWED_PAIRS', 'BTC/USD,ETH/USD').split(',')
             if pair.strip()
         }
         self.market_context_cache_seconds = int(os.getenv('MARKET_CONTEXT_CACHE_SECONDS', '300'))
         self.market_context_cache = {}
         self.support_touch_adaptive_filter = os.getenv('SUPPORT_TOUCH_ADAPTIVE_FILTER', 'True').lower() == 'true'
-        self.support_touch_backtest_interval = int(float(os.getenv('SUPPORT_TOUCH_BACKTEST_INTERVAL_HOURS', '12')) * 3600)
+        self.support_touch_backtest_interval = 5 * 60
         self.support_touch_min_trades = int(os.getenv('SUPPORT_TOUCH_MIN_TRADES', '10'))
         self.support_touch_min_winrate = float(os.getenv('SUPPORT_TOUCH_MIN_WINRATE', '50'))
         self.support_touch_min_total_pnl = float(os.getenv('SUPPORT_TOUCH_MIN_TOTAL_PNL', '0'))
@@ -176,6 +175,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Toujours connecter pour éviter les erreurs, même en paper trading
         self.connect()
         self.load_state()
+        self.websocket.set_exchange_client(self.exchange)
+        self.websocket.preload_klines(self.exchange)
+        self.websocket.start()
         self.refresh_support_touch_filter()
         
         # Initialiser l'affichage async
@@ -205,42 +207,96 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Notification de démarrage
         mode = "PAPER" if self.paper_trading else "LIVE"
         self.notifier.notify(f"🤖 Bot démarré - {mode}")
+        self.realtime_trading = True  # Init complète, activer le trading
     
+    def _place_paper_sell_order(self, symbol):
+        """Place un ordre limite de vente paper au prix cible (0.8% profit)"""
+        buy_price = self.get_real_buy_price(symbol)
+        if not buy_price:
+            return
+        
+        # Calculer quantité depuis positions ouvertes
+        net_amount = 0
+        for p in self.state.get('positions', []):
+            if p.get('symbol') == symbol:
+                amt = float(p.get('amount', 0))
+                if p.get('side') == 'buy':
+                    net_amount += amt
+                elif p.get('side') == 'sell':
+                    net_amount -= amt
+        
+        if net_amount <= 0.00001:
+            return
+        
+        # Prix cible = buy_price + MIN_PROFIT_THRESHOLD
+        target_price = buy_price * (1 + self.min_profit_threshold)
+        crypto = symbol.split('/')[0]
+        
+        # Vérifier si ordre paper déjà existant pour ce symbol
+        for oid, od in self.pending_orders.items():
+            if od.get('symbol') == symbol and od.get('side') == 'sell':
+                return  # Déjà un ordre actif
+        
+        order_id = f'paper_sell_{symbol.replace("/", "_")}_{int(time.time())}'
+        order = {'id': order_id, 'price': target_price, 'amount': net_amount, 'type': 'limit', 'side': 'sell'}
+        self.pending_orders[order_id] = {
+            'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
+        }
+        profit_pct = self.min_profit_threshold * 100
+        print(f"🎯 PAPER {crypto} → Ordre vente @ {target_price:.2f} (+{profit_pct:.1f}%) | Qty: {net_amount:.6f}")
+
     def _optimize_all_positions_at_startup(self):
         """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
         try:
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             balance = self.balance_manager.get_balance(force_refresh=True)
             
             optimized_count = 0
             skipped_count = 0
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 base_currency = symbol.split('/')[0]
                 
-                # Vérifier si crypto disponible
-                free_holding = balance.get(base_currency, {}).get('free', 0)
-                locked_holding = balance.get(base_currency, {}).get('used', 0)
-                total_holding = free_holding + locked_holding
-                
-                if total_holding > 0.00001:
-                    position_value = total_holding * self.get_price(symbol)
-                    min_cost = self.get_min_amount(symbol)['min_cost']
+                if self.paper_trading:
+                    # En paper: vérifier positions dans le state
+                    net_amount = 0
+                    for p in self.state.get('positions', []):
+                        if p.get('symbol') == symbol:
+                            amt = float(p.get('amount', 0))
+                            if p.get('side') == 'buy':
+                                net_amount += amt
+                            elif p.get('side') == 'sell':
+                                net_amount -= amt
                     
-                    # Si position valide
-                    if position_value >= min_cost:
-                        print(f"   📊 {base_currency}: {total_holding:.6f} détecté (Libre: {free_holding:.6f}, Verrouillé: {locked_holding:.6f})")
-                        
-                        # CRITIQUE: Vérifier si ordre existe déjà AVANT d'optimiser
-                        if locked_holding > 0.00001:
-                            print(f"   ✅ {base_currency}: Ordre déjà actif - Conservé")
-                            skipped_count += 1
-                            continue
-                        
-                        # Optimiser seulement si pas d'ordre actif
-                        if self.optimize_existing_position(symbol):
+                    if net_amount > 0.00001:
+                        current_price = self.get_price(symbol)
+                        position_value = net_amount * current_price
+                        min_cost = self.get_min_amount(symbol)['min_cost']
+                        if position_value >= min_cost:
+                            print(f"   📊 {base_currency}: {net_amount:.6f} détecté (paper)")
+                            self._place_paper_sell_order(symbol)
                             optimized_count += 1
+                else:
+                    # Mode réel: vérifier balance exchange
+                    free_holding = balance.get(base_currency, {}).get('free', 0)
+                    locked_holding = balance.get(base_currency, {}).get('used', 0)
+                    total_holding = free_holding + locked_holding
+                    
+                    if total_holding > 0.00001:
+                        position_value = total_holding * self.get_price(symbol)
+                        min_cost = self.get_min_amount(symbol)['min_cost']
+                        
+                        if position_value >= min_cost:
+                            print(f"   📊 {base_currency}: {total_holding:.6f} détecté (Libre: {free_holding:.6f}, Verrouillé: {locked_holding:.6f})")
+                            
+                            if locked_holding > 0.00001:
+                                print(f"   ✅ {base_currency}: Ordre déjà actif - Conservé")
+                                skipped_count += 1
+                                continue
+                            
+                            if self.optimize_existing_position(symbol):
+                                optimized_count += 1
             
             if optimized_count > 0:
                 print(f"✅ {optimized_count} position(s) optimisée(s) au démarrage")
@@ -335,18 +391,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return message
     
     def load_state(self):
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    self.state = json.load(f)
-                self._ensure_state_defaults()
-                if self.paper_trading:
-                    self._restore_paper_balance()
-                self._restore_trailing_stops_from_state()
-            except Exception as e:
-                print(f"⚠️ Erreur chargement: {e}")
-                self.state = {'positions': [], 'last_update': None}
-        else:
+        loaded = False
+        for path in [self.state_file, self.state_file + '.tmp']:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        self.state = json.load(f)
+                    self._ensure_state_defaults()
+                    if self.paper_trading:
+                        self._restore_paper_balance()
+                    self._restore_trailing_stops_from_state()
+                    loaded = True
+                    break
+                except Exception as e:
+                    print(f"⚠️ Erreur chargement {path}: {e}")
+        if not loaded:
             self.state = {'positions': [], 'last_update': None}
         self._ensure_state_defaults()
 
@@ -360,7 +419,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
 
     def _restore_paper_balance(self):
-        """Restaure l'USDT paper depuis le state, ou le reconstruit pour les anciens fichiers."""
+        """Restaure l'USD paper depuis le state, ou le reconstruit pour les anciens fichiers."""
         saved_balance = self.state.get('paper_balance')
         if saved_balance is not None:
             self.paper_balance = float(saved_balance)
@@ -421,8 +480,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if 'decision_journal' in self.state and len(self.state['decision_journal']) > self.decision_journal_max:
                 self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
             self.state['last_update'] = datetime.now().isoformat()
-            with open(self.state_file, 'w') as f:
+            # Écriture atomique pour éviter que le dashboard lise un fichier incomplet
+            tmp_file = self.state_file + '.tmp'
+            with open(tmp_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
+            os.replace(tmp_file, self.state_file)
         except Exception as e:
             print(f"⚠️ Erreur sauvegarde état: {e}")
 
@@ -507,7 +569,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         pair = pair.strip()
         if '/' in pair:
             return pair
-        return f"{pair[:-4]}/USDT" if pair.endswith('USDT') else pair
+        if pair.endswith('USD'): return f"{pair[:-3]}/USD"
+        return pair
 
     def _calculate_momentum_pct(self, klines, periods):
         if len(klines) <= periods:
@@ -629,7 +692,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except Exception:
             symbol_regime = 'UNKNOWN'
         try:
-            btc_regime = self.risk_manager._detect_market_regime('BTC/USDT')
+            btc_regime = self.risk_manager._detect_market_regime('BTC/USD')
         except Exception:
             btc_regime = 'UNKNOWN'
         try:
@@ -639,7 +702,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         falling = self._detect_falling_knife(symbol) if self.falling_knife_filter else {'is_falling': False, 'reason': 'disabled'}
         reversal = self._has_reversal_confirmation(symbol) if self.require_reversal_in_bear else {'confirmed': True, 'reason': 'not_required'}
-        is_alt = symbol != 'BTC/USDT'
+        is_alt = symbol not in ('BTC/USD', 'BTC/USD')
         btc_bear = self._is_bear_regime(btc_regime) or btc_momentum <= -2
         symbol_bear = self._is_bear_regime(symbol_regime)
         bear_mode = symbol_bear or (is_alt and btc_bear)
@@ -691,13 +754,33 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return position_data
 
         adjusted = dict(position_data)
-        adjusted['position_size_usdt'] = round(float(adjusted.get('position_size_usdt') or 0) * multiplier, 2)
+        adjusted['position_size_usd'] = round(float(adjusted.get('position_size_usd') or 0) * multiplier, 2)
         adjusted['position_size_crypto'] = float(adjusted.get('position_size_crypto') or 0) * multiplier
         metrics = dict(adjusted.get('risk_metrics') or {})
         metrics['market_context_multiplier'] = multiplier
         metrics['market_context_mode'] = context.get('mode')
         adjusted['risk_metrics'] = metrics
         return adjusted
+
+    def _get_backtest_interval(self):
+        # Dynamique : plus volatile = recalcul plus fréquent
+        try:
+            pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
+            volatilities = []
+            for pair in pairs:
+                symbol = self._normalize_symbol(pair.strip())
+                klines = self.websocket.get_klines(symbol, 20) if self.websocket.is_connected() else []
+                if len(klines) >= 10:
+                    closes = [k['close'] for k in klines]
+                    changes = [abs(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
+                    volatilities.append(sum(changes) / len(changes) * 100)
+            avg_vol = sum(volatilities) / len(volatilities) if volatilities else 2.0
+            if avg_vol >= 3.0:   return 5 * 60      # très volatile  → 5 min
+            if avg_vol >= 1.5:   return 5 * 60     # volatile       → 5 min
+            if avg_vol >= 0.5:   return 5 * 60     # normal         → 5 min
+            return 5 * 60                           # calme          → 5 min
+        except:
+            return self.support_touch_backtest_interval
 
     def refresh_support_touch_filter(self, force=False):
         """Relance le backtest Support Touch Pro si les données sont absentes ou trop vieilles."""
@@ -706,7 +789,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         filter_state = self.state.setdefault('support_touch_filter', {'last_run_ts': 0, 'pairs': {}})
         last_run = float(filter_state.get('last_run_ts') or 0)
-        if not force and time.time() - last_run < self.support_touch_backtest_interval:
+        interval = self._get_backtest_interval()
+        if not force and time.time() - last_run < interval:
             return True
 
         try:
@@ -819,11 +903,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 else:
                     exchange_name = os.getenv('EXCHANGE', 'binance').lower()
                     if exchange_name == 'kraken':
-                        min_costs = {'BTC/USDT': 0.5, 'ETH/USDT': 0.5, 'SOL/USDT': 0.5, 'BNB/USDT': 0.5}
-                        min_amounts = {'BTC/USDT': 0.0001, 'ETH/USDT': 0.001, 'SOL/USDT': 0.01, 'BNB/USDT': 0.01}
+                        min_costs = {'BTC/USD': 0.5, 'ETH/USD': 0.5, 'SOL/USD': 0.5, 'BTC/USD': 0.5, 'ETH/USD': 0.5}
+                        min_amounts = {'BTC/USD': 0.0001, 'ETH/USD': 0.001, 'SOL/USD': 0.01, 'BTC/USD': 0.0001, 'ETH/USD': 0.001}
                     else:
-                        min_costs = {'BTC/USDT': 15, 'ETH/USDT': 10, 'SOL/USDT': 8, 'BNB/USDT': 12}
-                        min_amounts = {'BTC/USDT': 0.00015, 'ETH/USDT': 0.003, 'SOL/USDT': 0.04, 'BNB/USDT': 0.01}
+                        min_costs = {'BTC/USD': 15, 'ETH/USD': 10, 'SOL/USD': 8, 'BNB/USD': 12}
+                        min_amounts = {'BTC/USD': 0.00015, 'ETH/USD': 0.003, 'SOL/USD': 0.04, 'BNB/USD': 0.01}
                     self.min_amounts[symbol] = {
                         'min_amount': min_amounts.get(symbol, 0.001), 
                         'min_cost': min_costs.get(symbol, 0.5 if exchange_name == 'kraken' else 10)
@@ -833,21 +917,22 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 exchange_name = os.getenv('EXCHANGE', 'binance').lower()
                 if exchange_name == 'kraken':
                     fallback_minimums = {
-                        'BTC/USDT': {'min_amount': 0.0001, 'min_cost': 0.5},
-                        'ETH/USDT': {'min_amount': 0.001, 'min_cost': 0.5},
-                        'SOL/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
-                        'BNB/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
+                        'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
+                        'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
+                        'SOL/USD': {'min_amount': 0.01, 'min_cost': 0.5},
+                        'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
+                        'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
                     }
                 else:
                     fallback_minimums = {
-                        'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 15.0},
-                        'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 10.0},
-                        'SOL/USDT': {'min_amount': 0.01, 'min_cost': 8.0},
-                        'BNB/USDT': {'min_amount': 0.001, 'min_cost': 12.0},
-                        'ADA/USDT': {'min_amount': 1.0, 'min_cost': 5.0},
-                        'DOT/USDT': {'min_amount': 0.1, 'min_cost': 6.0},
-                        'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 3.0},
-                        'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 7.0}
+                        'BTC/USD': {'min_amount': 0.00001, 'min_cost': 15.0},
+                        'ETH/USD': {'min_amount': 0.0001, 'min_cost': 10.0},
+                        'SOL/USD': {'min_amount': 0.01, 'min_cost': 8.0},
+                        'BNB/USD': {'min_amount': 0.001, 'min_cost': 12.0},
+                        'ADA/USD': {'min_amount': 1.0, 'min_cost': 5.0},
+                        'DOT/USD': {'min_amount': 0.1, 'min_cost': 6.0},
+                        'MATIC/USD': {'min_amount': 1.0, 'min_cost': 3.0},
+                        'AVAX/USD': {'min_amount': 0.01, 'min_cost': 7.0}
                     }
                 default_min = {'min_amount': 0.001, 'min_cost': 0.5 if exchange_name == 'kraken' else 1.0}
                 self.min_amounts[symbol] = fallback_minimums.get(symbol, default_min)
@@ -866,12 +951,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if cost > self.paper_balance:
                 print(f"⚠️ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
                 return False
-            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} USDT")
+            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} USD")
             return True
         else:
             balance = self.balance_manager.get_balance()
-            if symbol.endswith('/USDT'):
-                available = balance.get('USDT', {}).get('free', 0)
+            if symbol.endswith('/USD') or symbol.endswith('/USD'):
+                quote = 'USD' if symbol.endswith('/USD') else 'USD'
+                available = balance.get(quote, {}).get('free', 0)
                 if cost > available:
                     shortage = cost - available
                     return False
@@ -1027,7 +1113,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if not self.realtime_trading:
             return
         
-        formatted_symbol = f"{symbol[:-4]}/{symbol[-4:]}"
+        if symbol.endswith("USD"):
+            formatted_symbol = f"{symbol[:-3]}/USD"
+        elif symbol.endswith("USD"):
+            formatted_symbol = f"{symbol[:-3]}/USD"
+        elif symbol.endswith("USD"):
+            formatted_symbol = f"{symbol[:-3]}/USD"
+        else:
+            formatted_symbol = symbol
+        
+        # PAPER: vérifier ordres limite à chaque tick prix
+        if self.paper_trading and self.pending_orders:
+            self._check_paper_orders_for_symbol(formatted_symbol, price)
         
         # Détecter tendance cumulative
         cumulative_trend = self.track_cumulative_trend(formatted_symbol, price)
@@ -1051,10 +1148,73 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except Exception as e:
             print(f"❌ Erreur signal temps réel {symbol}: {e}")
     
+    def _check_paper_orders_for_symbol(self, symbol, current_price):
+        """Vérifie et exécute les ordres paper pour un symbole au prix temps réel."""
+        executed = []
+        for order_id, order_data in self.pending_orders.items():
+            if order_data.get('symbol') != symbol:
+                continue
+            order = order_data['order']
+            if order.get('type') != 'limit':
+                continue
+            
+            limit_price = order['price']
+            side = order['side']
+            amount = order['amount']
+            
+            if side == 'sell' and current_price >= limit_price:
+                # VENTE EXÉCUTÉE
+                buy_price = self.get_real_buy_price(symbol)
+                revenue = amount * current_price
+                self.paper_balance += revenue
+                crypto = symbol.split('/')[0]
+                print(f"✅ PAPER VENTE EXÉCUTÉE: {amount:.6f} {crypto} @ {current_price:.2f} (cible: {limit_price:.2f})")
+                
+                pnl = self.calculate_pnl(symbol, 'sell', amount, current_price, buy_price=buy_price)
+                if hasattr(self, 'risk_manager') and pnl is not None:
+                    self.risk_manager.record_trade(pnl)
+                
+                position = {
+                    'symbol': symbol, 'side': 'sell', 'amount': amount,
+                    'price': current_price, 'timestamp': datetime.now().isoformat(),
+                    'order_id': order_id, 'source': 'bot', 'paper': True,
+                    'avg_entry_price': buy_price
+                }
+                self.state['positions'].append(position)
+                self.total_trades += 1
+                
+                if hasattr(self, 'trailing_stop_manager'):
+                    self.trailing_stop_manager.remove_position(symbol)
+                if hasattr(self, 'set_symbol_cooldown'):
+                    self.set_symbol_cooldown(symbol, reason='paper_sell_executed')
+                if hasattr(self, 'notifier'):
+                    self.notifier.notify_trade_sell(symbol, amount, current_price, revenue, buy_price or current_price, pnl or 0, "N/A")
+                
+                executed.append(order_id)
+            
+            elif side == 'buy' and current_price <= limit_price:
+                cost = amount * current_price
+                self.paper_balance -= cost
+                position = {
+                    'symbol': symbol, 'side': 'buy', 'amount': amount,
+                    'price': current_price, 'timestamp': datetime.now().isoformat(),
+                    'order_id': order_id, 'source': 'bot', 'paper': True
+                }
+                self.state['positions'].append(position)
+                position['avg_entry_price'] = self.get_real_buy_price(symbol)
+                if hasattr(self, 'set_symbol_cooldown'):
+                    self.set_symbol_cooldown(symbol, reason='paper_buy_executed')
+                executed.append(order_id)
+        
+        for oid in executed:
+            del self.pending_orders[oid]
+        if executed:
+            self.save_state()
+    
     def check_and_recover_stuck_positions(self):
         balance = self.balance_manager.get_balance()
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+        for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(','):
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             base_currency = symbol.split('/')[0]
             current_holding = balance.get(base_currency, {}).get('free', 0)
             if current_holding <= 0.00001:
@@ -1100,7 +1260,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 self.stuck_manager.execute_recovery(self, symbol, current_price)
     
     def run(self):
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
 
         # Obtenir cryptos tradables via le système de scoring unifié
         balance = self.balance_manager.get_balance()
@@ -1127,7 +1287,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Obtenir balance et cryptos tradables via le système de scoring
                 balance = self.balance_manager.get_balance()
-                usdt_available = balance.get('USDT', {}).get('free', 0)
+                usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
                 
                 # Utiliser le market_analyzer pour filtrer les cryptos tradables
                 stuck_positions = []
@@ -1189,25 +1349,23 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 else:
                     self.last_balance_sync = time.time()
                 
-                # Vérifier optimisation positions existantes seulement pour cryptos tradables
+                # Vérifier optimisation positions existantes (mode réel uniquement)
+                # En paper, le trailing stop gère la sortie
                 optimized_any = False
-                for symbol in tradable_pairs:
-                    base_currency = symbol.split('/')[0]
-                    
-                    # CORRECTION: Force refresh balance pour détecter nouvelles positions
-                    balance_fresh = self.balance_manager.get_balance(force_refresh=True)
-                    free_holding = balance_fresh.get(base_currency, {}).get('free', 0)
-                    locked_holding = balance_fresh.get(base_currency, {}).get('used', 0)
-                    total_holding = free_holding + locked_holding
-                    
-                    # Optimiser si position existe (libre ou verrouillée)
-                    if total_holding > 0.00001:
-                        position_value = total_holding * self.get_price(symbol)
-                        min_cost = self.get_min_amount(symbol)['min_cost']
-                        if position_value >= min_cost:
-                            if self.optimize_existing_position(symbol):
-                                optimized_any = True
-                                break  # Une optimisation à la fois
+                if not self.paper_trading:
+                    for symbol in tradable_pairs:
+                        base_currency = symbol.split('/')[0]
+                        balance_fresh = self.balance_manager.get_balance(force_refresh=True)
+                        free_holding = balance_fresh.get(base_currency, {}).get('free', 0)
+                        locked_holding = balance_fresh.get(base_currency, {}).get('used', 0)
+                        total_holding = free_holding + locked_holding
+                        if total_holding > 0.00001:
+                            position_value = total_holding * self.get_price(symbol)
+                            min_cost = self.get_min_amount(symbol)['min_cost']
+                            if position_value >= min_cost:
+                                if self.optimize_existing_position(symbol):
+                                    optimized_any = True
+                                    break
                 
                 if optimized_any:
                     continue
@@ -1445,7 +1603,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 'min_score': dynamic_min_score,
                 'confidence': global_signal.get('confidence'),
                 'min_confidence': adaptive_threshold,
-                'position_size_usdt': position_data.get('position_size_usdt'),
+                'position_size_usd': position_data.get('position_size_usd'),
                 'position_size_crypto': position_data.get('position_size_crypto'),
                 'market_context': market_context
             },
@@ -1460,18 +1618,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except:
             return self.trading_fee  # Fallback
     
-    def calculate_real_trade_cost(self, symbol, amount_usdt, order_type='market'):
+    def calculate_real_trade_cost(self, symbol, amount_usd, order_type='market'):
         """Calcule coût réel avec frais dynamiques"""
         try:
-            return self.capital_manager.calculate_trade_cost(symbol, amount_usdt, order_type)
+            return self.capital_manager.calculate_trade_cost(symbol, amount_usd, order_type)
         except:
             # Fallback avec frais statiques
-            fee_cost = amount_usdt * self.trading_fee
+            fee_cost = amount_usd * self.trading_fee
             return {
-                'amount': amount_usdt,
+                'amount': amount_usd,
                 'fee_rate': self.trading_fee,
                 'fee_cost': fee_cost,
-                'total_cost': amount_usdt + fee_cost,
+                'total_cost': amount_usd + fee_cost,
                 'vip_level': 'Unknown',
                 'exchange': os.getenv('EXCHANGE', 'binance').lower()
             }
@@ -1484,9 +1642,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.async_print(f"💰 FRAIS: {fees_summary['vip_level']} | Optimal: {fees_summary['optimal_fee']}")
             
             # Seuils adaptatifs pour cryptos tradables
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             for pair in trading_pairs[:2]:  # Top 2
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 crypto = symbol.split('/')[0]
                 
                 if symbol in self.risk_manager.adaptive_thresholds:
@@ -1501,7 +1659,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             # Optimiser seuils adaptatifs
             self.risk_manager.optimize_thresholds_daily()
-            self.capital_manager.get_real_trading_fees('BTC/USDT')  # Force refresh
+            self.capital_manager.get_real_trading_fees('BTC/USD')  # Force refresh
             
         except Exception as e:
             pass  # Silencieux si erreur
@@ -1515,7 +1673,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             intervals = []
             
             for pair in all_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 volatility = self.get_pair_volatility(symbol)
                 has_position = self.has_active_position(symbol)
                 hour = datetime.now().hour
@@ -1634,11 +1792,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # Position réelle détectée, vérifier limite
                 return False  # Position déjà ouverte, bloquer
             
-            # NOUVEAU: Vérifier capital USDT disponible
-            usdt_available = balance.get('USDT', {}).get('free', 0)
+            # NOUVEAU: Vérifier capital USD disponible
+            quote = 'USD' if symbol.endswith('/USD') else 'USD'
+            usd_available = balance.get(quote, {}).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']
             
-            if usdt_available < min_cost:
+            if usd_available < min_cost:
                 return False  # Capital insuffisant
             
             return True  # OK pour ouvrir
@@ -1902,12 +2061,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         """Récupère le solde total du compte"""
         try:
             balance = self.balance_manager.get_balance()
-            usdt_balance = balance.get('USDT', {}).get('free', 0)
+            usd_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
             
             if self.paper_trading:
                 return self.paper_balance
             
-            return usdt_balance
+            return usd_balance
         except:
             return 100  # Fallback
     
@@ -1929,7 +2088,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 {
                     'price': current_price,
                     'avg_entry_price': avg_entry_price,
-                    'position_size_usdt': position_data.get('position_size_usdt'),
+                    'position_size_usd': position_data.get('position_size_usd'),
                     'position_size_crypto': position_data.get('position_size_crypto'),
                     'stop_loss_price': position_data.get('stop_loss_price'),
                     'risk_reward_ratio': position_data.get('risk_reward_ratio')
@@ -1937,7 +2096,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 throttle_seconds=0
             )
             # Affichage amélioré
-            print(f"✅ ACHAT {crypto}: {position_data['position_size_usdt']:.1f} USDT (Position #{position_count + 1})")
+            print(f"✅ ACHAT {crypto}: {position_data['position_size_usd']:.1f} USD (Position #{position_count + 1})")
             print(f"   💡 Raison: {reason}")
             print(f"   💰 Prix: {current_price:.2f} | Stop: {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%)")
             print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
@@ -1947,14 +2106,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if hasattr(self, 'trailing_stop_manager'):
                 self.trailing_stop_manager.add_position(symbol, current_price)
             
-            # CORRECTION: Placer immédiatement l'ordre de vente après l'achat
-            print(f"🔄 Placement ordre de vente automatique...")
-            import time
-            time.sleep(1)  # Attendre que l'exchange synchronise la balance
-            if self.optimize_existing_position(symbol):
-                print(f"✅ Ordre de vente placé avec succès")
+            # Placer ordre de vente (paper ET réel)
+            if self.paper_trading:
+                self._place_paper_sell_order(symbol)
             else:
-                print(f"⚠️ Ordre de vente sera placé au prochain cycle")
+                import time
+                time.sleep(1)
+                if self.optimize_existing_position(symbol):
+                    print(f"✅ Ordre de vente placé avec succès")
+                else:
+                    print(f"⚠️ Ordre de vente sera placé au prochain cycle")
         else:
             self.set_symbol_cooldown(symbol, self.symbol_failure_cooldown_seconds, reason='buy_failed')
             self.record_decision(
@@ -1962,7 +2123,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 {
                     'price': current_price,
                     'reason': reason,
-                    'position_size_usdt': position_data.get('position_size_usdt'),
+                    'position_size_usd': position_data.get('position_size_usd'),
                     'position_size_crypto': position_data.get('position_size_crypto')
                 },
                 throttle_seconds=0

@@ -1,5 +1,5 @@
 """
-Capital Manager - Gestion Automatique de Tous Capitaux (8+ USDT)
+Capital Manager - Gestion Automatique de Tous Capitaux (8+ USD)
 Adaptation automatique selon le capital disponible + minimums exchange
 Intègre Dynamic Fees Manager et Dust Manager
 """
@@ -23,28 +23,28 @@ class CapitalManager:
         self.vip_level = None
         
         # Dust Manager integration
-        self.dust_thresholds_usdt = {
+        self.dust_thresholds_usd = {
             'BTC': 0.50, 'ETH': 0.50, 'SOL': 0.50, 'BNB': 0.50,
             'ADA': 0.10, 'DOT': 0.20, 'MATIC': 0.10, 'AVAX': 0.30,
             'LINK': 0.30, 'UNI': 0.20, 'LTC': 0.50, 'BCH': 0.50
         }
         
         self.safe_minimums = {
-            'BTC/USDT': {'min_amount': 0.00001, 'min_cost': 1.0},
-            'ETH/USDT': {'min_amount': 0.0001, 'min_cost': 1.0},
-            'SOL/USDT': {'min_amount': 0.01, 'min_cost': 1.0},
-            'BNB/USDT': {'min_amount': 0.001, 'min_cost': 1.0},
-            'ADA/USDT': {'min_amount': 1.0, 'min_cost': 1.0},
-            'DOT/USDT': {'min_amount': 0.1, 'min_cost': 1.0},
-            'MATIC/USDT': {'min_amount': 1.0, 'min_cost': 1.0},
-            'AVAX/USDT': {'min_amount': 0.01, 'min_cost': 1.0},
-            'LINK/USDT': {'min_amount': 0.01, 'min_cost': 1.0},
-            'UNI/USDT': {'min_amount': 0.01, 'min_cost': 1.0},
-            'LTC/USDT': {'min_amount': 0.001, 'min_cost': 1.0},
-            'BCH/USDT': {'min_amount': 0.001, 'min_cost': 1.0}
+            'BTC/USD': {'min_amount': 0.00001, 'min_cost': 1.0},
+            'ETH/USD': {'min_amount': 0.0001, 'min_cost': 1.0},
+            'SOL/USD': {'min_amount': 0.01, 'min_cost': 1.0},
+            'BNB/USD': {'min_amount': 0.001, 'min_cost': 1.0},
+            'ADA/USD': {'min_amount': 1.0, 'min_cost': 1.0},
+            'DOT/USD': {'min_amount': 0.1, 'min_cost': 1.0},
+            'MATIC/USD': {'min_amount': 1.0, 'min_cost': 1.0},
+            'AVAX/USD': {'min_amount': 0.01, 'min_cost': 1.0},
+            'LINK/USD': {'min_amount': 0.01, 'min_cost': 1.0},
+            'UNI/USD': {'min_amount': 0.01, 'min_cost': 1.0},
+            'LTC/USD': {'min_amount': 0.001, 'min_cost': 1.0},
+            'BCH/USD': {'min_amount': 0.001, 'min_cost': 1.0}
         }
         
-    def get_adaptive_config(self, total_balance_usdt):
+    def get_adaptive_config(self, total_balance_usd):
         """Configuration automatique selon le capital avec limites de positions"""
         
         # Récupérer les montants minimums de l'exchange
@@ -52,14 +52,14 @@ class CapitalManager:
         
         # Obtenir les limites de positions
         from utils.market_analyzer import MarketAnalyzer
-        limits = MarketAnalyzer.get_position_limits(total_balance_usdt)
+        limits = MarketAnalyzer.get_position_limits(total_balance_usd)
         
-        if total_balance_usdt < 20:
-            # Mode Micro-Capital (8-20 USDT)
+        if total_balance_usd < 20:
+            # Mode Micro-Capital (8-20 USD)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 1), total_balance_usdt * 0.15),
+                'trade_amount': max(min_amounts.get('min_trade', 1), total_balance_usd * 0.15),
                 'spot_allocation': 1.0,  # 100% spot
-                'max_daily_loss': max(10, total_balance_usdt * 0.25),
+                'max_daily_loss': max(10, total_balance_usd * 0.25),
                 'max_positions': limits['max_positions_per_crypto'],
                 'max_tradeable_cryptos': limits['max_tradeable_cryptos'],
                 'total_max_positions': limits['total_max_positions'],
@@ -70,12 +70,12 @@ class CapitalManager:
                 'preferred_cryptos': ['DOGE', 'SHIB', 'PEPE']  # Volatiles
             }
             
-        elif total_balance_usdt < 50:
-            # Mode Croissance (20-50 USDT)
+        elif total_balance_usd < 50:
+            # Mode Croissance (20-50 USD)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 2), total_balance_usdt * 0.12),
+                'trade_amount': max(min_amounts.get('min_trade', 2), total_balance_usd * 0.12),
                 'spot_allocation': 1.0,  # 100% spot
-                'max_daily_loss': max(10, total_balance_usdt * 0.20),
+                'max_daily_loss': max(10, total_balance_usd * 0.20),
                 'max_positions': 2,
                 'aggressive_mode': True,
                 'compound_rate': 0.9,  # 90% réinvestissement
@@ -84,13 +84,13 @@ class CapitalManager:
                 'preferred_cryptos': ['BTC', 'ETH', 'DOGE', 'SHIB']
             }
             
-        elif total_balance_usdt < 200:
-            # Mode Équilibré (50-200 USDT)
+        elif total_balance_usd < 200:
+            # Mode Équilibré (50-200 USD)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 5), total_balance_usdt * 0.08),
+                'trade_amount': max(min_amounts.get('min_trade', 5), total_balance_usd * 0.08),
                 'spot_allocation': 0.95,  # 95% spot
                 'cash_reserve': 0.05,  # 5% cash
-                'max_daily_loss': max(10, total_balance_usdt * 0.15),
+                'max_daily_loss': max(10, total_balance_usd * 0.15),
                 'max_positions': 3,
                 'aggressive_mode': False,
                 'compound_rate': 0.8,  # 80% réinvestissement
@@ -100,12 +100,12 @@ class CapitalManager:
             }
             
         else:
-            # Mode Professionnel (200+ USDT)
+            # Mode Professionnel (200+ USD)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 10), total_balance_usdt * 0.05),
+                'trade_amount': max(min_amounts.get('min_trade', 10), total_balance_usd * 0.05),
                 'spot_allocation': 0.85,  # 85% spot
                 'cash_reserve': 0.15,  # 15% cash
-                'max_daily_loss': max(20, total_balance_usdt * 0.10),
+                'max_daily_loss': max(20, total_balance_usd * 0.10),
                 'max_positions': 5,
                 'aggressive_mode': False,
                 'compound_rate': 0.7,  # 70% réinvestissement
@@ -139,7 +139,7 @@ class CapitalManager:
                 }
                 
                 # Analyser les minimums pour les principales paires
-                for symbol in ['BTC/USDT', 'ETH/USDT', 'DOGE/USDT']:
+                for symbol in ['BTC/USD', 'ETH/USD', 'DOGE/USD']:
                     if symbol in markets:
                         market = markets[symbol]
                         min_cost = market.get('limits', {}).get('cost', {}).get('min', 1.0)
@@ -202,7 +202,7 @@ class CapitalManager:
         # Affichage compact en une ligne
         aggressive = "AGR" if config['aggressive_mode'] else "CON"
         
-        print(f"💰 Capital: {total_balance:.0f} USDT ({status}) | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
+        print(f"💰 Capital: {total_balance:.0f} USD ({status}) | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
         
         return config
     
@@ -220,17 +220,17 @@ class CapitalManager:
                 # En mode live, utiliser balance_manager
                 if hasattr(self.bot, 'balance_manager'):
                     try:
-                        balance_info = self.bot.balance_manager.get_total_balance_usdt()
+                        balance_info = self.bot.balance_manager.get_total_balance_usd()
                         total_balance = balance_info['total']
                     except:
                         # Fallback sur balance simple
                         balance = self.bot.balance_manager.get_balance()
-                        total_balance = balance.get('USDT', {}).get('free', 0)
+                        total_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
                 else:
                     # Fallback direct
                     try:
                         balance = self.bot.exchange.fetch_balance()
-                        total_balance = balance.get('USDT', {}).get('free', 0)
+                        total_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
                     except:
                         total_balance = 0
             
@@ -259,7 +259,7 @@ class CapitalManager:
         # Affichage compact en une ligne avec mode
         aggressive = "AGR" if config['aggressive_mode'] else "CON"
         
-        print(f"💰 Capital: {total_balance:.0f} USDT ({status}) [{mode_text}] | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
+        print(f"💰 Capital: {total_balance:.0f} USD ({status}) [{mode_text}] | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
         
         return config
     
@@ -336,16 +336,16 @@ class CapitalManager:
         fees = self.get_real_trading_fees(symbol)
         return fees['maker'] if order_type == 'limit' else fees['taker']
     
-    def calculate_trade_cost(self, symbol, amount_usdt, order_type='market'):
+    def calculate_trade_cost(self, symbol, amount_usd, order_type='market'):
         """Calcule coût total réel d'un trade"""
         fee_rate = self.get_fee_for_trade(symbol, order_type)
-        fee_cost = amount_usdt * fee_rate
+        fee_cost = amount_usd * fee_rate
         
         return {
-            'amount': amount_usdt,
+            'amount': amount_usd,
             'fee_rate': fee_rate,
             'fee_cost': fee_cost,
-            'total_cost': amount_usdt + fee_cost,
+            'total_cost': amount_usd + fee_cost,
             'vip_level': self.vip_level
         }
     
@@ -380,15 +380,15 @@ class CapitalManager:
     def is_dust(self, asset, amount):
         """Vérifie si une quantité de crypto est considérée comme dust"""
         try:
-            if asset == 'USDT':
+            if asset == 'USD':
                 return amount < 1.0
             
-            symbol = f"{asset}/USDT"
+            symbol = f"{asset}/USD"
             price = self.bot.get_price(symbol)
-            usdt_value = amount * price
-            dust_threshold = self.dust_thresholds_usdt.get(asset, 0.50)
+            usd_value = amount * price
+            dust_threshold = self.dust_thresholds_usd.get(asset, 0.50)
             
-            return usdt_value < dust_threshold
+            return usd_value < dust_threshold
         except Exception as e:
             print(f"⚠️ Erreur vérification dust {asset}: {e}")
             return True
@@ -417,25 +417,25 @@ class CapitalManager:
         for asset, balance_data in balances.items():
             total_amount = balance_data.get('total', 0)
             
-            if asset == 'USDT':
+            if asset == 'USD':
                 filtered_balances[asset] = balance_data
             elif not self.is_dust(asset, total_amount):
                 filtered_balances[asset] = balance_data
             else:
                 dust_detected[asset] = {
                     'amount': total_amount,
-                    'usdt_value': self._get_usdt_value(asset, total_amount)
+                    'usd_value': self._get_usd_value(asset, total_amount)
                 }
         
         return filtered_balances, dust_detected
     
-    def _get_usdt_value(self, asset, amount):
-        """Calcule la valeur USDT d'un asset"""
+    def _get_usd_value(self, asset, amount):
+        """Calcule la valeur USD d'un asset"""
         try:
-            if asset == 'USDT':
+            if asset == 'USD':
                 return amount
             
-            symbol = f"{asset}/USDT"
+            symbol = f"{asset}/USD"
             price = self.bot.get_price(symbol)
             return amount * price
         except:
@@ -447,18 +447,18 @@ class CapitalManager:
             return
         
         print(f"\n🧹 DUST DÉTECTÉ (valeurs trop petites pour trader):")
-        total_dust_usdt = 0
+        total_dust_usd = 0
         
         for asset, data in dust_detected.items():
             amount = data['amount']
-            usdt_value = data['usdt_value']
-            total_dust_usdt += usdt_value
+            usd_value = data['usd_value']
+            total_dust_usd += usd_value
             
-            print(f"   • {asset}: {amount:.8f} (~{usdt_value:.4f} USDT)")
+            print(f"   • {asset}: {amount:.8f} (~{usd_value:.4f} USD)")
         
-        print(f"   Total dust: {total_dust_usdt:.4f} USDT")
+        print(f"   Total dust: {total_dust_usd:.4f} USD")
         
-        if total_dust_usdt > 0.10:
+        if total_dust_usd > 0.10:
             print(f"   💡 Conseil: ignorer ou consolider ces petits montants manuellement sur l'exchange")
     
     def get_tradeable_balance(self, symbol):
@@ -506,7 +506,7 @@ class CapitalManager:
                 
                 print(f"❌ {base_currency}: Montant trop petit pour trader")
                 print(f"   Minimum: {minimums['min_amount']} {base_currency}")
-                print(f"   Coût minimum: {minimums['min_cost']} USDT")
+                print(f"   Coût minimum: {minimums['min_cost']} USD")
                 
                 return False
             

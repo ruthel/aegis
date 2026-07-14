@@ -77,7 +77,7 @@ class ExchangeBase(ABC):
 
     @abstractmethod
     def normalize_symbol(self, pair):
-        """Convertit un pair config (ex: BTCUSDT) en format exchange"""
+        """Convertit un pair config (ex: BTCUSD) en format exchange"""
         pass
 
     @abstractmethod

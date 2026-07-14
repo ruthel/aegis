@@ -186,14 +186,14 @@ class MarketAnalyzer:
         """AMÉLIORATION 3: Seuils adaptatifs par crypto"""
         # Seuils basés sur données historiques réelles
         crypto_thresholds = {
-            'BTC/USDT': {'very_low': 0.12, 'low': 0.25, 'medium': 0.50, 'high': 1.0},
-            'ETH/USDT': {'very_low': 0.15, 'low': 0.30, 'medium': 0.60, 'high': 1.2},
-            'SOL/USDT': {'very_low': 0.25, 'low': 0.50, 'medium': 1.0, 'high': 2.0},
-            'BNB/USDT': {'very_low': 0.18, 'low': 0.35, 'medium': 0.70, 'high': 1.4},
-            'ADA/USDT': {'very_low': 0.20, 'low': 0.40, 'medium': 0.80, 'high': 1.6},
-            'DOT/USDT': {'very_low': 0.22, 'low': 0.45, 'medium': 0.90, 'high': 1.8},
-            'MATIC/USDT': {'very_low': 0.30, 'low': 0.60, 'medium': 1.2, 'high': 2.4},
-            'AVAX/USDT': {'very_low': 0.28, 'low': 0.55, 'medium': 1.1, 'high': 2.2}
+            'BTC/USD': {'very_low': 0.12, 'low': 0.25, 'medium': 0.50, 'high': 1.0},
+            'ETH/USD': {'very_low': 0.15, 'low': 0.30, 'medium': 0.60, 'high': 1.2},
+            'SOL/USD': {'very_low': 0.25, 'low': 0.50, 'medium': 1.0, 'high': 2.0},
+            'BNB/USD': {'very_low': 0.18, 'low': 0.35, 'medium': 0.70, 'high': 1.4},
+            'ADA/USD': {'very_low': 0.20, 'low': 0.40, 'medium': 0.80, 'high': 1.6},
+            'DOT/USD': {'very_low': 0.22, 'low': 0.45, 'medium': 0.90, 'high': 1.8},
+            'MATIC/USD': {'very_low': 0.30, 'low': 0.60, 'medium': 1.2, 'high': 2.4},
+            'AVAX/USD': {'very_low': 0.28, 'low': 0.55, 'medium': 1.1, 'high': 2.2}
         }
         
         return crypto_thresholds.get(symbol, {
@@ -862,13 +862,13 @@ class MarketAnalyzer:
     
     def calculate_correlation_score(self, bot, symbol):
         """Score corrélation avec BTC (0-15 points)"""
-        if symbol == 'BTC/USDT':
+        if symbol == 'BTC/USD':
             return 15  # BTC = référence
         
         try:
             # Klines 7 jours pour corrélation fiable
             symbol_klines = bot.get_klines(symbol, 168, '1h')  # 7j en 1h
-            btc_klines = bot.get_klines('BTC/USDT', 168, '1h')
+            btc_klines = bot.get_klines('BTC/USD', 168, '1h')
             
             if len(symbol_klines) < 50 or len(btc_klines) < 50:
                 return 10  # Score neutre si pas assez de données
@@ -929,9 +929,9 @@ class MarketAnalyzer:
                 return 10
             
             # Estimation spread selon crypto (données de marché)
-            if symbol in ['BTC/USDT', 'ETH/USDT']:
+            if symbol in ['BTC/USD', 'ETH/USD']:
                 estimated_spread = 0.01  # 0.01%
-            elif symbol in ['BNB/USDT', 'SOL/USDT']:
+            elif symbol in ['BNB/USD', 'SOL/USD']:
                 estimated_spread = 0.02  # 0.02%
             else:
                 estimated_spread = 0.05  # 0.05%
@@ -1116,14 +1116,14 @@ class MarketAnalyzer:
         """Score Market Cap (0-10 points) - Taille relative"""
         # Ranking approximatif des cryptos par market cap
         market_cap_ranking = {
-            'BTC/USDT': 1,   # #1
-            'ETH/USDT': 2,   # #2
-            'BNB/USDT': 4,   # #4
-            'SOL/USDT': 5,   # #5
-            'ADA/USDT': 10,  # #10
-            'DOT/USDT': 15,  # #15
-            'MATIC/USDT': 20, # #20
-            'AVAX/USDT': 25   # #25
+            'BTC/USD': 1,   # #1
+            'ETH/USD': 2,   # #2
+            'BNB/USD': 4,   # #4
+            'SOL/USD': 5,   # #5
+            'ADA/USD': 10,  # #10
+            'DOT/USD': 15,  # #15
+            'MATIC/USD': 20, # #20
+            'AVAX/USD': 25   # #25
         }
         
         rank = market_cap_ranking.get(symbol, 100)
@@ -1540,7 +1540,7 @@ class MarketAnalyzer:
             volatility = self.calculate_volatility(klines, symbol, websocket_manager)
         
         base_points = self._get_base_volatility_points(volatility)
-        crypto_multiplier = 1.2 if symbol in ['BTC/USDT', 'ETH/USDT'] else 1.0
+        crypto_multiplier = 1.2 if symbol in ['BTC/USD', 'ETH/USD'] else 1.0
         
         return int(base_points * crypto_multiplier)
     
@@ -1660,16 +1660,16 @@ class MarketAnalyzer:
         """Classe toutes les cryptos et retourne les meilleures"""
         # Calculer limites dynamiques selon capital
         balance = bot.balance_manager.get_balance()
-        total_capital = balance.get('USDT', {}).get('free', 0)
+        total_capital = balance.get('USD', balance.get('USD', {})).get('free', 0)
         
         limits = self.get_position_limits(total_capital)
         self.max_tradeable = limits['max_tradeable_cryptos']
         
         balance = bot.balance_manager.get_balance()
-        usdt_available = balance.get('USDT', {}).get('free', 0)
+        usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
         
-        if usdt_available <= 0:
-            print(f"⚠️ Balance USDT: 0 - Aucune crypto tradable")
+        if usd_available <= 0:
+            print(f"⚠️ Balance USD: 0 - Aucune crypto tradable")
             return []
         
         scores = []
@@ -1677,12 +1677,12 @@ class MarketAnalyzer:
         volume_ratios = []
         
         for pair in trading_pairs:
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             base_currency = symbol.split('/')[0]
             
             min_cost = bot.get_min_amount(symbol)['min_cost']
             
-            if usdt_available < min_cost:
+            if usd_available < min_cost:
                 continue
             
             crypto_balance = balance.get(base_currency, {}).get('free', 0)
@@ -1733,7 +1733,7 @@ class MarketAnalyzer:
         
         dynamic_min_score = self._get_dynamic_min_score(
             available_count=len(scores),
-            capital=usdt_available,
+            capital=usd_available,
             market_conditions=market_conditions,
             bot=bot,
             symbol=None  # Pas de symbol spécifique pour le ranking global
@@ -1752,7 +1752,7 @@ class MarketAnalyzer:
             top_display = []
             for c in scores[:self.max_tradeable]:
                 if c['score'] >= dynamic_min_score:
-                    crypto = c['symbol'].replace('/USDT', '')
+                    crypto = c['symbol'].replace('/USD', '')
                     score = int(c['score'])
                     vol_score = c.get('volatility', 0)
                     
@@ -1771,7 +1771,7 @@ class MarketAnalyzer:
             if top_display:
                 # Raisons ajustement (concis)
                 reasons = []
-                if usdt_available < 20:
+                if usd_available < 20:
                     reasons.append("💰-15")
                 if market_conditions['avg_volatility'] < 1.5:
                     reasons.append("📉-10")
@@ -1781,10 +1781,10 @@ class MarketAnalyzer:
                 reason_text = f" ({' '.join(reasons)})" if reasons else ""
                 print(f"🎯 {' | '.join(top_display)} → Seuil {dynamic_min_score}{reason_text}")
             else:
-                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usdt_available:.2f} USDT")
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usd_available:.2f} USD")
         else:
-            if usdt_available > 0:
-                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usdt_available:.2f} USDT")
+            if usd_available > 0:
+                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usd_available:.2f} USD")
         
         return tradeable
     
@@ -1821,7 +1821,7 @@ class MarketAnalyzer:
     def _get_dynamic_weights(self, symbol, market_conditions=None):
         """Pondération adaptative selon crypto ET conditions de marché - 20 Facteurs Pro"""
         # Nouvelle pondération avec 20 facteurs
-        if symbol in ['BTC/USDT', 'ETH/USDT']:
+        if symbol in ['BTC/USD', 'ETH/USD']:
             base_weights = {
                 'rsi': 0.15, 'support_resistance': 0.12, 'orderbook': 0.08,
                 'correlation': 0.10, 'volume_profile': 0.09, 'multi_timeframe': 0.08,
@@ -1991,7 +1991,7 @@ class MarketAnalyzer:
         if not bot or not hasattr(bot, 'positions') or not bot.positions:
             return 0
         
-        existing_symbols = [pos.get('symbol', '').replace('USDT', '') for pos in bot.positions]
+        existing_symbols = [pos.get('symbol', '').replace('USD', '') for pos in bot.positions]
         
         correlation_groups = {
             'MAJOR': ['BTC', 'ETH'],
@@ -2000,7 +2000,7 @@ class MarketAnalyzer:
             'MEME': ['DOGE', 'SHIB', 'PEPE']
         }
         
-        current_symbol = symbol.replace('USDT', '')
+        current_symbol = symbol.replace('USD', '')
         current_group = None
         
         for group, symbols in correlation_groups.items():
@@ -2089,7 +2089,7 @@ class MarketAnalyzer:
 
     @staticmethod
     def get_position_limits(total_capital):
-        """Limites de positions dynamiques selon capital total (USDT)"""
+        """Limites de positions dynamiques selon capital total (USD)"""
         if total_capital <= 10:
             return {
                 'max_positions_per_crypto': 1,

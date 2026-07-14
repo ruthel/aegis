@@ -34,7 +34,7 @@ class TradingMixin:
         
         if not self.paper_trading:
             balance = self.balance_manager.get_balance()
-            available = balance.get('USDT', {}).get('free', 0)
+            available = balance.get('USD', balance.get('USD', {})).get('free', 0)
             if cost > available:
                 return None
         
@@ -47,7 +47,7 @@ class TradingMixin:
                 self.paper_balance -= cost
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': cost}
                 action_text = "moyennage" if allow_averaging else "achat"
-                print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USDT)")
+                print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
             else:
                 order = self.safe_request(self.exchange.create_market_buy_order, symbol, amount)
                 action_text = "Moyennage" if allow_averaging else "Achat"
@@ -99,7 +99,7 @@ class TradingMixin:
                 revenue = amount * price
                 self.paper_balance += revenue
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': revenue}
-                print(f"🧪 PAPER - Vente simulée: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USDT)")
+                print(f"🧪 PAPER - Vente simulée: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
             else:
                 balance = self.balance_manager.get_balance()
                 base_currency = symbol.split('/')[0]
@@ -147,7 +147,7 @@ class TradingMixin:
             return None
   
     def sell_limit(self, symbol, amount, price=None):
-        """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS + Validation 5 USDT"""
+        """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS + Validation 5 USD"""
         try:
             prediction = None
             crypto = symbol.split('/')[0]
@@ -192,8 +192,8 @@ class TradingMixin:
             MIN_NOTIONAL = self.get_min_amount(symbol)['min_cost']
             
             if notional_value < MIN_NOTIONAL:
-                print(f"❌ Montant vente {notional_value:.2f} USDT < minimum {MIN_NOTIONAL} USDT")
-                print(f"   Quantité: {amount:.8f} {crypto} × Prix: {price:.2f} = {notional_value:.2f} USDT")
+                print(f"❌ Montant vente {notional_value:.2f} USD < minimum {MIN_NOTIONAL} USD")
+                print(f"   Quantité: {amount:.8f} {crypto} × Prix: {price:.2f} = {notional_value:.2f} USD")
                 return None
             
             if self.paper_trading:
@@ -201,7 +201,7 @@ class TradingMixin:
                 self.pending_orders[order['id']] = {
                     'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
                 }
-                print(f"🧪 PAPER - Ordre limite VENTE: {amount:.6f} {symbol} @ {price:.6f} ({notional_value:.2f} USDT)")
+                print(f"🧪 PAPER - Ordre limite VENTE: {amount:.6f} {symbol} @ {price:.6f} ({notional_value:.2f} USD)")
                 return order
             else:
                 balance = self.balance_manager.get_balance()
@@ -242,12 +242,12 @@ class TradingMixin:
                                 f"🎯 ORDRE LIMITE PLACÉ\n"
                                 f"Crypto: {crypto}\n"
                                 f"Quantité: {amount:.6f}\n"
-                                f"Prix cible: {price:.2f} USDT\n"
-                                f"Valeur: {notional_value:.2f} USDT\n"
+                                f"Prix cible: {price:.2f} USD\n"
+                                f"Valeur: {notional_value:.2f} USD\n"
                                 f"Profit attendu: +{profit_pct:.2f}%"
                             )
                 
-                print(f"✅ Ordre limite créé: {amount:.6f} {crypto} @ {price:.6f} ({notional_value:.2f} USDT)")
+                print(f"✅ Ordre limite créé: {amount:.6f} {crypto} @ {price:.6f} ({notional_value:.2f} USD)")
                 return order
         except Exception as e:
             print(f"❌ Erreur vente limite: {e}")
@@ -333,7 +333,7 @@ class TradingMixin:
                 sell_fee = price * amount * self.trading_fee
                 total_fees = buy_fee + sell_fee
                 
-                print(f"💰 P&L: {pnl:+.2f} USDT (Frais: -{total_fees:.4f} USDT)")
+                print(f"💰 P&L: {pnl:+.2f} USD (Frais: -{total_fees:.4f} USD)")
                 
                 return pnl
         return None
@@ -642,14 +642,14 @@ class TradingMixin:
         
         try:
             import os
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             all_open_orders = {}
             
             # Sauvegarder les ordres précédents pour détecter les exécutions
             previous_orders = dict(self.pending_orders)
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                 
                 for order in open_orders:
@@ -683,19 +683,19 @@ class TradingMixin:
         except Exception as e:
             pass
     
-    def optimize_by_partial_sell(self, symbol, balance, min_cost_needed, usdt_available):
-        """Optimise en vendant partiellement la position pour libérer des USDT"""
+    def optimize_by_partial_sell(self, symbol, balance, min_cost_needed, usd_available):
+        """Optimise en vendant partiellement la position pour libérer des USD"""
         print(f"   🔄 OPTIMISATION PAR VENTE PARTIELLE:")
         
         base_currency = symbol.split('/')[0]
         current_holding = balance.get(base_currency, {}).get('free', 0)
         current_price = self.get_price(symbol)
         
-        # Calculer combien vendre pour obtenir les USDT nécessaires
-        shortage = min_cost_needed - usdt_available + 1  # +1 USDT de marge
+        # Calculer combien vendre pour obtenir les USD nécessaires
+        shortage = min_cost_needed - usd_available + 1  # +1 USD de marge
         amount_to_sell = shortage / current_price
         
-        print(f"   Besoin: {shortage:.2f} USDT -> Vendre {amount_to_sell:.6f} {base_currency}")
+        print(f"   Besoin: {shortage:.2f} USD -> Vendre {amount_to_sell:.6f} {base_currency}")
         
         # Vérifier qu'on a assez à vendre
         if amount_to_sell > current_holding:
@@ -717,7 +717,7 @@ class TradingMixin:
                         self.safe_request(self.exchange.cancel_order, order['id'], symbol)
                         print(f"   ❌ Ordre de vente annulé: {order['price']:.2f}")
             
-            # 2. Vendre une partie au marché pour libérer des USDT
+            # 2. Vendre une partie au marché pour libérer des USD
             print(f"   💰 Vente partielle: {amount_to_sell:.6f} {base_currency} à {current_price:.2f}")
             sell_order = self.sell_market(symbol, amount_to_sell)
             
@@ -741,10 +741,10 @@ class TradingMixin:
             since = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
             
             all_cycles = []
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 
                 # Récupérer tous les trades des 30 derniers jours
                 trades = self.safe_request(self.exchange.fetch_my_trades, symbol, since=since)
@@ -828,7 +828,7 @@ class TradingMixin:
             self.state['global_stats_30d'] = stats
             self.save_state()
             
-            print(f"📊 Win Rate (30j): {stats['winrate']:.1f}% | {stats['total_cycles']} cycles | {stats['total_pnl']:+.2f} USDT")
+            print(f"📊 Win Rate (30j): {stats['winrate']:.1f}% | {stats['total_cycles']} cycles | {stats['total_pnl']:+.2f} USD")
             
             return stats
             

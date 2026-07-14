@@ -12,22 +12,22 @@ class BalanceManager:
         
     def _get_allowed_assets(self):
         """Récupère la liste des cryptos autorisées depuis TRADING_PAIRS"""
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT').split(',')
-        allowed_assets = set(['USDT'])  # USDT toujours autorisé
+        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD').split(',')
+        allowed_assets = set(['USD', 'USD'])  # USD toujours autorisé
         
         for pair in trading_pairs:
             if '/' in pair:
                 base = pair.split('/')[0]
             else:
-                base = pair.replace('USDT', '')
+                base = pair.replace('USD', '').replace('USD', '')
             allowed_assets.add(base)
         
         return allowed_assets
 
     def _get_paper_balance(self):
-        """Reconstruit la balance paper depuis l'USDT simulé et l'état des positions."""
+        """Reconstruit la balance paper depuis l'USD simulé et l'état des positions."""
         balance = {
-            'USDT': {
+            'USD': {
                 'free': self.bot.paper_balance,
                 'used': 0,
                 'total': self.bot.paper_balance
@@ -52,7 +52,7 @@ class BalanceManager:
                 asset_balance['free'] -= amount
 
         for asset, data in balance.items():
-            if asset == 'USDT':
+            if asset in ('USD', 'USD'):
                 continue
             data['free'] = max(0, data['free'])
             data['total'] = data['free'] + data.get('used', 0)
@@ -104,7 +104,7 @@ class BalanceManager:
             
             return filtered_balance
         else:
-            return {'USDT': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
+            return {'USD': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
     
     def get_all_balances(self):
         """Récupère les soldes spot limités aux TRADING_PAIRS."""
@@ -117,7 +117,7 @@ class BalanceManager:
             
         try:
             balance = self.get_balance()
-            available = balance.get('USDT', {}).get('free', 0)
+            available = balance.get('USD', balance.get('USD', {})).get('free', 0)
             needed_balance = trade_amount * 1.2
             
             if available < needed_balance:
@@ -129,15 +129,15 @@ class BalanceManager:
             print(f"⚠️ Erreur vérification balance: {e}")
             return False
     
-    def get_total_balance_usdt(self):
-        """Calcule le solde spot total en USDT."""
+    def get_total_balance_usd(self):
+        """Calcule le solde spot total en USD."""
         try:
             spot_balance = self.get_balance()
-            spot_usdt = spot_balance.get('USDT', {}).get('free', 0)
+            spot_usd = spot_balance.get('USD', balance.get('USD', {})).get('free', 0)
             
             return {
-                'total': spot_usdt,
-                'spot': spot_usdt
+                'total': spot_usd,
+                'spot': spot_usd
             }
             
         except Exception as e:
@@ -147,9 +147,9 @@ class BalanceManager:
     def show_balance_summary(self):
         """Affiche un résumé complet des balances"""
         try:
-            balances = self.get_total_balance_usdt()
+            balances = self.get_total_balance_usd()
             
-            print(f"\n💰 RÉSUMÉ BALANCES USDT:")
+            print(f"\n💰 RÉSUMÉ BALANCES USD:")
             print(f"   Spot: {balances['spot']:.2f}")
             print(f"   ─────────────────")
             print(f"   Total: {balances['total']:.2f}")
@@ -175,8 +175,8 @@ class BalanceManager:
             
             # Test Spot
             spot_balance = self.get_balance()
-            usdt_spot = spot_balance.get('USDT', {}).get('free', 0)
-            print(f"💰 Balance SPOT USDT: {usdt_spot:.2f}")
+            usd_spot = spot_balance.get('USD', balance.get('USD', {})).get('free', 0)
+            print(f"💰 Balance SPOT USD: {usd_spot:.2f}")
             
             # Résumé
             self.show_balance_summary()

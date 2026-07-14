@@ -15,40 +15,41 @@ class SyncMixin:
             self.sync_trade_history()
             
             balance = self.balance_manager.get_balance()
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             
             all_positions = [p for p in self.state.get('positions', [])]
             active_buy_positions = []
             changed = False
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 base_currency = symbol.split('/')[0]
                 available = balance.get(base_currency, {}).get('free', 0)
                 
                 if available > 0.00001:
                     existing_buys = [p for p in all_positions if p['symbol'] == symbol and p['side'] == 'buy']
                     
+                    # Ignorer si valeur trop faible (dust)
+                    try:
+                        current_price = self.get_price(symbol)
+                        min_cost = self.get_min_amount(symbol)['min_cost']
+                        if available * current_price < min_cost:
+                            continue
+                    except:
+                        pass
+
                     if existing_buys:
                         position = existing_buys[-1].copy()
                         old_amount = position.get('amount', 0)
                         position['amount'] = available
                         active_buy_positions.append(position)
-                        
                         if abs(old_amount - available) > 0.00001:
                             changed = True
                     else:
                         last_trade = self.get_last_buy_from_history(symbol)
                         if last_trade:
                             active_buy_positions.append(last_trade)
-                        else:
-                            current_price = self.get_price(symbol)
-                            active_buy_positions.append({
-                                'symbol': symbol, 'side': 'buy', 'amount': available,
-                                'price': current_price, 'timestamp': datetime.now().isoformat(),
-                                'order_id': 'synced', 'source': 'exchange_manual', 'paper': False
-                            })
-                        changed = True
+                            changed = True
             
             if changed:
                 history = [p for p in all_positions if p['side'] == 'sell' or p.get('source') in ['binance_history', 'exchange_history']]
@@ -59,13 +60,13 @@ class SyncMixin:
     
     def sync_open_orders(self):
         try:
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             
             # Nettoyer d'abord les ordres locaux obsolètes
             all_open_order_ids = set()
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                 
                 for order in open_orders:
@@ -93,7 +94,7 @@ class SyncMixin:
     
     def sync_trade_history(self):
         try:
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             new_trades = []
             existing_order_ids = set()
             for position in self.state.get('positions', []):
@@ -102,7 +103,7 @@ class SyncMixin:
                 existing_order_ids.update(str(trade_id) for trade_id in position.get('trade_ids', []))
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
                 trades = self.safe_request(self.exchange.fetch_my_trades, symbol, limit=50)
                 
                 for trade in trades:

@@ -4,7 +4,7 @@ Usage:
     python scripts/backtest_support_touch.py
 
 Optional:
-    python scripts/backtest_support_touch.py --pairs BTC/USDT,ETH/USDT --limit 1000
+    python scripts/backtest_support_touch.py --pairs BTC/USD,ETH/USD --limit 1000
 """
 import argparse
 import json
@@ -24,8 +24,8 @@ def normalize_symbol(pair):
     pair = pair.strip()
     if '/' in pair:
         return pair
-    if pair.endswith('USDT'):
-        return f"{pair[:-4]}/USDT"
+    if pair.endswith('USD'):
+        return f"{pair[:-3]}/USD"
     return pair
 
 
@@ -148,7 +148,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(description='Backtest Support Touch Pro.')
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken').lower())
-    parser.add_argument('--pairs', default=os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT'))
+    parser.add_argument('--pairs', default=os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD'))
     parser.add_argument('--timeframe', default=os.getenv('BACKTEST_TIMEFRAME', '15m'))
     parser.add_argument('--limit', type=int, default=int(os.getenv('BACKTEST_LIMIT', '720')))
     parser.add_argument('--lookback', type=int, default=int(os.getenv('BACKTEST_LOOKBACK', '50')))

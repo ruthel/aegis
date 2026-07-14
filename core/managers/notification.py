@@ -42,8 +42,8 @@ class NotificationManager:
         crypto = symbol.split('/')[0]
         msg = f"🟢 ACHAT {crypto}\n\n"
         msg += f"💰 Montant: {amount:.6f} {crypto}\n"
-        msg += f"💵 Prix: {price:.2f} USDT\n"
-        msg += f"📊 Total: {total:.2f} USDT\n\n"
+        msg += f"💵 Prix: {price:.2f} USD\n"
+        msg += f"📊 Total: {total:.2f} USD\n\n"
         msg += f"📈 Signal: {signal_data.get('trend', 'N/A')} {signal_data.get('confidence', 0):.0f}%\n"
         msg += f"⚡ Vol: {signal_data.get('volatility', 0):.1f}/5 | Conf: {signal_data.get('confidence', 0):.0f}%\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
@@ -57,9 +57,9 @@ class NotificationManager:
         
         msg = f"🔴 VENTE {crypto}\n\n"
         msg += f"💰 Montant: {amount:.6f} {crypto}\n"
-        msg += f"💵 Prix: {price:.2f} USDT\n"
-        msg += f"📊 Total: {total:.2f} USDT\n\n"
-        msg += f"💸 P&L: {emoji} {pnl:+.2f} USDT ({pnl_pct:+.1f}%)\n"
+        msg += f"💵 Prix: {price:.2f} USD\n"
+        msg += f"📊 Total: {total:.2f} USD\n\n"
+        msg += f"💸 P&L: {emoji} {pnl:+.2f} USD ({pnl_pct:+.1f}%)\n"
         msg += f"⏱️ Détention: {hold_time}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
@@ -79,7 +79,7 @@ class NotificationManager:
         
         msg = f"🎯 ORDRE LIMITE INTELLIGENT\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"📤 Prix: {price:.6f} USDT\n"
+        msg += f"📤 Prix: {price:.6f} USD\n"
         msg += f"💰 Quantité: {amount:.6f} {crypto}\n"
         msg += f"🎯 Profit: +{profit_pct:.2f}%\n\n"
         msg += f"🧠 Analyse:\n"
@@ -119,7 +119,7 @@ class NotificationManager:
         crypto = symbol.split('/')[0]
         msg = f"⚠️ POSITION BLOQUÉE\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"💸 Perte: {loss_pct:.1f}% ({loss_amount:.2f} USDT)\n"
+        msg += f"💸 Perte: {loss_pct:.1f}% ({loss_amount:.2f} USD)\n"
         msg += f"⏳ Durée: {duration}\n\n"
         msg += f"🎯 Action: {action}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
@@ -134,15 +134,15 @@ class NotificationManager:
         # Calcul valeur absolue si prix de départ disponible
         if start_price:
             price_change_abs = current_price - start_price
-            change_display = f"{total_change_pct:.2f}% ({price_change_abs:+.2f} USDT)"
-            price_detail = f"├─ Prix départ: {start_price:.2f} USDT\n"
+            change_display = f"{total_change_pct:.2f}% ({price_change_abs:+.2f} USD)"
+            price_detail = f"├─ Prix départ: {start_price:.2f} USD\n"
         else:
             change_display = f"{total_change_pct:.2f}%"
             price_detail = ""
         
         msg = f"{direction_emoji} {direction_text.upper()}\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"💰 Prix actuel: {current_price:.2f} USDT\n"
+        msg += f"💰 Prix actuel: {current_price:.2f} USD\n"
         msg += price_detail
         msg += f"🎯 Élan: {count} impulsions\n"
         msg += f"📈 Cumul: {change_display}\n\n"
@@ -182,7 +182,7 @@ class NotificationManager:
         
         if current_price > 0:
             price_change_abs = current_price * (price_momentum / 100)
-            price_display = f"{price_momentum:+.1f}% ({price_change_abs:+.2f} USDT)"
+            price_display = f"{price_momentum:+.1f}% ({price_change_abs:+.2f} USD)"
         else:
             price_display = f"{price_momentum:+.1f}%"
         
@@ -219,7 +219,7 @@ class NotificationManager:
         volume_display = f"({format_volume(avg_vol_24h)} → {format_volume(estimated_vol)})"
         
         msg += f"├─ Intensité: {decline_pct_display:.1f}% {volume_display}\n"
-        msg += f"└─ Prix: {current_price:.2f} USDT ({trend_emoji} {price_momentum:+.1f}%)"
+        msg += f"└─ Prix: {current_price:.2f} USD ({trend_emoji} {price_momentum:+.1f}%)"
         
         if divergence:
             msg += " (divergence!)\n\n"
@@ -273,8 +273,8 @@ class NotificationManager:
         # Calcul distance absolue
         if current_price:
             distance_abs = abs(current_price - price)
-            distance_display = f"{distance_pct:.1f}% ({distance_abs:.2f} USDT)"
-            current_price_line = f"💰 Prix actuel: {current_price:.2f} USDT\n"
+            distance_display = f"{distance_pct:.1f}% ({distance_abs:.2f} USD)"
+            current_price_line = f"💰 Prix actuel: {current_price:.2f} USD\n"
         else:
             distance_display = f"{distance_pct:.1f}%"
             current_price_line = ""
@@ -283,7 +283,7 @@ class NotificationManager:
         msg += f"🪙 Crypto: {crypto}\n"
         msg += f"📊 Type: {level_type}\n"
         msg += current_price_line
-        msg += f"🎯 Niveau: {price:.2f} USDT\n"
+        msg += f"🎯 Niveau: {price:.2f} USD\n"
         msg += f"📏 Distance: {distance_display}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         return self.notify(msg, "")
@@ -292,12 +292,12 @@ class NotificationManager:
         """Formateur unifié pour changements de prix"""
         if previous_price and change_pct:
             change_abs = current_price - previous_price
-            return f"{change_pct:+.2f}% ({change_abs:+.2f} USDT)"
+            return f"{change_pct:+.2f}% ({change_abs:+.2f} USD)"
         elif change_pct:
             change_abs = current_price * (change_pct / 100)
-            return f"{change_pct:+.2f}% ({change_abs:+.2f} USDT)"
+            return f"{change_pct:+.2f}% ({change_abs:+.2f} USD)"
         else:
-            return f"{current_price:.2f} USDT"
+            return f"{current_price:.2f} USD"
 
     def format_volume_change(self, current_volume, previous_volume=None, change_pct=None):
         """Formateur unifié pour changements de volume"""
@@ -319,12 +319,12 @@ class NotificationManager:
         
         bot = self.bot_ref
         balance = bot.balance_manager.get_balance()
-        current_balance = balance.get('USDT', {}).get('free', 0)
+        current_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
         
-        # Calculer capital total (USDT + cryptos)
+        # Calculer capital total (USD + cryptos)
         total_value = current_balance
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+        for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(','):
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             crypto = symbol.split('/')[0]
             amount = balance.get(crypto, {}).get('free', 0)
             if amount > 0.00001:
@@ -340,13 +340,13 @@ class NotificationManager:
         msg = f"📊 {BOT_NAME} | RÉSUMÉ JOURNALIER\n"
         msg += f"{datetime.now().strftime('%d %b %Y')}\n\n"
         msg += f"💰 Capital\n"
-        msg += f"├─ Début: {start_balance:.2f} USDT\n"
-        msg += f"├─ Fin: {total_value:.2f} USDT\n"
+        msg += f"├─ Début: {start_balance:.2f} USD\n"
+        msg += f"├─ Fin: {total_value:.2f} USD\n"
         msg += f"└─ Variation: {variation:+.2f} ({variation_pct:+.1f}%)\n\n"
         msg += f"📈 Trading\n"
         msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
-        msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
-        msg += f"└─ Frais: ~{bot.total_trades * 0.02:.2f} USDT\n\n"
+        msg += f"├─ P&L: {bot.daily_pnl:+.2f} USD\n"
+        msg += f"└─ Frais: ~{bot.total_trades * 0.02:.2f} USD\n\n"
         msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         
         self.notify(msg, "")
@@ -419,14 +419,14 @@ class NotificationManager:
         
         bot = self.bot_ref
         balance = bot.balance_manager.get_balance()
-        usdt = balance.get('USDT', {}).get('free', 0)
+        usd = balance.get('USD', balance.get('USD', {})).get('free', 0)
         
         # Portfolio avec détail des ordres et P&L
         portfolio_items = []
-        total_value = usdt
+        total_value = usd
         
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(','):
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+        for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(','):
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             crypto = symbol.split('/')[0]
             free = balance.get(crypto, {}).get('free', 0)
             locked = balance.get(crypto, {}).get('used', 0)
@@ -441,8 +441,8 @@ class NotificationManager:
                         avg_buy_price = bot.position_manager.get_average_buy_price(crypto)
                         if avg_buy_price > 0:
                             pnl_pct = ((price - avg_buy_price) / avg_buy_price) * 100
-                            pnl_usdt = (price - avg_buy_price) * total
-                            pnl_display = f" • {pnl_pct:+.1f}% ({pnl_usdt:+.1f} USDT)"
+                            pnl_usd = (price - avg_buy_price) * total
+                            pnl_display = f" • {pnl_pct:+.1f}% ({pnl_usd:+.1f} USD)"
                         else:
                             pnl_display = ""
                     except:
@@ -461,21 +461,21 @@ class NotificationManager:
         win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
         
         msg = f"🤖 {BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}\n\n"
-        msg += f"💼 Portfolio ({total_value:.2f} USDT)\n"
-        msg += f"├─ USDT: {usdt:.2f}\n"
+        msg += f"💼 Portfolio ({total_value:.2f} USD)\n"
+        msg += f"├─ USD: {usd:.2f}\n"
         
         # Afficher chaque crypto avec détail des ordres
         for i, item in enumerate(portfolio_items):
             is_last = (i == len(portfolio_items) - 1)
             prefix = "└─" if is_last else "├─"
             
-            msg += f"{prefix} {item['crypto']}: {format_amount(item['amount'], item['crypto'])} • {item['value']:.2f} USDT{item['pnl_display']}\n"
+            msg += f"{prefix} {item['crypto']}: {format_amount(item['amount'], item['crypto'])} • {item['value']:.2f} USD{item['pnl_display']}\n"
             
             # Détail des ordres pour cette crypto
             if item['has_orders']:
                 try:
                     # Récupérer les ordres ouverts pour cette crypto
-                    open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USDT")
+                    open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USD")
                     if open_orders:
                         for j, order in enumerate(open_orders):
                             is_last_order = (j == len(open_orders) - 1)
@@ -492,11 +492,11 @@ class NotificationManager:
                                     profit_pct = gross_profit_pct - 0.2
                                 else:
                                     # Fallback: distance au prix actuel
-                                    current_price = bot.get_price(f"{item['crypto']}/USDT")
+                                    current_price = bot.get_price(f"{item['crypto']}/USD")
                                     profit_pct = ((order_price - current_price) / current_price) * 100
                             except:
                                 # Fallback: distance au prix actuel
-                                current_price = bot.get_price(f"{item['crypto']}/USDT")
+                                current_price = bot.get_price(f"{item['crypto']}/USD")
                                 profit_pct = ((order_price - current_price) / current_price) * 100
                             
                             # Calculer temps depuis création
@@ -535,15 +535,15 @@ class NotificationManager:
         # Utiliser stats 30j si disponibles (P&L + trades + winrate cohérents)
         if hasattr(bot, 'global_stats_30d') and bot.global_stats_30d:
             stats = bot.global_stats_30d
-            msg += f"├─ P&L: {stats['total_pnl']:+.2f} USDT\n"
+            msg += f"├─ P&L: {stats['total_pnl']:+.2f} USD\n"
             msg += f"├─ Trades: {stats['total_cycles']} ({stats['winrate']:.0f}% win) [30j]\n"
             if stats['best_trade'] > 0:
-                msg += f"└─ Meilleur: +{stats['best_trade']:.2f} USDT\n\n"
+                msg += f"└─ Meilleur: +{stats['best_trade']:.2f} USD\n\n"
             else:
                 msg += f"└─ Aucun trade\n\n"
         else:
             # Fallback sur stats journalières
-            msg += f"├─ P&L: {bot.daily_pnl:+.2f} USDT\n"
+            msg += f"├─ P&L: {bot.daily_pnl:+.2f} USD\n"
             win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
             msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
             if bot.total_trades > 0:
@@ -557,7 +557,7 @@ class NotificationManager:
         
         # Récupérer les cryptos tradables du bot
         try:
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             stuck_positions = []
             tradable_pairs = bot.crypto_scorer.rank_cryptos(bot, trading_pairs, stuck_positions)
         except:

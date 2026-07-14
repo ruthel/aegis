@@ -110,7 +110,7 @@ class PositionManager:
             base_amount = float(os.getenv('TRADE_AMOUNT', '8'))
             average_amount = base_amount * strategy['amount_multiplier']
             
-            print(f"🔄 Moyenner: Achat {average_amount:.2f} USDT")
+            print(f"🔄 Moyenner: Achat {average_amount:.2f} USD")
             trade_amount = average_amount / current_price
             result = bot.buy_market(symbol, trade_amount)
             
@@ -252,7 +252,7 @@ class PositionManager:
             )
             
             return {
-                'position_size_usdt': final_size['size_usdt'],
+                'position_size_usd': final_size['size_usd'],
                 'position_size_crypto': final_size['size_crypto'],
                 'stop_loss_price': stop_loss_data['price'],
                 'stop_loss_percent': stop_loss_data['percent'],
@@ -357,20 +357,20 @@ class PositionManager:
         try:
             current_price = self.bot.get_price(symbol)
             
-            # Montant USDT total à dépenser (incluant frais)
-            total_usdt_to_spend = risk_per_trade['amount'] / stop_distance
+            # Montant USD total à dépenser (incluant frais)
+            total_usd_to_spend = risk_per_trade['amount'] / stop_distance
             
             # Déduire frais AVANT calcul quantité crypto
             fee_rate = self._get_fee_rate()
-            net_usdt = total_usdt_to_spend / (1 + fee_rate)
-            fees_paid = total_usdt_to_spend - net_usdt
+            net_usd = total_usd_to_spend / (1 + fee_rate)
+            fees_paid = total_usd_to_spend - net_usd
             
             # Quantité crypto RÉELLEMENT reçue après frais
-            position_size_crypto = net_usdt / current_price
+            position_size_crypto = net_usd / current_price
             
             return {
-                'size_usdt': total_usdt_to_spend,
-                'size_usdt_net': net_usdt,
+                'size_usd': total_usd_to_spend,
+                'size_usd_net': net_usd,
                 'size_crypto': position_size_crypto,
                 'fees_paid': fees_paid,
                 'current_price': current_price
@@ -378,40 +378,40 @@ class PositionManager:
             
         except Exception as e:
             print(f"⚠️ Erreur risk-based size {symbol}: {e}")
-            return {'size_usdt': 10, 'size_usdt_net': 9.99, 'size_crypto': 0, 'fees_paid': 0.01, 'current_price': 0}
+            return {'size_usd': 10, 'size_usd_net': 9.99, 'size_crypto': 0, 'fees_paid': 0.01, 'current_price': 0}
     
     def _apply_final_adjustments(self, position_size, account_balance, atr_data, signal_strength, symbol):
-        """Applique ajustements finaux AVEC frais + arrondi stepSize + validation 5 USDT"""
+        """Applique ajustements finaux AVEC frais + arrondi stepSize + validation 5 USD"""
         try:
-            size_usdt = position_size['size_usdt']
+            size_usd = position_size['size_usd']
             current_price = position_size['current_price']
             fee_rate = self._get_fee_rate()
             
             # Ajustements multiplicateurs AVANT limites
             volatility_adj = self._get_volatility_adjustment(atr_data['volatility_level'])
             signal_adj = self._get_signal_adjustment(signal_strength)
-            size_usdt *= volatility_adj * signal_adj
+            size_usd *= volatility_adj * signal_adj
             
             # Limites STRICTES (APRÈS ajustements)
             max_position = account_balance * 0.10
             max_with_reserve = account_balance - 5.0
-            size_usdt = min(size_usdt, max_position, max_with_reserve)
-            size_usdt = max(size_usdt, 5.0)
+            size_usd = min(size_usd, max_position, max_with_reserve)
+            size_usd = max(size_usd, 5.0)
             
             # Gestion capital restant
-            remaining = account_balance - size_usdt
+            remaining = account_balance - size_usd
             if 0 < remaining < 5.0:
                 if account_balance < 10.0:
-                    size_usdt = account_balance
-                    print(f"💰 Micro-capital: Utilisation 100% ({size_usdt:.2f} USDT)")
+                    size_usd = account_balance
+                    print(f"💰 Micro-capital: Utilisation 100% ({size_usd:.2f} USD)")
                 else:
-                    size_usdt = account_balance - 5.0
-                    print(f"💰 Ajustement réserve: {size_usdt:.2f} USDT")
+                    size_usd = account_balance - 5.0
+                    print(f"💰 Ajustement réserve: {size_usd:.2f} USD")
             
             # Calculer quantité crypto AVEC frais
-            net_usdt = size_usdt / (1 + fee_rate)
-            fees_to_pay = size_usdt - net_usdt
-            size_crypto_raw = net_usdt / current_price
+            net_usd = size_usd / (1 + fee_rate)
+            fees_to_pay = size_usd - net_usd
+            size_crypto_raw = net_usd / current_price
             
             # Arrondir au step size de l'exchange
             size_crypto = self.round_quantity(symbol, size_crypto_raw)
@@ -425,51 +425,51 @@ class PositionManager:
             if size_crypto < min_amount:
                 import math
                 adjusted_crypto = math.ceil(min_amount / step_size) * step_size
-                adjusted_total_usdt = adjusted_crypto * current_price * (1 + fee_rate)
+                adjusted_total_usd = adjusted_crypto * current_price * (1 + fee_rate)
 
-                if adjusted_total_usdt > account_balance:
-                    print(f"⚠️ Quantité minimum {adjusted_crypto:.8f} coûte {adjusted_total_usdt:.2f} USDT > capital {account_balance:.2f} USDT")
+                if adjusted_total_usd > account_balance:
+                    print(f"⚠️ Quantité minimum {adjusted_crypto:.8f} coûte {adjusted_total_usd:.2f} USD > capital {account_balance:.2f} USD")
                     return self._get_zero_position_size()
 
                 size_crypto = adjusted_crypto
                 print(f"✅ Quantité ajustée au minimum exchange: {size_crypto:.8f}")
             
-            # Recalculer USDT basé sur quantité arrondie + frais
-            net_usdt_adjusted = size_crypto * current_price
-            total_usdt_adjusted = net_usdt_adjusted * (1 + fee_rate)
-            fees_adjusted = total_usdt_adjusted - net_usdt_adjusted
+            # Recalculer USD basé sur quantité arrondie + frais
+            net_usd_adjusted = size_crypto * current_price
+            total_usd_adjusted = net_usd_adjusted * (1 + fee_rate)
+            fees_adjusted = total_usd_adjusted - net_usd_adjusted
             
             # Vérifier minimum notional APRÈS arrondi
             exchange_name = os.getenv('EXCHANGE', 'binance').lower()
             MIN_NOTIONAL = 0.5 if exchange_name == 'kraken' else 5.0
-            if total_usdt_adjusted < MIN_NOTIONAL:
-                print(f"⚠️ Montant {total_usdt_adjusted:.2f} USDT < minimum {MIN_NOTIONAL} USDT après arrondi")
+            if total_usd_adjusted < MIN_NOTIONAL:
+                print(f"⚠️ Montant {total_usd_adjusted:.2f} USD < minimum {MIN_NOTIONAL} USD après arrondi")
                 
                 # Augmenter quantité pour atteindre minimum
-                min_net_usdt = MIN_NOTIONAL / (1 + fee_rate)
-                min_crypto_needed = min_net_usdt / current_price
+                min_net_usd = MIN_NOTIONAL / (1 + fee_rate)
+                min_crypto_needed = min_net_usd / current_price
                 
                 # Arrondir vers le HAUT cette fois
                 import math
                 size_crypto = math.ceil(min_crypto_needed / step_size) * step_size
                 
                 # Recalculer montant final
-                net_usdt_adjusted = size_crypto * current_price
-                total_usdt_adjusted = net_usdt_adjusted * (1 + fee_rate)
-                fees_adjusted = total_usdt_adjusted - net_usdt_adjusted
+                net_usd_adjusted = size_crypto * current_price
+                total_usd_adjusted = net_usd_adjusted * (1 + fee_rate)
+                fees_adjusted = total_usd_adjusted - net_usd_adjusted
                 
                 # Vérifier si dépasse capital disponible
-                if total_usdt_adjusted > account_balance:
-                    print(f"⚠️ Montant ajusté {total_usdt_adjusted:.2f} USDT > capital {account_balance:.2f} USDT")
+                if total_usd_adjusted > account_balance:
+                    print(f"⚠️ Montant ajusté {total_usd_adjusted:.2f} USD > capital {account_balance:.2f} USD")
                     return self._get_zero_position_size()
                 
-                print(f"✅ Ajusté à {total_usdt_adjusted:.2f} USDT pour respecter le minimum exchange")
+                print(f"✅ Ajusté à {total_usd_adjusted:.2f} USD pour respecter le minimum exchange")
             
-            print(f"💰 Trade: {total_usdt_adjusted:.2f} USDT → {size_crypto:.8f} crypto (frais: {fees_adjusted:.4f} USDT)")
+            print(f"💰 Trade: {total_usd_adjusted:.2f} USD → {size_crypto:.8f} crypto (frais: {fees_adjusted:.4f} USD)")
             
             return {
-                'size_usdt': round(total_usdt_adjusted, 2),
-                'size_usdt_net': round(net_usdt_adjusted, 2),
+                'size_usd': round(total_usd_adjusted, 2),
+                'size_usd_net': round(net_usd_adjusted, 2),
                 'size_crypto': size_crypto,
                 'fees': round(fees_adjusted, 4),
                 'volatility_adj': volatility_adj,
@@ -568,14 +568,14 @@ class PositionManager:
     def _get_zero_position_size(self):
         """Retourne une position de taille zéro quand trading arrêté"""
         return {
-            'size_usdt': 0,
+            'size_usd': 0,
             'size_crypto': 0,
-            'size_usdt_net': 0,
+            'size_usd_net': 0,
             'fees': 0,
             'volatility_adj': 1.0,
             'signal_adj': 1.0,
             'risk_reward': 0,
-            'position_size_usdt': 0,
+            'position_size_usd': 0,
             'position_size_crypto': 0,
             'stop_loss_price': 0,
             'stop_loss_percent': 0,
@@ -586,7 +586,7 @@ class PositionManager:
     def _get_fallback_size(self, account_balance):
         """Taille de fallback en cas d'erreur"""
         return {
-            'position_size_usdt': min(10.0, account_balance * 0.02),
+            'position_size_usd': min(10.0, account_balance * 0.02),
             'position_size_crypto': 0,
             'stop_loss_price': 0,
             'stop_loss_percent': 3.0,

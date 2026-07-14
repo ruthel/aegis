@@ -212,7 +212,7 @@ class AnalysisMixin:
         try:
             current_price = self.get_price(symbol)
             balance = self.balance_manager.get_balance()
-            usdt_available = balance.get('USDT', {}).get('free', 0)
+            usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
             base_currency = symbol.split('/')[0]
             crypto_free = balance.get(base_currency, {}).get('free', 0)
             crypto_locked = balance.get(base_currency, {}).get('used', 0)
@@ -232,8 +232,8 @@ class AnalysisMixin:
                         return {'status': 'BLOCKED', 'time_estimate': 'Position ouverte', 'reason': 'Attente vente'}
             
             trade_amount = float(os.getenv('TRADE_AMOUNT', '8'))
-            if usdt_available < trade_amount:
-                return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usdt_available:.2f} USDT disponible'}
+            if usd_available < trade_amount:
+                return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usd_available:.2f} USD disponible'}
             
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']

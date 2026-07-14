@@ -5,13 +5,13 @@ from core.exchange.base import ExchangeBase
 
 # Mapping des symboles Kraken vers format standard
 KRAKEN_SYMBOL_MAP = {
-    'BTC/USDT': 'BTC/USDT',
-    'ETH/USDT': 'ETH/USDT',
-    'SOL/USDT': 'SOL/USDT',
-    'BNB/USDT': 'BNB/USDT',
-    'ADA/USDT': 'ADA/USDT',
-    'DOT/USDT': 'DOT/USDT',
-    'AVAX/USDT': 'AVAX/USDT',
+    'BTC/USD': 'BTC/USD',
+    'ETH/USD': 'ETH/USD',
+    'SOL/USD': 'SOL/USD',
+    'BNB/USD': 'BNB/USD',
+    'ADA/USD': 'ADA/USD',
+    'DOT/USD': 'DOT/USD',
+    'AVAX/USD': 'AVAX/USD',
 }
 
 
@@ -82,7 +82,7 @@ class KrakenClient(ExchangeBase):
 
     def get_ws_streams(self, symbols):
         """Retourne les paires pour souscription WebSocket Kraken"""
-        # Kraken WebSocket utilise le format XBT/USDT pour BTC
+        # Kraken WebSocket utilise le format XBT/USD pour BTC
         pairs = []
         for s in symbols:
             pair = self.normalize_symbol(s)
@@ -133,14 +133,14 @@ class KrakenClient(ExchangeBase):
 
     def _ws_pair_to_symbol(self, ws_pair):
         """Convertit paire WS Kraken vers format standard"""
-        # XBT/USDT -> BTC/USDT
+        # XBT/USD -> BTC/USD
         return ws_pair.replace('XBT', 'BTC')
 
     def normalize_symbol(self, pair):
-        """BTCUSDT -> BTC/USDT"""
+        """BTCUSD -> BTC/USD"""
         if '/' in pair:
             return pair
-        for quote in ['USDT', 'USDC', 'USD', 'BTC', 'ETH']:
+        for quote in ['USD', 'USDC', 'USD', 'BTC', 'ETH']:
             if pair.endswith(quote):
                 return f"{pair[:-len(quote)]}/{quote}"
         return pair
@@ -160,9 +160,9 @@ class KrakenClient(ExchangeBase):
             pass
         # Fallback Kraken (minimums plus bas que Binance)
         fallback = {
-            'BTC/USDT': {'min_amount': 0.0001, 'min_cost': 0.5},
-            'ETH/USDT': {'min_amount': 0.001, 'min_cost': 0.5},
-            'SOL/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
-            'BNB/USDT': {'min_amount': 0.01, 'min_cost': 0.5},
+            'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
+            'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
+            'SOL/USD': {'min_amount': 0.01, 'min_cost': 0.5},
+            'BNB/USD': {'min_amount': 0.01, 'min_cost': 0.5},
         }
         return fallback.get(symbol, {'min_amount': 0.001, 'min_cost': 0.5})

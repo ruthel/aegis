@@ -12,7 +12,7 @@ class DisplayMixin:
         """Affiche les prix en temps réel avec analyse Support/Résistance"""
         prices = []
         for pair in trading_pairs:
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             try:
                 price = self.get_price(symbol)
                 crypto = symbol.split('/')[0]
@@ -49,22 +49,22 @@ class DisplayMixin:
         """Affiche tous les soldes Spot (free + locked) sur une ligne"""
         if self.paper_trading:
             # CORRECTION: Afficher paper_balance au lieu de balance_manager
-            self.async_print(f"💳 SPOT: USDT {self.paper_balance:.2f}")
+            self.async_print(f"💳 SPOT: USD {self.paper_balance:.2f}")
             return
         
         balance = self.balance_manager.get_balance()
         balances = []
         
-        usdt_free = balance.get('USDT', {}).get('free', 0)
-        usdt_locked = balance.get('USDT', {}).get('used', 0)
-        if usdt_free > 0.01 or usdt_locked > 0.01:
-            if usdt_locked > 0.01:
-                balances.append(f"USDT {usdt_free:.2f} ({usdt_locked:.2f} locked)")
+        usd_free = balance.get('USD', balance.get('USD', {})).get('free', 0)
+        usd_locked = balance.get('USD', balance.get('USD', {})).get('used', 0)
+        if usd_free > 0.01 or usd_locked > 0.01:
+            if usd_locked > 0.01:
+                balances.append(f"USD {usd_free:.2f} ({usd_locked:.2f} locked)")
             else:
-                balances.append(f"USDT {usdt_free:.2f}")
+                balances.append(f"USD {usd_free:.2f}")
         
         for pair in trading_pairs:
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             crypto = symbol.split('/')[0]
             free = balance.get(crypto, {}).get('free', 0)
             locked = balance.get(crypto, {}).get('used', 0)
@@ -119,20 +119,20 @@ class DisplayMixin:
                 position_value = amount * current_price
                 
                 if pnl_pct >= 0:
-                    self.async_print(f"🟢 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
+                    self.async_print(f"🟢 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USD")
                 else:
-                    self.async_print(f"🔴 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USDT")
+                    self.async_print(f"🔴 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USD")
             return
         
         # MODE RÉEL - Utiliser balance_manager
         balance = self.balance_manager.get_balance()
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSDT,ETHUSDT').split(',')
+        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
         min_profit_needed = self.min_profit_threshold + (2 * self.trading_fee)
         target_pct = min_profit_needed * 100
         
         has_positions = False
         for pair in trading_pairs:
-            symbol = pair if '/' in pair else f"{pair[:3]}/{pair[3:]}"
+            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             base_currency = symbol.split('/')[0]
             free = balance.get(base_currency, {}).get('free', 0)
             locked = balance.get(base_currency, {}).get('used', 0)
@@ -185,15 +185,15 @@ class DisplayMixin:
                         
                         # Marquer les ordres éloignés comme bloquants
                         if distance_pct > 5:
-                            self.async_print(f"🔴 {base_currency} bloqué: ordre {order['source']} @ {order['price']:.2f} USDT")
+                            self.async_print(f"🔴 {base_currency} bloqué: ordre {order['source']} @ {order['price']:.2f} USD")
                         else:
-                            self.async_print(f"🟡 {base_currency}: Ordre {order['source']} @ {order['price']:.2f} USDT")
+                            self.async_print(f"🟡 {base_currency}: Ordre {order['source']} @ {order['price']:.2f} USD")
                             self.async_print(f"   📍 Actuel: {current_price:.2f} (+{distance_pct:.1f}% à atteindre)")
                 else:
                     # Fallback si aucun ordre trouvé mais crypto locked
                     fallback_price = buy_price * (1 + min_profit_needed)
                     distance_pct = ((fallback_price - current_price) / current_price) * 100
-                    self.async_print(f"🟡 {base_currency}: Ordre @ {fallback_price:.2f} USDT")
+                    self.async_print(f"🟡 {base_currency}: Ordre @ {fallback_price:.2f} USD")
                     self.async_print(f"   📍 Actuel: {current_price:.2f} (+{distance_pct:.1f}% à atteindre)")
                 continue
             
@@ -240,7 +240,7 @@ class DisplayMixin:
         """Affiche l'en-tête du bot"""
         mode = "PAPER" if self.paper_trading else "LIVE"
         realtime = "⚡ TEMPS RÉEL" if self.realtime_trading else "🔄 CYCLIQUE"
-        cryptos = ', '.join([p.split('/')[0] if '/' in p else p.replace('USDT', '') for p in trading_pairs])
+        cryptos = ', '.join([p.split('/')[0] if '/' in p else p.replace('USD', '').replace('USD', '') for p in trading_pairs])
         
         # Afficher win rate global si disponible
         winrate_info = ""
@@ -264,7 +264,7 @@ class DisplayMixin:
             self.async_print("\n🔮 PRÉVISIONS VENTES:")
             for symbol, pred in sell_predictions:
                 crypto = symbol.split('/')[0]
-                self.async_print(f"🟢 {crypto}: Ordre @ {pred['target_price']:.2f} USDT")
+                self.async_print(f"🟢 {crypto}: Ordre @ {pred['target_price']:.2f} USD")
                 self.async_print(f"   📍 Actuel: {pred['current_price']:.2f} (+{pred['distance_pct']:.1f}% à atteindre)")
                 self.async_print(f"   ⏱️ Estimation: {pred['time_estimate']} | 🎯 Probabilité: {pred['probability']}%")
                 self.async_print(f"   💡 {pred['reason']} (Vol: {pred['volatility']:.1f}/5, Mom: {pred['momentum']:+.1f}%)")
@@ -274,7 +274,7 @@ class DisplayMixin:
         if buy_predictions:
             self.async_print("\n🔮 PRÉVISIONS ACHATS:")
             for crypto, prediction in buy_predictions:
-                symbol = f"{crypto}/USDT"
+                symbol = f"{crypto}/USD"
                 
                 # Ajouter info Support/Résistance
                 sr_info = ""
@@ -301,7 +301,7 @@ class DisplayMixin:
         """Affiche l'exécution d'une stratégie"""
         self.async_print(f"\n⚡ {symbol} {price:.2f} ({change_24h:+.2f}%) | Vol {vol_display:.1f}/5")
     
-    def get_tradable_pairs(self, trading_pairs, usdt_available):
+    def get_tradable_pairs(self, trading_pairs, usd_available):
         """Retourne la liste des paires réellement tradables via le crypto scorer"""
         stuck_positions = []
         return self.crypto_scorer.rank_cryptos(self, trading_pairs, stuck_positions)

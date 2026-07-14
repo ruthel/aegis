@@ -478,11 +478,11 @@ class TimeframeAnalyzer:
     
     def get_btc_correlation_filter(self, bot, symbol):
         """Filtre basé sur la corrélation avec BTC"""
-        if symbol == 'BTC/USDT' or not os.getenv('BTC_CORRELATION_FILTER', 'False') == 'True':
+        if symbol == 'BTC/USD' or not os.getenv('BTC_CORRELATION_FILTER', 'False') == 'True':
             return True
         
         try:
-            btc_klines = bot.get_klines('BTC/USDT', 20, os.getenv('MAIN_TIMEFRAME', '15m'))
+            btc_klines = bot.get_klines('BTC/USD', 20, os.getenv('MAIN_TIMEFRAME', '15m'))
             symbol_klines = bot.get_klines(symbol, 20, os.getenv('MAIN_TIMEFRAME', '15m'))
             
             if len(btc_klines) < 10 or len(symbol_klines) < 10:

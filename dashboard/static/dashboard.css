@@ -903,3 +903,36 @@ th {
   word-break: break-all;
   scrollbar-gutter: stable;
 }
+
+/* Console limit select */
+#consoleLimitSelect {
+  font-family: inherit;
+  font-size: 0.75rem;
+  padding: 5px 28px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23a0aec0'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+#consoleLimitSelect:hover {
+  border-color: var(--accent);
+}
+#consoleLimitSelect:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(99, 179, 237, 0.2);
+}
+#consoleLimitSelect option {
+  background-color: var(--card);
+  color: var(--text);
+  font-family: inherit;
+  padding: 4px 8px;
+}

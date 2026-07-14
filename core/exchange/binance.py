@@ -81,10 +81,10 @@ class BinanceClient(ExchangeBase):
         }
 
     def normalize_symbol(self, pair):
-        """BTCUSDT -> BTC/USDT"""
+        """BTCUSD -> BTC/USD"""
         if '/' in pair:
             return pair
-        for quote in ['USDT', 'USDC', 'BTC', 'ETH']:
+        for quote in ['USD', 'USDC', 'BTC', 'ETH']:
             if pair.endswith(quote):
                 return f"{pair[:-len(quote)]}/{quote}"
         return pair
