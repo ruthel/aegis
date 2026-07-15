@@ -28,10 +28,6 @@ class TradingMixin:
         price = self.get_price(symbol)
         cost = amount * price
         
-        if cost > self.max_daily_loss:
-            print(f"❌ Dépassement limite quotidienne: {cost} > {self.max_daily_loss}")
-            return None
-        
         if not self.paper_trading:
             balance = self.balance_manager.get_balance()
             available = balance.get('USD', balance.get('USD', {})).get('free', 0)

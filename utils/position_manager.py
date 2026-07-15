@@ -196,30 +196,12 @@ class PositionManager:
             if max_positions == 0:
                 return self._get_zero_position_size()
             
-            # Calculer taille de base
-            base_size = account_balance / max_positions if max_positions > 0 else account_balance * 0.1
-            
         except:
-            base_size = account_balance * 0.1  # Fallback 10%
+            pass
         
-        cache_key = f"{symbol}_position"
-        now = datetime.now()
-        
-        # Vérifier cache
-        if (cache_key in self.cache and 
-            (now - self.cache[cache_key]['timestamp']).seconds < self.cache_duration):
-            cached_data = self.cache[cache_key]
-            return cached_data['base_size']
-        
-        # Calculer nouvelle taille
-        position_data = self._calculate_optimal_size(symbol, signal_strength, base_size)
-        
-        # Cache résultat
-        self.cache[cache_key] = {
-            'base_size': position_data,
-            'risk_data': position_data['risk_metrics'],
-            'timestamp': now
-        }
+        # Calculer nouvelle taille avec le capital TOTAL
+        # CORRECTION BUG: On passe account_balance (capital total) pas base_size
+        position_data = self._calculate_optimal_size(symbol, signal_strength, account_balance)
         
         return position_data
     
@@ -392,8 +374,8 @@ class PositionManager:
             signal_adj = self._get_signal_adjustment(signal_strength)
             size_usd *= volatility_adj * signal_adj
             
-            # Limites STRICTES (APRÈS ajustements)
-            max_position = account_balance * 0.10
+            # Limites STRICTES (APRÈS ajustements) - UTILISE account_balance (capital total)
+            max_position = account_balance * 0.10  # 10% du capital total
             max_with_reserve = account_balance - 5.0
             size_usd = min(size_usd, max_position, max_with_reserve)
             size_usd = max(size_usd, 5.0)

@@ -1,4 +1,4 @@
-# 
+"""Dashboard Flask pour Aegis Trading Bot"""
 from __future__ import annotations
 
 import os
@@ -7,8 +7,8 @@ import signal
 import subprocess
 import sys
 import time
-from collections import deque
-from datetime import datetime
+from collections import deque, defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -71,19 +71,19 @@ CONFIG_FIELDS = {
     'STOP_LOSS_PERCENT': {'type': 'float', 'label': 'Stop loss %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'TRAILING_STOP_PERCENT': {'type': 'float', 'label': 'Trailing stop %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'SYMBOL_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown symbole sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
-    'SYMBOL_FAILURE_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown Ã©chec sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
+    'SYMBOL_FAILURE_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown echec sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_TRADES': {'type': 'int', 'label': 'Support Touch trades min.', 'section': 'Support Touch', 'min': 1, 'max': 500, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_WINRATE': {'type': 'float', 'label': 'Support Touch win rate min.', 'section': 'Support Touch', 'min': 0, 'max': 100, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_TOTAL_PNL': {'type': 'float', 'label': 'Support Touch PnL total min.', 'section': 'Support Touch', 'min': -100, 'max': 1000, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_AVG_PNL': {'type': 'float', 'label': 'Support Touch moyenne min.', 'section': 'Support Touch', 'min': -100, 'max': 100, 'restart': 'bot'},
     'SUPPORT_TOUCH_BACKTEST_INTERVAL_HOURS': {'type': 'float', 'label': 'Intervalle backtest h', 'section': 'Support Touch', 'min': 0.25, 'max': 168, 'restart': 'bot'},
-    'MARKET_REGIME_FILTER': {'type': 'bool', 'label': 'Filtre rÃ©gime marchÃ©', 'section': 'Bear Mode', 'restart': 'bot'},
+    'MARKET_REGIME_FILTER': {'type': 'bool', 'label': 'Filtre regime marche', 'section': 'Bear Mode', 'restart': 'bot'},
     'FALLING_KNIFE_FILTER': {'type': 'bool', 'label': 'Filtre falling knife', 'section': 'Bear Mode', 'restart': 'bot'},
     'REQUIRE_REVERSAL_CONFIRMATION_IN_BEAR': {'type': 'bool', 'label': 'Retournement requis en bear', 'section': 'Bear Mode', 'restart': 'bot'},
     'BEAR_MODE_TRADE_MULTIPLIER': {'type': 'float', 'label': 'Multiplicateur bear', 'section': 'Bear Mode', 'min': 0.05, 'max': 1, 'restart': 'bot'},
     'BEAR_MODE_MIN_CONFIDENCE_BONUS': {'type': 'float', 'label': 'Bonus confiance bear', 'section': 'Bear Mode', 'min': 0, 'max': 80, 'restart': 'bot'},
     'BEAR_MODE_SUPPORT_TOUCH_OVERRIDE': {'type': 'bool', 'label': 'Support override en bear', 'section': 'Bear Mode', 'restart': 'bot'},
-    'BEAR_MODE_ALLOWED_PAIRS': {'type': 'pairs', 'label': 'Paires autorisÃ©es en bear', 'section': 'Bear Mode', 'restart': 'bot'},
+    'BEAR_MODE_ALLOWED_PAIRS': {'type': 'pairs', 'label': 'Paires autorisees en bear', 'section': 'Bear Mode', 'restart': 'bot'},
     'MIN_CRYPTO_SCORE': {'type': 'int', 'label': 'Score crypto min.', 'section': 'Scoring', 'min': 0, 'max': 100, 'restart': 'bot'},
     'DASHBOARD_PORT': {'type': 'int', 'label': 'Port dashboard', 'section': 'Dashboard', 'min': 1024, 'max': 65535, 'restart': 'dashboard'},
     'LIVE_STATUS_INTERVAL_SECONDS': {'type': 'float', 'label': 'Refresh live status sec.', 'section': 'Dashboard', 'min': 0.25, 'max': 60, 'restart': 'bot'},
@@ -98,7 +98,7 @@ SECRET_KEYS = (
 )
 
 
-# Cache pour éviter de retourner un fallback vide si le fichier est temporairement illisible
+# Cache pour eviter de retourner un fallback vide si le fichier est temporairement illisible
 _read_json_cache = {}
 
 def read_json(path: Path, fallback):
@@ -109,7 +109,6 @@ def read_json(path: Path, fallback):
         _read_json_cache[str(path)] = data
         return data
     except Exception:
-        # Retourner le dernier état valide si le fichier est corrompu/en cours d'écriture
         return _read_json_cache.get(str(path), fallback)
 
 
@@ -142,7 +141,7 @@ def parse_bool(value):
         return True
     if normalized in ('false', '0', 'no', 'non', 'off'):
         return False
-    raise ValueError('doit Ãªtre True ou False')
+    raise ValueError('doit etre True ou False')
 
 
 def normalize_pairs(value):
@@ -172,16 +171,16 @@ def normalize_config_value(name, value):
     if kind == 'int':
         number = int(value)
         if number < meta.get('min', number) or number > meta.get('max', number):
-            raise ValueError(f"doit Ãªtre entre {meta.get('min')} et {meta.get('max')}")
+            raise ValueError(f"doit etre entre {meta.get('min')} et {meta.get('max')}")
         return str(number)
     if kind == 'float':
         number = float(value)
         if number < meta.get('min', number) or number > meta.get('max', number):
-            raise ValueError(f"doit Ãªtre entre {meta.get('min')} et {meta.get('max')}")
+            raise ValueError(f"doit etre entre {meta.get('min')} et {meta.get('max')}")
         return f"{number:g}"
     if kind == 'pairs':
         return normalize_pairs(value)
-    raise ValueError('type non supportÃ©')
+    raise ValueError('type non supporte')
 
 
 def write_dashboard_env(updates):
@@ -189,8 +188,8 @@ def write_dashboard_env(updates):
     current.update(updates)
 
     lines = [
-        '# RÃ©glages modifiables depuis le dashboard Aegis.',
-        '# Ne mettez jamais de clÃ© API ou secret dans ce fichier.',
+        '# Reglages modifiables depuis le dashboard Aegis.',
+        '# Ne mettez jamais de cle API ou secret dans ce fichier.',
         '',
     ]
     sections = {}
@@ -236,7 +235,7 @@ def config_payload():
         'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         'fields': fields,
         'secrets': secrets,
-        'message': 'Les changements sont Ã©crits dans .env.dashboard. RedÃ©marrage requis selon le champ.',
+        'message': 'Les changements sont ecrits dans .env.dashboard. Redemarrage requis selon le champ.',
     }
 
 
@@ -532,7 +531,7 @@ def support_touch(state):
 
 
 def important_logs():
-    keywords = ('â', 'â ï¸', 'error', 'erreur', 'permission denied', 'failed', 'Ã©chou')
+    keywords = ('error', 'erreur', 'permission denied', 'failed', 'echou')
     lines = []
     for line in tail_lines(ROOT / 'bot.log', 200):
         if any(keyword in line.lower() for keyword in keywords):
@@ -550,6 +549,367 @@ def live_status():
     })
 
 
+# ===== NOUVEAU: Fonctions pour les nouvelles fonctionnalités =====
+
+def compute_advanced_metrics(positions, paper_balance):
+    """Calcule les metriques avancees: Sharpe, Profit Factor, Max Drawdown, Kelly, Expectancy"""
+    buys = {}
+    trades = []  # [{pnl, symbol, buy_price, sell_price, amount, buy_time, sell_time}]
+
+    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+        symbol = pos.get('symbol')
+        side = pos.get('side')
+        amount = float(pos.get('amount') or 0)
+        px = float(pos.get('price') or 0)
+        if not symbol or amount <= 0 or px <= 0:
+            continue
+
+        if side == 'buy':
+            buys.setdefault(symbol, []).append({
+                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+            })
+        elif side == 'sell':
+            remaining = amount
+            queue = buys.get(symbol, [])
+            while remaining > 1e-12 and queue:
+                entry = queue[0]
+                filled = min(remaining, entry['amount'])
+                pnl = filled * (px - entry['price'])
+                pnl_pct = ((px - entry['price']) / entry['price']) * 100
+                trades.append({
+                    'pnl': pnl,
+                    'pnl_pct': pnl_pct,
+                    'symbol': symbol,
+                    'buy_price': entry['price'],
+                    'sell_price': px,
+                    'amount': filled,
+                    'buy_time': entry.get('ts'),
+                    'sell_time': pos.get('timestamp'),
+                })
+                entry['amount'] -= filled
+                remaining -= filled
+                if entry['amount'] <= 1e-12:
+                    queue.pop(0)
+
+    total = len(trades)
+    if total == 0:
+        return {
+            'sharpe_ratio': 0,
+            'profit_factor': 0,
+            'max_drawdown': 0,
+            'kelly_percent': 0,
+            'expectancy': 0,
+            'avg_win': 0,
+            'avg_loss': 0,
+            'total_trades': 0,
+        }
+
+    wins = [t for t in trades if t['pnl'] > 0]
+    losses = [t for t in trades if t['pnl'] <= 0]
+    total_pnl = sum(t['pnl'] for t in trades)
+
+    # Profit Factor
+    gross_profit = sum(t['pnl'] for t in wins)
+    gross_loss = abs(sum(t['pnl'] for t in losses))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+    # Win rate
+    win_rate = len(wins) / total if total > 0 else 0
+
+    # Expectancy
+    avg_win = gross_profit / len(wins) if wins else 0
+    avg_loss = gross_loss / len(losses) if losses else 0
+    expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+
+    # Kelly %
+    if avg_loss > 0:
+        kelly = win_rate - ((1 - win_rate) / (avg_win / avg_loss)) if avg_win > 0 else 0
+    else:
+        kelly = win_rate
+    kelly = max(0, min(kelly, 0.5))  # Cap at 50%
+
+    # Max Drawdown (simplified: track running PnL)
+    running_pnl = 0
+    peak = 0
+    max_dd = 0
+    for t in trades:
+        running_pnl += t['pnl']
+        if running_pnl > peak:
+            peak = running_pnl
+        dd = peak - running_pnl
+        if dd > max_dd:
+            max_dd = dd
+
+    # Sharpe Ratio (simplified: using trade PnL as returns)
+    if len(trades) >= 2:
+        pnls = [t['pnl'] for t in trades]
+        avg_pnl = sum(pnls) / len(pnls)
+        variance = sum((p - avg_pnl) ** 2 for p in pnls) / len(pnls)
+        std = variance ** 0.5
+        sharpe = (avg_pnl / std) * (252 ** 0.5) if std > 0 else 0  # Annualized
+    else:
+        sharpe = 0
+
+    return {
+        'sharpe_ratio': round(sharpe, 2),
+        'profit_factor': round(profit_factor, 2) if profit_factor != float('inf') else 999.99,
+        'max_drawdown': round(max_dd, 2),
+        'kelly_percent': round(kelly * 100, 1),
+        'expectancy': round(expectancy, 4),
+        'avg_win': round(avg_win, 4),
+        'avg_loss': round(avg_loss, 4),
+        'total_trades': total,
+    }
+
+
+def compute_trade_history(positions):
+    """Extrait l'historique complet des trades (buy/sell pairs)"""
+    buys = {}
+    trades = []
+
+    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+        symbol = pos.get('symbol')
+        side = pos.get('side')
+        amount = float(pos.get('amount') or 0)
+        px = float(pos.get('price') or 0)
+        if not symbol or amount <= 0 or px <= 0:
+            continue
+
+        if side == 'buy':
+            buys.setdefault(symbol, []).append({
+                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+            })
+        elif side == 'sell':
+            remaining = amount
+            queue = buys.get(symbol, [])
+            while remaining > 1e-12 and queue:
+                entry = queue[0]
+                filled = min(remaining, entry['amount'])
+                pnl = filled * (px - entry['price'])
+                pnl_pct = ((px - entry['price']) / entry['price']) * 100
+                trades.append({
+                    'symbol': symbol,
+                    'buy_price': round(entry['price'], 2),
+                    'sell_price': round(px, 2),
+                    'amount': round(filled, 8),
+                    'pnl': round(pnl, 4),
+                    'pnl_pct': round(pnl_pct, 2),
+                    'buy_time': entry.get('ts'),
+                    'sell_time': pos.get('timestamp'),
+                    'profitable': pnl > 0,
+                })
+                entry['amount'] -= filled
+                remaining -= filled
+                if entry['amount'] <= 1e-12:
+                    queue.pop(0)
+
+    return sorted(trades, key=lambda t: t.get('sell_time', ''), reverse=True)
+
+
+def compute_heatmap(positions):
+    """Calcule les stats par crypto, par jour, par heure"""
+    buys = {}
+    trades = []
+
+    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+        symbol = pos.get('symbol')
+        side = pos.get('side')
+        amount = float(pos.get('amount') or 0)
+        px = float(pos.get('price') or 0)
+        if not symbol or amount <= 0 or px <= 0:
+            continue
+
+        if side == 'buy':
+            buys.setdefault(symbol, []).append({
+                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+            })
+        elif side == 'sell':
+            remaining = amount
+            queue = buys.get(symbol, [])
+            while remaining > 1e-12 and queue:
+                entry = queue[0]
+                filled = min(remaining, entry['amount'])
+                pnl = filled * (px - entry['price'])
+                trades.append({
+                    'symbol': symbol,
+                    'pnl': pnl,
+                    'buy_time': entry.get('ts'),
+                    'sell_time': pos.get('timestamp'),
+                })
+                entry['amount'] -= filled
+                remaining -= filled
+                if entry['amount'] <= 1e-12:
+                    queue.pop(0)
+
+    # Par crypto
+    by_crypto = defaultdict(lambda: {'trades': 0, 'wins': 0, 'total_pnl': 0.0})
+    # Par jour de semaine
+    by_day = defaultdict(lambda: {'trades': 0, 'wins': 0, 'total_pnl': 0.0})
+    # Par heure
+    by_hour = defaultdict(lambda: {'trades': 0, 'wins': 0, 'total_pnl': 0.0})
+
+    for t in trades:
+        crypto = t['symbol'].split('/')[0]
+        by_crypto[crypto]['trades'] += 1
+        by_crypto[crypto]['total_pnl'] += t['pnl']
+        if t['pnl'] > 0:
+            by_crypto[crypto]['wins'] += 1
+
+        if t['sell_time']:
+            try:
+                dt = datetime.fromisoformat(t['sell_time'])
+                day_name = dt.strftime('%A')
+                hour = dt.hour
+                by_day[day_name]['trades'] += 1
+                by_day[day_name]['total_pnl'] += t['pnl']
+                if t['pnl'] > 0:
+                    by_day[day_name]['wins'] += 1
+                by_hour[hour]['trades'] += 1
+                by_hour[hour]['total_pnl'] += t['pnl']
+                if t['pnl'] > 0:
+                    by_hour[hour]['wins'] += 1
+            except Exception:
+                pass
+
+    # Formater
+    crypto_stats = [
+        {
+            'symbol': sym,
+            'trades': d['trades'],
+            'wins': d['wins'],
+            'win_rate': round(d['wins'] / d['trades'] * 100, 1) if d['trades'] else 0,
+            'total_pnl': round(d['total_pnl'], 4),
+        }
+        for sym, d in sorted(by_crypto.items(), key=lambda x: abs(x[1]['total_pnl']), reverse=True)
+    ]
+
+    day_stats = [
+        {
+            'day': day,
+            'trades': d['trades'],
+            'wins': d['wins'],
+            'win_rate': round(d['wins'] / d['trades'] * 100, 1) if d['trades'] else 0,
+            'total_pnl': round(d['total_pnl'], 4),
+        }
+        for day, d in sorted(by_day.items(), key=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].index(x[0]) if x[0] in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] else 0)
+    ]
+
+    hour_stats = [
+        {
+            'hour': h,
+            'trades': d['trades'],
+            'wins': d['wins'],
+            'win_rate': round(d['wins'] / d['trades'] * 100, 1) if d['trades'] else 0,
+            'total_pnl': round(d['total_pnl'], 4),
+        }
+        for h, d in sorted(by_hour.items())
+    ]
+
+    return {
+        'by_crypto': crypto_stats,
+        'by_day': day_stats,
+        'by_hour': hour_stats,
+    }
+
+
+def compute_capital_breakdown(state, positions, paper_balance):
+    """Calcule la repartition detaillee du capital"""
+    # Positions ouvertes
+    open_positions = weighted_positions(positions)
+    total_in_positions = sum(p['entry_value'] for p in open_positions)
+
+    # En ordres limites (pending sell orders)
+    pending_sell_value = 0
+    for oid, od in state.get('pending_orders', {}).items():
+        if od.get('side') == 'sell':
+            order = od.get('order', {})
+            amount = float(order.get('amount', 0))
+            price = float(order.get('price', 0))
+            pending_sell_value += amount * price
+
+    # Reserve (USD libre)
+    reserve = paper_balance
+
+    # Capital total
+    total_capital = reserve + total_in_positions + pending_sell_value
+
+    return {
+        'total_capital': round(total_capital, 2),
+        'available': round(reserve, 2),
+        'in_positions': round(total_in_positions, 2),
+        'in_limit_orders': round(pending_sell_value, 2),
+        'allocated_percent': round((total_in_positions + pending_sell_value) / total_capital * 100, 1) if total_capital > 0 else 0,
+        'available_percent': round(reserve / total_capital * 100, 1) if total_capital > 0 else 0,
+        'positions_detail': [
+            {
+                'symbol': p['symbol'],
+                'value': round(p['entry_value'], 2),
+                'percent': round(p['entry_value'] / total_capital * 100, 1) if total_capital > 0 else 0,
+            }
+            for p in open_positions
+        ],
+    }
+
+
+def compute_pnl_history(state):
+    """Extrait l'historique P&L sous forme de courbe de P&L réalisé cumulé"""
+    positions = state.get('positions', [])
+    initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
+
+    cumulative_pnl = 0.0
+    history = [{'time': 'start', 'balance': round(initial_balance, 2), 'pnl': 0.0}]
+
+    buys = {}
+    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+        symbol = pos.get('symbol')
+        side = pos.get('side')
+        amount = float(pos.get('amount') or 0)
+        px = float(pos.get('price') or 0)
+        if not symbol or amount <= 0 or px <= 0:
+            continue
+
+        if side == 'buy':
+            buys.setdefault(symbol, []).append({
+                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+            })
+            # Achat : le P&L réalisé ne change pas, on enregistre l'événement au même niveau
+            history.append({
+                'time': pos.get('timestamp'),
+                'balance': round(initial_balance + cumulative_pnl, 2),
+                'pnl': round(cumulative_pnl, 2),
+                'event': f"Achat {symbol.split('/')[0]} @ {px:.2f}",
+            })
+        elif side == 'sell':
+            remaining = amount
+            queue = buys.get(symbol, [])
+            trade_pnl = 0.0
+            while remaining > 1e-12 and queue:
+                entry = queue[0]
+                filled = min(remaining, entry['amount'])
+                trade_pnl += filled * (px - entry['price'])
+                remaining -= filled
+                entry['amount'] -= filled
+                if entry['amount'] <= 1e-12:
+                    queue.pop(0)
+            
+            cumulative_pnl += trade_pnl
+            history.append({
+                'time': pos.get('timestamp'),
+                'balance': round(initial_balance + cumulative_pnl, 2),
+                'pnl': round(cumulative_pnl, 2),
+                'event': f"Vente {symbol.split('/')[0]} @ {px:.2f}",
+            })
+
+    return {
+        'initial_balance': initial_balance,
+        'current_balance': round(initial_balance + cumulative_pnl, 2),
+        'total_pnl': round(cumulative_pnl, 2),
+        'history': history,
+    }
+
+
+# ===== ROUTES =====
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -558,10 +918,17 @@ def index():
 @app.route('/api/status')
 def api_status():
     state = read_json(active_state_file(), {'positions': []})
-    decisions = state.get('decision_journal') or parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 20)
+    decisions = parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 20)
     positions = weighted_positions(state.get('positions', []))
 
     stats = trade_stats(state.get('positions', []))
+    
+    total_decisions = 0
+    try:
+        with open(DATA_DIR / 'decision_journal.jsonl', 'rb') as f:
+            total_decisions = sum(1 for _ in f)
+    except Exception:
+        total_decisions = len(decisions)
 
     response = jsonify({
         'bot': {
@@ -581,7 +948,8 @@ def api_status():
         'market_context': state.get('market_context', {}),
         'live': live_status(),
         'support_touch': support_touch(state),
-        'decisions': decisions[-20:],
+        'decisions': decisions,
+        'total_decisions': total_decisions,
         'logs': important_logs(),
         'config': {
             'file': str(ENV_DASHBOARD.relative_to(ROOT)),
@@ -593,9 +961,28 @@ def api_status():
 
 @app.route('/api/decisions')
 def api_decisions():
-    state = read_json(active_state_file(), {'decision_journal': []})
-    decisions = state.get('decision_journal') or parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 80)
-    return jsonify({'decisions': decisions[-80:]})
+    limit_str = request.args.get('limit', '80')
+    if limit_str == 'all':
+        limit = 100000
+    else:
+        try:
+            limit = int(limit_str)
+        except ValueError:
+            limit = 80
+
+    decisions = parse_jsonl(DATA_DIR / 'decision_journal.jsonl', limit)
+    
+    total_count = 0
+    try:
+        with open(DATA_DIR / 'decision_journal.jsonl', 'rb') as f:
+            total_count = sum(1 for _ in f)
+    except Exception:
+        total_count = len(decisions)
+
+    return jsonify({
+        'decisions': decisions,
+        'total_count': total_count
+    })
 
 
 @app.route('/api/logs')
@@ -617,7 +1004,7 @@ def api_config_update():
 
     for name, value in values.items():
         if name not in CONFIG_FIELDS:
-            errors[name] = 'champ non autorisÃ©'
+            errors[name] = 'champ non autorise'
             continue
         if is_secret_key(name):
             errors[name] = 'secret non modifiable depuis le dashboard'
@@ -671,7 +1058,6 @@ def api_bot_console():
         return jsonify({'lines': all_lines, 'total': len(all_lines)})
     lines_count = int(lines_count)
     lines = tail_lines(BOT_LOG_FILE, lines_count)
-    # Return file size as change indicator (cheap stat)
     try:
         file_size = BOT_LOG_FILE.stat().st_size if BOT_LOG_FILE.exists() else 0
     except Exception:
@@ -686,9 +1072,58 @@ def api_live():
     return response
 
 
+# ===== NOUVELLES ROUTES =====
+
+@app.route('/api/analytics')
+def api_analytics():
+    """Endpoint pour les metriques avancees, heatmap, capital breakdown, PnL history"""
+    state = read_json(active_state_file(), {'positions': []})
+    positions = state.get('positions', [])
+    paper_balance = state.get('paper_balance', float(os.getenv('PAPER_BALANCE', '1000')))
+
+    advanced = compute_advanced_metrics(positions, paper_balance)
+    heatmap = compute_heatmap(positions)
+    capital = compute_capital_breakdown(state, positions, paper_balance)
+    pnl_history = compute_pnl_history(state)
+
+    response = jsonify({
+        'advanced_metrics': advanced,
+        'heatmap': heatmap,
+        'capital_breakdown': capital,
+        'pnl_history': pnl_history,
+    })
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/api/trades')
+def api_trades():
+    """Endpoint pour l'historique complet des trades"""
+    state = read_json(active_state_file(), {'positions': []})
+    positions = state.get('positions', [])
+    trades = compute_trade_history(positions)
+
+    # Filtres optionnels
+    symbol_filter = request.args.get('symbol', '').upper()
+    profitable_filter = request.args.get('profitable', '')
+
+    if symbol_filter:
+        trades = [t for t in trades if symbol_filter in t['symbol'].upper()]
+    if profitable_filter == 'win':
+        trades = [t for t in trades if t['profitable']]
+    elif profitable_filter == 'loss':
+        trades = [t for t in trades if not t['profitable']]
+
+    response = jsonify({
+        'trades': trades,
+        'total': len(trades),
+    })
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @sock.route('/ws/live')
 def ws_live(ws):
-    # Push live_status.json to browser via WebSocket whenever it changes
     import json as _json
     path = project_path(os.getenv('LIVE_STATUS_FILE'), DATA_DIR / 'live_status.json')
     last_mtime = 0.0
