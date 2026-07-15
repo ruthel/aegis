@@ -98,30 +98,22 @@ class DisplayMixin:
         
         self.async_print(f"\n📊 {pnl_display} | {total_trades} trades ({win_rate:.0f}% win){period_info}")
         
-        # CORRECTION: Utiliser les positions du state pour paper trading
+        # Positions nettes paper trading (style Binance)
         if self.paper_trading:
-            active_positions = [p for p in self.state.get('positions', []) 
-                              if p['side'] == 'buy']
-            
-            if not active_positions:
+            open_pos = self.get_open_positions()
+            if not open_pos:
                 self.async_print(f"⏳ Aucune position")
                 return
             
-            # Afficher positions paper trading
-            for position in active_positions:
-                symbol = position['symbol']
+            for symbol, data in open_pos.items():
                 crypto = symbol.split('/')[0]
-                amount = position['amount']
-                buy_price = position['price']
+                amount = data['amount']
+                buy_price = data['cost'] / amount
                 current_price = self.get_price(symbol)
-                
                 pnl_pct = ((current_price - buy_price) / buy_price) * 100
                 position_value = amount * current_price
-                
-                if pnl_pct >= 0:
-                    self.async_print(f"🟢 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USD")
-                else:
-                    self.async_print(f"🔴 {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USD")
+                emoji = "🟢" if pnl_pct >= 0 else "🔴"
+                self.async_print(f"{emoji} {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USD")
             return
         
         # MODE RÉEL - Utiliser balance_manager

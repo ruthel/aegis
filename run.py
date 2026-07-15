@@ -5,6 +5,10 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 """
 import sys
 import os
+
+# Forcer stdout/stderr unbuffered pour que les logs arrivent en temps réel
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 from dotenv import load_dotenv
 
 def clean_bot_states():
@@ -38,11 +42,11 @@ def clean_bot_states():
 if sys.stdout and sys.stdout.isatty():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# Forcer UTF-8 si pas de terminal (mode background)
+# Forcer UTF-8 + line-buffered si pas de terminal (mode background)
 if not sys.stdout or not sys.stdout.isatty():
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace') if sys.stdout else open(os.devnull, 'w')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace') if sys.stderr else open(os.devnull, 'w')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True) if sys.stdout else open(os.devnull, 'w')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True) if sys.stderr else open(os.devnull, 'w')
 
 # Charger les variables d'environnement
 def main():

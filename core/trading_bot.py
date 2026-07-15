@@ -418,6 +418,41 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if len(self.state['decision_journal']) > self.decision_journal_max:
             self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
 
+    def get_open_positions(self):
+        """Calcule les positions nettes ouvertes (style Binance: achats - ventes filled)."""
+        by_symbol = {}
+        for p in sorted(self.state.get('positions', []), key=lambda x: x.get('timestamp', '')):
+            sym = p.get('symbol')
+            amt = float(p.get('amount') or 0)
+            price = float(p.get('price') or 0)
+            if not sym or amt <= 0 or price <= 0:
+                continue
+            data = by_symbol.setdefault(sym, {'amount': 0.0, 'cost': 0.0})
+            if p['side'] == 'buy':
+                data['amount'] += amt
+                data['cost'] += amt * price
+            elif p['side'] == 'sell':
+                sold = min(amt, data['amount'])
+                avg = data['cost'] / data['amount'] if data['amount'] else 0
+                data['amount'] -= sold
+                data['cost'] -= sold * avg
+                if data['amount'] < 1e-8:
+                    data['amount'] = 0.0
+                    data['cost'] = 0.0
+        return {sym: d for sym, d in by_symbol.items() if d['amount'] > 1e-8}
+
+    def _close_buy_positions(self, symbol, sell_amount, sell_price):
+        """Marque les positions buy comme closed quand vendues (style Binance)."""
+        remaining = sell_amount
+        for p in self.state.get('positions', []):
+            if remaining <= 0:
+                break
+            if p.get('symbol') == symbol and p.get('side') == 'buy' and p.get('status') != 'closed':
+                p['status'] = 'closed'
+                p['closed_at'] = datetime.now().isoformat()
+                p['sell_price'] = sell_price
+                remaining -= float(p.get('amount') or 0)
+
     def _restore_paper_balance(self):
         """Restaure l'USD paper depuis le state, ou le reconstruit pour les anciens fichiers."""
         saved_balance = self.state.get('paper_balance')
@@ -1174,11 +1209,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if hasattr(self, 'risk_manager') and pnl is not None:
                     self.risk_manager.record_trade(pnl)
                 
+                # Marquer les positions buy correspondantes comme closed (style Binance)
+                self._close_buy_positions(symbol, amount, current_price)
+                
                 position = {
                     'symbol': symbol, 'side': 'sell', 'amount': amount,
                     'price': current_price, 'timestamp': datetime.now().isoformat(),
                     'order_id': order_id, 'source': 'bot', 'paper': True,
-                    'avg_entry_price': buy_price
+                    'avg_entry_price': buy_price, 'status': 'filled'
                 }
                 self.state['positions'].append(position)
                 self.total_trades += 1

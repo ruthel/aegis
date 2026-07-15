@@ -318,6 +318,7 @@ def start_bot_process():
 
     env = os.environ.copy()
     env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUNBUFFERED'] = '1'
 
     with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
         process = subprocess.Popen(
@@ -374,6 +375,68 @@ def env_bool(name, default='False'):
 
 def active_state_file():
     return DATA_DIR / ('paper_bot_state.json' if env_bool('PAPER_TRADING', 'True') else 'bot_state.json')
+
+
+def trade_stats(positions):
+    """Compute PnL, total closed trades, and win rate from buy/sell pairs."""
+    buys = {}  # symbol -> list of pending buys [{amount, price}]
+    trades = []  # closed trades with pnl
+    timestamps = []  # sell timestamps for duration calc
+
+    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+        symbol = pos.get('symbol')
+        side = pos.get('side')
+        amount = float(pos.get('amount') or 0)
+        px = float(pos.get('price') or 0)
+        if not symbol or amount <= 0 or px <= 0:
+            continue
+
+        if side == 'buy':
+            buys.setdefault(symbol, []).append({'amount': amount, 'price': px, 'ts': pos.get('timestamp')})
+        elif side == 'sell':
+            remaining = amount
+            queue = buys.get(symbol, [])
+            while remaining > 1e-12 and queue:
+                entry = queue[0]
+                filled = min(remaining, entry['amount'])
+                pnl = filled * (px - entry['price'])
+                trades.append(pnl)
+                if entry.get('ts'):
+                    try:
+                        timestamps.append(datetime.fromisoformat(entry['ts']))
+                    except Exception:
+                        pass
+                if pos.get('timestamp'):
+                    try:
+                        timestamps.append(datetime.fromisoformat(pos['timestamp']))
+                    except Exception:
+                        pass
+                entry['amount'] -= filled
+                remaining -= filled
+                if entry['amount'] <= 1e-12:
+                    queue.pop(0)
+
+    total = len(trades)
+    wins = sum(1 for t in trades if t > 0)
+    total_pnl = sum(trades)
+    win_rate = (wins / total * 100) if total else 0
+
+    # Compute trading duration in days from first to last trade
+    days_active = 0
+    if timestamps and len(timestamps) >= 2:
+        first = min(timestamps)
+        last = max(timestamps)
+        delta = (last - first).total_seconds()
+        days_active = delta / 86400 if delta > 0 else 0
+
+    return {
+        'total_trades': total,
+        'wins': wins,
+        'losses': total - wins,
+        'win_rate': round(win_rate, 1),
+        'total_pnl': round(total_pnl, 4),
+        'days_active': round(days_active, 4),
+    }
 
 
 def weighted_positions(positions):
@@ -498,6 +561,8 @@ def api_status():
     decisions = state.get('decision_journal') or parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 20)
     positions = weighted_positions(state.get('positions', []))
 
+    stats = trade_stats(state.get('positions', []))
+
     response = jsonify({
         'bot': {
             'name': os.getenv('BOT_NAME', 'Aegis'),
@@ -510,6 +575,7 @@ def api_status():
         'balance': {
             'paper_balance': state.get('paper_balance'),
         },
+        'stats': stats,
         'positions': positions,
         'cooldowns': cooldowns(state),
         'market_context': state.get('market_context', {}),

@@ -691,6 +691,28 @@ async function refresh() {
   $('paperBalance').textContent = data.balance.paper_balance === null || data.balance.paper_balance === undefined
     ? '--'
     : `${number(data.balance.paper_balance, 2)} USD`;
+
+  // Trade stats
+  const stats = data.stats || {};
+  const pnl = Number(stats.total_pnl);
+  $('totalPnl').textContent = Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : ''}${number(pnl, 4)} USD` : '--';
+  $('totalPnl').style.color = pnl > 0 ? 'var(--good)' : pnl < 0 ? 'var(--bad)' : '';
+  $('totalTrades').textContent = stats.total_trades != null ? `${stats.total_trades} (${stats.wins}W / ${stats.losses}L)` : '--';
+  $('winRate').textContent = stats.total_trades ? `${stats.win_rate}%` : '--';
+  $('winRate').style.color = stats.win_rate >= 50 ? 'var(--good)' : stats.win_rate > 0 ? 'var(--bad)' : '';
+
+  // Growth per trade = avg PnL / initial capital per trade
+  const growthPct = stats.total_trades ? (stats.total_pnl / stats.total_trades) / (Number(data.balance.paper_balance) || 100) * 100 : null;
+  $('growthPerTrade').textContent = growthPct !== null ? `${growthPct >= 0 ? '+' : ''}${number(growthPct, 3)}%` : '--';
+  $('growthPerTrade').style.color = growthPct > 0 ? 'var(--good)' : growthPct < 0 ? 'var(--bad)' : '';
+
+  // Growth per day = total PnL% / days active
+  const days = Number(stats.days_active) || 0;
+  const totalPnlPct = (Number(data.balance.paper_balance) || 100) > 0 ? pnl / (Number(data.balance.paper_balance) || 100) * 100 : 0;
+  const dailyGrowth = days > 0.01 ? totalPnlPct / days : null;
+  $('growthPerDay').textContent = dailyGrowth !== null ? `${dailyGrowth >= 0 ? '+' : ''}${number(dailyGrowth, 3)}%` : '--';
+  $('growthPerDay').style.color = dailyGrowth > 0 ? 'var(--good)' : dailyGrowth < 0 ? 'var(--bad)' : '';
+
   $('positionCount').textContent = data.positions.length;
   $('cooldownCount').textContent = data.cooldowns.length;
 
