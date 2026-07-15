@@ -76,13 +76,13 @@ BTC/USD 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 ### 🖥️ Interface Optimisée
 ```
 🤖 Aegis | LIVE ⚡ TEMPS RÉEL | 0 positions
-📊 BTC, ETH, SOL, BNB | Min dynamique | Seuil adaptatif | Spot multi-exchange
+📊 BTC, ETH, SOL, ADA | Min dynamique | Seuil adaptatif | Spot multi-exchange
 🛑 Ctrl+C pour arrêter
 
 📊 +1.45 USD | 3 trades (67% win)
 💳 SPOT: USD 95.23 | BTC 0.001234 | ETH 0.0012
 
-⚡ 12:34:56 | BTC 111.6K | ETH 3.98K | SOL 194 | BNB 1.20K
+⚡ 12:34:56 | BTC 111.6K | ETH 3.98K | SOL 194 | ADA 1.20K
 
 🎯 TOP: BTC 85 (V30 L20 M5) | ETH 72 (V25 L15 M10) → TRADING
 

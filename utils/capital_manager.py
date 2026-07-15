@@ -24,7 +24,7 @@ class CapitalManager:
         
         # Dust Manager integration
         self.dust_thresholds_usd = {
-            'BTC': 0.50, 'ETH': 0.50, 'SOL': 0.50, 'BNB': 0.50,
+            'BTC': 0.50, 'ETH': 0.50, 'SOL': 0.50, 'ADA': 0.50,
             'ADA': 0.10, 'DOT': 0.20, 'MATIC': 0.10, 'AVAX': 0.30,
             'LINK': 0.30, 'UNI': 0.20, 'LTC': 0.50, 'BCH': 0.50
         }
@@ -33,7 +33,7 @@ class CapitalManager:
             'BTC/USD': {'min_amount': 0.00001, 'min_cost': 1.0},
             'ETH/USD': {'min_amount': 0.0001, 'min_cost': 1.0},
             'SOL/USD': {'min_amount': 0.01, 'min_cost': 1.0},
-            'BNB/USD': {'min_amount': 0.001, 'min_cost': 1.0},
+            'ADA/USD': {'min_amount': 0.001, 'min_cost': 1.0},
             'ADA/USD': {'min_amount': 1.0, 'min_cost': 1.0},
             'DOT/USD': {'min_amount': 0.1, 'min_cost': 1.0},
             'MATIC/USD': {'min_amount': 1.0, 'min_cost': 1.0},
@@ -96,7 +96,7 @@ class CapitalManager:
                 'compound_rate': 0.8,  # 80% réinvestissement
                 'min_profit_threshold': 0.8,
                 'stop_loss_percent': 5.0,
-                'preferred_cryptos': ['BTC', 'ETH', 'SOL', 'BNB']
+                'preferred_cryptos': ['BTC', 'ETH', 'SOL', 'ADA']
             }
             
         else:
@@ -111,7 +111,7 @@ class CapitalManager:
                 'compound_rate': 0.7,  # 70% réinvestissement
                 'min_profit_threshold': 1.0,
                 'stop_loss_percent': 5.0,
-                'preferred_cryptos': ['BTC', 'ETH', 'SOL', 'BNB', 'ADA']
+                'preferred_cryptos': ['BTC', 'ETH', 'SOL', 'ADA', 'ADA']
             }
     
     def _get_exchange_min_amounts(self):

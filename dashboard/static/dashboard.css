@@ -547,7 +547,65 @@ html, body {
   opacity: 0.5;
 }
 
-/* ===== PANELS ===== */
+/* ===== SPLIT METRIC CARD (e.g. Avg Win / Avg Loss) ===== */
+.metric-card-split {
+  justify-content: center;
+  gap: 0;
+  padding: 14px 20px;
+}
+
+.metric-split-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.metric-split-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.metric-split-value {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-top: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.metric-split-top .metric-split-value { color: var(--good); }
+.metric-split-bottom .metric-split-value { color: var(--bad); }
+
+.metric-split-top .metric-icon-badge {
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.2);
+  color: var(--good);
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+}
+
+.metric-split-bottom .metric-icon-badge {
+  background: rgba(251, 113, 133, 0.1);
+  border-color: rgba(251, 113, 133, 0.2);
+  color: var(--bad);
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+}
+
+.metric-split-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 2px 0;
+}
+
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -746,7 +804,7 @@ tr:hover td {
 
 .live-quote {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
@@ -756,11 +814,11 @@ tr:hover td {
 
 .live-quote strong {
   display: block;
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 850;
-  line-height: 1;
+  line-height: 1.1;
   letter-spacing: -0.5px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .live-delta {

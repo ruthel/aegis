@@ -304,7 +304,10 @@ def start_bot_process():
     if bot_is_running():
         return {'started': False, 'already_running': True}
 
-    command = [sys.executable, str(ROOT / 'run.py')]
+    python_exe = sys.executable
+    if os.name == 'nt':
+        python_exe = python_exe.replace('python.exe', 'pythonw.exe')
+    command = [python_exe, str(ROOT / 'run.py')]
     BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     creationflags = 0
@@ -380,6 +383,7 @@ def trade_stats(positions):
     """Compute PnL, total closed trades, and win rate from buy/sell pairs."""
     buys = {}  # symbol -> list of pending buys [{amount, price}]
     trades = []  # closed trades with pnl
+    stakes = []  # stake sizes (cost of entry)
     timestamps = []  # sell timestamps for duration calc
 
     for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
@@ -400,6 +404,7 @@ def trade_stats(positions):
                 filled = min(remaining, entry['amount'])
                 pnl = filled * (px - entry['price'])
                 trades.append(pnl)
+                stakes.append(filled * entry['price'])
                 if entry.get('ts'):
                     try:
                         timestamps.append(datetime.fromisoformat(entry['ts']))
@@ -419,6 +424,7 @@ def trade_stats(positions):
     wins = sum(1 for t in trades if t > 0)
     total_pnl = sum(trades)
     win_rate = (wins / total * 100) if total else 0
+    avg_stake = (sum(stakes) / len(stakes)) if stakes else float(os.getenv('TRADE_AMOUNT', '5'))
 
     # Compute trading duration in days from first to last trade
     days_active = 0
@@ -435,6 +441,7 @@ def trade_stats(positions):
         'win_rate': round(win_rate, 1),
         'total_pnl': round(total_pnl, 4),
         'days_active': round(days_active, 4),
+        'avg_stake': round(avg_stake, 2),
     }
 
 

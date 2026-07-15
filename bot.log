@@ -26402,3 +26402,930 @@ WS Kraken: connexion ouverte, souscription...
 📊 +0.00 | 2 trades (0% win)
 🟢 ETH 0.046470 @ 1938.49 → 1939.81 (+0.07%) = 90.14 USD
 🟢 SOL 1.271390 @ 78.73 → 78.94 (+0.27%) = 100.36 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥13 - Balance 811.79 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 2 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1937.80 (-0.04%) = 90.05 USD
+🟢 SOL 1.271390 @ 78.73 → 78.91 (+0.23%) = 100.33 USD
+📊 ETH/USD: Tendance cumulative détectée! 5x baisse = 0.34%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥13 - Balance 811.79 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 2 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1937.94 (-0.03%) = 90.06 USD
+🟢 SOL 1.271390 @ 78.73 → 78.74 (+0.01%) = 100.11 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥13 - Balance 811.79 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 2 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1934.51 (-0.21%) = 89.90 USD
+🔴 SOL 1.271390 @ 78.73 → 78.67 (-0.08%) = 100.02 USD
+📊 SOL/USD: Tendance cumulative détectée! 5x baisse = 0.34%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+📊 ETH/USD: Tendance cumulative détectée! 5x baisse = 0.40%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥13 - Balance 811.79 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 2 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1932.27 (-0.32%) = 89.79 USD
+🔴 SOL 1.271390 @ 78.73 → 78.49 (-0.30%) = 99.79 USD
+🚀 Démarrage du bot Aegis...
+Exchange: Kraken (Canada compatible)
+🎯 Trailing stop activé pour ETH/USD: Stop initial à 1880.34
+🎯 Trailing stop activé pour SOL/USD: Stop initial à 76.37
+WS preload: BTCUSD 100 bougies @ 65258.8
+WS preload: ETHUSD 100 bougies @ 1933.26
+WS preload: SOLUSD 100 bougies @ 78.54
+WS Kraken: connexion wss://ws.kraken.com avec ['BTCUSD', 'ETHUSD', 'SOLUSD']
+💰 Capital: 812 USD (LARGE) [PAPER] | Trade: 41 | Spot: 85% | Stop: 5.0% | Mode: CON
+
+
+🔍 Vérification positions existantes...
+   📊 ETH: 0.046470 détecté (paper)
+🎯 PAPER ETH → Ordre vente @ 1954.00 (+0.8%) | Qty: 0.046470
+   📊 SOL: 1.271390 détecté (paper)
+🎯 PAPER SOL → Ordre vente @ 79.36 (+0.8%) | Qty: 1.271390
+✅ 2 position(s) optimisée(s) au démarrage
+
+WS Kraken: connexion ouverte, souscription...
+🚀 Démarrage du bot Aegis...
+Exchange: Kraken (Canada compatible)
+🎯 Trailing stop activé pour ETH/USD: Stop initial à 1880.34
+🎯 Trailing stop activé pour SOL/USD: Stop initial à 76.37
+WS preload: BTCUSD 100 bougies @ 65286.7
+WS preload: ETHUSD 100 bougies @ 1933.62
+WS preload: SOLUSD 100 bougies @ 78.62
+WS Kraken: connexion wss://ws.kraken.com avec ['BTCUSD', 'ETHUSD', 'SOLUSD']
+💰 Capital: 812 USD (LARGE) [PAPER] | Trade: 41 | Spot: 85% | Stop: 5.0% | Mode: CON
+
+
+🔍 Vérification positions existantes...
+   📊 ETH: 0.046470 détecté (paper)
+🎯 PAPER ETH → Ordre vente @ 1954.00 (+0.8%) | Qty: 0.046470
+   📊 SOL: 1.271390 détecté (paper)
+🎯 PAPER SOL → Ordre vente @ 79.36 (+0.8%) | Qty: 1.271390
+✅ 2 position(s) optimisée(s) au démarrage
+
+WS Kraken: connexion ouverte, souscription...
+🚀 Démarrage du bot Aegis...
+Exchange: Kraken (Canada compatible)
+🎯 Trailing stop activé pour ETH/USD: Stop initial à 1880.34
+🎯 Trailing stop activé pour SOL/USD: Stop initial à 76.37
+WS preload: BTCUSD 100 bougies @ 65268.4
+WS preload: ETHUSD 100 bougies @ 1934.74
+WS preload: SOLUSD 100 bougies @ 78.61
+WS Kraken: connexion wss://ws.kraken.com avec ['BTCUSD', 'ETHUSD', 'SOLUSD']
+💰 Capital: 812 USD (LARGE) [PAPER] | Trade: 41 | Spot: 85% | Stop: 5.0% | Mode: CON
+
+
+🔍 Vérification positions existantes...
+   📊 ETH: 0.046470 détecté (paper)
+🎯 PAPER ETH → Ordre vente @ 1954.00 (+0.8%) | Qty: 0.046470
+   📊 SOL: 1.271390 détecté (paper)
+🎯 PAPER SOL → Ordre vente @ 79.36 (+0.8%) | Qty: 1.271390
+✅ 2 position(s) optimisée(s) au démarrage
+
+WS Kraken: connexion ouverte, souscription...
+🚨 MACRO EVENT DÉTECTÉ: MARKET_UNCERTAINTY
+   📋 Incertitude marché généralisée
+   🎁 Bonus score: +8
+   🎯 Réduction seuil: -6
+   ⏰ Durée estimée: 12h
+   📨 Notification Telegram envoyée
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+🎯 BTC 13💤 | ETH 11💤 | SOL 11💤 → Seuil 10 (📉-10)
+🤖 Aegis | PAPER ⚡ TEMPS RÉEL | 2 positions
+📊 BTC, ETH, SOL | Min dynamique | Seuil adaptatif | Spot multi-exchange
+🛑 Ctrl+C pour arrêter
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1934.87 (-0.19%) = 89.91 USD
+🔴 SOL 1.271390 @ 78.73 → 78.60 (-0.17%) = 99.93 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+🎯 ETH 13💤 → Seuil 13 (📉-10)
+💳 SPOT: USD 811.79
+
+⚡ 09:30:54 | ETH 1935.43
+📊 ETH: Meilleur niveau 1932.91 (Support dynamique) - 0.1%
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1935.43 (-0.16%) = 89.94 USD
+🔴 SOL 1.271390 @ 78.73 → 78.70 (-0.04%) = 100.06 USD
+📊 SOL/USD: Tendance cumulative détectée! 4x hausse = 0.31%
+🚀 Démarrage du bot Aegis...
+Exchange: Kraken (Canada compatible)
+🎯 Trailing stop activé pour ETH/USD: Stop initial à 1880.34
+🎯 Trailing stop activé pour SOL/USD: Stop initial à 76.37
+WS preload: BTCUSD 100 bougies @ 65305.1
+WS preload: ETHUSD 100 bougies @ 1937.6
+WS preload: SOLUSD 100 bougies @ 78.79
+WS preload: ADAUSD 100 bougies @ 0.168396
+WS Kraken: connexion wss://ws.kraken.com avec ['BTCUSD', 'ETHUSD', 'SOLUSD', 'ADAUSD']
+💰 Capital: 812 USD (LARGE) [PAPER] | Trade: 41 | Spot: 85% | Stop: 5.0% | Mode: CON
+
+
+🔍 Vérification positions existantes...
+   📊 ETH: 0.046470 détecté (paper)
+   📊 SOL: 1.271390 détecté (paper)
+✅ 2 position(s) optimisée(s) au démarrage
+
+WS Kraken: connexion ouverte, souscription...
+🚨 MACRO EVENT DÉTECTÉ: MARKET_UNCERTAINTY
+   📋 Incertitude marché généralisée
+   🎁 Bonus score: +8
+   🎯 Réduction seuil: -6
+   ⏰ Durée estimée: 12h
+   📨 Notification Telegram envoyée
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 811.79 USD
+🤖 Aegis | PAPER ⚡ TEMPS RÉEL | 0 positions
+📊  | Min dynamique | Seuil adaptatif | Spot multi-exchange
+🛑 Ctrl+C pour arrêter
+
+📊 +0.00 | 0 trades (0% win)
+🟢 ETH 0.046470 @ 1938.49 → 1938.66 (+0.01%) = 90.09 USD
+🟢 SOL 1.271390 @ 78.73 → 78.84 (+0.14%) = 100.24 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 811.79 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1938.23 (-0.01%) = 90.07 USD
+🟢 SOL 1.271390 @ 78.73 → 78.80 (+0.09%) = 100.19 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+🎯 ADA: SUPPORT TOUCH PRO - Support 9 rebonds @ 0.17
+💰 Trade: 81.18 USD → 480.31887000 crypto (frais: 0.0811 USD)
+🧠 Paper trading: Validation OK - Coût 81.10 USD
+🧪 PAPER - Achat simulé: 480.318870 ADA/USD à 0.168842 (Balance: 730.69 USD)
+📊 Trades: 9, P&L: $1.29
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 811.79 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🟢 ETH 0.046470 @ 1938.49 → 1938.68 (+0.01%) = 90.09 USD
+🟢 SOL 1.271390 @ 78.73 → 78.78 (+0.06%) = 100.16 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.00%) = 81.10 USD
+✅ ACHAT ADA: 81.2 USD (Position #1)
+   💡 Raison: Support PRO 0.17 - Support 9 rebonds @ 0.17
+   💰 Prix: 0.17 | Stop: 0.17 (-1.0%)
+   📈 R/R: 1:2.0 | Quantité: 480.318870 ADA
+✅ Achat exécuté avec succès
+🎯 Trailing stop activé pour ADA/USD: Stop initial à 0.16
+🎯 PAPER ADA → Ordre vente @ 0.17 (+0.8%) | Qty: 480.318870
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🟢 ETH 0.046470 @ 1938.49 → 1938.70 (+0.01%) = 90.09 USD
+🟢 SOL 1.271390 @ 78.73 → 78.84 (+0.14%) = 100.24 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.10%) = 81.02 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1937.20 (-0.07%) = 90.02 USD
+🔴 SOL 1.271390 @ 78.73 → 78.71 (-0.03%) = 100.07 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.29%) = 80.86 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1936.15 (-0.12%) = 89.97 USD
+🔴 SOL 1.271390 @ 78.73 → 78.61 (-0.15%) = 99.94 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.32%) = 80.84 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+📊 SOL/USD: Tendance cumulative détectée! 5x baisse = 0.34%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1933.09 (-0.28%) = 89.83 USD
+🔴 SOL 1.271390 @ 78.73 → 78.51 (-0.28%) = 99.82 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.51%) = 80.68 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1931.51 (-0.36%) = 89.76 USD
+🔴 SOL 1.271390 @ 78.73 → 78.51 (-0.28%) = 99.82 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.73%) = 80.51 USD
+📊 ETH/USD: Tendance cumulative détectée! 4x baisse = 0.33%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+📊 BTC/USD: Tendance cumulative détectée! 5x baisse = 0.38%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1931.89 (-0.34%) = 89.77 USD
+🔴 SOL 1.271390 @ 78.73 → 78.46 (-0.34%) = 99.75 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.76%) = 80.48 USD
+📊 ADA/USD: Tendance cumulative détectée! 4x baisse = 0.46%
+⚡ Analyse forcée suite à tendance cumulative ADA/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1933.39 (-0.26%) = 89.84 USD
+🔴 SOL 1.271390 @ 78.73 → 78.48 (-0.32%) = 99.78 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-0.84%) = 80.41 USD
+📊 ETH/USD: Tendance cumulative détectée! 5x baisse = 0.32%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+📊 SOL/USD: Tendance cumulative détectée! 6x baisse = 0.36%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.51 (-0.51%) = 89.62 USD
+🔴 SOL 1.271390 @ 78.73 → 78.24 (-0.62%) = 99.47 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.24%) = 80.09 USD
+📊 BTC/USD: Tendance cumulative détectée! 5x baisse = 0.34%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1923.90 (-0.75%) = 89.40 USD
+🔴 SOL 1.271390 @ 78.73 → 78.07 (-0.84%) = 99.26 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.40%) = 79.96 USD
+📊 ADA/USD: Tendance cumulative détectée! 4x baisse = 0.46%
+⚡ Analyse forcée suite à tendance cumulative ADA/USD
+📊 SOL/USD: Tendance cumulative détectée! 5x baisse = 0.38%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+📊 ETH/USD: Tendance cumulative détectée! 5x baisse = 0.37%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1920.22 (-0.94%) = 89.23 USD
+🔴 SOL 1.271390 @ 78.73 → 77.91 (-1.04%) = 99.05 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.55%) = 79.84 USD
+📊 SOL/USD: Tendance cumulative détectée! 5x baisse = 0.33%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1919.44 (-0.98%) = 89.20 USD
+🔴 SOL 1.271390 @ 78.73 → 77.82 (-1.16%) = 98.94 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.61%) = 79.79 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1916.10 (-1.16%) = 89.04 USD
+🔴 SOL 1.271390 @ 78.73 → 77.73 (-1.27%) = 98.83 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.77%) = 79.66 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1918.85 (-1.01%) = 89.17 USD
+🔴 SOL 1.271390 @ 78.73 → 77.87 (-1.09%) = 99.00 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.87%) = 79.58 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1916.42 (-1.14%) = 89.06 USD
+🔴 SOL 1.271390 @ 78.73 → 77.77 (-1.22%) = 98.88 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.87%) = 79.58 USD
+⚠️ Erreur sauvegarde état: [WinError 5] Access is denied: 'data/paper_bot_state.json.tmp' -> 'data/paper_bot_state.json'
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1919.16 (-1.00%) = 89.18 USD
+🔴 SOL 1.271390 @ 78.73 → 77.93 (-1.02%) = 99.08 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.69%) = 79.73 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1919.28 (-0.99%) = 89.19 USD
+🔴 SOL 1.271390 @ 78.73 → 77.87 (-1.09%) = 99.00 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.71%) = 79.71 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1920.95 (-0.90%) = 89.27 USD
+🔴 SOL 1.271390 @ 78.73 → 77.93 (-1.02%) = 99.08 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.67%) = 79.75 USD
+📊 ETH/USD: Tendance cumulative détectée! 4x hausse = 0.31%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1922.90 (-0.80%) = 89.36 USD
+🔴 SOL 1.271390 @ 78.73 → 77.98 (-0.95%) = 99.14 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.63%) = 79.78 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1925.00 (-0.70%) = 89.45 USD
+🔴 SOL 1.271390 @ 78.73 → 78.09 (-0.81%) = 99.28 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.57%) = 79.83 USD
+📊 BTC/USD: Tendance cumulative détectée! 5x hausse = 0.33%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.19 (-0.58%) = 89.56 USD
+🔴 SOL 1.271390 @ 78.73 → 78.17 (-0.71%) = 99.38 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.49%) = 79.89 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1926.77 (-0.60%) = 89.54 USD
+🔴 SOL 1.271390 @ 78.73 → 78.18 (-0.70%) = 99.40 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.49%) = 79.89 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.05 (-0.49%) = 89.64 USD
+🔴 SOL 1.271390 @ 78.73 → 78.22 (-0.65%) = 99.45 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.58%) = 79.82 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1926.90 (-0.60%) = 89.54 USD
+🔴 SOL 1.271390 @ 78.73 → 78.17 (-0.71%) = 99.38 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.53%) = 79.86 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.64 (-0.51%) = 89.62 USD
+🔴 SOL 1.271390 @ 78.73 → 78.24 (-0.62%) = 99.47 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.50%) = 79.88 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.28 (-0.42%) = 89.70 USD
+🔴 SOL 1.271390 @ 78.73 → 78.27 (-0.58%) = 99.51 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.39%) = 79.97 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.21 (-0.43%) = 89.70 USD
+🔴 SOL 1.271390 @ 78.73 → 78.24 (-0.62%) = 99.47 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.32%) = 80.02 USD
+📊 BTC/USD: Tendance cumulative détectée! 4x hausse = 0.34%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.36 (-0.47%) = 89.66 USD
+🔴 SOL 1.271390 @ 78.73 → 78.15 (-0.74%) = 99.36 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.40%) = 79.97 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.12 (-0.48%) = 89.65 USD
+🔴 SOL 1.271390 @ 78.73 → 78.22 (-0.65%) = 99.45 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.28%) = 80.06 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1932.63 (-0.30%) = 89.81 USD
+🔴 SOL 1.271390 @ 78.73 → 78.30 (-0.55%) = 99.55 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.33%) = 80.02 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.52 (-0.41%) = 89.71 USD
+🔴 SOL 1.271390 @ 78.73 → 78.21 (-0.66%) = 99.44 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.40%) = 79.96 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.55 (-0.56%) = 89.57 USD
+🔴 SOL 1.271390 @ 78.73 → 78.07 (-0.84%) = 99.26 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.47%) = 79.90 USD
+📊 ETH/USD: Tendance cumulative détectée! 5x baisse = 0.38%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+📊 SOL/USD: Tendance cumulative détectée! 4x baisse = 0.37%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.37 (-0.57%) = 89.56 USD
+🔴 SOL 1.271390 @ 78.73 → 78.04 (-0.88%) = 99.22 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.48%) = 79.90 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.23 (-0.53%) = 89.60 USD
+🔴 SOL 1.271390 @ 78.73 → 78.06 (-0.85%) = 99.24 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.34%) = 80.01 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.15 (-0.53%) = 89.60 USD
+🔴 SOL 1.271390 @ 78.73 → 78.07 (-0.84%) = 99.26 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.50%) = 79.88 USD
+📊 SOL/USD: Tendance cumulative détectée! 5x hausse = 0.37%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.53 (-0.46%) = 89.67 USD
+🔴 SOL 1.271390 @ 78.73 → 78.28 (-0.57%) = 99.52 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.30%) = 80.04 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1924.83 (-0.70%) = 89.45 USD
+🔴 SOL 1.271390 @ 78.73 → 77.94 (-1.00%) = 99.09 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.30%) = 80.04 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.67 (-0.56%) = 89.58 USD
+🔴 SOL 1.271390 @ 78.73 → 78.05 (-0.86%) = 99.23 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.30%) = 80.04 USD
+📊 SOL/USD: Tendance cumulative détectée! 5x baisse = 0.32%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1923.73 (-0.76%) = 89.40 USD
+🔴 SOL 1.271390 @ 78.73 → 77.84 (-1.13%) = 98.96 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.70%) = 79.72 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1922.44 (-0.83%) = 89.34 USD
+🔴 SOL 1.271390 @ 78.73 → 77.89 (-1.07%) = 99.03 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.88%) = 79.58 USD
+📊 ETH/USD: Tendance cumulative détectée! 4x baisse = 0.30%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+📊 ADA/USD: Tendance cumulative détectée! 4x baisse = 0.40%
+⚡ Analyse forcée suite à tendance cumulative ADA/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1921.02 (-0.90%) = 89.27 USD
+🔴 SOL 1.271390 @ 78.73 → 77.77 (-1.22%) = 98.88 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-2.06%) = 79.43 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1921.87 (-0.86%) = 89.31 USD
+🔴 SOL 1.271390 @ 78.73 → 77.93 (-1.02%) = 99.08 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.75%) = 79.68 USD
+📊 ADA/USD: Tendance cumulative détectée! 4x hausse = 0.34%
+⚡ Analyse forcée suite à tendance cumulative ADA/USD
+📊 SOL/USD: Tendance cumulative détectée! 6x hausse = 0.35%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+📊 BTC/USD: Tendance cumulative détectée! 5x hausse = 0.36%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1926.42 (-0.62%) = 89.52 USD
+🔴 SOL 1.271390 @ 78.73 → 78.09 (-0.81%) = 99.28 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.73%) = 79.69 USD
+📊 ETH/USD: Tendance cumulative détectée! 5x hausse = 0.32%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.44 (-0.57%) = 89.57 USD
+🔴 SOL 1.271390 @ 78.73 → 78.07 (-0.84%) = 99.26 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.54%) = 79.85 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1926.68 (-0.61%) = 89.53 USD
+🔴 SOL 1.271390 @ 78.73 → 78.06 (-0.85%) = 99.24 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.62%) = 79.78 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+📊 SOL/USD: Tendance cumulative détectée! 4x baisse = 0.31%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.61 (-0.56%) = 89.58 USD
+🔴 SOL 1.271390 @ 78.73 → 77.94 (-1.00%) = 99.09 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.66%) = 79.75 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.39 (-0.47%) = 89.66 USD
+🔴 SOL 1.271390 @ 78.73 → 78.00 (-0.93%) = 99.17 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.55%) = 79.84 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.99 (-0.39%) = 89.73 USD
+🔴 SOL 1.271390 @ 78.73 → 78.06 (-0.85%) = 99.24 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.34%) = 80.01 USD
+📊 ETH/USD: Tendance cumulative détectée! 4x hausse = 0.36%
+⚡ Analyse forcée suite à tendance cumulative ETH/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1931.43 (-0.36%) = 89.75 USD
+🔴 SOL 1.271390 @ 78.73 → 78.08 (-0.83%) = 99.27 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.37%) = 79.99 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.10 (-0.54%) = 89.60 USD
+🔴 SOL 1.271390 @ 78.73 → 77.96 (-0.98%) = 99.12 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.43%) = 79.94 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.03 (-0.49%) = 89.64 USD
+🔴 SOL 1.271390 @ 78.73 → 77.98 (-0.95%) = 99.14 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.48%) = 79.90 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 1 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1926.20 (-0.63%) = 89.51 USD
+🔴 SOL 1.271390 @ 78.73 → 77.84 (-1.13%) = 98.96 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.62%) = 79.78 USD
+🚀 Démarrage du bot Aegis...
+Exchange: Kraken (Canada compatible)
+🎯 Trailing stop activé pour ETH/USD: Stop initial à 1880.34
+🎯 Trailing stop activé pour SOL/USD: Stop initial à 76.37
+🎯 Trailing stop activé pour ADA/USD: Stop initial à 0.16
+WS preload: BTCUSD 100 bougies @ 65369.8
+WS preload: ETHUSD 100 bougies @ 1926.72
+WS preload: SOLUSD 100 bougies @ 77.89
+WS preload: ADAUSD 100 bougies @ 0.166041
+WS Kraken: connexion wss://ws.kraken.com avec ['BTCUSD', 'ETHUSD', 'SOLUSD', 'ADAUSD']
+💰 Capital: 731 USD (LARGE) [PAPER] | Trade: 37 | Spot: 85% | Stop: 5.0% | Mode: CON
+
+
+🔍 Vérification positions existantes...
+   📊 ETH: 0.046470 détecté (paper)
+   📊 SOL: 1.271390 détecté (paper)
+   📊 ADA: 480.318870 détecté (paper)
+✅ 3 position(s) optimisée(s) au démarrage
+
+WS Kraken: connexion ouverte, souscription...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+🚨 MACRO EVENT DÉTECTÉ: MARKET_UNCERTAINTY
+   📋 Incertitude marché généralisée
+   🎁 Bonus score: +8
+   🎯 Réduction seuil: -6
+   ⏰ Durée estimée: 12h
+   📨 Notification Telegram envoyée
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+🤖 Aegis | PAPER ⚡ TEMPS RÉEL | 0 positions
+📊  | Min dynamique | Seuil adaptatif | Spot multi-exchange
+🛑 Ctrl+C pour arrêter
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1925.99 (-0.64%) = 89.50 USD
+🔴 SOL 1.271390 @ 78.73 → 77.89 (-1.07%) = 99.03 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.69%) = 79.73 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1925.88 (-0.65%) = 89.50 USD
+🔴 SOL 1.271390 @ 78.73 → 77.89 (-1.07%) = 99.03 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.82%) = 79.62 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1925.66 (-0.66%) = 89.49 USD
+🔴 SOL 1.271390 @ 78.73 → 77.90 (-1.05%) = 99.04 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.76%) = 79.67 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1924.06 (-0.74%) = 89.41 USD
+🔴 SOL 1.271390 @ 78.73 → 77.80 (-1.18%) = 98.91 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.91%) = 79.55 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1923.41 (-0.78%) = 89.38 USD
+🔴 SOL 1.271390 @ 78.73 → 77.86 (-1.11%) = 98.99 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.88%) = 79.57 USD
+📊 SOL/USD: Tendance cumulative détectée! 4x hausse = 0.33%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1926.82 (-0.60%) = 89.54 USD
+🔴 SOL 1.271390 @ 78.73 → 78.05 (-0.86%) = 99.23 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.64%) = 79.77 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.23 (-0.53%) = 89.60 USD
+🔴 SOL 1.271390 @ 78.73 → 78.07 (-0.84%) = 99.26 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.48%) = 79.90 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.52 (-0.57%) = 89.57 USD
+🔴 SOL 1.271390 @ 78.73 → 78.01 (-0.91%) = 99.18 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.64%) = 79.77 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.49 (-0.46%) = 89.66 USD
+🔴 SOL 1.271390 @ 78.73 → 78.10 (-0.80%) = 99.30 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.62%) = 79.78 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.16 (-0.48%) = 89.65 USD
+🔴 SOL 1.271390 @ 78.73 → 78.09 (-0.81%) = 99.28 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.55%) = 79.84 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.20 (-0.43%) = 89.70 USD
+🔴 SOL 1.271390 @ 78.73 → 78.09 (-0.81%) = 99.28 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.55%) = 79.84 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.90 (-0.55%) = 89.59 USD
+🔴 SOL 1.271390 @ 78.73 → 78.05 (-0.86%) = 99.23 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.53%) = 79.86 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.54 (-0.46%) = 89.67 USD
+🔴 SOL 1.271390 @ 78.73 → 78.10 (-0.80%) = 99.30 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.50%) = 79.88 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1931.25 (-0.37%) = 89.75 USD
+🔴 SOL 1.271390 @ 78.73 → 78.10 (-0.80%) = 99.30 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.51%) = 79.87 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.44 (-0.42%) = 89.71 USD
+🔴 SOL 1.271390 @ 78.73 → 78.08 (-0.83%) = 99.27 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.49%) = 79.89 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1928.68 (-0.51%) = 89.63 USD
+🔴 SOL 1.271390 @ 78.73 → 78.05 (-0.86%) = 99.23 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.64%) = 79.77 USD
+📊 BTC/USD: Tendance cumulative détectée! 5x baisse = 0.31%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.10 (-0.48%) = 89.65 USD
+🔴 SOL 1.271390 @ 78.73 → 77.96 (-0.98%) = 99.12 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.66%) = 79.75 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1927.88 (-0.55%) = 89.59 USD
+🔴 SOL 1.271390 @ 78.73 → 77.94 (-1.00%) = 99.09 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.72%) = 79.71 USD
+📊 ADA/USD: Tendance cumulative détectée! 4x baisse = 0.36%
+⚡ Analyse forcée suite à tendance cumulative ADA/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.29 (-0.47%) = 89.65 USD
+🔴 SOL 1.271390 @ 78.73 → 77.94 (-1.00%) = 99.09 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.81%) = 79.63 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.37 (-0.42%) = 89.70 USD
+🔴 SOL 1.271390 @ 78.73 → 78.00 (-0.93%) = 99.17 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.66%) = 79.75 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1932.60 (-0.30%) = 89.81 USD
+🔴 SOL 1.271390 @ 78.73 → 78.12 (-0.77%) = 99.32 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.67%) = 79.74 USD
+📊 SOL/USD: Tendance cumulative détectée! 6x hausse = 0.35%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+📊 BTC/USD: Tendance cumulative détectée! 4x hausse = 0.32%
+⚡ Analyse forcée suite à tendance cumulative BTC/USD
+📊 ADA/USD: Tendance cumulative détectée! 4x hausse = 0.33%
+⚡ Analyse forcée suite à tendance cumulative ADA/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1933.66 (-0.25%) = 89.86 USD
+🔴 SOL 1.271390 @ 78.73 → 78.14 (-0.75%) = 99.35 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.46%) = 79.92 USD
+🧪 Support Touch filter: OK ['ETH', 'SOL', 'ADA'] | Bloqué ['BTC']
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1932.34 (-0.32%) = 89.80 USD
+🔴 SOL 1.271390 @ 78.73 → 78.14 (-0.75%) = 99.35 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.46%) = 79.92 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.93 (-0.39%) = 89.73 USD
+🔴 SOL 1.271390 @ 78.73 → 78.04 (-0.88%) = 99.22 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.56%) = 79.83 USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1930.02 (-0.44%) = 89.69 USD
+🔴 SOL 1.271390 @ 78.73 → 77.95 (-0.99%) = 99.10 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.52%) = 79.87 USD
+📊 SOL/USD: Tendance cumulative détectée! 4x baisse = 0.33%
+⚡ Analyse forcée suite à tendance cumulative SOL/USD
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥23 - Balance 730.69 USD
+⚠️ Aucune crypto tradable - Attente...
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.01 (-0.49%) = 89.64 USD
+🔴 SOL 1.271390 @ 78.73 → 77.94 (-1.00%) = 99.09 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.55%) = 79.84 USD
+scription...
+🚨 MACRO EVENT DÉTECTÉ: MARKET_UNCERTAINTY
+   📋 Incertitude marché généralisée
+   🎁 Bonus score: +8
+   🎯 Réduction seuil: -6
+   ⏰ Durée estimée: 12h
+   📨 Notification Telegram envoyée
+   🎯 Ajustement macro: -6 (Événement: MARKET_UNCERTAINTY)
+⚠️ Aucune crypto ≥18 - Balance 730.69 USD
+🤖 Aegis | PAPER ⚡ TEMPS RÉEL | 0 positions
+📊  | Min dynamique | Seuil adaptatif | Spot multi-exchange
+🛑 Ctrl+C pour arrêter
+
+📊 +0.00 | 0 trades (0% win)
+🔴 ETH 0.046470 @ 1938.49 → 1929.01 (-0.49%) = 89.64 USD
+🔴 SOL 1.271390 @ 78.73 → 77.94 (-1.00%) = 99.09 USD
+🔴 ADA 480.318870 @ 0.17 → 0.17 (-1.55%) = 79.84 USD

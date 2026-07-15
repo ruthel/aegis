@@ -60,7 +60,7 @@ class RiskManager:
                 'BTC/USD': 5,
                 'ETH/USD': 10,
                 'SOL/USD': 8,
-                'BNB/USD': 12
+                'ADA/USD': 12
             }
             min_required = min_notionals.get(symbol, 10)
             
@@ -650,7 +650,7 @@ class CorrelationManager:
         self.max_correlated_positions = max_correlated_positions
         self.crypto_groups = {
             'major': ['BTC/USD', 'ETH/USD'],
-            'altcoins': ['SOL/USD', 'BNB/USD']
+            'altcoins': ['SOL/USD', 'ADA/USD']
         }
         self.active_positions = set()
         self.market_sentiment = 'neutral'  # 'bullish', 'bearish', 'neutral'

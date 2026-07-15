@@ -8,7 +8,7 @@ KRAKEN_SYMBOL_MAP = {
     'BTC/USD': 'BTC/USD',
     'ETH/USD': 'ETH/USD',
     'SOL/USD': 'SOL/USD',
-    'BNB/USD': 'BNB/USD',
+    'ADA/USD': 'ADA/USD',
     'ADA/USD': 'ADA/USD',
     'DOT/USD': 'DOT/USD',
     'AVAX/USD': 'AVAX/USD',
@@ -163,6 +163,6 @@ class KrakenClient(ExchangeBase):
             'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
             'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
             'SOL/USD': {'min_amount': 0.01, 'min_cost': 0.5},
-            'BNB/USD': {'min_amount': 0.01, 'min_cost': 0.5},
+            'ADA/USD': {'min_amount': 0.01, 'min_cost': 0.5},
         }
         return fallback.get(symbol, {'min_amount': 0.001, 'min_cost': 0.5})

@@ -6,7 +6,7 @@
   <title>Aegis Dashboard</title>
   <link rel="icon" href="{{ url_for('static', filename='brand/favicon.ico') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/aegis-mark-192.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=1.0.2">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=1.1.1">
   <!-- Chart.js Integration -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -62,7 +62,13 @@
       <!-- TOPBAR -->
       <header class="topbar">
         <div class="topbar-left">
-          <div class="topbar-title" id="botName">Aegis</div>
+          <div class="topbar-title-wrap" style="display: flex; align-items: center; gap: 8px;">
+            <div class="topbar-title" id="botName">Aegis</div>
+            <span id="wsBadge" class="badge neutral" style="font-size: 10px; font-weight: 700; height: 18px; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px; line-height: 1; border-radius: 99px;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="12" r="2"/><path d="M8.5 16.5a6 6 0 0 1 7 0"/></svg>
+              <span id="wsSummaryText">WS --</span>
+            </span>
+          </div>
           <div class="topbar-subtitle" id="lastUpdate">Chargement...</div>
         </div>
         <div class="topbar-right">
@@ -103,12 +109,13 @@
 
       <!-- VIEW: LIVE -->
       <section id="viewLive" class="view active">
-        <div class="metrics" id="liveMetrics">
+        <div class="metrics" id="liveMetrics" style="grid-template-columns: repeat(5, 1fr);">
+          <!-- Solde Paper -->
           <div class="metric-card color-info">
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" ry="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" ry="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
                 </span>
                 <span class="metric-label">Solde Paper</span>
               </div>
@@ -116,11 +123,12 @@
             <div class="metric-value" id="paperBalance">--</div>
           </div>
 
+          <!-- PnL Total -->
           <div class="metric-card color-good">
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 </span>
                 <span class="metric-label">PnL Total</span>
               </div>
@@ -128,102 +136,67 @@
             <div class="metric-value" id="totalPnl">--</div>
           </div>
 
+          <!-- Trades & Win Rate -->
+          <div class="metric-card color-accent" id="tradesWinRateCard">
+            <div class="metric-card-top" style="margin-bottom: 8px;">
+              <div class="metric-label-container">
+                <span class="metric-icon-badge">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+                </span>
+                <span class="metric-label">Trades & Win Rate</span>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
+              <div>
+                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: left;">Total (W / L)</span>
+                <div id="totalTrades" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+              </div>
+              <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
+              <div style="text-align: right;">
+                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Taux de Win</span>
+                <div id="winRate" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Croissance / Balance -->
           <div class="metric-card color-accent">
-            <div class="metric-card-top">
+            <div class="metric-card-top" style="margin-bottom: 8px;">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
                 </span>
-                <span class="metric-label">Trades</span>
+                <span class="metric-label">Croissance / Balance</span>
               </div>
             </div>
-            <div class="metric-value" id="totalTrades">--</div>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
+              <div>
+                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: left;">Par Trade</span>
+                <div id="growthPerTrade" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+              </div>
+              <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
+              <div style="text-align: right;">
+                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Par Jour</span>
+                <div id="growthPerDay" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+              </div>
+            </div>
           </div>
 
-          <div class="metric-card color-good">
+          <!-- Rendement / Mise -->
+          <div class="metric-card color-accent" id="growthPerStakeCard">
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:#f59e0b;"><circle cx="12" cy="12" r="8"/><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 </span>
-                <span class="metric-label">Win Rate</span>
+                <span class="metric-label">Rendement / Mise</span>
               </div>
             </div>
-            <div class="metric-value" id="winRate">--</div>
-          </div>
-
-          <div class="metric-card color-accent">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-                </span>
-                <span class="metric-label">Croissance / Trade</span>
-              </div>
-            </div>
-            <div class="metric-value" id="growthPerTrade">--</div>
-          </div>
-
-          <div class="metric-card color-accent">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                </span>
-                <span class="metric-label">Croissance / Jour</span>
-              </div>
-            </div>
-            <div class="metric-value" id="growthPerDay">--</div>
-          </div>
-
-          <div class="metric-card color-info">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-                </span>
-                <span class="metric-label">Positions</span>
-              </div>
-            </div>
-            <div class="metric-value" id="positionCount">--</div>
-          </div>
-
-          <div class="metric-card color-warn">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                </span>
-                <span class="metric-label">Cooldowns</span>
-              </div>
-            </div>
-            <div class="metric-value" id="cooldownCount">--</div>
-          </div>
-
-          <div class="metric-card color-accent">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
-                </span>
-                <span class="metric-label">Support Touch</span>
-              </div>
-            </div>
-            <div class="metric-value" id="supportSummary">--</div>
-          </div>
-
-          <div class="metric-card color-good">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="12" r="2"/><path d="M8.5 16.5a6 6 0 0 1 7 0"/></svg>
-                </span>
-                <span class="metric-label">WebSocket</span>
-              </div>
-            </div>
-            <div class="metric-value" id="wsSummary">--</div>
+            <div class="metric-value" id="growthPerStake">--</div>
           </div>
         </div>
+
+
 
         <div class="grid">
           <div class="span-12 panel">
@@ -358,28 +331,26 @@
             <div class="metric-value" id="expectancy">--</div>
           </div>
 
-          <div class="metric-card color-good">
-            <div class="metric-card-top">
+          <div class="metric-card color-neutral metric-card-split">
+            <div class="metric-card-top" style="margin-bottom: 8px;">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 </span>
-                <span class="metric-label">Avg Win</span>
+                <span class="metric-label">Avg Win / Avg Loss</span>
               </div>
             </div>
-            <div class="metric-value" id="avgWin">--</div>
-          </div>
-
-          <div class="metric-card color-bad">
-            <div class="metric-card-top">
-              <div class="metric-label-container">
-                <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                </span>
-                <span class="metric-label">Avg Loss</span>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
+              <div>
+                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px;">Avg Win</span>
+                <div id="avgWin" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--good); line-height: 1.1; white-space: nowrap;">--</div>
+              </div>
+              <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
+              <div style="text-align: right;">
+                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Avg Loss</span>
+                <div id="avgLoss" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--bad); line-height: 1.1; white-space: nowrap;">--</div>
               </div>
             </div>
-            <div class="metric-value" id="avgLoss">--</div>
           </div>
         </div>
 
@@ -498,6 +469,6 @@
     </main>
   </div>
 
-  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}?v=1.1.1"></script>
 </body>
 </html>

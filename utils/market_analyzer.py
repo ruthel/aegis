@@ -189,7 +189,7 @@ class MarketAnalyzer:
             'BTC/USD': {'very_low': 0.12, 'low': 0.25, 'medium': 0.50, 'high': 1.0},
             'ETH/USD': {'very_low': 0.15, 'low': 0.30, 'medium': 0.60, 'high': 1.2},
             'SOL/USD': {'very_low': 0.25, 'low': 0.50, 'medium': 1.0, 'high': 2.0},
-            'BNB/USD': {'very_low': 0.18, 'low': 0.35, 'medium': 0.70, 'high': 1.4},
+            'ADA/USD': {'very_low': 0.18, 'low': 0.35, 'medium': 0.70, 'high': 1.4},
             'ADA/USD': {'very_low': 0.20, 'low': 0.40, 'medium': 0.80, 'high': 1.6},
             'DOT/USD': {'very_low': 0.22, 'low': 0.45, 'medium': 0.90, 'high': 1.8},
             'MATIC/USD': {'very_low': 0.30, 'low': 0.60, 'medium': 1.2, 'high': 2.4},
@@ -931,7 +931,7 @@ class MarketAnalyzer:
             # Estimation spread selon crypto (données de marché)
             if symbol in ['BTC/USD', 'ETH/USD']:
                 estimated_spread = 0.01  # 0.01%
-            elif symbol in ['BNB/USD', 'SOL/USD']:
+            elif symbol in ['ADA/USD', 'SOL/USD']:
                 estimated_spread = 0.02  # 0.02%
             else:
                 estimated_spread = 0.05  # 0.05%
@@ -1118,7 +1118,7 @@ class MarketAnalyzer:
         market_cap_ranking = {
             'BTC/USD': 1,   # #1
             'ETH/USD': 2,   # #2
-            'BNB/USD': 4,   # #4
+            'ADA/USD': 4,   # #4
             'SOL/USD': 5,   # #5
             'ADA/USD': 10,  # #10
             'DOT/USD': 15,  # #15

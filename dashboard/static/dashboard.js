@@ -19,6 +19,7 @@ function esc(value) {
 }
 
 function number(value, digits = 2) {
+  if (value === null || value === undefined || value === '') return '--';
   const num = Number(value);
   if (!Number.isFinite(num)) return '--';
   return num.toLocaleString('fr-CA', {
@@ -28,11 +29,20 @@ function number(value, digits = 2) {
 }
 
 function price(value) {
+  if (value === null || value === undefined || value === '') return '--';
   const num = Number(value);
   if (!Number.isFinite(num)) return '--';
+  
+  let decimals = 2;
+  if (num < 1) {
+    decimals = 6;
+  } else if (num < 10) {
+    decimals = 4;
+  }
+  
   return num.toLocaleString('fr-CA', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: num < 1 ? 4 : 2,
+    maximumFractionDigits: decimals,
   });
 }
 
@@ -538,8 +548,9 @@ function renderPositions(positions, liveSymbols) {
 
   body.innerHTML = positions.map((position) => {
     const symbol = position.symbol;
-    const liveInfo = liveSymbols ? liveSymbols[symbol] : null;
-    const currentPx = liveInfo ? Number(liveInfo.price) : null;
+    const normKey = symbol.replace('/', '');
+    const liveInfo = liveSymbols ? (liveSymbols[symbol] || liveSymbols[normKey]) : null;
+    const currentPx = (liveInfo && liveInfo.price !== undefined && liveInfo.price !== null) ? Number(liveInfo.price) : null;
     
     let currentValText = '--';
     let pnlText = '--';
@@ -592,7 +603,10 @@ function renderSupportTouch(data) {
   const pairs = data.pairs || [];
   const thresholds = data.thresholds || {};
   const allowed = pairs.filter((item) => item.allowed).length;
-  $('supportSummary').textContent = `${allowed}/${pairs.length || 0}`;
+  const supportSummaryEl = $('supportSummary');
+  if (supportSummaryEl) {
+    supportSummaryEl.textContent = `${allowed}/${pairs.length || 0}`;
+  }
   $('supportLastRun').textContent = data.last_run ? `Dernier run ${dateWithRelative(data.last_run, false)}` : '';
 
   const grid = $('supportGrid');
@@ -708,8 +722,11 @@ function renderLive(data) {
   const connected = Boolean(data?.connected);
   const totalTicks = entries.reduce((sum, [, item]) => sum + Number(item.tick_count || 0), 0);
   const queueSize = Number(data?.queue_size || 0);
-  $('wsSummary').textContent = connected ? 'OK' : 'REST';
-  $('wsSummary').style.color = connected ? 'var(--good)' : 'var(--warn)';
+  const wsBadge = $('wsBadge');
+  if (wsBadge) {
+    wsBadge.className = connected ? 'badge good' : 'badge warn';
+    $('wsSummaryText').textContent = connected ? 'WS OK' : 'WS REST';
+  }
   if (data?.timestamp) {
     if (connected) {
       $('wsLastUpdate').innerHTML = `<span class="live-indicator-pulse"></span> Temps réel`;
@@ -873,8 +890,21 @@ async function refresh() {
   $('growthPerDay').textContent = dailyGrowth !== null ? `${dailyGrowth >= 0 ? '+' : ''}${number(dailyGrowth, 3)}%` : '--';
   $('growthPerDay').style.color = dailyGrowth > 0 ? 'var(--good)' : dailyGrowth < 0 ? 'var(--bad)' : '';
 
-  $('positionCount').textContent = data.positions.length;
-  $('cooldownCount').textContent = data.cooldowns.length;
+  // Yield relative to average stake size
+  const avgStake = Number(stats.avg_stake) || 5;
+  const growthMisePct = avgStake > 0 ? (pnl / avgStake) * 100 : 0;
+  $('growthPerStake').textContent = stats.total_trades ? `${growthMisePct >= 0 ? '+' : ''}${number(growthMisePct, 2)}%` : '--';
+  $('growthPerStake').style.color = growthMisePct > 0 ? 'var(--good)' : growthMisePct < 0 ? 'var(--bad)' : '';
+  const growthStakeCard = $('growthPerStake').closest('.metric-card');
+  if (growthStakeCard) {
+    growthStakeCard.className = `metric-card ${growthMisePct > 0 ? 'color-good' : growthMisePct < 0 ? 'color-bad' : 'color-accent'}`;
+  }
+
+  const posCountEl = $('positionCount');
+  if (posCountEl) posCountEl.textContent = data.positions.length;
+
+  const coolCountEl = $('cooldownCount');
+  if (coolCountEl) coolCountEl.textContent = data.cooldowns.length;
 
   renderLive(data.live);
   renderPositions(data.positions, data.live?.symbols);

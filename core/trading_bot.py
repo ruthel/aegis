@@ -401,6 +401,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     if self.paper_trading:
                         self._restore_paper_balance()
                     self._restore_trailing_stops_from_state()
+                    self.pending_orders = self.state.get('pending_orders', {})
                     loaded = True
                     break
                 except Exception as e:
@@ -512,6 +513,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 self.state['positions'] = unique_positions
             if self.paper_trading:
                 self.state['paper_balance'] = self.paper_balance
+            self.state['pending_orders'] = self.pending_orders
             if 'decision_journal' in self.state and len(self.state['decision_journal']) > self.decision_journal_max:
                 self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
             self.state['last_update'] = datetime.now().isoformat()
@@ -941,8 +943,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         min_costs = {'BTC/USD': 0.5, 'ETH/USD': 0.5, 'SOL/USD': 0.5, 'BTC/USD': 0.5, 'ETH/USD': 0.5}
                         min_amounts = {'BTC/USD': 0.0001, 'ETH/USD': 0.001, 'SOL/USD': 0.01, 'BTC/USD': 0.0001, 'ETH/USD': 0.001}
                     else:
-                        min_costs = {'BTC/USD': 15, 'ETH/USD': 10, 'SOL/USD': 8, 'BNB/USD': 12}
-                        min_amounts = {'BTC/USD': 0.00015, 'ETH/USD': 0.003, 'SOL/USD': 0.04, 'BNB/USD': 0.01}
+                        min_costs = {'BTC/USD': 15, 'ETH/USD': 10, 'SOL/USD': 8, 'ADA/USD': 12}
+                        min_amounts = {'BTC/USD': 0.00015, 'ETH/USD': 0.003, 'SOL/USD': 0.04, 'ADA/USD': 0.01}
                     self.min_amounts[symbol] = {
                         'min_amount': min_amounts.get(symbol, 0.001), 
                         'min_cost': min_costs.get(symbol, 0.5 if exchange_name == 'kraken' else 10)
@@ -963,7 +965,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         'BTC/USD': {'min_amount': 0.00001, 'min_cost': 15.0},
                         'ETH/USD': {'min_amount': 0.0001, 'min_cost': 10.0},
                         'SOL/USD': {'min_amount': 0.01, 'min_cost': 8.0},
-                        'BNB/USD': {'min_amount': 0.001, 'min_cost': 12.0},
+                        'ADA/USD': {'min_amount': 0.001, 'min_cost': 12.0},
                         'ADA/USD': {'min_amount': 1.0, 'min_cost': 5.0},
                         'DOT/USD': {'min_amount': 0.1, 'min_cost': 6.0},
                         'MATIC/USD': {'min_amount': 1.0, 'min_cost': 3.0},
@@ -1012,7 +1014,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except Exception as e:
             print(f"❌ Erreur prix {symbol}: {e}")
             if self.paper_trading:
-                fallback_prices = {'BTC': 50000, 'ETH': 3000, 'SOL': 100, 'BNB': 300}
+                fallback_prices = {'BTC': 50000, 'ETH': 3000, 'SOL': 100, 'ADA': 300}
                 crypto = symbol.split('/')[0]
                 return fallback_prices.get(crypto, 100)
             raise e
