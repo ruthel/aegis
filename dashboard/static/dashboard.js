@@ -6,6 +6,8 @@ const state = {
 };
 
 let pnlChartInstance = null;
+let scoreChartInstance = null;
+let activeCardMenuSymbol = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,17 +34,27 @@ function price(value) {
   if (value === null || value === undefined || value === '') return '--';
   const num = Number(value);
   if (!Number.isFinite(num)) return '--';
-  
+
   let decimals = 2;
   if (num < 1) {
     decimals = 6;
   } else if (num < 10) {
     decimals = 4;
   }
-  
+
   return num.toLocaleString('fr-CA', {
     minimumFractionDigits: num < 1 ? 4 : 2,
     maximumFractionDigits: decimals,
+  });
+}
+
+function qty(value) {
+  if (value === null || value === undefined || value === '') return '--';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '--';
+  return num.toLocaleString('fr-CA', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 8,
   });
 }
 
@@ -139,7 +151,7 @@ function formatFriendlyDate(value, showSeconds = true) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const diffDays = Math.round((today - target) / 86400000);
-  
+
   const timeOptions = {
     hour: '2-digit',
     minute: '2-digit',
@@ -151,7 +163,7 @@ function formatFriendlyDate(value, showSeconds = true) {
 
   if (diffDays === 0) return `Aujourd'hui · ${time}`;
   if (diffDays === 1) return `Hier · ${time}`;
-  
+
   const day = date.getDate();
   const month = date.toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '');
   return `${day} ${month}. · ${time}`;
@@ -282,7 +294,7 @@ function renderConfigField(field) {
     data-type="${esc(field.type)}"
   `;
   const source = field.source === 'dashboard' ? '.env.dashboard' : 'env';
-  
+
   let restartBadge = '';
   if (field.restart === 'bot') {
     restartBadge = `<span class="cfg-badge reboot" title="Nécessite de redémarrer le bot"><svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 3px; display: inline-block;"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>bot</span>`;
@@ -296,7 +308,7 @@ function renderConfigField(field) {
   if (field.type === 'bool') {
     const checked = String(field.value).toLowerCase() === 'true' ? 'checked' : '';
     control = `<label class="switch"><input ${common} type="checkbox" ${checked}><span></span></label>`;
-    
+
     return `
       <div class="config-field bool-field">
         <div class="config-meta-container">
@@ -321,7 +333,7 @@ function renderConfigField(field) {
       field.max !== null && field.max !== undefined ? `max="${esc(field.max)}"` : '',
     ].filter(Boolean).join(' ');
     control = `<input ${attrs}>`;
-    
+
     return `
       <div class="config-field text-field">
         <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-bottom:2px;">
@@ -373,14 +385,14 @@ function renderBotProcess(control) {
     dot.className = `status-dot ${running ? 'live' : 'off'}`;
   }
   setBadge($('botProcessBadge'), running ? 'bot ON' : 'bot OFF', running ? 'badge good' : 'badge bad');
-  
+
   const toggleBtn = $('toggleBotButton');
   if (toggleBtn) {
     toggleBtn.className = `btn ${running ? 'btn-danger' : 'btn-success'}`;
     const btnText = toggleBtn.querySelector('.btn-text') || toggleBtn;
     btnText.textContent = running ? 'Arrêter' : 'Démarrer';
-    
-    const svgIcon = running 
+
+    const svgIcon = running
       ? `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/></svg>`
       : `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
     const iconContainer = toggleBtn.querySelector('.btn-icon-wrapper') || toggleBtn;
@@ -431,12 +443,17 @@ function supportReasonLabel(reason) {
   return labels[reason] || reason.replaceAll('_', ' ');
 }
 
-function supportReasonTooltip(reason, item, thresholds = {}) {
+function supportReasonTooltip(reason, item = {}, thresholds = {}) {
+  const minTrades = item.threshold_trades ?? thresholds.min_trades ?? 10;
+  const minWinrate = item.threshold_win_rate ?? thresholds.min_winrate ?? 50;
+  const minTotalPnl = item.threshold_total_pnl ?? thresholds.min_total_pnl ?? 0;
+  const minAvgPnl = item.threshold_avg_pnl ?? thresholds.min_avg_pnl ?? 0;
+
   const tips = {
-    insufficient_trades: `Attendre plus de signaux backtest. Actuel: ${item.trades ?? 0}. Requis: ${thresholds.min_trades ?? 10}.`,
-    winrate_below_threshold: `Le taux de réussite est trop faible. Actuel: ${percent(item.win_rate)}. Requis: ${percent(thresholds.min_winrate ?? 50)} ou plus.`,
-    total_pnl_below_threshold: `Le profit total simulé est insuffisant. Actuel: ${percent(item.total_pnl_percent)}. Requis: ${percent(thresholds.min_total_pnl ?? 0)} ou plus.`,
-    avg_pnl_below_threshold: `Le gain moyen par trade est insuffisant. Actuel: ${percent(item.avg_pnl_percent)}. Requis: ${percent(thresholds.min_avg_pnl ?? 0)} ou plus.`,
+    insufficient_trades: `Attendre plus de signaux backtest. Actuel: ${item.trades ?? 0}. Requis: ${minTrades}.`,
+    winrate_below_threshold: `Le taux de réussite est trop faible. Actuel: ${percent(item.win_rate)}. Requis: ${percent(minWinrate)} ou plus.`,
+    total_pnl_below_threshold: `Le profit total simulé est insuffisant. Actuel: ${percent(item.total_pnl_percent)}. Requis: ${percent(minTotalPnl)} ou plus.`,
+    avg_pnl_below_threshold: `Le gain moyen par trade est insuffisant. Actuel: ${percent(item.avg_pnl_percent)}. Requis: ${percent(minAvgPnl)} ou plus.`,
     no_backtest_result: 'Aucun résultat backtest utilisable. Attendre le prochain backtest automatique ou relancer le bot.',
     not_evaluated: 'La paire n’a pas encore été évaluée par le filtre Support Touch.',
     backtest_error: 'Le backtest a échoué. Vérifier la connexion exchange et les logs.',
@@ -542,7 +559,7 @@ function decisionMetricChips(item) {
 function renderPositions(positions, liveSymbols) {
   const body = $('positionsBody');
   if (!positions.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">Aucune position ouverte</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="empty">Aucune position ouverte</td></tr>';
     return;
   }
 
@@ -551,27 +568,33 @@ function renderPositions(positions, liveSymbols) {
     const normKey = symbol.replace('/', '');
     const liveInfo = liveSymbols ? (liveSymbols[symbol] || liveSymbols[normKey]) : null;
     const currentPx = (liveInfo && liveInfo.price !== undefined && liveInfo.price !== null) ? Number(liveInfo.price) : null;
-    
+
     let currentValText = '--';
     let pnlText = '--';
     let pnlClass = 'badge neutral';
-    
+
     if (currentPx) {
       const currentValue = position.amount * currentPx;
       const pnlVal = currentValue - position.entry_value;
       const pnlPct = (pnlVal / position.entry_value) * 100;
-      
+
       currentValText = `${number(currentValue, 2)} USD`;
-      pnlText = `${pnlVal >= 0 ? '+' : ''}${number(pnlVal, 2)} USD (${pnlPct >= 0 ? '+' : ''}${number(pnlPct, 2)}%)`;
+      pnlText = `${pnlVal >= 0 ? '+' : ''}${number(pnlVal, 2)} (${pnlPct >= 0 ? '+' : ''}${number(pnlPct, 2)}%)`;
       pnlClass = badgeClass(pnlVal >= 0);
+    }
+
+    let slText = price(position.stop_loss_price);
+    if (position.is_trailing) {
+      slText += ` (${number(position.trailing_percent, 1)}%)`;
     }
 
     return `
       <tr>
         <td><strong>${esc(symbol)}</strong></td>
-        <td>${number(position.amount, 8)}</td>
+        <td>${qty(position.amount)}</td>
         <td>${price(position.avg_entry_price)}</td>
-        <td>${price(currentPx)}</td>
+        <td>${price(position.avg_entry_price)} <span style="color: #94a3b8; margin: 0 4px;">➔</span> <strong style="color: #10b981;">${price(position.target_price)}</strong></td>
+        <td><span style="font-weight: 600; color: #ef4444;">${esc(slText)}</span></td>
         <td>${number(position.entry_value, 2)} USD</td>
         <td>${currentValText}</td>
         <td>
@@ -615,21 +638,24 @@ function renderSupportTouch(data) {
     return;
   }
 
-  grid.innerHTML = pairs.map((item) => `
-    <section class="support-card">
-      <header>
-        <h3>${esc(item.symbol)}</h3>
-        <span class="${badgeClass(item.allowed)}">${item.allowed ? 'OK' : 'Bloqué'}</span>
-      </header>
-      <div class="support-stats">
-        <div><span>Trades</span><strong>${item.trades ?? 0}</strong></div>
-        <div><span>Win rate</span><strong>${percent(item.win_rate)}</strong></div>
-        <div><span>Total</span><strong>${signedPercent(item.total_pnl_percent, 2)}</strong></div>
-        <div><span>Moyenne</span><strong>${signedPercent(item.avg_pnl_percent, 3)}</strong></div>
-      </div>
-      <div class="reason-list" aria-label="Raisons">${renderReasonChips(item.reason, item, thresholds)}</div>
-    </section>
-  `).join('');
+  grid.innerHTML = pairs.map((item) => {
+    const regimeText = item.regime && item.regime !== 'UNKNOWN' ? ` <span class="badge info" style="font-size: 9px; padding: 2px 6px; font-weight: 700; background: var(--info-bg); border: 1px solid var(--info-border); color: #bfdbfe; border-radius: 99px; margin-left: 6px;">${item.regime.replaceAll('_', ' ')}</span>` : '';
+    return `
+      <section class="support-card">
+        <header style="align-items: center;">
+          <h3 style="display: flex; align-items: center; flex-wrap: wrap;">${esc(item.symbol)}${regimeText}</h3>
+          <span class="${badgeClass(item.allowed)}">${item.allowed ? 'OK' : 'Bloqué'}</span>
+        </header>
+        <div class="support-stats">
+          <div><span>Trades</span><strong>${item.trades ?? 0}</strong></div>
+          <div><span>Win rate</span><strong>${percent(item.win_rate)}</strong></div>
+          <div><span>Total</span><strong>${signedPercent(item.total_pnl_percent, 2)}</strong></div>
+          <div><span>Moyenne</span><strong>${signedPercent(item.avg_pnl_percent, 3)}</strong></div>
+        </div>
+        <div class="reason-list" aria-label="Raisons">${renderReasonChips(item.reason, item, thresholds)}</div>
+      </section>
+    `;
+  }).join('');
 }
 
 function renderMarketContext(context) {
@@ -647,11 +673,11 @@ function renderMarketContext(context) {
     const mode = item.mode || '--';
     const modeClass = regimeClass(mode);
     const multiplier = Number(item.trade_multiplier || 1);
-    
+
     // Formater le texte du régime (remplacer underscores par des espaces)
     const rawRegime = item.symbol_regime || '--';
     const cleanRegime = rawRegime.replace(/_/g, ' ');
-    
+
     // Classe de couleur pour le texte du régime
     let regimeColorClass = '';
     if (rawRegime.includes('BULL')) {
@@ -661,12 +687,12 @@ function renderMarketContext(context) {
     } else if (rawRegime.includes('SIDE') || rawRegime.includes('RANGE')) {
       regimeColorClass = 'regime-val-side';
     }
-    
+
     // Classes pour les badges de statut du bas
     const knifeClass = falling ? 'regime-flag-pill danger' : 'regime-flag-pill';
     const supportClass = item.support_touch_override_allowed ? 'regime-flag-pill success' : 'regime-flag-pill danger';
     const modePillClass = bear ? 'regime-flag-pill danger' : 'regime-flag-pill';
-    
+
     return `
       <section class="support-card regime-card ${modeClass}">
         <header style="margin-bottom: 8px;">
@@ -750,46 +776,148 @@ function renderLive(data) {
     grid.innerHTML = '<p class="empty">Aucun tick WebSocket enregistré. Redémarre le bot pour activer live_status.json.</p>';
     return;
   }
+  // Vérifier si toutes les cartes existent déjà pour faire une mise à jour en place
+  const allCardsExist = entries.every(([symbol]) => document.getElementById(`liveCard-${symbol}`));
 
-  grid.innerHTML = entries.map(([symbol, item]) => {
-    const tickAge = item.last_tick_age_seconds;
-    const stale = tickAge === null || tickAge === undefined || tickAge > 30;
-    const spreadText = item.spread_percent === null || item.spread_percent === undefined
-      ? '--'
-      : signedPercent(item.spread_percent, 2);
-    const deltaText = signedPercent(item.price_change_since_analysis_percent, 2);
-    const deltaValue = Number(item.price_change_since_analysis_percent);
-    const deltaClass = Number.isFinite(deltaValue) && deltaValue >= 0 ? 'up' : 'down';
-    return `
-      <section class="support-card live-card">
-        <header>
-          <div>
-            <h3>${esc(symbol.endsWith('USD') ? symbol.slice(0,-3)+'/USD' : symbol)}</h3>
+  if (!allCardsExist) {
+    grid.innerHTML = entries.map(([symbol, item]) => {
+      const tickAge = item.last_tick_age_seconds;
+      const stale = tickAge === null || tickAge === undefined || tickAge > 30;
+      const spreadText = item.spread_percent === null || item.spread_percent === undefined
+        ? '--'
+        : signedPercent(item.spread_percent, 2);
+      const deltaText = signedPercent(item.price_change_since_analysis_percent, 2);
+      const deltaValue = Number(item.price_change_since_analysis_percent);
+      const deltaClass = Number.isFinite(deltaValue) && deltaValue >= 0 ? 'up' : 'down';
+      const formattedSymbol = symbol.endsWith('USD') ? symbol.slice(0, -3) + '/USD' : symbol;
+      return `
+        <section id="liveCard-${symbol}" class="support-card live-card" style="position: relative;">
+          <header style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <h3>${esc(formattedSymbol)}</h3>
+              <span class="badge-status ${badgeClass(!stale, !connected)}">${stale ? 'stale' : 'live'}</span>
+            </div>
+            
+            <div class="card-more-menu-container" style="position: relative;">
+              <button class="btn-card-more" onclick="toggleCardMenu(event, '${symbol}')" style="background: none; border: none; padding: 4px; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; border-radius: 4px; transition: background 0.2s;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #10b981; filter: drop-shadow(0 0 2px rgba(16,185,129,0.3));">
+                  <circle cx="12" cy="12" r="1.5"/>
+                  <circle cx="12" cy="5" r="1.5"/>
+                  <circle cx="12" cy="19" r="1.5"/>
+                </svg>
+              </button>
+            <div id="cardMenu-${symbol}" class="card-dropdown-menu">
+              <button class="action-buy" onclick="triggerCardAction(event, 'force_buy', '${formattedSymbol}')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>
+                Force BUY
+              </button>
+              <button class="action-sell" onclick="triggerCardAction(event, 'force_sell', '${formattedSymbol}')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="7" y1="7" x2="17" y2="17"/><polyline points="17 7 17 17 7 17"/></svg>
+                Force SELL
+              </button>
+              <div class="menu-divider"></div>
+              <div class="menu-section-header">Pause</div>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 900)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                15 min
+              </button>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 3600)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                1 heure
+              </button>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 14400)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                4 heures
+              </button>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 86400)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                24 heures
+              </button>
+            </div>
           </div>
-          <span class="${badgeClass(!stale, !connected)}">${stale ? 'stale' : 'live'}</span>
-        </header>
-
-        <div class="live-quote">
-          <div>
-            <span>Dernier prix</span>
-            <strong>${price(item.price)}</strong>
+          </header>
+          
+          <div class="live-quote">
+            <div>
+              <span>Dernier prix</span>
+              <strong class="val-price">${price(item.price)}</strong>
+            </div>
+            <span class="live-delta val-delta ${deltaClass}">${deltaText}</span>
           </div>
-          <span class="live-delta ${deltaClass}">${deltaText}</span>
-        </div>
 
-        <div class="quote-row">
-          <div><span>Bid</span><strong>${price(item.bid)}</strong></div>
-          <div><span>Ask</span><strong>${price(item.ask)}</strong></div>
-        </div>
+          <div class="quote-row">
+            <div><span>Bid</span><strong class="val-bid">${price(item.bid)}</strong></div>
+            <div><span>Ask</span><strong class="val-ask">${price(item.ask)}</strong></div>
+          </div>
 
-        <div class="live-statbar">
-          <span>Analyse ${item.last_analysis_age_seconds === null || item.last_analysis_age_seconds === undefined ? '--' : duration(Math.round(item.last_analysis_age_seconds))}</span>
-          <span>Spread ${spreadText}</span>
-          <span>${item.tick_count ?? 0} ticks</span>
-        </div>
-      </section>
-    `;
-  }).join('');
+          <div class="live-statbar">
+            <span class="val-analysis">Analyse ${item.last_analysis_age_seconds === null || item.last_analysis_age_seconds === undefined ? '--' : duration(Math.round(item.last_analysis_age_seconds))}</span>
+            <span class="val-spread">Spread ${spreadText}</span>
+            <span class="val-ticks">${item.tick_count ?? 0} ticks</span>
+          </div>
+        </section>
+      `;
+    }).join('');
+  } else {
+    // Mettre à jour les valeurs textuelles en place sans toucher au DOM structurel
+    entries.forEach(([symbol, item]) => {
+      const card = document.getElementById(`liveCard-${symbol}`);
+      if (!card) return;
+
+      const tickAge = item.last_tick_age_seconds;
+      const stale = tickAge === null || tickAge === undefined || tickAge > 30;
+      const spreadText = item.spread_percent === null || item.spread_percent === undefined
+        ? '--'
+        : signedPercent(item.spread_percent, 2);
+      const deltaText = signedPercent(item.price_change_since_analysis_percent, 2);
+      const deltaValue = Number(item.price_change_since_analysis_percent);
+      const deltaClass = Number.isFinite(deltaValue) && deltaValue >= 0 ? 'up' : 'down';
+
+      // Status badge
+      const badge = card.querySelector('.badge-status');
+      if (badge) {
+        badge.className = `badge-status ${badgeClass(!stale, !connected)}`;
+        badge.textContent = stale ? 'stale' : 'live';
+      }
+
+      // Price
+      const priceEl = card.querySelector('.val-price');
+      if (priceEl) priceEl.textContent = price(item.price);
+
+      // Delta
+      const deltaEl = card.querySelector('.val-delta');
+      if (deltaEl) {
+        deltaEl.className = `live-delta val-delta ${deltaClass}`;
+        deltaEl.textContent = deltaText;
+      }
+
+      // Bid
+      const bidEl = card.querySelector('.val-bid');
+      if (bidEl) bidEl.textContent = price(item.bid);
+
+      // Ask
+      const askEl = card.querySelector('.val-ask');
+      if (askEl) askEl.textContent = price(item.ask);
+
+      // Analysis age
+      const analysisEl = card.querySelector('.val-analysis');
+      if (analysisEl) {
+        analysisEl.textContent = `Analyse ${item.last_analysis_age_seconds === null || item.last_analysis_age_seconds === undefined ? '--' : duration(Math.round(item.last_analysis_age_seconds))}`;
+      }
+
+      // Spread
+      const spreadEl = card.querySelector('.val-spread');
+      if (spreadEl) {
+        spreadEl.textContent = `Spread ${spreadText}`;
+      }
+
+      // Ticks
+      const ticksEl = card.querySelector('.val-ticks');
+      if (ticksEl) {
+        ticksEl.textContent = `${item.tick_count ?? 0} ticks`;
+      }
+    });
+  }
 }
 
 function renderDecisions(decisions, totalCount) {
@@ -815,10 +943,10 @@ function renderDecisions(decisions, totalCount) {
       <p class="event-time">${esc(item.action || '--')} · ${esc(dateWithRelative(item.timestamp, false))}</p>
     </div>
   `).join('') + (
-    actualTotal > visible.length
-      ? `<p class="timeline-more">+${actualTotal - visible.length} décision(s) plus ancienne(s) masquée(s)</p>`
-      : ''
-  );
+      actualTotal > visible.length
+        ? `<p class="timeline-more">+${actualTotal - visible.length} décision(s) plus ancienne(s) masquée(s)</p>`
+        : ''
+    );
 }
 
 function renderLogs(logs) {
@@ -1015,16 +1143,16 @@ function renderCapitalBreakdown(capital) {
         <div style="display:flex;gap:16px;flex-wrap:wrap;">
           <span style="display:flex;align-items:center;gap:6px;">
             <span style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-            Disponible (${number(pctAvailable,1)}%)
+            Disponible (${number(pctAvailable, 1)}%)
           </span>
           <span style="display:flex;align-items:center;gap:6px;">
             <span style="width:8px;height:8px;border-radius:50%;background:#6366f1;display:inline-block;"></span>
-            En Positions (${number(pctPositions,1)}%)
+            En Positions (${number(pctPositions, 1)}%)
           </span>
           ${pctLimit > 0.1 ? `
             <span style="display:flex;align-items:center;gap:6px;">
               <span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>
-              Ordres Limites (${number(pctLimit,1)}%)
+              Ordres Limites (${number(pctLimit, 1)}%)
             </span>
           ` : ''}
         </div>
@@ -1038,19 +1166,19 @@ function renderCapitalBreakdown(capital) {
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
       <div class="cap-card" style="padding:14px 16px;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.04);transition:var(--transition);">
         <span style="display:block;color:var(--text-muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Capital Total</span>
-        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:var(--text);">${number(capital.total_capital,2)} <span style="font-size:12px;color:var(--text-muted);">USD</span></strong>
+        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:var(--text);">${number(capital.total_capital, 2)} <span style="font-size:12px;color:var(--text-muted);">USD</span></strong>
       </div>
       <div class="cap-card" style="padding:14px 16px;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.04);transition:var(--transition);">
         <span style="display:block;color:var(--text-muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Disponible</span>
-        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:#10b981;">${number(capital.available,2)} <span style="font-size:12px;color:rgba(16,185,129,0.7);">USD</span></strong>
+        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:#10b981;">${number(capital.available, 2)} <span style="font-size:12px;color:rgba(16,185,129,0.7);">USD</span></strong>
       </div>
       <div class="cap-card" style="padding:14px 16px;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.04);transition:var(--transition);">
         <span style="display:block;color:var(--text-muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">En Positions</span>
-        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:#6366f1;">${number(capital.in_positions,2)} <span style="font-size:12px;color:rgba(99,102,241,0.7);">USD</span></strong>
+        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:#6366f1;">${number(capital.in_positions, 2)} <span style="font-size:12px;color:rgba(99,102,241,0.7);">USD</span></strong>
       </div>
       <div class="cap-card" style="padding:14px 16px;background:rgba(0,0,0,0.15);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.04);transition:var(--transition);">
         <span style="display:block;color:var(--text-muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Ordres Limites</span>
-        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:#f59e0b;">${number(capital.in_limit_orders,2)} <span style="font-size:12px;color:rgba(245,158,11,0.7);">USD</span></strong>
+        <strong style="font-family:'Outfit',sans-serif;font-size:20px;font-weight:700;color:#f59e0b;">${number(capital.in_limit_orders, 2)} <span style="font-size:12px;color:rgba(245,158,11,0.7);">USD</span></strong>
       </div>
     </div>
   `;
@@ -1072,8 +1200,8 @@ function renderCapitalBreakdown(capital) {
             ${capital.positions_detail.map(p => `
               <tr>
                 <td style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:12px;"><strong style="color:var(--text);">${esc(p.symbol)}</strong></td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:12px;text-align:right;font-weight:600;color:var(--text-secondary);">${number(p.value,2)} USD</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:12px;text-align:right;font-weight:700;color:var(--info);">${number(p.percent,1)}%</td>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:12px;text-align:right;font-weight:600;color:var(--text-secondary);">${number(p.value, 2)} USD</td>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:12px;text-align:right;font-weight:700;color:var(--info);">${number(p.percent, 1)}%</td>
               </tr>
             `).join('')}
           </tbody>
@@ -1097,7 +1225,7 @@ function renderPnlHistory(pnlData) {
     $('pnlChart').innerHTML = '<canvas id="pnlCanvas"></canvas>';
   }
 
-  summary.textContent = `${number(pnlData.initial_balance,2)} USD → ${number(pnlData.current_balance,2)} USD (${pnlData.total_pnl >= 0 ? '+' : ''}${number(pnlData.total_pnl,2)} USD)`;
+  summary.textContent = `${number(pnlData.initial_balance, 2)} USD → ${number(pnlData.current_balance, 2)} USD (${pnlData.total_pnl >= 0 ? '+' : ''}${number(pnlData.total_pnl, 2)} USD)`;
 
   const history = pnlData.history;
   const labels = history.map((h, i) => {
@@ -1109,7 +1237,7 @@ function renderPnlHistory(pnlData) {
   const dataPoints = history.map(h => h.pnl);
 
   const ctx = $('pnlCanvas').getContext('2d');
-  
+
   if (pnlChartInstance && $('pnlCanvas')) {
     const isProfitable = pnlData.total_pnl >= 0;
     pnlChartInstance.data.labels = labels;
@@ -1118,14 +1246,14 @@ function renderPnlHistory(pnlData) {
     pnlChartInstance.data.datasets[0].backgroundColor = isProfitable ? 'rgba(52, 211, 153, 0.08)' : 'rgba(251, 113, 133, 0.08)';
     pnlChartInstance.data.datasets[0].pointBackgroundColor = isProfitable ? '#34d399' : '#fb7185';
     pnlChartInstance.data.datasets[0].pointRadius = history.length < 30 ? 4 : 1;
-    
-    pnlChartInstance.options.plugins.tooltip.callbacks.title = function(context) {
+
+    pnlChartInstance.options.plugins.tooltip.callbacks.title = function (context) {
       const idx = context[0].dataIndex;
       const h = history[idx];
       if (h.time === 'start') return 'Solde Initial';
       return h.event || 'Trade';
     };
-    pnlChartInstance.options.plugins.tooltip.callbacks.label = function(context) {
+    pnlChartInstance.options.plugins.tooltip.callbacks.label = function (context) {
       const idx = context.dataIndex;
       const h = history[idx];
       return [
@@ -1171,13 +1299,13 @@ function renderPnlHistory(pnlData) {
           borderColor: '#262c33',
           borderWidth: 1,
           callbacks: {
-            title: function(context) {
+            title: function (context) {
               const idx = context[0].dataIndex;
               const h = history[idx];
               if (h.time === 'start') return 'Solde Initial';
               return h.event || 'Trade';
             },
-            label: function(context) {
+            label: function (context) {
               const idx = context.dataIndex;
               const h = history[idx];
               return [
@@ -1230,7 +1358,7 @@ function renderHeatmapCrypto(data) {
       <div class="item">
         <strong>${esc(c.symbol)}</strong>
         <div style="text-align:right;">
-          <div style="color:${pnlColor};font-size:13px;font-weight:800;">${c.total_pnl >= 0 ? '+' : ''}${number(c.total_pnl,4)} USD</div>
+          <div style="color:${pnlColor};font-size:13px;font-weight:800;">${c.total_pnl >= 0 ? '+' : ''}${number(c.total_pnl, 4)} USD</div>
           <div style="font-size:11px;color:var(--muted);">${c.trades} trades (${c.win_rate}%)</div>
         </div>
       </div>
@@ -1245,7 +1373,7 @@ function renderHeatmapByDay(data) {
     return;
   }
 
-  const dayNames = {'Monday':'Lun','Tuesday':'Mar','Wednesday':'Mer','Thursday':'Jeu','Friday':'Ven','Saturday':'Sam','Sunday':'Dim'};
+  const dayNames = { 'Monday': 'Lun', 'Tuesday': 'Mar', 'Wednesday': 'Mer', 'Thursday': 'Jeu', 'Friday': 'Ven', 'Saturday': 'Sam', 'Sunday': 'Dim' };
 
   box.innerHTML = data.map(d => {
     const pnlColor = d.total_pnl >= 0 ? 'var(--good)' : 'var(--bad)';
@@ -1253,7 +1381,7 @@ function renderHeatmapByDay(data) {
       <div class="item">
         <strong>${dayNames[d.day] || d.day}</strong>
         <div style="text-align:right;">
-          <div style="color:${pnlColor};font-size:12px;font-weight:800;">${d.total_pnl >= 0 ? '+' : ''}${number(d.total_pnl,4)}</div>
+          <div style="color:${pnlColor};font-size:12px;font-weight:800;">${d.total_pnl >= 0 ? '+' : ''}${number(d.total_pnl, 4)}</div>
           <div style="font-size:10px;color:var(--muted);">${d.trades} (${d.win_rate}%)</div>
         </div>
       </div>
@@ -1272,9 +1400,9 @@ function renderHeatmapByHour(data) {
     const pnlColor = h.total_pnl >= 0 ? 'var(--good)' : 'var(--bad)';
     return `
       <div class="item">
-        <strong>${String(h.hour).padStart(2,'0')}h</strong>
+        <strong>${String(h.hour).padStart(2, '0')}h</strong>
         <div style="text-align:right;">
-          <div style="color:${pnlColor};font-size:12px;font-weight:800;">${h.total_pnl >= 0 ? '+' : ''}${number(h.total_pnl,4)}</div>
+          <div style="color:${pnlColor};font-size:12px;font-weight:800;">${h.total_pnl >= 0 ? '+' : ''}${number(h.total_pnl, 4)}</div>
           <div style="font-size:10px;color:var(--muted);">${h.trades} (${h.win_rate}%)</div>
         </div>
       </div>
@@ -1298,13 +1426,13 @@ function renderTrades(trades) {
   const wins = trades.filter(t => t.profitable).length;
   const losses = trades.length - wins;
 
-  summary.textContent = `${trades.length} trades | ${wins}W / ${losses}L | P&L total: ${totalPnl >= 0 ? '+' : ''}${number(totalPnl,4)} USD`;
+  summary.textContent = `${trades.length} trades | ${wins}W / ${losses}L | P&L total: ${totalPnl >= 0 ? '+' : ''}${number(totalPnl, 4)} USD`;
 
   body.innerHTML = trades.map(t => {
     const buyVal = t.amount * t.buy_price;
     const sellVal = t.amount * t.sell_price;
     const pnlClass = t.profitable ? 'badge good' : 'badge bad';
-    
+
     return `
       <tr>
         <td style="font-size: 11px; color: var(--text-muted); font-weight: 500;">
@@ -1345,8 +1473,116 @@ async function refreshAnalytics() {
     renderHeatmapCrypto(data.heatmap.by_crypto);
     renderHeatmapByDay(data.heatmap.by_day);
     renderHeatmapByHour(data.heatmap.by_hour);
+    await refreshScoreChart();
   } catch (e) {
     // Silencieux
+  }
+}
+
+async function refreshScoreChart() {
+  const chartContainer = $('scoreChart');
+  if (!chartContainer) return;
+
+  const symbol = $('scoreChartSymbol')?.value || 'BTC/USD';
+  const hours = $('scoreChartHours')?.value || '24';
+
+  try {
+    const url = `/api/analytics/scores?symbol=${encodeURIComponent(symbol)}&hours=${hours}`;
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) return;
+    const scores = await response.json();
+
+    if (!scores || scores.length < 2) {
+      if (scoreChartInstance) {
+        try { scoreChartInstance.destroy(); } catch (e) { }
+        scoreChartInstance = null;
+      }
+      chartContainer.innerHTML = '<p class="empty" style="text-align:center;padding:40px;color:var(--text-muted);">Pas assez de scores historisés pour cette période</p>';
+      return;
+    }
+
+    if (!$('scoreCanvas')) {
+      if (scoreChartInstance) {
+        try { scoreChartInstance.destroy(); } catch (e) { }
+        scoreChartInstance = null;
+      }
+      chartContainer.innerHTML = '<canvas id="scoreCanvas"></canvas>';
+    }
+
+    const labels = scores.map(s => {
+      const date = parseDate(s.timestamp);
+      return date ? date.toLocaleDateString('fr-CA', { month: '2-digit', day: '2-digit' }) + ' ' + date.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
+    });
+
+    const dataPoints = scores.map(s => s.score);
+    const ctx = $('scoreCanvas').getContext('2d');
+
+    if (scoreChartInstance && $('scoreCanvas')) {
+      scoreChartInstance.data.labels = labels;
+      scoreChartInstance.data.datasets[0].data = dataPoints;
+      scoreChartInstance.update();
+      return;
+    }
+
+    scoreChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Score Crypto (0-100)',
+            data: dataPoints,
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59, 130, 246, 0.08)',
+            borderWidth: 2.5,
+            tension: 0.3,
+            fill: true,
+            pointRadius: scores.length < 30 ? 4 : 1,
+            pointHoverRadius: 6,
+            pointBackgroundColor: '#3b82f6',
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            grid: { color: 'rgba(255, 255, 255, 0.03)' },
+            ticks: { color: '#94a3b8', font: { size: 10 } }
+          },
+          y: {
+            min: 0,
+            max: 100,
+            grid: { color: 'rgba(255, 255, 255, 0.03)' },
+            ticks: { color: '#94a3b8', font: { size: 10 } }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#0f172a',
+            titleColor: '#f8fafc',
+            bodyColor: '#f8fafc',
+            borderColor: 'rgba(255, 255, 255, 0.08)',
+            borderWidth: 1,
+            callbacks: {
+              label: function (context) {
+                const idx = context.dataIndex;
+                const s = scores[idx];
+                return [
+                  `Score: ${s.score}/100`,
+                  `Prix: ${number(s.price, 2)} USD`
+                ];
+              }
+            }
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur refreshScoreChart:', error);
   }
 }
 
@@ -1484,7 +1720,7 @@ function connectLiveWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
   ws.onmessage = (event) => {
-    try { renderLive(JSON.parse(event.data)); } catch (e) {}
+    try { renderLive(JSON.parse(event.data)); } catch (e) { }
   };
   ws.onclose = () => setTimeout(connectLiveWs, 2000);
   ws.onerror = () => ws.close();
@@ -1516,7 +1752,7 @@ async function exportTradesCsv() {
     if (!response.ok) return;
     const data = await response.json();
     const trades = data.trades || [];
-    
+
     if (!trades.length) {
       alert('Aucun trade à exporter.');
       return;
@@ -1535,9 +1771,9 @@ async function exportTradesCsv() {
       t.profitable ? 'WIN' : 'LOSS'
     ]);
 
-    const csvContent = "data:text/csv;charset=utf-8," 
+    const csvContent = "data:text/csv;charset=utf-8,"
       + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    
+
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -1564,13 +1800,15 @@ if ($('decisionsLimitSelect')) {
     safeRefresh();
   });
 }
+if ($('scoreChartSymbol')) $('scoreChartSymbol').addEventListener('change', refreshScoreChart);
+if ($('scoreChartHours')) $('scoreChartHours').addEventListener('change', refreshScoreChart);
 if ($('refreshButton')) $('refreshButton').addEventListener('click', safeRefresh);
 $('saveConfigButton').addEventListener('click', saveConfig);
 if ($('toggleBotButton')) {
   $('toggleBotButton').addEventListener('click', async () => {
     const isRunning = $('botStatusDot').classList.contains('live');
     const endpoint = isRunning ? '/api/bot/stop' : '/api/bot/start';
-    
+
     const toggleBtn = $('toggleBotButton');
     toggleBtn.disabled = true;
     const btnText = toggleBtn.querySelector('.btn-text') || toggleBtn;
@@ -1609,13 +1847,13 @@ function initializeCustomDropdowns() {
 
     const trigger = document.createElement('div');
     trigger.className = 'custom-dropdown-trigger';
-    
+
     const label = document.createElement('span');
     label.className = 'custom-dropdown-label';
-    
+
     const selectedOption = select.options[select.selectedIndex] || select.options[0];
     label.textContent = selectedOption ? selectedOption.textContent : '';
-    
+
     const arrow = document.createElement('span');
     arrow.className = 'custom-dropdown-arrow';
     arrow.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 1 5 5 9 1"/></svg>`;
@@ -1664,7 +1902,173 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.custom-dropdown-container.open').forEach((container) => {
     container.classList.remove('open');
   });
+  document.querySelectorAll('.card-dropdown-menu').forEach((menu) => {
+    menu.style.display = 'none';
+  });
+  activeCardMenuSymbol = null;
 });
+
+// ===== CARD OVERRIDE FUNCTIONS =====
+window.toggleCardMenu = function (event, symbol) {
+  event.stopPropagation();
+  const menu = document.getElementById(`cardMenu-${symbol}`);
+  if (menu) {
+    const isOpen = menu.style.display === 'block';
+    // Fermer tous les menus de carte
+    document.querySelectorAll('.card-dropdown-menu').forEach((m) => {
+      m.style.display = 'none';
+    });
+    if (!isOpen) {
+      menu.style.display = 'block';
+      activeCardMenuSymbol = symbol;
+    } else {
+      menu.style.display = 'none';
+      activeCardMenuSymbol = null;
+    }
+  }
+};
+
+window.triggerCardAction = function (event, action, symbol, seconds = null) {
+  event.stopPropagation();
+  // Fermer le menu
+  document.querySelectorAll('.card-dropdown-menu').forEach((menu) => {
+    menu.style.display = 'none';
+  });
+  activeCardMenuSymbol = null;
+
+  if (action === 'force_buy') {
+    if (confirm(`Voulez-vous forcer un ACHAT (BUY) sur ${symbol} ?`)) {
+      sendBotCommand('force_buy', symbol);
+    }
+  } else if (action === 'force_sell') {
+    if (confirm(`Voulez-vous forcer une VENTE (SELL) sur ${symbol} ?`)) {
+      sendBotCommand('force_sell', symbol);
+    }
+  } else if (action === 'pause_pair') {
+    sendBotCommand('pause_pair', symbol, seconds);
+  }
+};
+
+// ===== MANUAL OVERRIDE HANDLERS =====
+async function sendBotCommand(action, symbol, seconds = null) {
+  const statusSpan = $('overrideStatusMessage');
+  if (statusSpan) {
+    statusSpan.style.opacity = '1';
+    statusSpan.style.color = 'var(--text-muted)';
+    statusSpan.textContent = 'Envoi de la commande...';
+  }
+
+  try {
+    const response = await fetch('/api/bot/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, symbol, seconds: seconds ? parseInt(seconds) : null })
+    });
+    const data = await response.json();
+    if (data && data.ok) {
+      if (statusSpan) {
+        statusSpan.style.color = 'var(--good)';
+        statusSpan.textContent = data.message;
+      }
+    } else {
+      if (statusSpan) {
+        statusSpan.style.color = 'var(--bad)';
+        statusSpan.textContent = data.error || 'Erreur inconnue';
+      }
+    }
+  } catch (error) {
+    if (statusSpan) {
+      statusSpan.style.color = 'var(--bad)';
+      statusSpan.textContent = `Erreur: ${error.message}`;
+    }
+  }
+
+  setTimeout(() => {
+    if (statusSpan) {
+      statusSpan.style.opacity = '0';
+    }
+  }, 4000);
+}
+
+// ===== MANUAL BACKTEST RUNNER =====
+let backtestInterval = null;
+
+function pollBacktestStatus() {
+  fetch('/api/support_touch/backtest_status')
+    .then(r => r.json())
+    .then(data => {
+      const btn = $('runBacktestBtn');
+      if (data.running) {
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = '⏳ Backtest en cours...';
+        }
+      } else {
+        if (backtestInterval) {
+          clearInterval(backtestInterval);
+          backtestInterval = null;
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🔄 Lancer Backtest';
+        }
+
+        // Si le backtest vient de finir (exit_code !== null)
+        if (data.exit_code !== null) {
+          // Rafraîchir les données immédiatement sur l'UI
+          safeRefresh();
+          // Notifier le bot de rafraîchir son filtre Support Touch immédiatement
+          fetch('/api/bot/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'refresh_support_touch' })
+          }).catch(err => console.error('Failed to notify bot:', err));
+        }
+      }
+    })
+    .catch(err => console.error('Error polling backtest status:', err));
+}
+
+function startManualBacktest() {
+  const btn = $('runBacktestBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Initialisation...';
+  }
+
+  fetch('/api/support_touch/run_backtest', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        if (btn) {
+          btn.textContent = '⏳ Backtest en cours...';
+        }
+        if (!backtestInterval) {
+          backtestInterval = setInterval(pollBacktestStatus, 1000);
+        }
+      } else {
+        alert('Erreur au lancement du backtest : ' + (data.error || 'Erreur inconnue'));
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🔄 Lancer Backtest';
+        }
+      }
+    })
+    .catch(err => {
+      alert('Erreur réseau au lancement du backtest : ' + err.message);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🔄 Lancer Backtest';
+      }
+    });
+}
+
+// Enregistrement de l'écouteur du bouton
+const runBacktestBtn = $('runBacktestBtn');
+if (runBacktestBtn) {
+  runBacktestBtn.addEventListener('click', startManualBacktest);
+}
+pollBacktestStatus();
 
 window.addEventListener('hashchange', () => setView(currentHashView()));
 initializeCustomDropdowns();

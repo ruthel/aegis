@@ -95,8 +95,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self._last_decision = {}  # Anti-spam logs
         self._decision_log_throttle = {}
         self.decision_journal_file = os.getenv('DECISION_JOURNAL_FILE', 'data/decision_journal.jsonl')
-        self.decision_journal_max = int(os.getenv('DECISION_JOURNAL_MAX', '500'))
+        self.decision_journal_max = int(os.getenv('DECISION_JOURNAL_MAX', '5000'))
         self._decision_journal_since_compact = 0
+        self._last_score_append = {}
         self.symbol_cooldown_seconds = int(os.getenv('SYMBOL_COOLDOWN_SECONDS', '300'))
         self.symbol_failure_cooldown_seconds = int(os.getenv('SYMBOL_FAILURE_COOLDOWN_SECONDS', '120'))
         self.market_regime_filter = os.getenv('MARKET_REGIME_FILTER', 'True').lower() == 'true'
@@ -118,7 +119,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.support_touch_min_total_pnl = float(os.getenv('SUPPORT_TOUCH_MIN_TOTAL_PNL', '0'))
         self.support_touch_min_avg_pnl = float(os.getenv('SUPPORT_TOUCH_MIN_AVG_PNL', '0'))
         self.support_touch_fail_closed = os.getenv('SUPPORT_TOUCH_FAIL_CLOSED', 'True').lower() == 'true'
-        self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_FILE', 'data/support_touch_backtest_auto.json')
+        self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_FILE', 'data/support_touch_backtest.json')
         self.support_touch_backtest_timeout = int(os.getenv('SUPPORT_TOUCH_BACKTEST_TIMEOUT_SECONDS', '90'))
         
         # Ordres
@@ -192,6 +193,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # Ajustement automatique selon le capital
         self.capital_manager.auto_adjust_bot()
+        self.capital_manager.sync_fees_to_bot()
         print()  # Ligne vide après l'analyse du capital
         
         # Calculer win rate global 30 jours au démarrage
@@ -210,40 +212,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.realtime_trading = True  # Init complète, activer le trading
     
     def _place_paper_sell_order(self, symbol):
-        """Place un ordre limite de vente paper au prix cible (0.8% profit)"""
-        buy_price = self.get_real_buy_price(symbol)
-        if not buy_price:
-            return
-        
-        # Calculer quantité depuis positions ouvertes
-        net_amount = 0
-        for p in self.state.get('positions', []):
-            if p.get('symbol') == symbol:
-                amt = float(p.get('amount', 0))
-                if p.get('side') == 'buy':
-                    net_amount += amt
-                elif p.get('side') == 'sell':
-                    net_amount -= amt
-        
-        if net_amount <= 0.00001:
-            return
-        
-        # Prix cible = buy_price + MIN_PROFIT_THRESHOLD
-        target_price = buy_price * (1 + self.min_profit_threshold)
-        crypto = symbol.split('/')[0]
-        
-        # Vérifier si ordre paper déjà existant pour ce symbol
-        for oid, od in self.pending_orders.items():
-            if od.get('symbol') == symbol and od.get('side') == 'sell':
-                return  # Déjà un ordre actif
-        
-        order_id = f'paper_sell_{symbol.replace("/", "_")}_{int(time.time())}'
-        order = {'id': order_id, 'price': target_price, 'amount': net_amount, 'type': 'limit', 'side': 'sell'}
-        self.pending_orders[order_id] = {
-            'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
-        }
-        profit_pct = self.min_profit_threshold * 100
-        print(f"🎯 PAPER {crypto} → Ordre vente @ {target_price:.2f} (+{profit_pct:.1f}%) | Qty: {net_amount:.6f}")
+        """Redirige vers la méthode unifiée d'optimisation de position"""
+        return self.optimize_existing_position(symbol)
 
     def _optimize_all_positions_at_startup(self):
         """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
@@ -493,9 +463,29 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             elif position.get('side') == 'sell':
                 data['amount'] -= amount
 
+        saved_stops = self.state.get('trailing_stops', {})
         for symbol, data in open_positions.items():
             if data['amount'] > 0.00001 and data['last_buy_price']:
-                self.trailing_stop_manager.add_position(symbol, data['last_buy_price'])
+                saved_data = saved_stops.get(symbol, {})
+                saved_percent = saved_data.get('trailing_percent')
+                
+                # Restaurer le trailing stop avec son pourcentage spécifique
+                self.trailing_stop_manager.add_position(
+                    symbol, data['last_buy_price'], 
+                    trailing_percent=saved_percent
+                )
+                
+                # Restaurer le plus haut historique et le stop calculé
+                if symbol in self.trailing_stop_manager.positions and saved_data:
+                    pos = self.trailing_stop_manager.positions[symbol]
+                    if 'highest_price' in saved_data:
+                        pos['highest_price'] = float(saved_data['highest_price'])
+                    if 'stop_price' in saved_data:
+                        pos['stop_price'] = float(saved_data['stop_price'])
+                    if 'initial_trailing_percent' in saved_data:
+                        pos['initial_trailing_percent'] = float(saved_data['initial_trailing_percent'])
+                    elif saved_percent is not None:
+                        pos['initial_trailing_percent'] = float(saved_percent)
     
     def save_state(self):
         try:
@@ -516,12 +506,34 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.state['pending_orders'] = self.pending_orders
             if 'decision_journal' in self.state and len(self.state['decision_journal']) > self.decision_journal_max:
                 self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
+            if hasattr(self, 'trailing_stop_manager'):
+                self.state['trailing_stops'] = {
+                    symbol: {
+                        'stop_price': float(data['stop_price']),
+                        'highest_price': float(data['highest_price']),
+                        'buy_price': float(data['buy_price']),
+                        'trailing_percent': float(data.get('trailing_percent', self.trailing_stop_manager.trailing_percent)),
+                        'initial_trailing_percent': float(data.get('initial_trailing_percent', data.get('trailing_percent', self.trailing_stop_manager.trailing_percent)))
+                    }
+                    for symbol, data in self.trailing_stop_manager.positions.items()
+                }
             self.state['last_update'] = datetime.now().isoformat()
-            # Écriture atomique pour éviter que le dashboard lise un fichier incomplet
+            # Écriture atomique avec retry pour éviter les conflits d'accès sur Windows (WinError 32)
             tmp_file = self.state_file + '.tmp'
             with open(tmp_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
-            os.replace(tmp_file, self.state_file)
+            
+            success = False
+            for i in range(5):
+                try:
+                    os.replace(tmp_file, self.state_file)
+                    success = True
+                    break
+                except PermissionError:
+                    time.sleep(0.05)  # Attendre 50ms que l'autre processus relâche le fichier
+            
+            if not success:
+                os.replace(tmp_file, self.state_file)  # Ultime tentative pour remonter l'erreur si échec persistant
         except Exception as e:
             print(f"⚠️ Erreur sauvegarde état: {e}")
 
@@ -558,7 +570,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         """Garde le JSONL borné sur disque sans le réécrire à chaque décision."""
         try:
             self._decision_journal_since_compact += 1
-            compact_every = max(50, self.decision_journal_max // 5)
+            compact_every = max(100, self.decision_journal_max // 5)
             if self._decision_journal_since_compact < compact_every:
                 return
             self._decision_journal_since_compact = 0
@@ -569,7 +581,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             with open(self.decision_journal_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
-            keep = max(self.decision_journal_max, 1)
+            keep = 20000
             if len(lines) <= keep + compact_every:
                 return
 
@@ -861,14 +873,47 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 total_pnl = float(item.get('total_pnl_percent') or 0)
                 avg_pnl = float(item.get('avg_pnl_percent') or 0)
 
+                # Détection dynamique du régime du marché pour adapter les seuils
+                regime = 'UNKNOWN'
+                try:
+                    klines_15m = self.get_klines(symbol, 20, '15m')
+                    if klines_15m and len(klines_15m) >= 20:
+                        regime = self.market_analyzer._detect_market_regime(klines_15m)
+                except Exception as e:
+                    self.logger.warning(f"Erreur détection régime pour Support Touch {symbol}: {e}")
+
+                # Seuils adaptatifs
+                d_trades = self.support_touch_min_trades
+                d_winrate = self.support_touch_min_winrate
+                d_total_pnl = self.support_touch_min_total_pnl
+                d_avg_pnl = self.support_touch_min_avg_pnl
+
+                if regime == 'BULL_TRENDING':
+                    d_winrate -= 5.0
+                    d_total_pnl -= 0.2
+                    d_avg_pnl -= 0.02
+                elif regime == 'BEAR_TRENDING':
+                    d_winrate += 10.0
+                    d_total_pnl += 1.0
+                    d_avg_pnl += 0.10
+                elif regime == 'HIGH_VOLATILITY':
+                    d_winrate += 5.0
+                    d_total_pnl += 0.5
+                    d_avg_pnl += 0.05
+
+                # Protection des seuils à des niveaux raisonnables
+                d_winrate = max(35.0, min(d_winrate, 85.0))
+                d_total_pnl = max(-1.0, d_total_pnl)
+                d_avg_pnl = max(-0.1, d_avg_pnl)
+
                 blockers = []
-                if trades < self.support_touch_min_trades:
+                if trades < d_trades:
                     blockers.append('insufficient_trades')
-                if win_rate < self.support_touch_min_winrate:
+                if win_rate < d_winrate:
                     blockers.append('winrate_below_threshold')
-                if total_pnl < self.support_touch_min_total_pnl:
+                if total_pnl < d_total_pnl:
                     blockers.append('total_pnl_below_threshold')
-                if avg_pnl < self.support_touch_min_avg_pnl:
+                if avg_pnl < d_avg_pnl:
                     blockers.append('avg_pnl_below_threshold')
 
                 allowed = not blockers
@@ -879,6 +924,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'win_rate': win_rate,
                     'total_pnl_percent': total_pnl,
                     'avg_pnl_percent': avg_pnl,
+                    'regime': regime,
+                    'threshold_win_rate': d_winrate,
+                    'threshold_total_pnl': d_total_pnl,
+                    'threshold_avg_pnl': d_avg_pnl,
                     'last_checked': datetime.now().isoformat()
                 }
 
@@ -1323,6 +1372,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         try:
             while True:
+                self._poll_dashboard_commands()
                 self.show_performance()
                 
                 # Obtenir balance et cryptos tradables via le système de scoring
@@ -1472,12 +1522,42 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                             self.notifier.notify_dynamic_level(symbol, best_entry['type'], best_entry['price'], best_entry['distance'])
                             self.last_dynamic_notifications[notification_key] = time.time()
         except Exception as e:
-            pass  # Silencieux
+            print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
     def intelligent_strategy(self, symbol, amount, current_price):
         """Stratégie intelligente - Support touch PRIORITAIRE"""
         crypto = symbol.split('/')[0]
         market_context = self.get_market_context(symbol)
+
+        # Calcul du Trailing Stop Adaptatif selon le régime de marché et la volatilité ATR
+        regime = market_context.get('symbol_regime', 'SIDEWAYS')
+        base_trailing = float(os.getenv('TRAILING_STOP_PERCENT', '2.5'))
+        
+        # 1. Multiplicateur de régime de marché (direction)
+        if regime == 'BULL_STRONG':
+            regime_multiplier = 1.4
+        elif regime == 'BULL_WEAK':
+            regime_multiplier = 1.2
+        elif regime == 'BEAR_STRONG':
+            regime_multiplier = 0.6
+        elif regime == 'BEAR_WEAK':
+            regime_multiplier = 0.8
+        else:
+            regime_multiplier = 1.0
+            
+        # 2. Multiplicateur de volatilité basé sur l'ATR (référence: volatilité moyenne de 2.0%)
+        atr_multiplier = 1.0
+        try:
+            atr_data = self.stuck_manager._calculate_atr(symbol)
+            atr_percent = atr_data.get('atr_percent', 2.0)
+            if atr_percent > 0:
+                atr_multiplier = atr_percent / 2.0
+        except Exception as e:
+            print(f"⚠️ Impossible de calculer l'ATR pour le trailing stop adaptatif: {e}")
+            
+        # 3. Combinaison finale bornée
+        adaptive_trailing = base_trailing * regime_multiplier * atr_multiplier
+        adaptive_trailing = round(max(0.5, min(10.0, adaptive_trailing)), 2)
 
         cooldown_remaining = self.get_symbol_cooldown_remaining(symbol)
         if cooldown_remaining > 0:
@@ -1532,9 +1612,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 signal_strength = support_check['confidence']
                 account_balance = self.get_account_balance()
                 position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
+                
+                # Apply confidence sizing factor
+                factor = self._confidence_sizing_factor(signal_strength)
+                if factor != 1.0:
+                    position_data['position_size_usd'] = round(position_data['position_size_usd'] * factor, 2)
+                    raw_crypto = position_data['position_size_crypto'] * factor
+                    position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
+                
                 position_data = self.apply_market_context_position_adjustment(position_data, market_context)
                 position_data['target_price'] = support_check['target_price']
                 position_data['stop_loss_price'] = support_check['stop_loss']
+                position_data['trailing_stop_percent'] = adaptive_trailing
+                position_data['support_price'] = support_check['support_price']
                 reason = f"Support PRO {support_check['support_price']:.2f} - {support_check['reason']}"
                 self.record_decision(
                     symbol, 'buy', True, reason,
@@ -1555,6 +1645,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # 3. SCORING PROFESSIONNEL (si pas de support touch)
         websocket_manager = getattr(self, 'websocket', None)
         crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
+        self._append_score_history(symbol, crypto_score, current_price)
         dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 10)
         
         if crypto_score < dynamic_min_score:
@@ -1624,7 +1715,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         signal_strength = self.get_signal_strength(symbol, current_price)
         account_balance = self.get_account_balance()
         position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
+        
+        # Apply confidence sizing factor
+        factor = self._confidence_sizing_factor(signal_strength)
+        if factor != 1.0:
+            position_data['position_size_usd'] = round(position_data['position_size_usd'] * factor, 2)
+            raw_crypto = position_data['position_size_crypto'] * factor
+            position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
+            
         position_data = self.apply_market_context_position_adjustment(position_data, market_context)
+        position_data['trailing_stop_percent'] = adaptive_trailing
         
         # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
@@ -1651,6 +1751,26 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         )
         self.execute_buy(symbol, position_data, current_price, reason)
     
+    def _confidence_sizing_factor(self, confidence):
+        """Calcule un multiplicateur de position selon la confiance du signal"""
+        try:
+            conf = float(confidence)
+        except:
+            return 1.0
+        
+        if conf < 55:
+            return 0.5
+        elif conf < 65:
+            return 0.6
+        elif conf < 75:
+            return 0.8
+        elif conf < 85:
+            return 1.0
+        elif conf < 95:
+            return 1.2
+        else:
+            return 1.4
+            
     def get_real_trading_fee(self, symbol, order_type='market'):
         """Récupère frais réels au lieu des frais statiques"""
         try:
@@ -1699,10 +1819,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             # Optimiser seuils adaptatifs
             self.risk_manager.optimize_thresholds_daily()
-            self.capital_manager.get_real_trading_fees('BTC/USD')  # Force refresh
+            self.capital_manager.sync_fees_to_bot()  # Force refresh and sync fees
             
         except Exception as e:
-            pass  # Silencieux si erreur
+            print(f"⚠️ Erreur optimisations quotidiennes: {e}")
     
     def get_optimal_check_interval(self, all_pairs):
         """Calcule intervalle optimal selon volatilité multi-pairs - TOUTES les cryptos"""
@@ -1892,6 +2012,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     self.trailing_stop_manager.remove_position(symbol)
             except Exception as e:
                 print(f"⚠️ Erreur trailing stop {symbol}: {e}")
+        self.save_state()
     
     def get_entry_signal(self, symbol, current_price):
         """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""
@@ -2144,7 +2265,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"✅ Achat exécuté avec succès")
             # Ajouter trailing stop avec prix optimisé
             if hasattr(self, 'trailing_stop_manager'):
-                self.trailing_stop_manager.add_position(symbol, current_price)
+                self.trailing_stop_manager.add_position(
+                    symbol, current_price, 
+                    trailing_percent=position_data.get('trailing_stop_percent'),
+                    support_price=position_data.get('support_price')
+                )
             
             # Placer ordre de vente (paper ET réel)
             if self.paper_trading:
@@ -2169,4 +2294,137 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 throttle_seconds=0
             )
             print(f"❌ Échec de l'achat")
+            
+    def _poll_dashboard_commands(self):
+        """Lit et exécute les commandes envoyées depuis le dashboard"""
+        cmd_file = 'data/bot_commands.json'
+        if not os.path.exists(cmd_file) or os.path.getsize(cmd_file) == 0:
+            return
+            
+        try:
+            # Lire les commandes
+            with open(cmd_file, 'r', encoding='utf-8') as f:
+                commands = json.load(f)
+            
+            if not commands or not isinstance(commands, list):
+                return
+                
+            # Vider le fichier de commandes en réécrivant une liste vide
+            tmp_file = cmd_file + '.tmp'
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+            os.replace(tmp_file, cmd_file)
+            
+            # Exécuter chaque commande
+            for cmd in commands:
+                action = cmd.get('action')
+                symbol = cmd.get('symbol')
+                if not action:
+                    continue
+                    
+                print(f"🎮 Commande reçue du dashboard: {action} sur {symbol if symbol else 'global'}")
+                
+                if action == 'force_buy' and symbol:
+                    self._execute_force_buy(symbol)
+                elif action == 'force_sell' and symbol:
+                    self._execute_force_sell(symbol)
+                elif action == 'pause_pair' and symbol:
+                    seconds = int(cmd.get('seconds') or 3600)
+                    self.set_symbol_cooldown(symbol, seconds=seconds, reason='manual_pause')
+                    print(f"⏸️ Paire {symbol} mise en pause pour {seconds}s")
+                elif action == 'refresh_support_touch':
+                    self.refresh_support_touch_filter(force=True)
+                    print("🧪 Filtre Support Touch rafraîchi manuellement avec succès.")
+                    
+        except Exception as e:
+            print(f"⚠️ Erreur lors du polling des commandes du dashboard: {e}")
+
+    def _execute_force_buy(self, symbol):
+        """Force un achat en ignorant les filtres techniques, mais en validant le capital"""
+        try:
+            # 1. Vérifier capital USD disponible
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            quote = 'USD'
+            usd_available = balance.get(quote, {}).get('free', 0) if not self.paper_trading else self.paper_balance
+            
+            min_cost = self.get_min_amount(symbol)['min_cost']
+            if usd_available < min_cost:
+                print(f"❌ Impossible de forcer l'achat: Capital insuffisant ({usd_available:.2f} USD < min {min_cost:.2f} USD)")
+                return
+                
+            # 2. Calculer position sizing avec une confiance fixée à 100% pour avoir la taille maximale autorisée
+            account_balance = self.get_account_balance()
+            position_data = self.stuck_manager.calculate_position_size(symbol, 100, account_balance)
+            
+            # Ne pas appliquer de réduction de bear mode pour un force buy manuel
+            position_data['target_price'] = self.get_price(symbol) * 1.015  # cible +1.5% par défaut
+            position_data['stop_loss_price'] = self.get_price(symbol) * 0.95  # stop -5% par défaut
+            
+            reason = "Achat manuel forcé via Dashboard"
+            
+            # Exécuter l'achat
+            self.execute_buy(symbol, position_data, self.get_price(symbol), reason)
+            
+        except Exception as e:
+            print(f"❌ Erreur lors du force buy: {e}")
+
+    def _execute_force_sell(self, symbol):
+        """Force la vente de toute la crypto disponible pour un symbole"""
+        try:
+            # 1. Annuler les ordres de vente actifs pour ce symbole
+            self._cancel_sell_orders_for_symbol(symbol)
+            
+            # 2. Récupérer le solde disponible
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            base_currency = symbol.split('/')[0]
+            
+            if self.paper_trading:
+                # En paper trading, trouver les positions correspondantes dans self.state['positions']
+                amount_to_sell = 0
+                for p in self.state.get('positions', []):
+                    if p['symbol'] == symbol and p['side'] == 'buy':
+                        amount_to_sell += p['amount']
+            else:
+                amount_to_sell = balance.get(base_currency, {}).get('free', 0)
+                
+            if amount_to_sell <= 0.00001:
+                print(f"❌ Impossible de forcer la vente: Aucun solde disponible pour {base_currency}")
+                return
+                
+            # 3. Exécuter la vente au marché
+            if self.sell_market(symbol, amount_to_sell):
+                if hasattr(self, 'trailing_stop_manager'):
+                    self.trailing_stop_manager.remove_position(symbol)
+                print(f"✅ Vente forcée exécutée avec succès pour {amount_to_sell:.6f} {base_currency}")
+            else:
+                print(f"❌ Échec de la vente forcée pour {symbol}")
+                
+        except Exception as e:
+            print(f"❌ Erreur lors du force sell: {e}")
+
+    def _append_score_history(self, symbol, score, price):
+        """Historise le score crypto dans data/crypto_scores.jsonl (max 1 fois par 5 minutes par symbole)"""
+        try:
+            now = time.time()
+            last_append = self._last_score_append.get(symbol, 0)
+            if now - last_append < 300:  # 5 minutes
+                return
+                
+            self._last_score_append[symbol] = now
+            
+            score_file = 'data/crypto_scores.jsonl'
+            os.makedirs(os.path.dirname(score_file) or '.', exist_ok=True)
+            
+            entry = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': symbol,
+                'score': int(score),
+                'price': float(price)
+            }
+            
+            with open(score_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry) + '\n')
+                
+        except Exception as e:
+            print(f"⚠️ Erreur lors de l'historisation du score pour {symbol}: {e}")
     

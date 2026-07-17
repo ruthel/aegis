@@ -159,10 +159,11 @@ class AnalysisMixin:
             if hasattr(self, 'pattern_analyzer') and len(klines_15m) >= 50:
                 sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines_15m)
                 support_levels = sr_levels.get('support_levels', [])
-                
                 for support in support_levels[:3]:
                     support_price = support['price']
-                    if current_price <= support_price * 1.001:
+                    # Le prix doit être proche du support (entre -1% et +0.1%)
+                    # Si le prix s'effondre en dessous, le support est brisé et on n'achète pas
+                    if support_price * 0.99 <= current_price <= support_price * 1.001:
                         rebounds = support.get('strength', 1)
                         
                         # Standard pro: 2+ rebonds avec pondération

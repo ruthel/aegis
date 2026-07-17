@@ -1627,30 +1627,65 @@ class MarketAnalyzer:
             if data_quality == 'HIGH_7D':
                 weights['volume'] *= 1.1  # Bonus réduit car plus de facteurs
             
-            total_score = (
-                volatility_score * weights['volatility'] +
-                volume_score * weights['volume'] +
-                momentum_score * weights['momentum'] +
-                rsi_score * weights['rsi'] +
-                correlation_score * weights['correlation'] +
-                liquidity_score * weights['liquidity'] +
-                technical_score * weights['technical'] +
-                market_cap_score * weights['market_cap'] +
-                support_resistance_score * weights['support_resistance'] +
-                multi_timeframe_score * weights['multi_timeframe'] +
-                orderbook_score * weights['orderbook'] +
-                price_action_score * weights['price_action'] +
-                volume_profile_score * weights['volume_profile'] +
-                momentum_div_score * weights['momentum_div'] +
-                volatility_cluster_score * weights['volatility_cluster'] +
-                fibonacci_score * weights['fibonacci'] +
-                microstructure_score * weights['microstructure'] +
-                seasonality_score * weights['seasonality'] +
-                spread_score * weights['spread'] +
-                history_score * weights['history']
-            )
-            
-            return min(total_score, 100)
+            # Normalisation des sous-scores sur 100 points
+            max_scores = {
+                'volatility': 30,
+                'volume': 25,
+                'momentum': 25,
+                'rsi': 20,
+                'correlation': 15,
+                'liquidity': 15,
+                'technical': 20,
+                'market_cap': 10,
+                'support_resistance': 15,
+                'multi_timeframe': 15,
+                'orderbook': 15,
+                'price_action': 12,
+                'volume_profile': 18,
+                'momentum_div': 16,
+                'volatility_cluster': 12,
+                'fibonacci': 10,
+                'microstructure': 14,
+                'seasonality': 15,
+                'spread': 10,
+                'history': 10
+            }
+
+            raw_scores = {
+                'volatility': volatility_score,
+                'volume': volume_score,
+                'momentum': momentum_score,
+                'rsi': rsi_score,
+                'correlation': correlation_score,
+                'liquidity': liquidity_score,
+                'technical': technical_score,
+                'market_cap': market_cap_score,
+                'support_resistance': support_resistance_score,
+                'multi_timeframe': multi_timeframe_score,
+                'orderbook': orderbook_score,
+                'price_action': price_action_score,
+                'volume_profile': volume_profile_score,
+                'momentum_div': momentum_div_score,
+                'volatility_cluster': volatility_cluster_score,
+                'fibonacci': fibonacci_score,
+                'microstructure': microstructure_score,
+                'seasonality': seasonality_score,
+                'spread': spread_score,
+                'history': history_score
+            }
+
+            total_weighted_normalized = 0.0
+            total_weight = 0.0
+            for factor, raw_val in raw_scores.items():
+                w = weights.get(factor, 0.0)
+                max_val = max_scores.get(factor, 10)
+                # Normalisation à 0-100
+                normalized = (raw_val / max_val) * 100.0
+                total_weighted_normalized += normalized * w
+                total_weight += w
+
+            total_score = total_weighted_normalized / total_weight if total_weight > 0 else 0.0
+            return min(max(total_score, 0.0), 100.0)
             
         except Exception as e:
             print(f"❌ Erreur scoring {symbol}: {e}")

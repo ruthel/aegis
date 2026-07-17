@@ -31,6 +31,8 @@ class WebSocketManager:
         self.reconnect_attempts = 0
         self.max_reconnect = 5
         self.balance_callback = None
+        self.last_connected_ts = time.time()
+        self.is_ws_connected = False
         self.listen_key = None
         self.exchange_client = None  # Référence au client exchange
         self.tick_counts = {symbol: 0 for symbol in self.symbols}
@@ -75,14 +77,17 @@ class WebSocketManager:
 
     def _start_worker(self):
         """Démarre le worker thread pour analyses asynchrones"""
+        import queue
         def worker():
             while self.running:
                 try:
                     symbol, price = self.analysis_queue.get(timeout=1)
                     if hasattr(self, 'bot_callback') and self.bot_callback:
                         self.bot_callback(symbol, price)
-                except:
+                except queue.Empty:
                     pass
+                except Exception as e:
+                    print(f"⚠️ Erreur worker WebSocket: {e}")
         
         self.worker_thread = threading.Thread(target=worker, daemon=True)
         self.worker_thread.start()
@@ -142,6 +147,8 @@ class WebSocketManager:
         """Souscription aux channels Kraken à l'ouverture"""
         import json as std_json
         self.reconnect_attempts = 0
+        self.is_ws_connected = True
+        self.last_connected_ts = time.time()
         print("WS Kraken: connexion ouverte, souscription...")
 
         # Convertir symboles en format Kraken
@@ -247,6 +254,8 @@ class WebSocketManager:
     def on_open(self, ws):
         """Callback à l'ouverture de la connexion"""
         self.reconnect_attempts = 0
+        self.is_ws_connected = True
+        self.last_connected_ts = time.time()
     
     def on_message(self, ws, message):
         """Traite les messages Binance (optimisé)"""
@@ -384,9 +393,11 @@ class WebSocketManager:
     def on_error(self, ws, error):
         """Gere les erreurs WebSocket"""
         print(f"WS erreur: {error}")
+        self.is_ws_connected = False
     
     def on_close(self, ws, close_status_code, close_msg):
         """Gère la fermeture de connexion (silencieux)"""
+        self.is_ws_connected = False
         if self.running:
             self.reconnect()
     
@@ -396,19 +407,38 @@ class WebSocketManager:
             self.preload_klines(self.exchange_client)
 
     def reconnect(self):
-        """Reconnexion automatique (silencieux)"""
-        if self.reconnect_attempts < self.max_reconnect:
-            self.reconnect_attempts += 1
-            time.sleep(2 ** self.reconnect_attempts)  # Backoff exponentiel
-            self.connect()
-            self._preload_after_reconnect()
-        else:
-            print("❌ WebSocket déconnecté - Mode REST")
-            self.reconnect_attempts = 0
-            time.sleep(30)
-            if self.running:
+        """Reconnexion automatique illimitée avec backoff exponentiel"""
+        self.is_ws_connected = False
+        self.reconnect_attempts += 1
+        
+        # Backoff exponentiel capé à 60 secondes
+        delay = min(60, 2 ** self.reconnect_attempts)
+        
+        downtime = time.time() - self.last_connected_ts
+        if downtime > 60:
+            print(f"⚠️ WS déconnecté depuis {downtime:.0f}s. Nouvelle tentative dans {delay}s (Tentative {self.reconnect_attempts})")
+        
+        time.sleep(delay)
+        
+        if self.running:
+            try:
                 self.connect()
                 self._preload_after_reconnect()
+            except Exception as e:
+                print(f"⚠️ Erreur reconnexion WS: {e}")
+                
+    def get_connection_status(self):
+        """Retourne le statut actuel de la connexion WebSocket"""
+        now = time.time()
+        downtime = 0.0
+        if not self.is_ws_connected:
+            downtime = max(0.0, now - self.last_connected_ts)
+        return {
+            'connected': self.is_ws_connected,
+            'last_connected': self.last_connected_ts,
+            'reconnect_attempts': self.reconnect_attempts,
+            'downtime_seconds': downtime
+        }
     
     def get_price(self, symbol):
         """Récupère le prix en temps réel"""

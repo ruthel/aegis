@@ -589,36 +589,62 @@ class RiskManager:
 class TrailingStopManager:
     def __init__(self, trailing_percent=3.0):
         self.trailing_percent = trailing_percent
-        self.positions = {}  # {symbol: {'buy_price': price, 'highest_price': price, 'stop_price': price}}
+        self.positions = {}  # {symbol: {'buy_price': price, 'highest_price': price, 'stop_price': price, 'trailing_percent': percent}}
     
-    def add_position(self, symbol, buy_price):
-        """Ajoute une nouvelle position avec trailing stop"""
-        stop_price = buy_price * (1 - self.trailing_percent / 100)
+    def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None):
+        """Ajoute une nouvelle position avec trailing stop adaptatif et support technique"""
+        percent = trailing_percent if trailing_percent is not None else self.trailing_percent
+        stop_price = buy_price * (1 - percent / 100)
+        
+        # Si un support technique est spécifié, caler le stop initial dessous s'il est plus protecteur
+        if support_price is not None:
+            technical_stop = float(support_price) * 0.99
+            if technical_stop > stop_price:
+                stop_price = technical_stop
+                print(f"🏰 {symbol}: Stop initial calé sous le support technique à {stop_price:.2f}")
+                
         self.positions[symbol] = {
             'buy_price': buy_price,
             'highest_price': buy_price,
             'stop_price': stop_price,
+            'trailing_percent': percent,
+            'initial_trailing_percent': percent,
             'created_at': datetime.now().isoformat()
         }
-        print(f"🎯 Trailing stop activé pour {symbol}: Stop initial à {stop_price:.2f}")
+        print(f"🎯 Trailing stop activé pour {symbol}: Stop initial à {stop_price:.2f} (écart: {percent:.1f}%)")
     
     def update_position(self, symbol, current_price):
-        """Met à jour le trailing stop si le prix monte"""
+        """Met à jour le trailing stop si le prix monte avec resserrement progressif selon le profit"""
         if symbol not in self.positions:
             return False
             
         position = self.positions[symbol]
+        initial_percent = position.get('initial_trailing_percent', self.trailing_percent)
+        
+        # Calcul du profit latent en pourcentage
+        profit_pct = ((current_price - position['buy_price']) / position['buy_price']) * 100
+        
+        # Resserrement par paliers du pourcentage de trailing
+        if profit_pct >= 8.0:
+            percent = initial_percent * 0.4  # Resserrement agressif (ex: 3.5% -> 1.4%)
+        elif profit_pct >= 5.0:
+            percent = initial_percent * 0.6  # Resserrement modéré (ex: 3.5% -> 2.1%)
+        elif profit_pct >= 3.0:
+            percent = initial_percent * 0.8  # Resserrement léger (ex: 3.5% -> 2.8%)
+        else:
+            percent = initial_percent
         
         # Si nouveau plus haut, on met à jour le trailing stop
         if current_price > position['highest_price']:
             position['highest_price'] = current_price
-            new_stop = current_price * (1 - self.trailing_percent / 100)
+            new_stop = current_price * (1 - percent / 100)
             
             # Le stop ne peut que monter, jamais descendre
             if new_stop > position['stop_price']:
                 old_stop = position['stop_price']
                 position['stop_price'] = new_stop
-                print(f"📈 {symbol}: Trailing stop mis à jour {old_stop:.2f} → {new_stop:.2f}")
+                position['trailing_percent'] = percent
+                print(f"📈 {symbol}: Trailing stop mis à jour {old_stop:.2f} → {new_stop:.2f} (écart: {percent:.1f}%, profit: {profit_pct:.1f}%)")
         
         return False
     

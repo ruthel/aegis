@@ -422,8 +422,8 @@ class TradingMixin:
             self.save_state()
     
     def optimize_existing_position(self, symbol):
-        """Optimise une position existante avec prix cible intelligent"""
-        # TOUJOURS rafraîchir depuis l'exchange (pas de cache)
+        """Optimise une position existante avec prix cible intelligent et remplacement d'ordres"""
+        # Obtenir les soldes
         balance = self.balance_manager.get_balance(force_refresh=True)
         base_currency = symbol.split('/')[0]
         free_holding = balance.get(base_currency, {}).get('free', 0)
@@ -433,71 +433,100 @@ class TradingMixin:
         
         if total_amount <= 0.00001:
             return False
-        
-        # CORRECTION: Annuler ordre existant si moyennage détecté
-        if free_holding > 0.00001 and locked_holding > 0.00001:
-            print(f"🔄 {base_currency}: Moyennage détecté - Annulation ordre existant")
-            if not self.paper_trading:
-                try:
-                    open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-                    for order in open_orders:
-                        if order['side'] == 'sell':
-                            self.safe_request(self.exchange.cancel_order, order['id'], symbol)
-                            print(f"   ❌ Ordre annulé: {order['amount']:.6f} {base_currency} @ {order['price']:.2f}")
-                except Exception as e:
-                    print(f"   ⚠️ Erreur annulation: {e}")
             
-            # Attendre que l'annulation soit effective
-            import time
-            time.sleep(1)
-            
-            # Rafraîchir balance après annulation
-            balance = self.balance_manager.get_balance(force_refresh=True)
-            free_holding = balance.get(base_currency, {}).get('free', 0)
-            locked_holding = balance.get(base_currency, {}).get('used', 0)
-            total_amount = free_holding + locked_holding
-            print(f"   ✅ Balance mise à jour: {total_amount:.6f} {base_currency} libre")
-        
-        # Placer ordre avec TOUTE la position disponible
-        if locked_holding <= 0.00001 and free_holding > 0.00001:
-            # VÉRIFIER sur l'exchange si ordre existe vraiment (pas juste le cache)
-            if not self.paper_trading:
-                try:
-                    open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-                    if open_orders:
-                        print(f"⚠️ {base_currency}: Ordre déjà existant sur l'exchange - Skip")
-                        return False
-                except Exception as e:
-                    print(f"⚠️ Erreur vérification ordres: {e}")
-            
-            avg_buy_price = self.get_real_buy_price(symbol)
-            if avg_buy_price:
-                current_price = self.get_price(symbol)
-                
-                # Utiliser la prédiction intelligente pour le prix cible
-                prediction = self.market_analyzer.predict_price_target_with_probability(
-                    self, symbol, current_price, min_profit_pct=0.6
-                )
-                
-                if prediction:
-                    sell_price = prediction['target_price']
-                    print(f"💰 Optimisation {base_currency}: Target intelligent {sell_price:.6f} "
-                          f"({prediction['method_used']}, {prediction['probability']}%)")
-                else:
-                    # Fallback: profit minimum AVEC frais (pas double)
-                    # Les frais sont déjà inclus dans le calcul PNL, pas besoin de les doubler
-                    min_profit = self.min_profit_threshold
-                    sell_price = avg_buy_price * (1 + min_profit)
-                    print(f"💰 Optimisation {base_currency}: Target fallback {sell_price:.6f}")
-                
-                sell_order = self.sell_limit(symbol, free_holding, sell_price)
-                if sell_order:
-                    profit_pct = ((sell_price - avg_buy_price) / avg_buy_price) * 100
-                    print(f"✅ Ordre placé: {free_holding:.6f} {base_currency} @ {sell_price:.6f} (+{profit_pct:.1f}%)")
-                    return True
+        avg_buy_price = self.get_real_buy_price(symbol)
+        if not avg_buy_price:
             return False
+            
+        current_price = self.get_price(symbol)
         
-        return False
+        # 1. Calculer le nouveau prix cible optimal basé sur les résistances et le profit minimum
+        min_profit_pct = self.min_profit_threshold * 100
+        prediction = self.market_analyzer.predict_price_target_with_probability(
+            self, symbol, current_price, min_profit_pct=min_profit_pct
+        )
+        
+        if prediction:
+            sell_price = prediction['target_price']
+            method = f"{prediction['method_used']} ({prediction['probability']}%)"
+        else:
+            # Fallback profit minimum
+            sell_price = avg_buy_price * (1 + self.min_profit_threshold)
+            method = "fallback"
+            
+        # S'assurer que la cible de profit est toujours supérieure au prix d'achat réel + frais (Pas de vente à perte)
+        min_profitable_price = avg_buy_price * (1 + self.trading_fee * 2 + 0.001)
+        if sell_price < min_profitable_price:
+            sell_price = max(sell_price, avg_buy_price * (1 + self.min_profit_threshold))
+            method = "guaranteed_profit_fallback"
+            
+        # 2. GESTION DU REPLACEMENT EN MODE PAPER
+        if self.paper_trading:
+            existing_oid = None
+            existing_price = None
+            for oid, od in list(self.pending_orders.items()):
+                if od.get('symbol') == symbol and od.get('side') == 'sell':
+                    existing_oid = oid
+                    existing_price = od['order']['price']
+                    break
+                    
+            if existing_oid:
+                # Remplacer si l'écart de prix est supérieur à 0.2%
+                if abs(existing_price - sell_price) / existing_price > 0.002:
+                    print(f"🔄 PAPER {base_currency} : Target de vente optimisée {existing_price:.4f} → {sell_price:.4f} ({method})")
+                    if existing_oid in self.pending_orders:
+                        del self.pending_orders[existing_oid]
+                    
+                    order_id = f'paper_sell_{symbol.replace("/", "_")}_{int(time.time())}'
+                    order = {'id': order_id, 'price': sell_price, 'amount': total_amount, 'type': 'limit', 'side': 'sell'}
+                    self.pending_orders[order_id] = {
+                        'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
+                    }
+                    return True
+                return False
+            else:
+                # Créer un nouvel ordre de vente paper
+                order_id = f'paper_sell_{symbol.replace("/", "_")}_{int(time.time())}'
+                order = {'id': order_id, 'price': sell_price, 'amount': total_amount, 'type': 'limit', 'side': 'sell'}
+                self.pending_orders[order_id] = {
+                    'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
+                }
+                print(f"🎯 PAPER {base_currency} → Ordre vente placé @ {sell_price:.4f} ({method}) | Qty: {total_amount:.6f}")
+                return True
+                
+        # 3. GESTION DU REPLACEMENT EN MODE RÉEL (KRAKEN)
+        else:
+            try:
+                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                sell_orders = [o for o in open_orders if o['side'] == 'sell']
+                
+                if sell_orders:
+                    existing_order = sell_orders[0]
+                    existing_price = float(existing_order['price'])
+                    existing_id = existing_order['id']
+                    
+                    # Remplacer si l'écart de prix est supérieur à 0.2%
+                    if abs(existing_price - sell_price) / existing_price > 0.002:
+                        print(f"🔄 {base_currency} : Remplacement ordre de vente {existing_price:.6f} → {sell_price:.6f} ({method})")
+                        self.safe_request(self.exchange.cancel_order, existing_id, symbol)
+                        time.sleep(1)
+                        
+                        # Rafraîchir les fonds libres
+                        balance = self.balance_manager.get_balance(force_refresh=True)
+                        free_holding = balance.get(base_currency, {}).get('free', 0)
+                        if free_holding > 0.00001:
+                            self.sell_limit(symbol, free_holding, sell_price)
+                            return True
+                    return False
+                else:
+                    # Créer un nouvel ordre de vente réel
+                    if free_holding > 0.00001:
+                        self.sell_limit(symbol, free_holding, sell_price)
+                        return True
+                    return False
+            except Exception as e:
+                print(f"⚠️ Erreur optimisation position réelle {symbol}: {e}")
+                return False
 
     def _get_trade_order_id(self, trade):
         """Extrait l'id d'ordre depuis un trade CCXT, selon l'exchange."""
@@ -677,7 +706,7 @@ class TradingMixin:
             self.pending_orders = all_open_orders
             
         except Exception as e:
-            pass
+            print(f"⚠️ Erreur detect_order_modifications: {e}")
     
     def optimize_by_partial_sell(self, symbol, balance, min_cost_needed, usd_available):
         """Optimise en vendant partiellement la position pour libérer des USD"""

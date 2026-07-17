@@ -8,8 +8,16 @@ from config import BOT_NAME
 class NotificationManager:
     def __init__(self):
         self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
-        self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        self.enabled = bool(self.telegram_token and self.chat_id)
+        self.chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+        
+        # Ignorer si ce sont des valeurs par défaut / templates (.env)
+        is_placeholder = (
+            not self.telegram_token or
+            not self.chat_id or
+            'votre_token' in self.telegram_token or
+            'votre_chat_id' in self.chat_id
+        )
+        self.enabled = not is_placeholder
         self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
         self.last_status_time = 0
         self.bot_ref = None
@@ -126,10 +134,8 @@ class NotificationManager:
         self.notify(msg, "")
     
     def notify_cumulative_trend(self, symbol, direction, count, total_change_pct, current_price, start_price=None):
-        """Notification tendance cumulative détectée"""
-        crypto = symbol.split('/')[0]
-        direction_text = "tendance baissière" if direction < 0 else "tendance haussière"
-        direction_emoji = "📉" if direction < 0 else "📈"
+        """Notification tendance cumulative détectée - Désactivé (spam)"""
+        return
         
         # Calcul valeur absolue si prix de départ disponible
         if start_price:
@@ -438,8 +444,8 @@ class NotificationManager:
                 if value >= bot.get_min_amount(symbol)['min_cost']:
                     # Calculer P&L de la position
                     try:
-                        avg_buy_price = bot.position_manager.get_average_buy_price(crypto)
-                        if avg_buy_price > 0:
+                        avg_buy_price = bot.get_real_buy_price(symbol)
+                        if avg_buy_price and avg_buy_price > 0:
                             pnl_pct = ((price - avg_buy_price) / avg_buy_price) * 100
                             pnl_usd = (price - avg_buy_price) * total
                             pnl_display = f" • {pnl_pct:+.1f}% ({pnl_usd:+.1f} USD)"
@@ -450,6 +456,7 @@ class NotificationManager:
                     
                     portfolio_items.append({
                         'crypto': crypto,
+                        'symbol': symbol,
                         'amount': total,
                         'value': value,
                         'pnl_display': pnl_display,
@@ -484,19 +491,19 @@ class NotificationManager:
                             # Calculer profit réel (prix vente - prix achat - frais)
                             order_price = float(order['price'])
                             try:
-                                avg_buy_price = bot.position_manager.get_average_buy_price(item['crypto'])
-                                if avg_buy_price > 0:
+                                avg_buy_price = bot.get_real_buy_price(item['symbol'])
+                                if avg_buy_price and avg_buy_price > 0:
                                     # Profit brut
                                     gross_profit_pct = ((order_price - avg_buy_price) / avg_buy_price) * 100
                                     # Soustraire frais (0.1% achat + 0.1% vente = 0.2%)
                                     profit_pct = gross_profit_pct - 0.2
                                 else:
                                     # Fallback: distance au prix actuel
-                                    current_price = bot.get_price(f"{item['crypto']}/USD")
+                                    current_price = bot.get_price(item['symbol'])
                                     profit_pct = ((order_price - current_price) / current_price) * 100
                             except:
                                 # Fallback: distance au prix actuel
-                                current_price = bot.get_price(f"{item['crypto']}/USD")
+                                current_price = bot.get_price(item['symbol'])
                                 profit_pct = ((order_price - current_price) / current_price) * 100
                             
                             # Calculer temps depuis création

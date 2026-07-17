@@ -62,6 +62,14 @@ load_dotenv(ROOT / '.env.dashboard', override=True)
 app = Flask(__name__, template_folder='templates', static_folder='static')
 sock = Sock(app)
 
+# Suppression de la bannière Flask au démarrage et du bruit des requêtes HTTP (GET/POST) dans la console
+import logging
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+
+import click
+click.echo = lambda *args, **kwargs: None
+click.secho = lambda *args, **kwargs: None
+
 
 CONFIG_FIELDS = {
     'PAPER_TRADING': {'type': 'bool', 'label': 'Paper trading', 'section': 'Trading', 'restart': 'bot'},
@@ -207,7 +215,6 @@ def write_dashboard_env(updates):
     for key, value in current.items():
         if key in CONFIG_FIELDS:
             os.environ[key] = value
-
 
 def config_payload():
     dashboard_values = read_env_file(ENV_DASHBOARD)
@@ -445,7 +452,7 @@ def trade_stats(positions):
     }
 
 
-def weighted_positions(positions):
+def weighted_positions(positions, trailing_stops=None, pending_orders=None):
     by_symbol = {}
     for position in sorted(positions, key=lambda item: item.get('timestamp', '')):
         symbol = position.get('symbol')
@@ -481,12 +488,39 @@ def weighted_positions(positions):
         if data['amount'] <= 0:
             continue
         avg_entry = data['cost'] / data['amount'] if data['amount'] else 0
+        
+        stop_loss_price = None
+        is_trailing = False
+        trailing_percent = float(os.getenv('TRAILING_STOP_PERCENT', '2.5'))
+        if trailing_stops and data['symbol'] in trailing_stops:
+            stop_loss_price = trailing_stops[data['symbol']].get('stop_price')
+            is_trailing = True
+            trailing_percent = float(trailing_stops[data['symbol']].get('trailing_percent', trailing_percent))
+            
+        # Chercher le prix de vente cible dans les ordres en attente (Paper / CCXT)
+        target_price = None
+        if pending_orders:
+            for oid, od in pending_orders.items():
+                if isinstance(od, dict) and od.get('symbol') == data['symbol'] and od.get('side') == 'sell':
+                    order_info = od.get('order', od)
+                    target_price = float(order_info.get('price') or 0)
+                    break
+                    
+        # Fallback si aucun ordre de vente n'est encore placé
+        if not target_price or target_price <= 0:
+            min_profit = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
+            target_price = avg_entry * (1 + min_profit)
+            
         result.append({
             'symbol': data['symbol'],
             'amount': data['amount'],
             'avg_entry_price': avg_entry,
             'entry_value': data['amount'] * avg_entry,
             'last_update': data['last_update'],
+            'stop_loss_price': stop_loss_price,
+            'is_trailing': is_trailing,
+            'trailing_percent': trailing_percent,
+            'target_price': target_price
         })
     return sorted(result, key=lambda item: item['symbol'])
 
@@ -503,7 +537,7 @@ def cooldowns(state):
 
 def support_touch(state):
     state_filter = state.get('support_touch_filter') or {}
-    backtest_path = project_path(os.getenv('SUPPORT_TOUCH_BACKTEST_FILE'), DATA_DIR / 'support_touch_backtest_auto.json')
+    backtest_path = project_path(os.getenv('SUPPORT_TOUCH_BACKTEST_FILE'), DATA_DIR / 'support_touch_backtest.json')
     backtest = read_json(backtest_path, {})
     pairs = state_filter.get('pairs') or {}
 
@@ -822,7 +856,7 @@ def compute_heatmap(positions):
 def compute_capital_breakdown(state, positions, paper_balance):
     """Calcule la repartition detaillee du capital"""
     # Positions ouvertes
-    open_positions = weighted_positions(positions)
+    open_positions = weighted_positions(positions, state.get('trailing_stops'), state.get('pending_orders'))
     total_in_positions = sum(p['entry_value'] for p in open_positions)
 
     # En ordres limites (pending sell orders)
@@ -926,7 +960,7 @@ def index():
 def api_status():
     state = read_json(active_state_file(), {'positions': []})
     decisions = parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 20)
-    positions = weighted_positions(state.get('positions', []))
+    positions = weighted_positions(state.get('positions', []), state.get('trailing_stops'), state.get('pending_orders'))
 
     stats = trade_stats(state.get('positions', []))
     
@@ -1054,6 +1088,46 @@ def api_bot_restart():
     return jsonify({'ok': True, 'stopped': stopped, **started, 'status': bot_status_payload(force=True)})
 
 
+@app.route('/api/bot/command', methods=['POST'])
+def api_bot_command():
+    try:
+        data = request.get_json() or {}
+        action = data.get('action')
+        symbol = data.get('symbol')
+        
+        if not action:
+            return jsonify({'ok': False, 'error': 'action is required'}), 400
+            
+        cmd_file = DATA_DIR / 'bot_commands.json'
+        
+        # Load existing commands
+        commands = []
+        if cmd_file.exists():
+            try:
+                commands = json_loads(cmd_file.read_bytes())
+                if not isinstance(commands, list):
+                    commands = []
+            except Exception:
+                commands = []
+                
+        # Append new command
+        commands.append({
+            'action': action,
+            'symbol': symbol,
+            'timestamp': time.time(),
+            'seconds': data.get('seconds')
+        })
+        
+        # Write back atomically
+        tmp_file = DATA_DIR / 'bot_commands.json.tmp'
+        tmp_file.write_text(json_dumps(commands), encoding='utf-8')
+        os.replace(tmp_file, cmd_file)
+        
+        return jsonify({'ok': True, 'message': f'Command {action} scheduled for {symbol}'})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/bot/console')
 def api_bot_console():
     lines_count = request.args.get('lines', '500')
@@ -1103,6 +1177,46 @@ def api_analytics():
     return response
 
 
+@app.route('/api/analytics/scores')
+def api_analytics_scores():
+    """Retourne l'historique des scores crypto pour une paire"""
+    symbol = request.args.get('symbol', 'BTC/USD')
+    hours = request.args.get('hours', '24')
+    try:
+        hours = float(hours)
+    except:
+        hours = 24.0
+        
+    score_file = DATA_DIR / 'crypto_scores.jsonl'
+    if not score_file.exists():
+        return jsonify([])
+        
+    results = []
+    cutoff = datetime.now() - timedelta(hours=hours)
+    
+    try:
+        with open(score_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json_loads(line.strip())
+                    if entry.get('symbol') != symbol:
+                        continue
+                    ts_str = entry.get('timestamp')
+                    if ts_str:
+                        # standard fromisoformat
+                        ts = datetime.fromisoformat(ts_str)
+                        if ts >= cutoff:
+                            results.append(entry)
+                except Exception:
+                    continue
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
+    return jsonify(results)
+
+
 @app.route('/api/trades')
 def api_trades():
     """Endpoint pour l'historique complet des trades"""
@@ -1127,7 +1241,50 @@ def api_trades():
     })
     response.headers['Cache-Control'] = 'no-store'
     return response
+BACKTEST_PROCESS = None
 
+@app.route('/api/support_touch/run_backtest', methods=['POST'])
+def api_run_support_touch_backtest():
+    global BACKTEST_PROCESS
+    if BACKTEST_PROCESS and BACKTEST_PROCESS.poll() is None:
+        return jsonify({'ok': False, 'error': 'Backtest is already running'}), 400
+        
+    python_exe = sys.executable
+    command = [
+        python_exe,
+        str(ROOT / 'scripts' / 'backtest_support_touch.py'),
+        '--output',
+        str(DATA_DIR / 'support_touch_backtest.json')
+    ]
+    
+    try:
+        BACKTEST_PROCESS = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return jsonify({'ok': True, 'pid': BACKTEST_PROCESS.pid})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/support_touch/backtest_status', methods=['GET'])
+def api_support_touch_backtest_status():
+    global BACKTEST_PROCESS
+    running = False
+    exit_code = None
+    if BACKTEST_PROCESS:
+        poll_res = BACKTEST_PROCESS.poll()
+        if poll_res is None:
+            running = True
+        else:
+            exit_code = poll_res
+            BACKTEST_PROCESS = None
+            
+    return jsonify({
+        'running': running,
+        'exit_code': exit_code
+    })
 
 @sock.route('/ws/live')
 def ws_live(ws):

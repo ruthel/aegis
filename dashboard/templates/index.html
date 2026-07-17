@@ -1,15 +1,17 @@
 <!doctype html>
 <html lang="fr">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aegis Dashboard</title>
   <link rel="icon" href="{{ url_for('static', filename='brand/favicon.ico') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/aegis-mark-192.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=1.1.1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=1.1.3">
   <!-- Chart.js Integration -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
+
 <body>
   <div class="app-layout">
     <!-- SIDEBAR -->
@@ -25,19 +27,35 @@
       <div class="sidebar-label">Navigation</div>
       <button type="button" class="nav-button active" data-view="live">
         <span class="nav-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9" />
+            <rect x="14" y="3" width="7" height="5" />
+            <rect x="14" y="12" width="7" height="9" />
+            <rect x="3" y="16" width="7" height="5" />
+          </svg>
         </span>
         <span>Live</span>
       </button>
       <button type="button" class="nav-button" data-view="analytics">
         <span class="nav-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3v18h18" />
+            <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3" />
+          </svg>
         </span>
         <span>Analytics</span>
       </button>
       <button type="button" class="nav-button" data-view="trades">
         <span class="nav-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="8 21 3 21 3 16"/><line x1="3" y1="21" x2="20" y2="4"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 3 21 3 21 8" />
+            <line x1="4" y1="20" x2="21" y2="3" />
+            <polyline points="8 21 3 21 3 16" />
+            <line x1="3" y1="21" x2="20" y2="4" />
+          </svg>
         </span>
         <span>Trades</span>
       </button>
@@ -45,13 +63,22 @@
       <div class="sidebar-label">Système</div>
       <button type="button" class="nav-button" data-view="console">
         <span class="nav-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
         </span>
         <span>Console</span>
       </button>
       <button type="button" class="nav-button" data-view="config">
         <span class="nav-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
         </span>
         <span>Configuration</span>
       </button>
@@ -64,8 +91,16 @@
         <div class="topbar-left">
           <div class="topbar-title-wrap" style="display: flex; align-items: center; gap: 8px;">
             <div class="topbar-title" id="botName">Aegis</div>
-            <span id="wsBadge" class="badge neutral" style="font-size: 10px; font-weight: 700; height: 18px; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px; line-height: 1; border-radius: 99px;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="12" r="2"/><path d="M8.5 16.5a6 6 0 0 1 7 0"/></svg>
+            <span id="wsBadge" class="badge neutral"
+              style="font-size: 10px; font-weight: 700; height: 18px; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px; line-height: 1; border-radius: 99px;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                style="flex-shrink: 0;">
+                <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                <circle cx="12" cy="12" r="2" />
+                <path d="M8.5 16.5a6 6 0 0 1 7 0" />
+              </svg>
               <span id="wsSummaryText">WS --</span>
             </span>
           </div>
@@ -75,18 +110,42 @@
           <div class="topbar-status-group">
             <span class="status-bar">
               <span class="status-dot live" id="botStatusDot"></span>
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="badge-icon"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="15" x2="23" y2="15"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="15" x2="4" y2="15"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                class="badge-icon">
+                <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
+                <rect x="9" y="9" width="6" height="6" />
+                <line x1="9" y1="1" x2="9" y2="4" />
+                <line x1="15" y1="1" x2="15" y2="4" />
+                <line x1="9" y1="20" x2="9" y2="23" />
+                <line x1="15" y1="20" x2="15" y2="23" />
+                <line x1="20" y1="9" x2="23" y2="9" />
+                <line x1="20" y1="15" x2="23" y2="15" />
+                <line x1="1" y1="9" x2="4" y2="9" />
+                <line x1="1" y1="15" x2="4" y2="15" />
+              </svg>
               <span id="botProcessBadge"><span class="badge-text">bot --</span></span>
             </span>
 
             <div class="badge-group">
               <span id="modeBadge" class="badge neutral">
-                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="badge-icon"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                  class="badge-icon">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                </svg>
                 <span class="badge-text">mode</span>
               </span>
               <span class="badge-divider"></span>
               <span id="exchangeBadge" class="badge neutral">
-                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="badge-icon"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                  class="badge-icon">
+                  <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
+                  <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+                  <line x1="6" y1="6" x2="6.01" y2="6" />
+                  <line x1="6" y1="18" x2="6.01" y2="18" />
+                </svg>
                 <span class="badge-text">exchange</span>
               </span>
             </div>
@@ -95,12 +154,21 @@
           <div class="topbar-actions-group">
             <button id="toggleBotButton" class="btn btn-success">
               <span class="btn-icon-wrapper">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  class="btn-icon">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
               </span>
               <span class="btn-text">Démarrer</span>
             </button>
             <button id="restartBotButton" class="btn btn-primary">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
               <span>Redémarrer</span>
             </button>
           </div>
@@ -115,7 +183,11 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" ry="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="5" width="20" height="14" rx="2" ry="2" />
+                    <line x1="2" y1="10" x2="22" y2="10" />
+                  </svg>
                 </span>
                 <span class="metric-label">Solde Paper</span>
               </div>
@@ -128,7 +200,11 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="1" x2="12" y2="23" />
+                    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                  </svg>
                 </span>
                 <span class="metric-label">PnL Total</span>
               </div>
@@ -141,20 +217,31 @@
             <div class="metric-card-top" style="margin-bottom: 8px;">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21.21 15.89A10 10 0 1 1 8 2.83" />
+                    <path d="M22 12A10 10 0 0 0 12 2v10z" />
+                  </svg>
                 </span>
                 <span class="metric-label">Trades & Win Rate</span>
               </div>
             </div>
-            <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
+            <div
+              style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
               <div>
-                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: left;">Total (W / L)</span>
-                <div id="totalTrades" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+                <span
+                  style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: left;">Total
+                  (W / L)</span>
+                <div id="totalTrades" class="metric-value"
+                  style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
               </div>
               <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
               <div style="text-align: right;">
-                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Taux de Win</span>
-                <div id="winRate" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+                <span
+                  style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Taux
+                  de Win</span>
+                <div id="winRate" class="metric-value"
+                  style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
               </div>
             </div>
           </div>
@@ -164,20 +251,31 @@
             <div class="metric-card-top" style="margin-bottom: 8px;">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                    <polyline points="17 6 23 6 23 12" />
+                  </svg>
                 </span>
                 <span class="metric-label">Croissance / Balance</span>
               </div>
             </div>
-            <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
+            <div
+              style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
               <div>
-                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: left;">Par Trade</span>
-                <div id="growthPerTrade" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+                <span
+                  style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: left;">Par
+                  Trade</span>
+                <div id="growthPerTrade" class="metric-value"
+                  style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
               </div>
               <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
               <div style="text-align: right;">
-                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Par Jour</span>
-                <div id="growthPerDay" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
+                <span
+                  style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Par
+                  Jour</span>
+                <div id="growthPerDay" class="metric-value"
+                  style="font-size: 16px; font-weight: 800; color: var(--text); line-height: 1.1;">--</div>
               </div>
             </div>
           </div>
@@ -187,7 +285,13 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:#f59e0b;"><circle cx="12" cy="12" r="8"/><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                    style="color:#f59e0b;">
+                    <circle cx="12" cy="12" r="8" />
+                    <path d="M12 2v20" />
+                    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                  </svg>
                 </span>
                 <span class="metric-label">Rendement / Mise</span>
               </div>
@@ -199,28 +303,35 @@
 
 
         <div class="grid">
-          <div class="span-12 panel">
+          <div class="span-12 panel panel-live" style="overflow: visible;">
             <div class="panel-head">
               <h2>WebSocket Live</h2>
-              <span id="wsLastUpdate" class="muted"></span>
+              <div style="display:flex; gap:12px; align-items:center;">
+                <span id="overrideStatusMessage"
+                  style="font-size: 12px; font-weight: 700; transition: opacity 0.3s; opacity: 0;"></span>
+                <span id="wsLastUpdate" class="muted"></span>
+              </div>
             </div>
             <div id="wsMeta" class="live-meta"></div>
             <div id="wsGrid" class="support-grid"></div>
           </div>
 
           <div class="span-8 panel">
-            <div class="panel-head"><h2>Positions</h2></div>
+            <div class="panel-head">
+              <h2>Positions</h2>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>Symbole</th>
                     <th>Quantité</th>
-                    <th>Prix moyen</th>
-                    <th>Prix actuel</th>
-                    <th>Valeur entrée</th>
-                    <th>Valeur actuelle</th>
-                    <th>P&L Latent</th>
+                    <th>Prix Moyen</th>
+                    <th>Objectif</th>
+                    <th>Stop Loss</th>
+                    <th>Entrée</th>
+                    <th>Actuel</th>
+                    <th>P&L</th>
                   </tr>
                 </thead>
                 <tbody id="positionsBody"></tbody>
@@ -229,20 +340,29 @@
           </div>
 
           <div class="span-4 panel">
-            <div class="panel-head"><h2>Cooldowns</h2></div>
+            <div class="panel-head">
+              <h2>Cooldowns</h2>
+            </div>
             <div id="cooldownsList" class="list"></div>
           </div>
 
           <div class="span-12 panel">
-            <div class="panel-head">
-              <h2>Support Touch Pro</h2>
-              <span id="supportLastRun" class="muted"></span>
+            <div class="panel-head"
+              style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <h2>Support Touch Pro</h2>
+                <span id="supportLastRun" class="muted" style="font-size:11px;"></span>
+              </div>
+              <button id="runBacktestBtn" class="btn" style="padding: 4px 12px; font-size: 11px;">🔄 Lancer
+                Backtest</button>
             </div>
             <div id="supportGrid" class="support-grid"></div>
           </div>
 
           <div class="span-12 panel">
-            <div class="panel-head"><h2>Régime Marché</h2></div>
+            <div class="panel-head">
+              <h2>Régime Marché</h2>
+            </div>
             <div id="marketContextGrid" class="support-grid"></div>
           </div>
 
@@ -262,7 +382,9 @@
           </div>
 
           <div class="span-5 panel">
-            <div class="panel-head"><h2>Alertes</h2></div>
+            <div class="panel-head">
+              <h2>Alertes</h2>
+            </div>
             <div id="logsList" class="logs"></div>
           </div>
         </div>
@@ -275,7 +397,12 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="20" x2="18" y2="10" />
+                    <line x1="12" y1="20" x2="12" y2="4" />
+                    <line x1="6" y1="20" x2="6" y2="14" />
+                  </svg>
                 </span>
                 <span class="metric-label">Sharpe Ratio</span>
               </div>
@@ -287,7 +414,11 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="8" r="7" />
+                    <polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88" />
+                  </svg>
                 </span>
                 <span class="metric-label">Profit Factor</span>
               </div>
@@ -299,7 +430,11 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 18 13.5 8.5 8.5 13.5 1 6" />
+                    <polyline points="17 18 23 18 23 12" />
+                  </svg>
                 </span>
                 <span class="metric-label">Max Drawdown</span>
               </div>
@@ -311,7 +446,12 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="19" y1="5" x2="5" y2="19" />
+                    <circle cx="6.5" cy="6.5" r="2.5" />
+                    <circle cx="17.5" cy="17.5" r="2.5" />
+                  </svg>
                 </span>
                 <span class="metric-label">Kelly %</span>
               </div>
@@ -323,7 +463,10 @@
             <div class="metric-card-top">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
                 </span>
                 <span class="metric-label">Expectancy</span>
               </div>
@@ -335,20 +478,33 @@
             <div class="metric-card-top" style="margin-bottom: 8px;">
               <div class="metric-label-container">
                 <span class="metric-icon-badge">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
                 </span>
                 <span class="metric-label">Avg Win / Avg Loss</span>
               </div>
             </div>
-            <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
+            <div
+              style="display: flex; align-items: center; justify-content: space-between; padding-top: 4px; gap: 8px;">
               <div>
-                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px;">Avg Win</span>
-                <div id="avgWin" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--good); line-height: 1.1; white-space: nowrap;">--</div>
+                <span
+                  style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px;">Avg
+                  Win</span>
+                <div id="avgWin" class="metric-value"
+                  style="font-size: 16px; font-weight: 800; color: var(--good); line-height: 1.1; white-space: nowrap;">
+                  --</div>
               </div>
               <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
               <div style="text-align: right;">
-                <span style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Avg Loss</span>
-                <div id="avgLoss" class="metric-value" style="font-size: 16px; font-weight: 800; color: var(--bad); line-height: 1.1; white-space: nowrap;">--</div>
+                <span
+                  style="font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; text-align: right;">Avg
+                  Loss</span>
+                <div id="avgLoss" class="metric-value"
+                  style="font-size: 16px; font-weight: 800; color: var(--bad); line-height: 1.1; white-space: nowrap;">
+                  --</div>
               </div>
             </div>
           </div>
@@ -356,7 +512,9 @@
 
         <div class="grid">
           <div class="span-12 panel">
-            <div class="panel-head"><h2>Capital Breakdown</h2></div>
+            <div class="panel-head">
+              <h2>Capital Breakdown</h2>
+            </div>
             <div id="capitalBreakdown" class="list"></div>
           </div>
 
@@ -370,18 +528,47 @@
             </div>
           </div>
 
+          <div class="span-12 panel">
+            <div class="panel-head">
+              <h2>Historique des Scores Crypto</h2>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="scoreChartSymbol" class="custom-select" style="min-width: 120px;">
+                  <option value="BTC/USD">BTC/USD</option>
+                  <option value="ETH/USD">ETH/USD</option>
+                  <option value="SOL/USD">SOL/USD</option>
+                  <option value="ADA/USD">ADA/USD</option>
+                </select>
+                <select id="scoreChartHours" class="custom-select" style="min-width: 100px;">
+                  <option value="12">12 heures</option>
+                  <option value="24" selected>24 heures</option>
+                  <option value="72">3 jours</option>
+                  <option value="168">7 jours</option>
+                </select>
+              </div>
+            </div>
+            <div id="scoreChart" class="panel-body" style="padding: 16px; min-height: 240px; position: relative;">
+              <canvas id="scoreCanvas"></canvas>
+            </div>
+          </div>
+
           <div class="span-6 panel">
-            <div class="panel-head"><h2>Heatmap par Crypto</h2></div>
+            <div class="panel-head">
+              <h2>Heatmap par Crypto</h2>
+            </div>
             <div id="heatmapCrypto" class="list"></div>
           </div>
 
           <div class="span-3 panel">
-            <div class="panel-head"><h2>Par Jour</h2></div>
+            <div class="panel-head">
+              <h2>Par Jour</h2>
+            </div>
             <div id="heatmapDay" class="list"></div>
           </div>
 
           <div class="span-3 panel">
-            <div class="panel-head"><h2>Par Heure</h2></div>
+            <div class="panel-head">
+              <h2>Par Heure</h2>
+            </div>
             <div id="heatmapHour" class="list"></div>
           </div>
         </div>
@@ -393,17 +580,28 @@
           <div class="panel-head">
             <h2>Trade History</h2>
             <div style="display:flex;gap:8px;align-items:center;">
-              <input type="text" id="tradeFilterSymbol" placeholder="Filtrer par crypto..." style="min-height:32px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 10px;background:var(--bg);color:var(--text);font:inherit;font-size:12px;width:160px;">
+              <input type="text" id="tradeFilterSymbol" placeholder="Filtrer par crypto..."
+                style="min-height:32px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 10px;background:var(--bg);color:var(--text);font:inherit;font-size:12px;width:160px;">
               <select id="tradeFilterProfitable" class="custom-select">
                 <option value="">Tous</option>
                 <option value="win">Gagnants</option>
                 <option value="loss">Perdants</option>
               </select>
               <button id="tradeRefreshButton" class="btn" title="Rafraîchir">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M23 4v6h-6" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
               </button>
               <button id="tradeExportCsvButton" class="btn btn-primary">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;vertical-align:middle;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                  style="margin-right:6px;vertical-align:middle;">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
                 Exporter CSV
               </button>
             </div>
@@ -458,7 +656,13 @@
               <span id="configHint" class="muted" style="font-size:11px;"></span>
             </div>
             <button id="saveConfigButton" class="btn btn-primary">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;vertical-align:middle;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                style="margin-right:6px;vertical-align:middle;">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" />
+                <polyline points="7 3 7 8 15 8" />
+              </svg>
               Sauvegarder
             </button>
           </div>
@@ -469,6 +673,7 @@
     </main>
   </div>
 
-  <script src="{{ url_for('static', filename='dashboard.js') }}?v=1.1.1"></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}?v=1.1.3"></script>
 </body>
+
 </html>

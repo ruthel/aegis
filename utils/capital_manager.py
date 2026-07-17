@@ -300,6 +300,42 @@ class CapitalManager:
                 print(f"⚠️ Erreur récupération frais {symbol}: {e}")
         
         return self._get_fallback_fees()
+        
+    def sync_fees_to_bot(self):
+        """Récupère et synchronise les frais réels sur le bot"""
+        try:
+            # Récupérer la première paire configurée
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
+            if not trading_pairs:
+                return False
+            
+            first_pair = trading_pairs[0].strip()
+            # Normaliser
+            if '/' not in first_pair:
+                if first_pair.endswith('USD'):
+                    symbol = f"{first_pair[:-3]}/USD"
+                else:
+                    symbol = f"{first_pair}/USD"
+            else:
+                symbol = first_pair
+            
+            fees = self.get_real_trading_fees(symbol)
+            taker_fee = fees.get('taker', 0.001)
+            
+            # Mettre à jour les variables sur le bot
+            self.bot.trading_fee = taker_fee
+            # Formule: (taker_fee * 2) + 0.002 (aller-retour frais + marge 0.2%)
+            optimal_min_profit = (taker_fee * 2) + 0.002
+            
+            # Utiliser la valeur configurée par l'utilisateur (ex: 3%) si elle est supérieure au minimum optimal de couverture des frais
+            configured_min_profit = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
+            self.bot.min_profit_threshold = max(configured_min_profit, optimal_min_profit)
+            
+            print(f"🔄 FRAIS SYNCHRONISÉS: Taker: {taker_fee*100:.3f}% | Profit Min Optimal (frais couverts): {optimal_min_profit*100:.3f}% | Profit Target Effectif: {self.bot.min_profit_threshold*100:.3f}%")
+            return True
+        except Exception as e:
+            print(f"⚠️ Erreur synchronisation frais au bot: {e}")
+            return False
     
     def _detect_vip_level(self, taker_fee):
         """Détecte niveau VIP selon frais taker"""

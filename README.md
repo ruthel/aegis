@@ -1,6 +1,6 @@
 # 🤖 Aegis Trading Bot v2
 
-Bot de trading spot multi-exchange avec stratégies intelligentes, risk management et optimisations temps réel.
+Bot de trading spot multi-exchange avec stratégies intelligentes, risk management, optimisations temps réel et dashboard web de monitoring avancé.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -73,23 +73,25 @@ BTC/USD 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 └──────────────────────────────────────────────────┘
 ```
 
-### 🖥️ Interface Optimisée
+### 🖥️ Dashboard Web de Monitoring (`dashboard/`)
+
+Interface web premium (Flask + WebSocket) pour surveiller et piloter le bot en temps réel.
+
 ```
-🤖 Aegis | LIVE ⚡ TEMPS RÉEL | 0 positions
-📊 BTC, ETH, SOL, ADA | Min dynamique | Seuil adaptatif | Spot multi-exchange
-🛑 Ctrl+C pour arrêter
-
-📊 +1.45 USD | 3 trades (67% win)
-💳 SPOT: USD 95.23 | BTC 0.001234 | ETH 0.0012
-
-⚡ 12:34:56 | BTC 111.6K | ETH 3.98K | SOL 194 | ADA 1.20K
-
-🎯 TOP: BTC 85 (V30 L20 M5) | ETH 72 (V25 L15 M10) → TRADING
-
-⚡ BTC/USD 111645.23 (+2.34%) | Vol 2.1B
-📊 BTC 111645 | Signal: BUY | Confiance: [████████░░] ✓ 75%
-🎯 BTC → BUY_READY (Signal 75%) | Exécution: Immédiate
+# Démarrer le dashboard + bot
+python start.py
+# → http://127.0.0.1:8080
 ```
+
+**Fonctionnalités Dashboard :**
+- **Live** : Flux WebSocket temps réel, positions ouvertes avec P&L latent, prix actuels, **Contrôle Manuel (Manual Override : Force BUY / Force SELL / Pause)**
+- **Dashboard** : 5 cartes métriques sur une ligne (Solde, PnL, Trades/WinRate, Croissance/Balance, Rendement/Mise)
+- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss fusionnés, graphique PnL, heatmaps par crypto/jour/heure, **Graphique d'Historique des Scores Crypto**
+- **Trades** : Historique complet des trades fermés, export CSV
+- **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel
+- **Console** : Logs bot en temps réel avec autoscroll et filtrage
+- **Bot Control** : Démarrer/arrêter le bot sans console CMD visible (pythonw.exe sur Windows)
+
 
 ## ⚙️ Configuration Avancée
 
@@ -167,6 +169,13 @@ aegis/
 │   └── capital_manager.py      # Gestion capital + frais dynamiques
 ├── config.py                   # Configuration centralisée (.env)
 ├── run.py                      # Point d'entrée sécurisé
+├── start.py                    # Lance dashboard + bot ensemble
+├── dashboard/                  # Interface web Flask
+│   ├── app.py                  # Serveur Flask + routes API
+│   ├── templates/index.html    # UI premium (glassmorphism, dark mode)
+│   └── static/
+│       ├── dashboard.js        # Logique frontend (WebSocket, Chart.js)
+│       └── dashboard.css       # Styles premium
 ```
 
 ## 🔥 Optimisations Niveau 2
@@ -572,11 +581,12 @@ python -m cProfile -o profile.stats run.py
 
 ---
 
-**Version** : 2.2 Professional Aegis  
-**Architecture** : Modulaire consolidée (6 classes vs 12)  
+**Version** : 2.3 Professional Aegis  
+**Architecture** : Modulaire consolidée (6 classes vs 12) + Dashboard Web  
 **Code** : -500 lignes redondantes éliminées  
 **Performance** : Intervalle adaptatif + sessions optimisées  
 **Déploiement** : AWS EU + Render + Local  
 **Latence** : 10-30ms (optimisé Europe)  
-**Revenus** : Trading spot
-**Sécurité** : IP statique + CloudWatch
+**Dashboard** : Flask + WebSocket + Chart.js — http://127.0.0.1:8080  
+**Revenus** : Trading spot  
+**Sécurité** : IP statique + CloudWatch  

@@ -102,7 +102,7 @@ def backtest_symbol(exchange, symbol, args):
         if not signal:
             continue
 
-        exit_index, exit_price, outcome = simulate_trade(
+        exit_index, exit_price, outcome_raw = simulate_trade(
             klines,
             index,
             current_price,
@@ -110,7 +110,32 @@ def backtest_symbol(exchange, symbol, args):
             args.stop_percent,
             args.max_hold_candles,
         )
-        pnl_percent = ((exit_price - current_price) / current_price) * 100
+        
+        # Déterminer les frais de transaction réels (Taker)
+        fee_rate = 0.001  # 0.1% par défaut
+        
+        # 1. Lire depuis la variable d'environnement (exprimée en %, ex: 0.26 pour 0.26%)
+        env_fee = os.getenv('TRADING_FEE_PERCENT')
+        if env_fee:
+            try:
+                fee_rate = float(env_fee) / 100.0
+            except ValueError:
+                pass
+        else:
+            # 2. Lire depuis l'exchange CCXT chargé
+            try:
+                market = exchange.markets.get(symbol)
+                if market and market.get('taker') is not None:
+                    fee_rate = float(market['taker'])
+            except Exception:
+                pass
+
+        # Calculer le P&L net après frais de transaction (achat + vente)
+        # Achat: current_price * (1 + fee_rate)
+        # Vente: exit_price * (1 - fee_rate)
+        pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
+        outcome = 'win' if pnl_percent > 0 else 'loss'
+
         trades.append({
             'entry_time': datetime.fromtimestamp(klines[index]['timestamp'] / 1000, timezone.utc).isoformat(),
             'exit_time': datetime.fromtimestamp(klines[exit_index]['timestamp'] / 1000, timezone.utc).isoformat(),

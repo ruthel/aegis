@@ -51,10 +51,31 @@ if not sys.stdout or not sys.stdout.isatty():
 # Charger les variables d'environnement
 def main():
     """Point d'entrée principal"""
-    print("🚀 Démarrage du bot Aegis...")
     import os as _os
     _os.makedirs('data', exist_ok=True)
-    open('data/bot.pid', 'w').write(str(_os.getpid()))
+    
+    # Vérification de sécurité : s'assurer qu'aucune autre instance du bot ne tourne
+    pid_path = 'data/bot.pid'
+    if _os.path.exists(pid_path):
+        try:
+            with open(pid_path, 'r') as f:
+                old_pid = int(f.read().strip())
+            if old_pid != _os.getpid():
+                try:
+                    # check si le processus est actif
+                    _os.kill(old_pid, 0)
+                    print(f"❌ ERREUR: Une autre instance du bot Aegis est déjà en cours d'exécution (PID {old_pid}).")
+                    print("   Veuillez arrêter l'autre instance ou supprimer data/bot.pid avant de démarrer.")
+                    sys.exit(1)
+                except (ProcessLookupError, OSError):
+                    # Le PID est orphelin, on peut écraser
+                    pass
+        except ValueError:
+            # Fichier corrompu, on continue
+            pass
+
+    print("🚀 Démarrage du bot Aegis...")
+    open(pid_path, 'w').write(str(_os.getpid()))
     
     # Charger la configuration locale en dernier pour les secrets non versionnés.
     load_dotenv(override=True)
