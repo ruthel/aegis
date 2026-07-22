@@ -44,9 +44,26 @@ MAX_DAILY_TRADES = int(os.getenv('MAX_DAILY_TRADES', '100'))
 EMERGENCY_STOP_LOSS = float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
 TRADING_FEE_PERCENT = float(os.getenv('TRADING_FEE_PERCENT', '0.1'))
 MIN_PROFIT_THRESHOLD = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8'))
-
-# Variables supplémentaires du .env actuel
 RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '2'))
+
+# ===== BREAKEVEN STOP (ZÉRO PERTE) =====
+BREAKEVEN_STOP_ENABLED = os.getenv('BREAKEVEN_STOP_ENABLED', 'False').lower() == 'true'
+BREAKEVEN_USE_RESISTANCE = os.getenv('BREAKEVEN_USE_RESISTANCE', 'True').lower() == 'true'
+BREAKEVEN_TRIGGER_PROFIT_PCT = float(os.getenv('BREAKEVEN_TRIGGER_PROFIT_PCT', '1.5'))
+BREAKEVEN_LOCK_PROFIT_PCT = float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0'))
+BREAKEVEN_MIN_NET_PROFIT_PCT = float(os.getenv('BREAKEVEN_MIN_NET_PROFIT_PCT', '0.02'))
+BREAKEVEN_TRIGGER_BUFFER_PCT = float(os.getenv('BREAKEVEN_TRIGGER_BUFFER_PCT', '0.0'))
+BREAKEVEN_MIN_STOP_GAP_PCT = float(os.getenv('BREAKEVEN_MIN_STOP_GAP_PCT', '0.01'))
+
+# ===== EXIT DECISION ENGINE (PHASE 1: SHADOW MODE) =====
+EXIT_ENGINE_ENABLED = os.getenv('EXIT_ENGINE_ENABLED', 'True').lower() == 'true'
+EXIT_ENGINE_SHADOW_MODE = os.getenv('EXIT_ENGINE_SHADOW_MODE', 'True').lower() == 'true'
+PROFIT_FRAGILE_MAX_NET_PCT = float(os.getenv('PROFIT_FRAGILE_MAX_NET_PCT', '0.40'))
+TIME_STOP_MINUTES = int(os.getenv('TIME_STOP_MINUTES', '12'))
+
+# ===== CORE ML ENGINE =====
+ML_FILTER_ENABLED = os.getenv('ML_FILTER_ENABLED', 'False').lower() == 'true'
+ML_MIN_PROBABILITY = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
 
 # ===== PAPER TRADING =====
 PAPER_TRADING = os.getenv('PAPER_TRADING', 'False').lower() == 'true'

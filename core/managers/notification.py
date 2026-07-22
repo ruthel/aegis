@@ -2,6 +2,7 @@ import requests
 import os
 import time
 import threading
+import json
 from datetime import datetime, timedelta
 from config import BOT_NAME
 
@@ -22,27 +23,222 @@ class NotificationManager:
         self.last_status_time = 0
         self.bot_ref = None
         self.daily_stats = {'start_balance': 0, 'trades': [], 'start_time': None}
+        self._last_update_id = None
         
     def set_bot(self, bot):
-        """Référence au bot pour status périodique"""
+        """Référence au bot pour status périodique et écoute des commandes"""
         self.bot_ref = bot
+        if self.enabled:
+            # Lancer l'écouteur de commandes Telegram en arrière-plan
+            threading.Thread(target=self._poll_telegram_commands, daemon=True).start()
         
+    def _poll_telegram_commands(self):
+        """Boucle d'écoute (long-polling) des commandes Telegram"""
+        offset = 0
+        
+        # Consommer tous les anciens messages en attente au démarrage pour ne pas les réexécuter
+        try:
+            init_url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates"
+            res = requests.get(init_url, params={'offset': -1, 'timeout': 0}, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                results = data.get('result', [])
+                if results:
+                    last_update = results[-1]
+                    offset = last_update['update_id'] + 1
+                    print(f"🧹 Telegram : messages en attente ignorés au démarrage.")
+        except Exception as e:
+            print(f"⚠️ Erreur initialisation offset Telegram : {e}")
+
+        url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates"
+        
+        # Petit délai au démarrage pour s'assurer que le bot est initialisé
+        time.sleep(2)
+        print("🤖 Écouteur de commandes Telegram démarré.")
+        
+        while self.enabled:
+            try:
+                params = {'offset': offset, 'timeout': 20}
+                response = requests.get(url, params=params, timeout=25)
+                
+                if response.status_code != 200:
+                    time.sleep(5)
+                    continue
+                    
+                data = response.json()
+                if not data.get('ok'):
+                    time.sleep(5)
+                    continue
+                    
+                for update in data.get('result', []):
+                    update_id = update['update_id']
+                    self._last_update_id = update_id
+                    offset = update_id + 1
+                    
+                    message = update.get('message', {})
+                    text = message.get('text', '').strip()
+                    chat = message.get('chat', {})
+                    chat_id = str(chat.get('id', ''))
+                    
+                    # Sécurité : N'accepter que les messages provenant du chat_id autorisé
+                    if chat_id != self.chat_id:
+                        continue
+                        
+                    if text:
+                        msg_id = message.get('message_id')
+                        msg_date = message.get('date')
+                        self.save_telegram_message_history(msg_id, text, msg_date, direction="incoming")
+                    
+                    if text.startswith('/'):
+                        command = text.split()[0].lower()
+                        self._handle_telegram_command(command)
+                        
+            except Exception as e:
+                # Éviter de saturer la boucle en cas d'erreur réseau
+                time.sleep(10)
+
+    def _handle_telegram_command(self, command):
+        """Traite une commande reçue depuis Telegram"""
+        if command == '/events':
+            try:
+                from utils.event_manager import MacroEventManager
+                macro_mgr = MacroEventManager()
+                now = time.time()
+                upcoming = []
+                from datetime import timezone
+                
+                for item in macro_mgr.macro_calendar_2026:
+                    event_dt = datetime.fromisoformat(item['date']).replace(tzinfo=timezone.utc)
+                    event_ts = event_dt.timestamp()
+                    if event_ts > now:
+                        local_dt = datetime.fromtimestamp(event_ts)
+                        upcoming.append((event_ts, item, local_dt))
+                
+                upcoming.sort(key=lambda x: x[0])
+                next_events = upcoming[:5]
+                
+                msg = "📅 <b>ÉVÉNEMENTS MACRO PROGRAMMÉS (2026)</b>\n\n"
+                if next_events:
+                    for i, (event_ts, item, local_dt) in enumerate(next_events):
+                        event_type = item['event']
+                        event_name = "Réunion FED" if event_type == "FED_MEETING" else "CPI Inflation" if event_type == "INFLATION_DATA" else "Incertitude Marché"
+                        date_display = local_dt.strftime("%d/%m/%Y à %H:%M")
+                        
+                        # Récupérer les paramètres correspondants
+                        params = macro_mgr.event_adjustments.get(event_type, {})
+                        bonus = params.get('score_bonus', 10)
+                        reduction = params.get('threshold_reduction', 8)
+                        duration = params.get('duration_hours', 24)
+                        desc = item.get('description', '')
+                        
+                        msg += f"<b>{i+1}. {event_name}</b>\n"
+                        msg += f"Le <b>{date_display}</b> (heure locale) aura lieu l'événement <i>\"{desc}\"</i>. Pour y faire face, le bot s'adaptera pendant une durée de <b>{duration}h</b> en augmentant son score de <b>+{bonus} points</b> et en réduisant son seuil de déclenchement de <b>-{reduction} points</b>.\n\n"
+                else:
+                    msg += "Aucun événement futur recensé pour le moment.\n"
+                
+                msg += "<i>Le bot s'adapte automatiquement et se met en mode sécurité 2h avant chaque événement.</i>"
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur lors de la récupération des événements : {e}", "")
+                
+        elif command == '/status':
+            try:
+                status_msg = self._build_status_message()
+                self.notify(status_msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur lors de la génération du statut : {e}", "")
+                
+        elif command == '/restart':
+            try:
+                self.notify("🔄 <b>Redémarrage du bot en cours...</b>", "")
+                time.sleep(1)
+                
+                # IMPORTANT: Confirmer la lecture du message à Telegram avant de couper le bot.
+                # Sinon, au redémarrage, getUpdates renverra à nouveau ce message de /restart en boucle.
+                if hasattr(self, '_last_update_id') and self._last_update_id:
+                    try:
+                        confirm_url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates"
+                        confirm_params = {'offset': self._last_update_id + 1, 'limit': 1, 'timeout': 0}
+                        requests.get(confirm_url, params=confirm_params, timeout=2)
+                    except Exception:
+                        pass
+                
+                import urllib.request
+                port = os.getenv('DASHBOARD_PORT', '8080')
+                url = f"http://127.0.0.1:{port}/api/bot/restart"
+                
+                req = urllib.request.Request(url, method='POST')
+                try:
+                    with urllib.request.urlopen(req, timeout=2) as response:
+                        pass
+                except Exception:
+                    pass
+            except Exception as e:
+                self.notify(f"⚠️ Échec du redémarrage : {e}", "")
+                
+        elif command == '/help' or command == '/start':
+            msg = "🤖 <b>COMMANDES DISPONIBLES</b>\n\n"
+            msg += "• /status - Voir le portefeuille et la performance\n"
+            msg += "• /events - Voir les 5 prochains événements macroéconomiques répertoriés\n"
+            msg += "• /restart - Redémarrer le bot à distance\n"
+            msg += "• /help - Afficher ce message d'aide"
+            self.notify(msg, "")
+        
+    def save_telegram_message_history(self, message_id, text, timestamp=None, direction="outgoing"):
+        """Enregistre tout message Telegram dans data/telegram_messages.jsonl et data/telegram_messages.json"""
+        try:
+            os.makedirs('data', exist_ok=True)
+            entry = {
+                'message_id': message_id,
+                'timestamp': timestamp or int(datetime.now().timestamp()),
+                'direction': direction,
+                'text': text
+            }
+            # 1. Format JSONL primary: data/telegram_messages.jsonl
+            with open('data/telegram_messages.jsonl', 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+            # 2. Format JSON Array: data/telegram_messages.json
+            json_path = 'data/telegram_messages.json'
+            history = []
+            if os.path.exists(json_path):
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        history = json.load(f)
+                        if not isinstance(history, list):
+                            history = []
+                except Exception:
+                    history = []
+            history.append(entry)
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ Erreur enregistrement historique Telegram: {e}")
+
     def notify(self, message, emoji="🤖"):
+        full_text = f"{emoji} {message}".strip() if emoji else message
         if not self.enabled:
-            print(f"📢 {message}")
+            print(f"📢 {full_text}")
             return False
             
         try:
             url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
             data = {
                 'chat_id': self.chat_id,
-                'text': f"{emoji} {message}",
+                'text': full_text,
                 'parse_mode': 'HTML'
             }
             response = requests.post(url, data=data, timeout=10)
-            return response.status_code == 200
-        except:
-            print(f"📢 {message}")
+            if response.status_code == 200:
+                res_json = response.json()
+                if res_json.get('ok') and 'result' in res_json:
+                    msg_id = res_json['result'].get('message_id')
+                    ts = res_json['result'].get('date')
+                    self.save_telegram_message_history(msg_id, full_text, ts)
+                return True
+            return False
+        except Exception as e:
+            print(f"📢 {full_text}")
             return False
     
     def notify_trade_buy(self, symbol, amount, price, total, signal_data):
@@ -58,17 +254,36 @@ class NotificationManager:
         self.notify(msg, "")
     
     def notify_trade_sell(self, symbol, amount, price, total, buy_price, pnl, hold_time):
-        """Notification vente avec P&L"""
+        """Notification vente (le profit pnl est déjà déduit des frais)"""
         crypto = symbol.split('/')[0]
-        pnl_pct = ((price - buy_price) / buy_price) * 100
-        emoji = "🟢" if pnl > 0 else "🔴"
         
+        # Calcul de la base de coût d'achat initiale pour déterminer le % de P&L exact
+        if buy_price and buy_price > 0 and buy_price != price and amount > 0:
+            cost_basis = buy_price * amount
+        elif total and total > 0:
+            cost_basis = total - pnl
+        else:
+            cost_basis = (price * amount) - pnl if (price and amount) else 0.0
+
+        pnl_pct = (pnl / cost_basis * 100.0) if (cost_basis and cost_basis > 0) else 0.0
+
+        if pnl >= 0.0001:
+            emoji = "🟢"
+            sign = "+"
+        elif pnl <= -0.0001:
+            emoji = "🔴"
+            sign = ""
+        else:
+            emoji = "⚪"
+            sign = ""
+
         msg = f"🔴 VENTE {crypto}\n\n"
         msg += f"💰 Montant: {amount:.6f} {crypto}\n"
         msg += f"💵 Prix: {price:.2f} USD\n"
         msg += f"📊 Total: {total:.2f} USD\n\n"
-        msg += f"💸 P&L: {emoji} {pnl:+.2f} USD ({pnl_pct:+.1f}%)\n"
-        msg += f"⏱️ Détention: {hold_time}\n\n"
+        msg += f"💸 P&L: {emoji} {pnl:+.2f} USD ({sign}{pnl_pct:.2f}%)\n"
+        if hold_time and hold_time != "N/A":
+            msg += f"⏱️ Détention: {hold_time}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
@@ -363,22 +578,24 @@ class NotificationManager:
     
     def notify_macro_event_start(self, event_type, event_info):
         """Notification début d'événement macro"""
-        message = f"🚨 **MACRO EVENT DÉTECTÉ**\n\n"
-        message += f"🏷️ **Type**: {event_type}\n"
-        message += f"📋 **Description**: {event_info['description']}\n\n"
-        message += f"🎁 **Bonus Score**: +{event_info['score_bonus']} points\n"
-        message += f"🎯 **Réduction Seuil**: -{event_info['threshold_reduction']} points\n"
-        message += f"⏰ **Durée Estimée**: {event_info['duration_hours']}h\n\n"
+        event_name = "Réunion FED" if event_type == "FED_MEETING" else "CPI Inflation" if event_type == "INFLATION_DATA" else "Incertitude Marché" if event_type == "MARKET_UNCERTAINTY" else event_type
+        message = f"🤖 🚨 <b>MACRO EVENT DÉTECTÉ</b>\n\n"
+        message += f"🏷️ <b>Type</b>: {event_name}\n"
+        message += f"📋 <b>Description</b>: {event_info['description']}\n\n"
+        message += f"🎁 <b>Bonus Score</b>: +{event_info['score_bonus']} points\n"
+        message += f"🎯 <b>Réduction Seuil</b>: -{event_info['threshold_reduction']} points\n"
+        message += f"⏰ <b>Durée Estimée</b>: {event_info['duration_hours']}h\n\n"
         message += f"🤖 Le bot s'adapte automatiquement aux conditions macro."
-        return self.notify(message)
+        return self.notify(message, "")
     
     def notify_macro_event_end(self, event_type, elapsed_hours):
         """Notification fin d'événement macro"""
-        message = f"✅ **FIN MACRO EVENT**\n\n"
-        message += f"🏷️ **Type**: {event_type}\n"
-        message += f"⏱️ **Durée**: {elapsed_hours:.1f}h\n\n"
+        event_name = "Réunion FED" if event_type == "FED_MEETING" else "CPI Inflation" if event_type == "INFLATION_DATA" else "Incertitude Marché" if event_type == "MARKET_UNCERTAINTY" else event_type
+        message = f"✅ <b>FIN MACRO EVENT</b>\n\n"
+        message += f"🏷️ <b>Type</b>: {event_name}\n"
+        message += f"⏱️ <b>Durée</b>: {elapsed_hours:.1f}h\n\n"
         message += f"🔄 Le bot reprend ses paramètres normaux."
-        return self.notify(message)
+        return self.notify(message, "")
     
     def send_status_update(self):
         """Envoie status périodique synchronisé sur XX:00 et XX:30"""
@@ -404,16 +621,74 @@ class NotificationManager:
         
         try:
             status = self._build_status_message()
-            self.notify(status)
+            self.notify(status, "")
         except Exception as e:
             pass
-    
+            
+    def _get_historical_performance(self):
+        """Calcule les statistiques de performance réelles basées sur l'historique des positions du bot"""
+        if not self.bot_ref or not hasattr(self.bot_ref, 'state'):
+            return None
+            
+        positions = self.bot_ref.state.get('positions', [])
+        buys = {}
+        trades = []
+        
+        # Parcourir les positions triées chronologiquement
+        for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+            symbol = pos.get('symbol')
+            side = pos.get('side')
+            amount = float(pos.get('amount') or 0)
+            px = float(pos.get('price') or 0)
+            if not symbol or amount <= 0 or px <= 0:
+                continue
+                
+            if side == 'buy':
+                buys.setdefault(symbol, []).append({
+                    'amount': amount, 'price': px
+                })
+            elif side == 'sell':
+                remaining = amount
+                queue = buys.get(symbol, [])
+                while remaining > 1e-12 and queue:
+                    entry = queue[0]
+                    filled = min(remaining, entry['amount'])
+                    
+                    # Estimer les frais (0.4% taker Kraken par défaut)
+                    fee_rate = getattr(self.bot_ref, 'trading_fee', 0.004)
+                    buy_cost = entry['price'] * filled * (1 + fee_rate)
+                    sell_revenue = px * filled * (1 - fee_rate)
+                    pnl = sell_revenue - buy_cost
+                    
+                    trades.append({
+                        'pnl': pnl,
+                        'profitable': pnl > 0
+                    })
+                    
+                    entry['amount'] -= filled
+                    remaining -= filled
+                    if entry['amount'] <= 1e-12:
+                        queue.pop(0)
+                        
+        if not trades:
+            return None
+            
+        wins = [t for t in trades if t['profitable']]
+        total_pnl = sum(t['pnl'] for t in trades)
+        best_trade = max(t['pnl'] for t in trades) if trades else 0
+        
+        return {
+            'total_pnl': total_pnl,
+            'total_trades': len(trades),
+            'winrate': (len(wins) / len(trades)) * 100 if trades else 0,
+            'best_trade': best_trade
+        }
+
     def _build_status_message(self):
         """Construit message status ultra-compact"""
         
         def format_amount(amount, crypto):
             """Formate la quantité avec décimales adaptatives"""
-            # Cryptos chères (BTC, etc.) : plus de décimales
             if amount < 0.001:
                 return f"{amount:.8f}".rstrip('0').rstrip('.')
             elif amount < 0.01:
@@ -464,10 +739,40 @@ class NotificationManager:
                     })
                     total_value += value
         
-        # Stats
-        win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
-        
+        # Macro Security section
+        macro_text = ""
+        try:
+            if hasattr(bot, 'market_analyzer') and bot.market_analyzer is not None:
+                macro_mgr = bot.market_analyzer._get_macro_manager()
+            else:
+                from utils.event_manager import MacroEventManager
+                macro_mgr = MacroEventManager()
+                
+            if macro_mgr and macro_mgr.current_event:
+                event_type = macro_mgr.current_event
+                event_name = "Réunion FED" if event_type == "FED_MEETING" else "CPI Inflation" if event_type == "INFLATION_DATA" else "Incertitude Marché" if event_type == "MARKET_UNCERTAINTY" else event_type
+                info = macro_mgr.current_event_info or {}
+                desc = info.get('description', '')
+                elapsed = (time.time() - macro_mgr.event_start_time) / 3600 if macro_mgr.event_start_time else 0
+                duration = info.get('duration_hours', 24)
+                remaining = max(0, duration - elapsed)
+                bonus = info.get('score_bonus', 0)
+                reduction = info.get('threshold_reduction', 0)
+                
+                macro_text = f"🤖 🔴 <b>Macro-Securité : {event_name}</b>\n"
+                macro_text += f"──────────────────────────\n"
+                if desc:
+                    macro_text += f"{desc}\n\n"
+                macro_text += f"⏱️ <b>Temps restant</b> : {remaining:.1f}h / {duration}h\n"
+                macro_text += f"⚖️ <b>Ajustements appliqués</b> :\n"
+                macro_text += f"   • Bonus de Score : +{bonus}\n"
+                macro_text += f"   • Seuil d'Entrée : -{reduction}\n"
+                macro_text += f"──────────────────────────\n\n"
+        except Exception as e:
+            pass
+
         msg = f"🤖 {BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}\n\n"
+        msg += macro_text
         msg += f"💼 Portfolio ({total_value:.2f} USD)\n"
         msg += f"├─ USD: {usd:.2f}\n"
         
@@ -481,36 +786,28 @@ class NotificationManager:
             # Détail des ordres pour cette crypto
             if item['has_orders']:
                 try:
-                    # Récupérer les ordres ouverts pour cette crypto
                     open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USD")
                     if open_orders:
                         for j, order in enumerate(open_orders):
                             is_last_order = (j == len(open_orders) - 1)
                             order_prefix = "     └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
                             
-                            # Calculer profit réel (prix vente - prix achat - frais)
                             order_price = float(order['price'])
                             try:
                                 avg_buy_price = bot.get_real_buy_price(item['symbol'])
                                 if avg_buy_price and avg_buy_price > 0:
-                                    # Profit brut
                                     gross_profit_pct = ((order_price - avg_buy_price) / avg_buy_price) * 100
-                                    # Soustraire frais (0.1% achat + 0.1% vente = 0.2%)
                                     profit_pct = gross_profit_pct - 0.2
                                 else:
-                                    # Fallback: distance au prix actuel
                                     current_price = bot.get_price(item['symbol'])
                                     profit_pct = ((order_price - current_price) / current_price) * 100
                             except:
-                                # Fallback: distance au prix actuel
                                 current_price = bot.get_price(item['symbol'])
                                 profit_pct = ((order_price - current_price) / current_price) * 100
                             
-                            # Calculer temps depuis création
                             order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
                             time_diff = datetime.now() - order_time
                             
-                            # Format durée avec jours + heures
                             if time_diff.days > 0:
                                 hours = time_diff.seconds // 3600
                                 time_display = f"{time_diff.days}j {hours}h"
@@ -522,74 +819,61 @@ class NotificationManager:
                                 time_display = f"{time_diff.seconds // 60}min"
                             
                             msg += f"{order_prefix} Limite: {format_amount(float(order['amount']), item['crypto'])} @ {order_price:.2f}\n"
-                            # Ajouter ligne de détails (profit + durée)
                             detail_prefix = "     │  ├─" if (is_last and not is_last_order) else "        ├─" if is_last else "│  │  ├─" if not is_last_order else "│     ├─"
                             msg += f"{detail_prefix} Profit: +{profit_pct:.1f}%\n"
                             detail_prefix2 = "     │  └─" if (is_last and not is_last_order) else "        └─" if is_last else "│  │  └─" if not is_last_order else "│     └─"
                             msg += f"{detail_prefix2} Durée: {time_display}\n"
                     else:
-                        # Pas d'ordres trouvés mais balance locked > 0
                         order_prefix = "   └─" if is_last else "│  └─"
                         msg += f"{order_prefix} 🤖 Ordre actif (détails indisponibles)\n"
                 except Exception as e:
-                    # Fallback si erreur récupération ordres
                     order_prefix = "   └─" if is_last else "│  └─"
                     msg += f"{order_prefix} 🤖 Ordre actif\n"
         
         msg += f"\n"
         msg += f"📈 Performance\n"
         
-        # Utiliser stats 30j si disponibles (P&L + trades + winrate cohérents)
-        if hasattr(bot, 'global_stats_30d') and bot.global_stats_30d:
-            stats = bot.global_stats_30d
+        stats = self._get_historical_performance()
+        if stats:
             msg += f"├─ P&L: {stats['total_pnl']:+.2f} USD\n"
-            msg += f"├─ Trades: {stats['total_cycles']} ({stats['winrate']:.0f}% win) [30j]\n"
-            if stats['best_trade'] > 0:
-                msg += f"└─ Meilleur: +{stats['best_trade']:.2f} USD\n\n"
+            msg += f"├─ Trades: {stats['total_trades']} ({stats['winrate']:.0f}% win)\n"
+            if stats['best_trade'] > 0 or stats['total_trades'] > 0:
+                msg += f"└─ Meilleur: {stats['best_trade']:+.2f} USD\n\n"
             else:
                 msg += f"└─ Aucun trade\n\n"
         else:
-            # Fallback sur stats journalières
-            msg += f"├─ P&L: {bot.daily_pnl:+.2f} USD\n"
-            win_rate = (bot.winning_trades / bot.total_trades * 100) if bot.total_trades > 0 else 0
-            msg += f"├─ Trades: {bot.total_trades} ({win_rate:.0f}% win)\n"
-            if bot.total_trades > 0:
-                msg += f"└─ Meilleur: N/A\n\n"
-            else:
-                msg += f"└─ Aucun trade\n\n"
-        
-        # Opportunités - LIMITER AUX TRADABLE PAIRS
-        msg += f"🔮 Opportunités\n"
-        opps = []
-        
-        # Récupérer les cryptos tradables du bot
-        try:
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
-            stuck_positions = []
-            tradable_pairs = bot.crypto_scorer.rank_cryptos(bot, trading_pairs, stuck_positions)
-        except:
-            tradable_pairs = []
-        
-        # Seulement les cryptos tradables
-        for symbol in tradable_pairs:
-            crypto = symbol.split('/')[0]
+            msg += f"├─ P&L: +0.00 USD\n"
+            msg += f"├─ Trades: 0 (0% win)\n"
+            msg += f"└─ Aucun trade\n\n"
             
-            try:
-                prediction = bot.predict_next_buy_opportunity(symbol)
-                
-                if prediction['status'] == 'READY':
-                    opps.append(f"{crypto}: Maintenant ({prediction['confidence']:.0f}%)")
-                elif prediction['status'] == 'WAITING':
-                    price = prediction.get('target_price', 0)
-                    opps.append(f"{crypto}: {prediction['time_estimate']} (↓ {price:.0f})")
-            except:
-                pass
-        
-        if opps:
-            for i, opp in enumerate(opps):
-                prefix = "├─" if i < len(opps) - 1 else "└─"
-                msg += f"{prefix} {opp}\n"
-        else:
-            msg += "└─ Aucune\n"
+        # Section Prochains Événements Macro
+        try:
+            from utils.event_manager import MacroEventManager
+            macro_mgr = MacroEventManager()
+            now = time.time()
+            upcoming = []
+            from datetime import timezone
+            
+            for item in macro_mgr.macro_calendar_2026:
+                event_dt = datetime.fromisoformat(item['date']).replace(tzinfo=timezone.utc)
+                event_ts = event_dt.timestamp()
+                if event_ts > now:
+                    local_dt = datetime.fromtimestamp(event_ts)
+                    event_name = "FED" if item['event'] == "FED_MEETING" else "CPI Inflation" if item['event'] == "INFLATION_DATA" else "Incertitude Marché"
+                    date_display = local_dt.strftime("%d/%m à %H:%M")
+                    upcoming.append((event_ts, f"{event_name} : {date_display}"))
+            
+            upcoming.sort(key=lambda x: x[0])
+            next_events = upcoming[:2]
+            
+            msg += f"📅 <b>Événements Macro à venir</b>\n"
+            if next_events:
+                for i, (_, text) in enumerate(next_events):
+                    prefix = "├─" if i < len(next_events) - 1 else "└─"
+                    msg += f"{prefix} {text}\n"
+            else:
+                msg += "└─ Aucun événement à venir\n"
+        except Exception as e:
+            pass
         
         return msg

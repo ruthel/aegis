@@ -656,6 +656,17 @@ html, body {
 .span-9 { grid-column: span 9; }
 .span-12 { grid-column: span 12; }
 
+/* Panel qui s'adapte à sa hauteur de contenu (ne s'étire pas) */
+.panel-fit {
+  align-self: start;
+}
+
+/* Liste scrollable avec hauteur maximale */
+.list-scroll {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
 /* ===== BADGES ===== */
 .badge {
   display: inline-flex;
@@ -931,10 +942,45 @@ tr:hover td {
 }
 
 .btn-card-more {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: var(--transition);
 }
 .btn-card-more:hover {
   background: rgba(255, 255, 255, 0.05) !important;
+  color: var(--text);
+}
+
+.position-actions-cell {
+  width: 42px;
+  text-align: right;
+  position: relative;
+}
+
+.position-action-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+.position-dropdown-menu {
+  right: 0;
+  left: auto;
+  top: 32px;
+}
+
+.card-dropdown-menu.menu-floating {
+  position: fixed;
+  z-index: 5000;
 }
 
 

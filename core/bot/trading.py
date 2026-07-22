@@ -5,6 +5,23 @@ import os
 
 class TradingMixin:
     """Mixin pour les opérations de trading"""
+
+    def _calculate_fee_details(self, amount, sell_price, buy_price=None):
+        """Retourne les frais paper en USD pour audit des positions sell."""
+        fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+        amount = float(amount or 0)
+        sell_price = float(sell_price or 0)
+        buy_price = float(buy_price or 0) if buy_price else 0
+
+        sell_fee = sell_price * amount * fee_rate
+        buy_fee = buy_price * amount * fee_rate if buy_price > 0 else 0
+        return {
+            'fee_rate': fee_rate,
+            'buy_fee': buy_fee,
+            'sell_fee': sell_fee,
+            'fee': buy_fee + sell_fee,
+            'fee_currency': 'USD'
+        }
     
     def buy_market(self, symbol, amount, allow_averaging=False):
         if hasattr(self, 'risk_manager') and not self.risk_manager.can_trade():
@@ -114,6 +131,10 @@ class TradingMixin:
                     'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
                     'avg_entry_price': buy_price
                 }
+                if self.paper_trading:
+                    position.update(self._calculate_fee_details(
+                        amount, order.get('price', price), buy_price
+                    ))
                 self.state['positions'].append(position)
                 self.save_state()
                 self.total_trades += 1
@@ -392,6 +413,7 @@ class TradingMixin:
                         'order_id': order_id, 'source': 'bot', 'paper': True,
                         'avg_entry_price': buy_price
                     }
+                    position.update(self._calculate_fee_details(amount, current_price, buy_price))
                     self.state['positions'].append(position)
                     if hasattr(self, 'set_symbol_cooldown'):
                         self.set_symbol_cooldown(symbol, reason='paper_limit_sell_executed')

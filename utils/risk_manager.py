@@ -326,6 +326,20 @@ class RiskManager:
             elif current_price < ema_20_daily < ema_50_daily and short_momentum < momentum_thresholds['bear_weak']:
                 return 'BEAR_WEAK'
             else:
+                if bot and hasattr(bot, 'get_klines') and hasattr(bot, 'calculate_ema'):
+                    try:
+                        h1_klines = bot.get_klines(symbol, 24, '1h')
+                        if len(h1_klines) >= 12:
+                            h1_closes = [k['close'] for k in h1_klines]
+                            h1_ema20 = bot.calculate_ema(h1_closes, 10)
+                            h1_prev = bot.calculate_ema(h1_closes[:-3], 10)
+                            slope = (h1_ema20 - h1_prev) / h1_prev if h1_prev else 0
+                            if slope < -0.0002:
+                                return 'SIDEWAYS_DOWN'
+                            elif slope > 0.0002:
+                                return 'SIDEWAYS_UP'
+                    except Exception:
+                        pass
                 return 'SIDEWAYS'
         except:
             return 'UNKNOWN'
@@ -591,10 +605,12 @@ class TrailingStopManager:
         self.trailing_percent = trailing_percent
         self.positions = {}  # {symbol: {'buy_price': price, 'highest_price': price, 'stop_price': price, 'trailing_percent': percent}}
     
-    def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None):
-        """Ajoute une nouvelle position avec trailing stop adaptatif et support technique"""
+    def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None, resistance_price=None, fee_rate=None):
+        """Ajoute une nouvelle position avec trailing stop adaptatif, support technique et résistance"""
         percent = trailing_percent if trailing_percent is not None else self.trailing_percent
         stop_price = buy_price * (1 - percent / 100)
+        if fee_rate is None:
+            fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100
         
         # Si un support technique est spécifié, caler le stop initial dessous s'il est plus protecteur
         if support_price is not None:
@@ -609,21 +625,75 @@ class TrailingStopManager:
             'stop_price': stop_price,
             'trailing_percent': percent,
             'initial_trailing_percent': percent,
+            'breakeven_active': False,
+            'resistance_price': float(resistance_price) if resistance_price else None,
+            'fee_rate': float(fee_rate or 0),
             'created_at': datetime.now().isoformat()
         }
         print(f"🎯 Trailing stop activé pour {symbol}: Stop initial à {stop_price:.2f} (écart: {percent:.1f}%)")
     
     def update_position(self, symbol, current_price):
-        """Met à jour le trailing stop si le prix monte avec resserrement progressif selon le profit"""
+        """Met à jour le trailing stop si le prix monte avec resserrement progressif selon le profit et Breakeven Stop"""
         if symbol not in self.positions:
             return False
             
         position = self.positions[symbol]
+        changed = False
         initial_percent = position.get('initial_trailing_percent', self.trailing_percent)
         
         # Calcul du profit latent en pourcentage
         profit_pct = ((current_price - position['buy_price']) / position['buy_price']) * 100
         
+        # SYSTEM ZÉRO PERTE (BREAKEVEN STOP)
+        be_enabled = os.getenv('BREAKEVEN_STOP_ENABLED', 'True').lower() == 'true'
+        be_use_res = os.getenv('BREAKEVEN_USE_RESISTANCE', 'True').lower() == 'true'
+        be_trigger_pct = float(os.getenv('BREAKEVEN_TRIGGER_PROFIT_PCT', '1.5'))
+        be_lock_pct = float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0'))
+        stored_fee_rate = position.get('fee_rate')
+        fee_rate = float(stored_fee_rate) if stored_fee_rate is not None else (float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100)
+        buy_price = float(position['buy_price'])
+        breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
+        trading_fee_pct = ((breakeven_price / buy_price) - 1) * 100
+        net_floor_pct = float(os.getenv('BREAKEVEN_MIN_NET_PROFIT_PCT', '0.05'))
+        trigger_buffer_pct = float(os.getenv('BREAKEVEN_TRIGGER_BUFFER_PCT', '0.05'))
+        min_stop_gap_pct = float(os.getenv('BREAKEVEN_MIN_STOP_GAP_PCT', '0.03'))
+        fee_floor_stop_price = buy_price * (1 + (trading_fee_pct + net_floor_pct) / 100)
+        min_price_for_fee_floor = fee_floor_stop_price / max(0.000001, (1 - min_stop_gap_pct / 100))
+        fee_floor_trigger_pct = max(
+            trading_fee_pct + trigger_buffer_pct,
+            ((min_price_for_fee_floor / buy_price) - 1) * 100
+        )
+        res_price = position.get('resistance_price')
+        
+        # Mode Résistance Dynamique (50% de la distance vers la résistance)
+        if be_use_res and res_price and res_price > position['buy_price']:
+            res_dist_pct = ((res_price - position['buy_price']) / position['buy_price']) * 100
+            effective_trigger_pct = max(fee_floor_trigger_pct, res_dist_pct * 0.5)
+            net_res_gain = max(0.0, res_dist_pct - trading_fee_pct)
+            lock_profit = net_res_gain * 0.5
+            be_target_price = position['buy_price'] * (1 + (trading_fee_pct + lock_profit) / 100)
+        else:
+            if be_trigger_pct == 0.0:
+                effective_trigger_pct = trading_fee_pct
+            elif be_trigger_pct < 0:
+                effective_trigger_pct = trading_fee_pct + abs(be_trigger_pct)
+            else:
+                effective_trigger_pct = be_trigger_pct
+            be_target_price = position['buy_price'] * (1 + (trading_fee_pct + be_lock_pct) / 100)
+
+        if be_enabled and profit_pct >= fee_floor_trigger_pct:
+            protected_stop = max(fee_floor_stop_price, be_target_price if profit_pct >= effective_trigger_pct else fee_floor_stop_price)
+            max_safe_stop = current_price * (1 - min_stop_gap_pct / 100)
+            if max_safe_stop < fee_floor_stop_price:
+                return changed
+            protected_stop = min(protected_stop, max_safe_stop)
+            if protected_stop > position['stop_price']:
+                old_stop = position['stop_price']
+                position['stop_price'] = protected_stop
+                position['breakeven_active'] = True
+                changed = True
+                print(f"🛡️ {symbol}: Stop net protégé ! Stop relevé {old_stop:.2f} → {protected_stop:.2f} (Frais A/R: {trading_fee_pct:.3f}%, plancher net: +{net_floor_pct:.2f}%)")
+
         # Resserrement par paliers du pourcentage de trailing
         if profit_pct >= 8.0:
             percent = initial_percent * 0.4  # Resserrement agressif (ex: 3.5% -> 1.4%)
@@ -633,10 +703,18 @@ class TrailingStopManager:
             percent = initial_percent * 0.8  # Resserrement léger (ex: 3.5% -> 2.8%)
         else:
             percent = initial_percent
-        
+
+        # Le pourcentage de trailing ne peut que se resserrer (diminuer), jamais s'élargir
+        # Cela évite qu'une baisse de profit_pct entre deux paliers ne produise
+        # un stop calculé avec un écart plus grand → stop qui "descend" par rapport au précédent
+        current_trailing = position.get('trailing_percent', initial_percent)
+        if percent > current_trailing:
+            percent = current_trailing
+
         # Si nouveau plus haut, on met à jour le trailing stop
         if current_price > position['highest_price']:
             position['highest_price'] = current_price
+            changed = True
             new_stop = current_price * (1 - percent / 100)
             
             # Le stop ne peut que monter, jamais descendre
@@ -644,9 +722,13 @@ class TrailingStopManager:
                 old_stop = position['stop_price']
                 position['stop_price'] = new_stop
                 position['trailing_percent'] = percent
+                changed = True
                 print(f"📈 {symbol}: Trailing stop mis à jour {old_stop:.2f} → {new_stop:.2f} (écart: {percent:.1f}%, profit: {profit_pct:.1f}%)")
+            elif percent < position.get('trailing_percent', initial_percent):
+                position['trailing_percent'] = percent
+                changed = True
         
-        return False
+        return changed
     
     def should_stop_loss(self, symbol, current_price):
         """Vérifie si le trailing stop est déclenché"""

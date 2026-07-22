@@ -47,38 +47,137 @@ def create_public_exchange(exchange_name):
     return exchange
 
 
-def detect_support_touch(pattern_analyzer, history, current_price):
+def detect_trade_signal(pattern_analyzer, history, current_price):
+    if len(history) < 15:
+        return None
+
+    closes = [k['close'] for k in history]
+    
+    # 1. Filtre de Pente (Bloquer si pente baissière SIDEWAYS_DOWN)
+    if len(closes) >= 12:
+        ema10_curr = sum(closes[-10:]) / 10.0
+        ema10_prev = sum(closes[-13:-3]) / 10.0
+        slope = (ema10_curr - ema10_prev) / ema10_prev if ema10_prev else 0
+        if slope < -0.0002:  # Pente descendante -> REJET !
+            return None
+
+    # 2. Filtre Anti-Couteau qui tombe (Falling Knife)
+    last_candle = history[-1]
+    open_px = float(last_candle.get('open', current_price))
+    close_px = float(last_candle.get('close', current_price))
+    if close_px < open_px:
+        drop_pct = (open_px - close_px) / open_px
+        if drop_pct >= 0.006:  # Baisse rapide sur bougie rouge -> REJET !
+            return None
+
+    # 3A. SIGNAL 1 : Support Touch PRO (Rebond sur support)
     levels = pattern_analyzer.find_support_resistance_levels(history)
     for support in levels.get('support_levels', [])[:3]:
         support_price = float(support['price'])
         rebounds = int(support.get('strength', 1))
         if current_price <= support_price * 1.001 and rebounds >= 2:
             confidence = min(85, 60 + (rebounds - 2) * 10)
+            nearest_resistance = None
+            for res in levels.get('resistance_levels', []):
+                r_price = float(res['price'])
+                if r_price > current_price * 1.002:
+                    if nearest_resistance is None or r_price < nearest_resistance:
+                        nearest_resistance = r_price
+            
             return {
+                'type': 'support_touch',
                 'support_price': support_price,
+                'resistance_price': nearest_resistance,
                 'rebounds': rebounds,
                 'confidence': confidence,
                 'reason': f"Support {rebounds} rebonds @ {support_price:.2f}",
             }
+
+    # 3B. SIGNAL 2 : Cassure Haussière de Range / Pattern Breakout
+    if len(closes) >= 20:
+        recent_range_high = max([k['high'] for k in history[-10:-1]])
+        recent_range_low = min([k['low'] for k in history[-10:-1]])
+        range_size_pct = (recent_range_high - recent_range_low) / recent_range_low
+        
+        # Si compression de range (< 1.8%) et la bougie actuelle casse le haut du range avec impulsion verte
+        if range_size_pct < 0.018 and current_price > recent_range_high * 1.001 and close_px > open_px:
+            return {
+                'type': 'pattern_breakout',
+                'support_price': recent_range_low,
+                'resistance_price': recent_range_high * 1.02,
+                'rebounds': 1,
+                'confidence': 75,
+                'reason': f"Cassure Haussière de Range ({recent_range_high:.2f})",
+            }
+
     return None
 
 
-def simulate_trade(klines, entry_index, entry_price, target_percent, stop_percent, max_hold):
-    target_price = entry_price * (1 + target_percent / 100)
-    stop_price = entry_price * (1 - stop_percent / 100)
+def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent, max_hold, trailing_percent, breakeven_stop=False, breakeven_trigger=1.5, breakeven_lock=0.0, fee_rate=0.001, resistance_price=None, use_resistance=False):
+    highest_price = entry_price
+    initial_percent = trailing_percent
+    stop_price = entry_price * (1 - initial_percent / 100)
+
+    # Si support technique, caler le stop initial dessous s'il est plus protecteur (1% sous le support par défaut)
+    if support_price is not None:
+        technical_stop = float(support_price) * (1 - stop_percent / 100)
+        if technical_stop > stop_price:
+            stop_price = technical_stop
+
     last_index = min(len(klines) - 1, entry_index + max_hold)
+    current_stop_price = stop_price
+    be_active = False
 
     for exit_index in range(entry_index + 1, last_index + 1):
         candle = klines[exit_index]
-        hit_stop = candle['low'] <= stop_price
-        hit_target = candle['high'] >= target_price
 
-        if hit_stop and hit_target:
-            return exit_index, stop_price, 'loss'
-        if hit_stop:
-            return exit_index, stop_price, 'loss'
-        if hit_target:
-            return exit_index, target_price, 'win'
+        # Sortie Stop Loss dynamique
+        if candle['low'] <= current_stop_price:
+            return exit_index, current_stop_price, 'loss'
+
+        # Mise à jour du plus haut et du trailing stop
+        if candle['high'] > highest_price:
+            highest_price = candle['high']
+            profit_pct = ((highest_price - entry_price) / entry_price) * 100
+
+            # SYSTEM ZÉRO PERTE (BREAKEVEN STOP)
+            if breakeven_stop:
+                roundtrip_fee_pct = (fee_rate * 2) * 100
+                
+                if use_resistance and resistance_price and resistance_price > entry_price:
+                    res_dist_pct = ((resistance_price - entry_price) / entry_price) * 100
+                    # Déclencher à 50% de la distance vers la résistance (au minimum les frais)
+                    effective_trigger = max(roundtrip_fee_pct + 0.1, res_dist_pct * 0.5)
+                    net_res_gain = max(0.0, res_dist_pct - roundtrip_fee_pct)
+                    lock_profit = net_res_gain * 0.5
+                    be_target_stop = entry_price * (1 + (roundtrip_fee_pct + lock_profit) / 100)
+                else:
+                    if breakeven_trigger == 0.0:
+                        effective_trigger = roundtrip_fee_pct
+                    elif breakeven_trigger < 0:
+                        effective_trigger = roundtrip_fee_pct + abs(breakeven_trigger)
+                    else:
+                        effective_trigger = breakeven_trigger
+                    be_target_stop = entry_price * (1 + (roundtrip_fee_pct + breakeven_lock) / 100)
+
+                if profit_pct >= effective_trigger and not be_active:
+                    if be_target_stop > current_stop_price:
+                        current_stop_price = be_target_stop
+                        be_active = True
+
+            # Resserrement par paliers du pourcentage de trailing
+            if profit_pct >= 8.0:
+                percent = initial_percent * 0.4
+            elif profit_pct >= 5.0:
+                percent = initial_percent * 0.6
+            elif profit_pct >= 3.0:
+                percent = initial_percent * 0.8
+            else:
+                percent = initial_percent
+
+            new_stop = highest_price * (1 - percent / 100)
+            if new_stop > current_stop_price:
+                current_stop_price = new_stop
 
     exit_price = klines[last_index]['close']
     outcome = 'win' if exit_price > entry_price else 'loss'
@@ -90,49 +189,79 @@ def backtest_symbol(exchange, symbol, args):
     klines = [to_kline(row) for row in raw]
     analyzer = PatternAnalyzer(bot=None)
     trades = []
-    next_allowed_index = args.lookback
+
+    # Déterminer les frais de transaction réels (Taker)
+    fee_rate = 0.001  # 0.1% par défaut
+    env_fee = os.getenv('TRADING_FEE_PERCENT')
+    if env_fee:
+        try:
+            fee_rate = float(env_fee) / 100.0
+        except ValueError:
+            pass
+    else:
+        try:
+            market = exchange.markets.get(symbol)
+            if market and market.get('taker') is not None:
+                fee_rate = float(market['taker'])
+        except Exception:
+            pass
+
+    next_allowed_index = 0
 
     for index in range(args.lookback, len(klines) - 1):
         if index < next_allowed_index:
             continue
 
-        history = klines[index - args.lookback:index]
+        history = klines[:index]
         current_price = klines[index]['close']
-        signal = detect_support_touch(analyzer, history, current_price)
+        signal = detect_trade_signal(analyzer, history, current_price)
         if not signal:
             continue
+
+        # Calcul dynamique max_hold
+        if args.dynamic_hold:
+            prices = [k['close'] for k in klines[max(0, index - 20):index]]
+            if len(prices) >= 5:
+                returns = [abs(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
+                volatility = (sum(returns) / len(returns)) * 100
+            else:
+                volatility = 2.5
+
+            if volatility >= 4.5:
+                hold_hours = 3
+            elif volatility >= 3.5:
+                hold_hours = 5
+            elif volatility >= 2.5:
+                hold_hours = 7.5
+            else:
+                hold_hours = 12
+            
+            tf = args.timeframe
+            if tf.endswith('m'):
+                tf_mins = int(tf[:-1])
+            elif tf.endswith('h'):
+                tf_mins = int(tf[:-1]) * 60
+            else:
+                tf_mins = 15
+            max_hold = int((hold_hours * 60) / tf_mins)
+        else:
+            max_hold = args.max_hold_candles
 
         exit_index, exit_price, outcome_raw = simulate_trade(
             klines,
             index,
             current_price,
-            args.target_percent,
+            signal.get('support_price'),
             args.stop_percent,
-            args.max_hold_candles,
+            max_hold,
+            args.trailing_percent,
+            breakeven_stop=args.breakeven_stop,
+            breakeven_trigger=args.breakeven_trigger,
+            breakeven_lock=args.breakeven_lock,
+            fee_rate=fee_rate
         )
         
-        # Déterminer les frais de transaction réels (Taker)
-        fee_rate = 0.001  # 0.1% par défaut
-        
-        # 1. Lire depuis la variable d'environnement (exprimée en %, ex: 0.26 pour 0.26%)
-        env_fee = os.getenv('TRADING_FEE_PERCENT')
-        if env_fee:
-            try:
-                fee_rate = float(env_fee) / 100.0
-            except ValueError:
-                pass
-        else:
-            # 2. Lire depuis l'exchange CCXT chargé
-            try:
-                market = exchange.markets.get(symbol)
-                if market and market.get('taker') is not None:
-                    fee_rate = float(market['taker'])
-            except Exception:
-                pass
-
         # Calculer le P&L net après frais de transaction (achat + vente)
-        # Achat: current_price * (1 + fee_rate)
-        # Vente: exit_price * (1 - fee_rate)
         pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
         outcome = 'win' if pnl_percent > 0 else 'loss'
 
@@ -177,10 +306,21 @@ def parse_args():
     parser.add_argument('--timeframe', default=os.getenv('BACKTEST_TIMEFRAME', '15m'))
     parser.add_argument('--limit', type=int, default=int(os.getenv('BACKTEST_LIMIT', '720')))
     parser.add_argument('--lookback', type=int, default=int(os.getenv('BACKTEST_LOOKBACK', '50')))
-    parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '24')))
+    parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96')))
     parser.add_argument('--target-percent', type=float, default=float(os.getenv('BACKTEST_TARGET_PERCENT', '1.5')))
     parser.add_argument('--stop-percent', type=float, default=float(os.getenv('BACKTEST_STOP_PERCENT', '1.0')))
+    parser.add_argument('--trailing-percent', type=float, default=float(os.getenv('TRAILING_STOP_PERCENT', '2.5')))
     parser.add_argument('--cooldown-candles', type=int, default=int(os.getenv('BACKTEST_COOLDOWN_CANDLES', '4')))
+    parser.add_argument('--dynamic-hold', action='store_true', help='Use dynamic max hold time based on historical volatility')
+    
+    be_enabled_default = os.getenv('BREAKEVEN_STOP_ENABLED', 'True').lower() == 'true'
+    be_use_res_default = os.getenv('BREAKEVEN_USE_RESISTANCE', 'True').lower() == 'true'
+    parser.add_argument('--breakeven-stop', action='store_true', default=be_enabled_default, help='Enable Breakeven Stop')
+    parser.add_argument('--no-breakeven-stop', action='store_false', dest='breakeven_stop', help='Disable Breakeven Stop')
+    parser.add_argument('--breakeven-trigger', type=float, default=float(os.getenv('BREAKEVEN_TRIGGER_PROFIT_PCT', '1.5')), help='Breakeven trigger profit %')
+    parser.add_argument('--breakeven-lock', type=float, default=float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0')), help='Breakeven lock profit % (0=fees, 1=fees+1%)')
+    parser.add_argument('--breakeven-use-resistance', action='store_true', default=be_use_res_default, help='Use dynamic Resistance level for Breakeven Stop')
+    
     parser.add_argument('--output', default='data/support_touch_backtest.json')
     return parser.parse_args()
 
@@ -217,6 +357,7 @@ def main():
             'max_hold_candles': args.max_hold_candles,
             'target_percent': args.target_percent,
             'stop_percent': args.stop_percent,
+            'trailing_percent': args.trailing_percent,
             'cooldown_candles': args.cooldown_candles,
         },
         'results': results,

@@ -559,28 +559,45 @@ function decisionMetricChips(item) {
 function renderPositions(positions, liveSymbols) {
   const body = $('positionsBody');
   if (!positions.length) {
-    body.innerHTML = '<tr><td colspan="8" class="empty">Aucune position ouverte</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="empty">Aucune position ouverte</td></tr>';
     return;
   }
 
   body.innerHTML = positions.map((position) => {
     const symbol = position.symbol;
+    const menuId = `positionMenu-${symbol.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     const normKey = symbol.replace('/', '');
     const liveInfo = liveSymbols ? (liveSymbols[symbol] || liveSymbols[normKey]) : null;
     const currentPx = (liveInfo && liveInfo.price !== undefined && liveInfo.price !== null) ? Number(liveInfo.price) : null;
 
     let currentValText = '--';
-    let pnlText = '--';
-    let pnlClass = 'badge neutral';
+    let pnlGrossText = '--';
+    let pnlNetText = '--';
+    let grossClass = 'badge neutral';
+    let netClass = 'badge neutral';
+
+    const feePct = position.trading_fee_pct !== undefined ? position.trading_fee_pct : 0.20;
+    const feeVal = position.trading_fee_value !== undefined ? position.trading_fee_value : (position.entry_value * feePct / 100);
+    const feeText = `${number(feeVal, 2)} USD (${number(feePct, 2)}%)`;
 
     if (currentPx) {
       const currentValue = position.amount * currentPx;
-      const pnlVal = currentValue - position.entry_value;
-      const pnlPct = (pnlVal / position.entry_value) * 100;
+      
+      // P&L Brut (Variation du prix)
+      const pnlGrossVal = currentValue - position.entry_value;
+      const pnlGrossPct = (pnlGrossVal / position.entry_value) * 100;
+
+      // P&L Net (Après déduction des frais d'échange aller-retour)
+      const pnlNetVal = pnlGrossVal - feeVal;
+      const pnlNetPct = (pnlNetVal / position.entry_value) * 100;
 
       currentValText = `${number(currentValue, 2)} USD`;
-      pnlText = `${pnlVal >= 0 ? '+' : ''}${number(pnlVal, 2)} (${pnlPct >= 0 ? '+' : ''}${number(pnlPct, 2)}%)`;
-      pnlClass = badgeClass(pnlVal >= 0);
+
+      pnlGrossText = `${pnlGrossVal >= 0 ? '+' : ''}${number(pnlGrossVal, 2)} (${pnlGrossPct >= 0 ? '+' : ''}${number(pnlGrossPct, 2)}%)`;
+      grossClass = badgeClass(pnlGrossVal >= 0);
+
+      pnlNetText = `${pnlNetVal >= 0 ? '+' : ''}${number(pnlNetVal, 2)} (${pnlNetPct >= 0 ? '+' : ''}${number(pnlNetPct, 2)}%)`;
+      netClass = badgeClass(pnlNetVal >= 0);
     }
 
     let slText = price(position.stop_loss_price);
@@ -588,19 +605,50 @@ function renderPositions(positions, liveSymbols) {
       slText += ` (${number(position.trailing_percent, 1)}%)`;
     }
 
+    let continuationBadge = '';
+    if (position.exit_recommendation) {
+      const score = position.exit_recommendation.continuation_score ?? 50;
+      const dec = position.exit_recommendation.decision || 'HOLD';
+      let badgeColor = '#10b981';
+      if (score < 45) badgeColor = '#ef4444';
+      else if (score < 65) badgeColor = '#f59e0b';
+      continuationBadge = `<div style="font-size: 0.72rem; margin-top: 3px;"><span style="background:${badgeColor}20; color:${badgeColor}; border:1px solid ${badgeColor}50; padding:1px 5px; border-radius:4px; font-weight:600; display:inline-block;" title="ContinuationScore: ${score}/100 | Action: ${dec}">📊 ${score}/100 (${dec})</span></div>`;
+    }
+
     return `
       <tr>
-        <td><strong>${esc(symbol)}</strong></td>
+        <td><strong>${esc(symbol)}</strong>${continuationBadge}</td>
         <td>${qty(position.amount)}</td>
         <td>${price(position.avg_entry_price)}</td>
         <td>${price(position.avg_entry_price)} <span style="color: #94a3b8; margin: 0 4px;">➔</span> <strong style="color: #10b981;">${price(position.target_price)}</strong></td>
         <td><span style="font-weight: 600; color: #ef4444;">${esc(slText)}</span></td>
         <td>${number(position.entry_value, 2)} USD</td>
         <td>${currentValText}</td>
-        <td>
-          <span class="${pnlClass}">
-            ${pnlText}
-          </span>
+        <td><span style="color: #94a3b8; font-weight: 500;">${esc(feeText)}</span></td>
+        <td><span class="${grossClass}">${pnlGrossText}</span></td>
+        <td><span class="${netClass}">${pnlNetText}</span></td>
+        <td class="position-actions-cell">
+          <div class="card-more-menu-container position-action-menu">
+            <button class="btn-card-more" onclick="toggleCardMenu(event, '${menuId}')" title="Actions position" aria-label="Actions position">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="1.5"/>
+                <circle cx="12" cy="5" r="1.5"/>
+                <circle cx="12" cy="19" r="1.5"/>
+              </svg>
+            </button>
+            <div id="cardMenu-${menuId}" class="card-dropdown-menu position-dropdown-menu">
+              <button class="action-sell" onclick="triggerCardAction(event, 'force_sell', '${esc(symbol)}')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="7" x2="17" y2="17"/><polyline points="17 7 17 17 7 17"/></svg>
+                Vendre
+              </button>
+              <div class="menu-divider"></div>
+              <div class="menu-section-header">Pause</div>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${esc(symbol)}', 900)">15 min</button>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${esc(symbol)}', 3600)">1 heure</button>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${esc(symbol)}', 14400)">4 heures</button>
+              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${esc(symbol)}', 86400)">24 heures</button>
+            </div>
+          </div>
         </td>
       </tr>
     `;
@@ -639,7 +687,27 @@ function renderSupportTouch(data) {
   }
 
   grid.innerHTML = pairs.map((item) => {
-    const regimeText = item.regime && item.regime !== 'UNKNOWN' ? ` <span class="badge info" style="font-size: 9px; padding: 2px 6px; font-weight: 700; background: var(--info-bg); border: 1px solid var(--info-border); color: #bfdbfe; border-radius: 99px; margin-left: 6px;">${item.regime.replaceAll('_', ' ')}</span>` : '';
+    let regimeBadgeColor = '#bfdbfe';
+    let regimeBg = 'var(--info-bg)';
+    let regimeBorder = 'var(--info-border)';
+    
+    if (item.regime) {
+      if (item.regime.includes('BULL') || item.regime.includes('UP')) {
+        regimeBadgeColor = '#6ee7b7';
+        regimeBg = 'rgba(16,185,129,0.15)';
+        regimeBorder = 'rgba(16,185,129,0.3)';
+      } else if (item.regime.includes('BEAR') || item.regime.includes('DOWN')) {
+        regimeBadgeColor = '#fca5a5';
+        regimeBg = 'rgba(239,68,68,0.15)';
+        regimeBorder = 'rgba(239,68,68,0.3)';
+      } else if (item.regime.includes('SIDE') || item.regime.includes('RANGE')) {
+        regimeBadgeColor = '#fde68a';
+        regimeBg = 'rgba(245,158,11,0.15)';
+        regimeBorder = 'rgba(245,158,11,0.3)';
+      }
+    }
+
+    const regimeText = item.regime && item.regime !== 'UNKNOWN' ? ` <span class="badge info" style="font-size: 9px; padding: 2px 6px; font-weight: 700; background: ${regimeBg}; border: 1px solid ${regimeBorder}; color: ${regimeBadgeColor}; border-radius: 99px; margin-left: 6px;">${item.regime.replaceAll('_', ' ')}</span>` : '';
     return `
       <section class="support-card">
         <header style="align-items: center;">
@@ -667,31 +735,47 @@ function renderMarketContext(context) {
   }
 
   grid.innerHTML = entries.map(([symbol, item]) => {
+    const symbolBear = Boolean(item.symbol_bear);
+    const btcBear = Boolean(item.btc_bear);
     const bear = Boolean(item.bear_mode);
     const falling = Boolean(item.falling_knife?.is_falling);
     const reversal = Boolean(item.reversal?.confirmed);
-    const mode = item.mode || '--';
+    const mode = item.mode || (symbolBear ? 'BEAR' : 'NORMAL');
     const modeClass = regimeClass(mode);
     const multiplier = Number(item.trade_multiplier || 1);
 
-    // Formater le texte du régime (remplacer underscores par des espaces)
+    // Formater le texte du régime
     const rawRegime = item.symbol_regime || '--';
     const cleanRegime = rawRegime.replace(/_/g, ' ');
 
-    // Classe de couleur pour le texte du régime
+    // Couleur du régime symbole
     let regimeColorClass = '';
-    if (rawRegime.includes('BULL')) {
+    if (rawRegime.includes('BULL') || rawRegime.includes('SIDEWAYS_UP')) {
       regimeColorClass = 'regime-val-bull';
-    } else if (rawRegime.includes('BEAR')) {
+    } else if (rawRegime.includes('BEAR') || rawRegime.includes('SIDEWAYS_DOWN')) {
       regimeColorClass = 'regime-val-bear';
     } else if (rawRegime.includes('SIDE') || rawRegime.includes('RANGE')) {
       regimeColorClass = 'regime-val-side';
     }
 
+    // Badge en haut à droite (Badge Mode)
+    let headerBadgeClass = 'badge info';
+    if (mode === 'BULL') headerBadgeClass = 'badge success';
+    else if (mode === 'BEAR') headerBadgeClass = 'badge danger';
+    else if (mode === 'RANGE' || mode === 'SIDEWAYS') headerBadgeClass = 'badge warn';
+
     // Classes pour les badges de statut du bas
     const knifeClass = falling ? 'regime-flag-pill danger' : 'regime-flag-pill';
     const supportClass = item.support_touch_override_allowed ? 'regime-flag-pill success' : 'regime-flag-pill danger';
-    const modePillClass = bear ? 'regime-flag-pill danger' : 'regime-flag-pill';
+
+    let modePillHtml = '';
+    if (symbolBear) {
+      modePillHtml = `<span class="regime-flag-pill danger">Bear Symbole</span>`;
+    } else if (bear && btcBear) {
+      modePillHtml = `<span class="regime-flag-pill warning">Frein BTC (${number(multiplier, 2)}x)</span>`;
+    } else {
+      modePillHtml = `<span class="regime-flag-pill success">Plein Régime</span>`;
+    }
 
     return `
       <section class="support-card regime-card ${modeClass}">
@@ -700,7 +784,7 @@ function renderMarketContext(context) {
             <h3>${esc(symbol)}</h3>
             <span class="live-source">BTC ${esc(item.btc_regime || '--')}</span>
           </div>
-          <span class="${badgeClass(!bear, bear)}">${esc(mode)}</span>
+          <span class="${headerBadgeClass}">${esc(mode)}</span>
         </header>
 
         <div class="regime-hero">
@@ -731,7 +815,7 @@ function renderMarketContext(context) {
         <div class="regime-flags">
           <span class="${knifeClass}">Knife: ${falling ? 'oui' : 'non'}</span>
           <span class="${supportClass}">Support: ${item.support_touch_override_allowed ? 'OK' : 'Bloqué'}</span>
-          ${bear ? `<span class="${modePillClass}">Bear Mode</span>` : ''}
+          ${modePillHtml}
         </div>
 
         <div class="regime-footer">
@@ -797,44 +881,6 @@ function renderLive(data) {
               <h3>${esc(formattedSymbol)}</h3>
               <span class="badge-status ${badgeClass(!stale, !connected)}">${stale ? 'stale' : 'live'}</span>
             </div>
-            
-            <div class="card-more-menu-container" style="position: relative;">
-              <button class="btn-card-more" onclick="toggleCardMenu(event, '${symbol}')" style="background: none; border: none; padding: 4px; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; border-radius: 4px; transition: background 0.2s;">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #10b981; filter: drop-shadow(0 0 2px rgba(16,185,129,0.3));">
-                  <circle cx="12" cy="12" r="1.5"/>
-                  <circle cx="12" cy="5" r="1.5"/>
-                  <circle cx="12" cy="19" r="1.5"/>
-                </svg>
-              </button>
-            <div id="cardMenu-${symbol}" class="card-dropdown-menu">
-              <button class="action-buy" onclick="triggerCardAction(event, 'force_buy', '${formattedSymbol}')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>
-                Force BUY
-              </button>
-              <button class="action-sell" onclick="triggerCardAction(event, 'force_sell', '${formattedSymbol}')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="7" y1="7" x2="17" y2="17"/><polyline points="17 7 17 17 7 17"/></svg>
-                Force SELL
-              </button>
-              <div class="menu-divider"></div>
-              <div class="menu-section-header">Pause</div>
-              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 900)">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                15 min
-              </button>
-              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 3600)">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                1 heure
-              </button>
-              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 14400)">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                4 heures
-              </button>
-              <button class="action-pause" onclick="triggerCardAction(event, 'pause_pair', '${formattedSymbol}', 86400)">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                24 heures
-              </button>
-            </div>
-          </div>
           </header>
           
           <div class="live-quote">
@@ -990,10 +1036,14 @@ async function refresh() {
 
   // Trade stats
   const stats = data.stats || {};
-  const pnl = Number(stats.total_pnl);
-  $('totalPnl').textContent = Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : ''}${number(pnl, 4)} USD` : '--';
-  $('totalPnl').style.color = pnl > 0 ? 'var(--good)' : pnl < 0 ? 'var(--bad)' : '';
-  const pnlCard = $('totalPnl').closest('.metric-card');
+  const pnlGross = Number(stats.total_pnl_gross ?? stats.total_pnl);
+  const pnlNet = Number(stats.total_pnl_net ?? stats.total_pnl);
+  $('totalPnlGross').textContent = Number.isFinite(pnlGross) ? `${pnlGross >= 0 ? '+' : ''}${number(pnlGross, 2)} USD` : '--';
+  $('totalPnlGross').style.color = pnlGross > 0 ? 'var(--good)' : pnlGross < 0 ? 'var(--bad)' : '';
+  $('totalPnlNet').textContent = Number.isFinite(pnlNet) ? `${pnlNet >= 0 ? '+' : ''}${number(pnlNet, 2)} USD` : '--';
+  $('totalPnlNet').style.color = pnlNet > 0 ? 'var(--good)' : pnlNet < 0 ? 'var(--bad)' : '';
+  const pnl = Number.isFinite(pnlNet) ? pnlNet : 0;
+  const pnlCard = $('totalPnlCard');
   if (pnlCard) {
     pnlCard.className = `metric-card ${pnl > 0 ? 'color-good' : pnl < 0 ? 'color-bad' : 'color-accent'}`;
   }
@@ -1417,21 +1467,42 @@ function renderTrades(trades) {
   const summary = $('tradesSummary');
 
   if (!trades || !trades.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">Aucun trade</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="empty">Aucun trade</td></tr>';
     summary.textContent = '0 trades';
     return;
   }
 
-  const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
+  const totalGrossPnl = trades.reduce((sum, t) => sum + (Number(t.pnl_gross ?? t.pnl) || 0), 0);
+  const totalFees = trades.reduce((sum, t) => sum + (Number(t.fees) || 0), 0);
+  const totalNetPnl = trades.reduce((sum, t) => sum + (Number(t.pnl_net ?? t.pnl) || 0), 0);
   const wins = trades.filter(t => t.profitable).length;
   const losses = trades.length - wins;
 
-  summary.textContent = `${trades.length} trades | ${wins}W / ${losses}L | P&L total: ${totalPnl >= 0 ? '+' : ''}${number(totalPnl, 4)} USD`;
+  summary.textContent = `${trades.length} trades | ${wins}W / ${losses}L | Brut: ${totalGrossPnl >= 0 ? '+' : ''}${number(totalGrossPnl, 4)} USD | Fees: ${number(totalFees, 4)} USD | Net: ${totalNetPnl >= 0 ? '+' : ''}${number(totalNetPnl, 4)} USD`;
 
   body.innerHTML = trades.map(t => {
     const buyVal = t.amount * t.buy_price;
     const sellVal = t.amount * t.sell_price;
-    const pnlClass = t.profitable ? 'badge good' : 'badge bad';
+    const pnlGross = Number(t.pnl_gross ?? t.pnl) || 0;
+    const fees = Number(t.fees) || 0;
+    const pnlNet = Number(t.pnl_net ?? t.pnl) || 0;
+    const pnlNetPct = Number(t.pnl_net_pct ?? t.pnl_pct) || 0;
+
+    let pnlNetColor = 'var(--good)';
+    let pnlClass = 'badge good';
+
+    if (Math.abs(pnlNet) < 0.005) {
+      pnlNetColor = 'var(--warn)';
+      pnlClass = 'badge warn';
+    } else if (pnlNet < 0) {
+      pnlNetColor = 'var(--bad)';
+      pnlClass = 'badge bad';
+    }
+
+    let pnlGrossColor = pnlGross > 0.005 ? 'var(--good)' : (pnlGross < -0.005 ? 'var(--bad)' : 'var(--warn)');
+
+    const netTextFormatted = (Math.abs(pnlNet) < 0.005 ? '' : (pnlNet > 0 ? '+' : '')) + number(pnlNet, 2) + ' USD';
+    const pctTextFormatted = (Math.abs(pnlNetPct) < 0.005 ? '' : (pnlNetPct > 0 ? '+' : '')) + number(pnlNetPct, 2) + '%';
 
     return `
       <tr>
@@ -1448,12 +1519,18 @@ function renderTrades(trades) {
           <div style="font-size: 10px; color: var(--text-muted);">${number(sellVal, 2)} USD</div>
         </td>
         <td>${number(t.amount, 6)}</td>
-        <td style="color: ${t.profitable ? 'var(--good)' : 'var(--bad)'}; font-weight: 800;">
-          ${t.pnl >= 0 ? '+' : ''}${number(t.pnl, 2)} USD
+        <td style="color: ${pnlGrossColor}; font-weight: 800;">
+          ${pnlGross > 0.005 ? '+' : ''}${number(pnlGross, 2)} USD
+        </td>
+        <td style="color: var(--text-muted); font-weight: 700;">
+          ${number(fees, 2)} USD
+        </td>
+        <td style="color: ${pnlNetColor}; font-weight: 800;">
+          ${netTextFormatted}
         </td>
         <td>
           <span class="${pnlClass}">
-            ${t.pnl_pct >= 0 ? '+' : ''}${number(t.pnl_pct, 2)}%
+            ${pctTextFormatted}
           </span>
         </td>
       </tr>
@@ -1509,9 +1586,25 @@ async function refreshScoreChart() {
       chartContainer.innerHTML = '<canvas id="scoreCanvas"></canvas>';
     }
 
+    const selectedHours = Number(hours);
+    const compactTimeOnly = selectedHours <= 24;
+    const scoreTickLimit = selectedHours <= 12 ? 7 : selectedHours <= 24 ? 9 : selectedHours <= 72 ? 8 : 10;
+    const scoreXAxisTicks = {
+      color: '#94a3b8',
+      font: { size: 10 },
+      autoSkip: true,
+      maxTicksLimit: scoreTickLimit,
+      maxRotation: 0,
+      minRotation: 0,
+      padding: 8
+    };
+
     const labels = scores.map(s => {
       const date = parseDate(s.timestamp);
-      return date ? date.toLocaleDateString('fr-CA', { month: '2-digit', day: '2-digit' }) + ' ' + date.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
+      if (!date) return '';
+      const timeLabel = date.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
+      if (compactTimeOnly) return timeLabel;
+      return date.toLocaleDateString('fr-CA', { month: '2-digit', day: '2-digit' }) + ' ' + timeLabel;
     });
 
     const dataPoints = scores.map(s => s.score);
@@ -1520,6 +1613,7 @@ async function refreshScoreChart() {
     if (scoreChartInstance && $('scoreCanvas')) {
       scoreChartInstance.data.labels = labels;
       scoreChartInstance.data.datasets[0].data = dataPoints;
+      scoreChartInstance.options.scales.x.ticks = scoreXAxisTicks;
       scoreChartInstance.update();
       return;
     }
@@ -1549,7 +1643,7 @@ async function refreshScoreChart() {
         scales: {
           x: {
             grid: { color: 'rgba(255, 255, 255, 0.03)' },
-            ticks: { color: '#94a3b8', font: { size: 10 } }
+            ticks: scoreXAxisTicks
           },
           y: {
             min: 0,
@@ -1759,15 +1853,17 @@ async function exportTradesCsv() {
     }
 
     // Generate CSV content
-    const headers = ['Date', 'Symbole', 'Prix Achat', 'Prix Vente', 'Quantité', 'PNL USD', 'PNL %', 'Type'];
+    const headers = ['Date', 'Symbole', 'Prix Achat', 'Prix Vente', 'Quantité', 'PNL Brut USD', 'Fees USD', 'PNL Net USD', 'PNL Net %', 'Type'];
     const rows = trades.map(t => [
       t.sell_time || '',
       t.symbol || '',
       t.buy_price || 0,
       t.sell_price || 0,
       t.amount || 0,
-      t.pnl || 0,
-      t.pnl_pct || 0,
+      t.pnl_gross || 0,
+      t.fees || 0,
+      t.pnl_net ?? t.pnl ?? 0,
+      t.pnl_net_pct ?? t.pnl_pct ?? 0,
       t.profitable ? 'WIN' : 'LOSS'
     ]);
 
@@ -1904,6 +2000,10 @@ document.addEventListener('click', () => {
   });
   document.querySelectorAll('.card-dropdown-menu').forEach((menu) => {
     menu.style.display = 'none';
+    menu.classList.remove('menu-floating');
+    menu.style.left = '';
+    menu.style.right = '';
+    menu.style.top = '';
   });
   activeCardMenuSymbol = null;
 });
@@ -1917,12 +2017,26 @@ window.toggleCardMenu = function (event, symbol) {
     // Fermer tous les menus de carte
     document.querySelectorAll('.card-dropdown-menu').forEach((m) => {
       m.style.display = 'none';
+      m.classList.remove('menu-floating');
+      m.style.left = '';
+      m.style.right = '';
+      m.style.top = '';
     });
     if (!isOpen) {
+      const buttonRect = event.currentTarget.getBoundingClientRect();
+      menu.classList.add('menu-floating');
       menu.style.display = 'block';
+      const menuRect = menu.getBoundingClientRect();
+      const margin = 8;
+      const left = Math.max(margin, Math.min(window.innerWidth - menuRect.width - margin, buttonRect.right - menuRect.width));
+      const top = Math.max(margin, Math.min(window.innerHeight - menuRect.height - margin, buttonRect.bottom + 6));
+      menu.style.left = `${left}px`;
+      menu.style.right = 'auto';
+      menu.style.top = `${top}px`;
       activeCardMenuSymbol = symbol;
     } else {
       menu.style.display = 'none';
+      menu.classList.remove('menu-floating');
       activeCardMenuSymbol = null;
     }
   }
@@ -1968,8 +2082,20 @@ async function sendBotCommand(action, symbol, seconds = null) {
     if (data && data.ok) {
       if (statusSpan) {
         statusSpan.style.color = 'var(--good)';
-        statusSpan.textContent = data.message;
+        statusSpan.textContent = action === 'force_sell'
+          ? `Vente demandée pour ${symbol}. Exécution en cours...`
+          : data.message;
       }
+      safeRefresh();
+      refreshTrades();
+      refreshAnalytics();
+      [600, 1400, 2600].forEach((delay) => {
+        setTimeout(() => {
+          safeRefresh();
+          refreshTrades();
+          refreshAnalytics();
+        }, delay);
+      });
     } else {
       if (statusSpan) {
         statusSpan.style.color = 'var(--bad)';

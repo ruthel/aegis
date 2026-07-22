@@ -78,6 +78,13 @@ CONFIG_FIELDS = {
     'MAX_DAILY_LOSS': {'type': 'float', 'label': 'Perte max / jour', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
     'STOP_LOSS_PERCENT': {'type': 'float', 'label': 'Stop loss %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'TRAILING_STOP_PERCENT': {'type': 'float', 'label': 'Trailing stop %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
+    'BREAKEVEN_STOP_ENABLED': {'type': 'bool', 'label': 'Activer Stop Zéro Perte (Breakeven)', 'section': 'Risque', 'restart': 'bot'},
+    'BREAKEVEN_USE_RESISTANCE': {'type': 'bool', 'label': 'Breakeven basé sur la Résistance (50% R1)', 'section': 'Risque', 'restart': 'bot'},
+    'BREAKEVEN_TRIGGER_PROFIT_PCT': {'type': 'float', 'label': 'Seuil d\'activ. Breakeven % (Si résistance inactive)', 'section': 'Risque', 'min': -50.0, 'max': 20, 'restart': 'bot'},
+    'BREAKEVEN_LOCK_PROFIT_PCT': {'type': 'float', 'label': 'Verrouillage Profit % (0=Frais, 1=Frais+1%)', 'section': 'Risque', 'min': 0.0, 'max': 10, 'restart': 'bot'},
+    'BREAKEVEN_MIN_NET_PROFIT_PCT': {'type': 'float', 'label': 'Profit net min. protégé %', 'section': 'Risque', 'min': 0.0, 'max': 5, 'restart': 'bot'},
+    'BREAKEVEN_TRIGGER_BUFFER_PCT': {'type': 'float', 'label': 'Buffer activation frais %', 'section': 'Risque', 'min': 0.0, 'max': 5, 'restart': 'bot'},
+    'BREAKEVEN_MIN_STOP_GAP_PCT': {'type': 'float', 'label': 'Écart min stop/prix %', 'section': 'Risque', 'min': 0.0, 'max': 2, 'restart': 'bot'},
     'SYMBOL_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown symbole sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
     'SYMBOL_FAILURE_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown echec sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
     'SUPPORT_TOUCH_MIN_TRADES': {'type': 'int', 'label': 'Support Touch trades min.', 'section': 'Support Touch', 'min': 1, 'max': 500, 'restart': 'bot'},
@@ -292,18 +299,27 @@ def stop_bot_processes():
             pid = int(BOT_PID_FILE.read_text().strip())
             if os.name == 'nt':
                 subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'],
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=5)
             else:
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(1)
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.kill(pid, signal.SIGTERM)
                 except Exception:
                     pass
             stopped.append(pid)
             BOT_PID_FILE.unlink(missing_ok=True)
     except Exception:
         pass
+
+    # Tuer également tout processus bot orphelin en arrière-plan
+    try:
+        if os.name == 'nt':
+            cmd = 'cmd /c "taskkill /F /IM pythonw.exe"'
+            subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
+        else:
+            subprocess.run(["pkill", "-f", "run.py"], capture_output=True, timeout=5)
+    except Exception:
+        pass
+
     return stopped
 
 
@@ -389,7 +405,9 @@ def active_state_file():
 def trade_stats(positions):
     """Compute PnL, total closed trades, and win rate from buy/sell pairs."""
     buys = {}  # symbol -> list of pending buys [{amount, price}]
-    trades = []  # closed trades with pnl
+    trades = []  # closed trades with net pnl
+    gross_trades = []
+    fees_total = 0.0
     stakes = []  # stake sizes (cost of entry)
     timestamps = []  # sell timestamps for duration calc
 
@@ -409,8 +427,17 @@ def trade_stats(positions):
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl = filled * (px - entry['price'])
-                trades.append(pnl)
+                pnl_gross = filled * (px - entry['price'])
+                fee_rate = pos.get('fee_rate')
+                if fee_rate is not None:
+                    fees = (entry['price'] * filled * float(fee_rate)) + (px * filled * float(fee_rate))
+                else:
+                    total_fee = float(pos.get('fee') or 0)
+                    fees = total_fee * (filled / amount) if amount > 0 else 0
+                pnl_net = pnl_gross - fees
+                trades.append(pnl_net)
+                gross_trades.append(pnl_gross)
+                fees_total += fees
                 stakes.append(filled * entry['price'])
                 if entry.get('ts'):
                     try:
@@ -428,7 +455,8 @@ def trade_stats(positions):
                     queue.pop(0)
 
     total = len(trades)
-    wins = sum(1 for t in trades if t > 0)
+    wins = sum(1 for t in trades if t >= -0.005)
+    total_pnl_gross = sum(gross_trades)
     total_pnl = sum(trades)
     win_rate = (wins / total * 100) if total else 0
     avg_stake = (sum(stakes) / len(stakes)) if stakes else float(os.getenv('TRADE_AMOUNT', '5'))
@@ -446,13 +474,16 @@ def trade_stats(positions):
         'wins': wins,
         'losses': total - wins,
         'win_rate': round(win_rate, 1),
+        'total_pnl_gross': round(total_pnl_gross, 4),
+        'total_fees': round(fees_total, 4),
+        'total_pnl_net': round(total_pnl, 4),
         'total_pnl': round(total_pnl, 4),
         'days_active': round(days_active, 4),
         'avg_stake': round(avg_stake, 2),
     }
 
 
-def weighted_positions(positions, trailing_stops=None, pending_orders=None):
+def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit_recommendations=None):
     by_symbol = {}
     for position in sorted(positions, key=lambda item: item.get('timestamp', '')):
         symbol = position.get('symbol')
@@ -511,16 +542,34 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None):
             min_profit = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
             target_price = avg_entry * (1 + min_profit)
             
+        fee_pct = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) * 2
+        entry_val = data['amount'] * avg_entry
+        exit_rec = None
+        if exit_recommendations and isinstance(exit_recommendations, dict):
+            exit_rec = exit_recommendations.get(data['symbol'])
+        if not exit_rec:
+            exit_rec = {
+                "symbol": data['symbol'],
+                "decision": "HOLD",
+                "continuation_score": 50,
+                "net_pnl_pct": 0.0,
+                "reason": "initial_evaluating",
+                "shadow_mode": True
+            }
+
         result.append({
             'symbol': data['symbol'],
             'amount': data['amount'],
             'avg_entry_price': avg_entry,
-            'entry_value': data['amount'] * avg_entry,
+            'entry_value': entry_val,
             'last_update': data['last_update'],
             'stop_loss_price': stop_loss_price,
             'is_trailing': is_trailing,
             'trailing_percent': trailing_percent,
-            'target_price': target_price
+            'target_price': target_price,
+            'trading_fee_pct': fee_pct,
+            'trading_fee_value': entry_val * (fee_pct / 100.0),
+            'exit_recommendation': exit_rec
         })
     return sorted(result, key=lambda item: item['symbol'])
 
@@ -726,18 +775,33 @@ def compute_trade_history(positions):
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl = filled * (px - entry['price'])
-                pnl_pct = ((px - entry['price']) / entry['price']) * 100
+                entry_value = filled * entry['price']
+                pnl_gross = filled * (px - entry['price'])
+                fee_rate = pos.get('fee_rate')
+                if fee_rate is not None:
+                    fees = (entry['price'] * filled * float(fee_rate)) + (px * filled * float(fee_rate))
+                else:
+                    total_fee = float(pos.get('fee') or 0)
+                    fees = total_fee * (filled / amount) if amount > 0 else 0
+                pnl_net = pnl_gross - fees
+                pnl_gross_pct = (pnl_gross / entry_value) * 100 if entry_value else 0
+                pnl_net_pct = (pnl_net / entry_value) * 100 if entry_value else 0
                 trades.append({
                     'symbol': symbol,
                     'buy_price': round(entry['price'], 2),
                     'sell_price': round(px, 2),
                     'amount': round(filled, 8),
-                    'pnl': round(pnl, 4),
-                    'pnl_pct': round(pnl_pct, 2),
+                    'pnl_gross': round(pnl_gross, 4),
+                    'fees': round(fees, 4),
+                    'pnl_net': round(pnl_net, 4),
+                    'pnl_gross_pct': round(pnl_gross_pct, 2),
+                    'pnl_net_pct': round(pnl_net_pct, 2),
+                    'fee_rate': float(fee_rate) if fee_rate is not None else None,
+                    'pnl': round(pnl_net, 4),
+                    'pnl_pct': round(pnl_net_pct, 2),
                     'buy_time': entry.get('ts'),
                     'sell_time': pos.get('timestamp'),
-                    'profitable': pnl > 0,
+                    'profitable': pnl_net >= -0.005,
                 })
                 entry['amount'] -= filled
                 remaining -= filled
@@ -856,13 +920,21 @@ def compute_heatmap(positions):
 def compute_capital_breakdown(state, positions, paper_balance):
     """Calcule la repartition detaillee du capital"""
     # Positions ouvertes
-    open_positions = weighted_positions(positions, state.get('trailing_stops'), state.get('pending_orders'))
+    open_positions = weighted_positions(positions, state.get('trailing_stops'), state.get('pending_orders'), state.get('exit_recommendations'))
     total_in_positions = sum(p['entry_value'] for p in open_positions)
 
     # En ordres limites (pending sell orders)
+    pending_orders = state.get('pending_orders') or {}
     pending_sell_value = 0
-    for oid, od in state.get('pending_orders', {}).items():
-        if od.get('side') == 'sell':
+    if isinstance(pending_orders, dict):
+        orders_iterable = pending_orders.values()
+    elif isinstance(pending_orders, list):
+        orders_iterable = pending_orders
+    else:
+        orders_iterable = []
+
+    for od in orders_iterable:
+        if isinstance(od, dict) and od.get('side') == 'sell':
             order = od.get('order', {})
             amount = float(order.get('amount', 0))
             price = float(order.get('price', 0))
@@ -960,7 +1032,7 @@ def index():
 def api_status():
     state = read_json(active_state_file(), {'positions': []})
     decisions = parse_jsonl(DATA_DIR / 'decision_journal.jsonl', 20)
-    positions = weighted_positions(state.get('positions', []), state.get('trailing_stops'), state.get('pending_orders'))
+    positions = weighted_positions(state.get('positions', []), state.get('trailing_stops'), state.get('pending_orders'), state.get('exit_recommendations'))
 
     stats = trade_stats(state.get('positions', []))
     

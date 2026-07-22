@@ -17,14 +17,51 @@ class PositionManager:
         self.cache = {}
         self.cache_duration = 300  # 5 minutes
         
+    def get_dynamic_stuck_threshold_hours(self, symbol):
+        """Calcule dynamiquement le seuil d'heures bloquées basé sur la volatilité courante"""
+        try:
+            bot = self.bot
+            volatility_score = 3.0
+            
+            try:
+                if hasattr(bot, 'websocket') and bot.websocket.is_connected():
+                    ws_klines = bot.websocket.get_klines(symbol, 60)
+                    if len(ws_klines) >= 10:
+                        volatility_score = MarketAnalyzer.calculate_volatility(ws_klines, symbol)
+                else:
+                    klines = bot.get_klines(symbol, 60, os.getenv('MAIN_TIMEFRAME', '15m'))
+                    volatility_score = MarketAnalyzer.calculate_volatility(klines, symbol)
+            except:
+                pass
+                
+            # Plus la volatilité est faible, plus le prix met du temps à bouger
+            if volatility_score <= 1.5:
+                return 72  # Très faible : tolérer 72h
+            elif volatility_score <= 2.5:
+                return 48  # Faible : tolérer 48h
+            elif volatility_score <= 3.5:
+                return 36  # Moyenne : tolérer 36h
+            elif volatility_score <= 4.5:
+                return 24  # Elevée : tolérer 24h
+            else:
+                return 12  # Très élevée : tolérer 12h
+        except Exception as e:
+            try:
+                return int(os.getenv('STUCK_THRESHOLD_HOURS', '24'))
+            except:
+                return 24
+
     def check_stuck_position(self, symbol, current_price, buy_price, buy_time):
         """Vérifie si une position est bloquée"""
         loss_percent = MarketAnalyzer.calculate_loss_percent(current_price, buy_price)
         hours_held = MarketAnalyzer.calculate_hours_held(buy_time)
         
+        # Récupérer le seuil dynamique
+        dynamic_threshold = self.get_dynamic_stuck_threshold_hours(symbol)
+        
         is_stuck = (
             loss_percent < -5 and  # Perte > 5%
-            hours_held > self.stuck_threshold_hours  # Détenu > 24h
+            hours_held > dynamic_threshold  # Détenu > seuil dynamique
         )
         
         if is_stuck:
@@ -34,9 +71,10 @@ class PositionManager:
                     'buy_time': buy_time,
                     'detected_at': time.time(),
                     'max_loss': loss_percent,
-                    'recovery_attempts': 0
+                    'recovery_attempts': 0,
+                    'threshold_used': dynamic_threshold
                 }
-                print(f"⚠️ POSITION BLOQUÉE: {symbol}")
+                print(f"⚠️ POSITION BLOQUÉE: {symbol} (Seuil dynamique: {dynamic_threshold}h)")
                 print(f"   💸 Perte: {loss_percent:.2f}%")
                 print(f"   ⏰ Détenu: {hours_held:.1f}h")
             else:

@@ -25,6 +25,7 @@ from utils.position_manager import PositionManager
 from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
+from utils.exit_engine import ExitDecisionEngine
 
 # Mixins
 from core.bot.trading import TradingMixin
@@ -100,6 +101,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self._last_score_append = {}
         self.symbol_cooldown_seconds = int(os.getenv('SYMBOL_COOLDOWN_SECONDS', '300'))
         self.symbol_failure_cooldown_seconds = int(os.getenv('SYMBOL_FAILURE_COOLDOWN_SECONDS', '120'))
+        # Verrous par symbole : empêche deux threads d'acheter simultanément le même actif
+        self._buy_locks: dict = {}
+        self._last_trailing_stop_save = 0
         self.market_regime_filter = os.getenv('MARKET_REGIME_FILTER', 'True').lower() == 'true'
         self.falling_knife_filter = os.getenv('FALLING_KNIFE_FILTER', 'True').lower() == 'true'
         self.require_reversal_in_bear = os.getenv('REQUIRE_REVERSAL_CONFIRMATION_IN_BEAR', 'True').lower() == 'true'
@@ -136,6 +140,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.trailing_stop_manager = TrailingStopManager(float(os.getenv('TRAILING_STOP_PERCENT', '3')))
         self.correlation_manager = CorrelationManager()
         
+        # Exit Decision Engine (Phase 1: Shadow Mode)
+        exit_enabled = os.getenv('EXIT_ENGINE_ENABLED', 'True').lower() == 'true'
+        shadow_mode = os.getenv('EXIT_ENGINE_SHADOW_MODE', 'True').lower() == 'true'
+        fragile_pct = float(os.getenv('PROFIT_FRAGILE_MAX_NET_PCT', '0.40'))
+        time_stop_min = int(os.getenv('TIME_STOP_MINUTES', '12'))
+        self.exit_decision_engine = ExitDecisionEngine(
+            shadow_mode=shadow_mode,
+            fragile_max_net_pct=fragile_pct,
+            time_stop_minutes=time_stop_min
+        ) if exit_enabled else None
+        
         # NOUVEAUX DÉTECTEURS CRITIQUES
 
         self.multi_tf_analyzer = TimeframeAnalyzer()
@@ -152,6 +167,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         self.pattern_analyzer = PatternAnalyzer(self)
         self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
+        
+        # Core Machine Learning Engine
+        from core.ml_engine import MLEngine
+        self.ml_engine = MLEngine()
+        self.ml_filter_enabled = os.getenv('ML_FILTER_ENABLED', 'False').lower() == 'true'
+        self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
         
         # Gestionnaire de balance centralisé
         self.balance_manager = BalanceManager(self)
@@ -425,24 +446,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 remaining -= float(p.get('amount') or 0)
 
     def _restore_paper_balance(self):
-        """Restaure l'USD paper depuis le state, ou le reconstruit pour les anciens fichiers."""
+        """Restaure l'USD paper depuis le state, ou le reconstruit de manière exacte."""
         saved_balance = self.state.get('paper_balance')
         if saved_balance is not None:
             self.paper_balance = float(saved_balance)
             return
 
         initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
-        balance = initial_balance
-        for position in self.state.get('positions', []):
-            amount = float(position.get('amount', 0) or 0)
-            price = float(position.get('price', 0) or 0)
-            value = amount * price
-            if position.get('side') == 'buy':
-                balance -= value
-            elif position.get('side') == 'sell':
-                balance += value
-
-        self.paper_balance = max(0, balance)
+        try:
+            from dashboard.app import trade_stats, weighted_positions
+            stats = trade_stats(self.state.get('positions', []))
+            open_pos = weighted_positions(self.state.get('positions', []), self.state.get('trailing_stops'), self.state.get('pending_orders'))
+            open_cost = sum(p['entry_value'] for p in open_pos)
+            self.paper_balance = max(0, initial_balance + stats.get('total_pnl_net', 0) - open_cost)
+        except Exception:
+            self.paper_balance = initial_balance
 
     def _restore_trailing_stops_from_state(self):
         """Restaure les trailing stops en mémoire pour les positions ouvertes."""
@@ -486,6 +504,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         pos['initial_trailing_percent'] = float(saved_data['initial_trailing_percent'])
                     elif saved_percent is not None:
                         pos['initial_trailing_percent'] = float(saved_percent)
+                    if 'breakeven_active' in saved_data:
+                        pos['breakeven_active'] = bool(saved_data['breakeven_active'])
+                    # Restaurer resistance_price pour que le breakeven mode soit identique après redémarrage
+                    if 'resistance_price' in saved_data and saved_data['resistance_price'] is not None:
+                        pos['resistance_price'] = float(saved_data['resistance_price'])
     
     def save_state(self):
         try:
@@ -513,7 +536,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         'highest_price': float(data['highest_price']),
                         'buy_price': float(data['buy_price']),
                         'trailing_percent': float(data.get('trailing_percent', self.trailing_stop_manager.trailing_percent)),
-                        'initial_trailing_percent': float(data.get('initial_trailing_percent', data.get('trailing_percent', self.trailing_stop_manager.trailing_percent)))
+                        'initial_trailing_percent': float(data.get('initial_trailing_percent', data.get('trailing_percent', self.trailing_stop_manager.trailing_percent))),
+                        'breakeven_active': bool(data.get('breakeven_active', False)),
+                        'resistance_price': float(data['resistance_price']) if data.get('resistance_price') else None
                     }
                     for symbol, data in self.trailing_stop_manager.positions.items()
                 }
@@ -612,7 +637,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.save_state()
 
     def _is_bear_regime(self, regime):
-        return regime in ['BEAR_WEAK', 'BEAR_STRONG', 'VOLATILE']
+        return regime in ['BEAR', 'BEAR_WEAK', 'BEAR_STRONG', 'SIDEWAYS_DOWN']
 
     def _normalize_symbol(self, pair):
         pair = pair.strip()
@@ -756,9 +781,20 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         symbol_bear = self._is_bear_regime(symbol_regime)
         bear_mode = symbol_bear or (is_alt and btc_bear)
 
+        if symbol_bear:
+            mode_display = 'BEAR'
+        elif 'BULL' in str(symbol_regime) or symbol_regime == 'SIDEWAYS_UP':
+            mode_display = 'BULL'
+        elif 'SIDE' in str(symbol_regime) or 'RANGE' in str(symbol_regime):
+            mode_display = 'RANGE'
+        else:
+            mode_display = 'BEAR' if bear_mode else 'NORMAL'
+
         context = {
-            'mode': 'BEAR' if bear_mode else 'NORMAL',
+            'mode': mode_display,
             'bear_mode': bear_mode,
+            'symbol_bear': symbol_bear,
+            'btc_bear': btc_bear,
             'symbol_regime': symbol_regime,
             'btc_regime': btc_regime,
             'btc_momentum_percent': btc_momentum,
@@ -824,12 +860,52 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     changes = [abs(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
                     volatilities.append(sum(changes) / len(changes) * 100)
             avg_vol = sum(volatilities) / len(volatilities) if volatilities else 2.0
-            if avg_vol >= 3.0:   return 5 * 60      # très volatile  → 5 min
-            if avg_vol >= 1.5:   return 5 * 60     # volatile       → 5 min
-            if avg_vol >= 0.5:   return 5 * 60     # normal         → 5 min
-            return 5 * 60                           # calme          → 5 min
+            if avg_vol >= 3.0:   return 15 * 60     # très volatile  → 15 min
+            if avg_vol >= 1.5:   return 60 * 60     # volatile       → 1 heure
+            if avg_vol >= 0.5:   return 3 * 3600    # normal         → 3 heures
+            return 6 * 3600                         # calme          → 6 heures
         except:
             return self.support_touch_backtest_interval
+
+    def _get_dynamic_backtest_limit(self):
+        """Calcule dynamiquement la limite de bougies du backtest selon la volatilité globale"""
+        try:
+            pairs = [p.strip() for p in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',') if p.strip()]
+            vol_scores = []
+            for pair in pairs:
+                symbol = self._normalize_symbol(pair)
+                try:
+                    if self.websocket and self.websocket.is_connected():
+                        ws_klines = self.websocket.get_klines(symbol, 60)
+                        if len(ws_klines) >= 10:
+                            vol = self.market_analyzer.calculate_volatility(ws_klines, symbol)
+                            vol_scores.append(vol)
+                    else:
+                        klines = self.get_klines(symbol, 60, os.getenv('MAIN_TIMEFRAME', '15m'))
+                        vol = self.market_analyzer.calculate_volatility(klines, symbol)
+                        vol_scores.append(vol)
+                except:
+                    pass
+            
+            avg_vol = sum(vol_scores) / len(vol_scores) if vol_scores else 3.0
+            
+            # Plus le marché est calme, plus on étend la période pour avoir un échantillon statistique suffisant de trades
+            # Plus le marché est agité, plus on réduit la période pour s'adapter rapidement aux retournements
+            if avg_vol <= 1.5:
+                return 1920  # Très calme : évaluer sur 20 jours
+            elif avg_vol <= 2.5:
+                return 1344  # Calme : évaluer sur 14 jours
+            elif avg_vol <= 3.5:
+                return 720   # Normal : évaluer sur 7.5 jours
+            elif avg_vol <= 4.5:
+                return 480   # Volatile : évaluer sur 5 jours
+            else:
+                return 288   # Très volatile : évaluer sur 3 jours
+        except Exception:
+            try:
+                return int(os.getenv('BACKTEST_LIMIT', '720'))
+            except:
+                return 720
 
     def refresh_support_touch_filter(self, force=False):
         """Relance le backtest Support Touch Pro si les données sont absentes ou trop vieilles."""
@@ -843,9 +919,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return True
 
         try:
+            dynamic_limit = self._get_dynamic_backtest_limit()
             command = [
                 sys.executable,
                 'scripts/backtest_support_touch.py',
+                '--dynamic-hold',
+                '--limit',
+                str(dynamic_limit),
                 '--output',
                 self.support_touch_backtest_file
             ]
@@ -1199,14 +1279,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if not self.realtime_trading:
             return
         
-        if symbol.endswith("USD"):
-            formatted_symbol = f"{symbol[:-3]}/USD"
-        elif symbol.endswith("USD"):
-            formatted_symbol = f"{symbol[:-3]}/USD"
+        if '/' in symbol:
+            formatted_symbol = symbol
         elif symbol.endswith("USD"):
             formatted_symbol = f"{symbol[:-3]}/USD"
         else:
             formatted_symbol = symbol
+
+        self._update_trailing_stop_from_tick(formatted_symbol, price)
         
         # PAPER: vérifier ordres limite à chaque tick prix
         if self.paper_trading and self.pending_orders:
@@ -1233,6 +1313,66 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
         except Exception as e:
             print(f"❌ Erreur signal temps réel {symbol}: {e}")
+
+    def _evaluate_exit_engine_for_symbol(self, symbol, current_price):
+        """Évalue une position ouverte avec l'ExitDecisionEngine (ContinuationScore + Recommandations)."""
+        if not getattr(self, 'exit_decision_engine', None):
+            return None
+        if not hasattr(self, 'trailing_stop_manager') or symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
+            return None
+
+        try:
+            position_data = self.trailing_stop_manager.positions[symbol]
+            tf = os.getenv('MAIN_TIMEFRAME', '15m')
+            klines = self.get_klines(symbol, 30, tf)
+            btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
+            
+            result = self.exit_decision_engine.evaluate_position(
+                symbol, current_price, position_data, klines, btc_klines
+            )
+            
+            if 'exit_recommendations' not in self.state:
+                self.state['exit_recommendations'] = {}
+            self.state['exit_recommendations'][symbol] = result
+            
+            self._log_decision(
+                symbol=symbol,
+                action="exit_decision",
+                allowed=True,
+                reason=result['reason'],
+                metrics={
+                    'decision': result['decision'],
+                    'continuation_score': result['continuation_score'],
+                    'net_pnl_pct': result['net_pnl_pct'],
+                    'duration_minutes': result['duration_minutes'],
+                    'shadow_mode': result['shadow_mode']
+                },
+                throttle_seconds=30
+            )
+            return result
+        except Exception as e:
+            print(f"⚠️ Erreur évaluation ExitDecisionEngine {symbol}: {e}")
+            return None
+
+    def _update_trailing_stop_from_tick(self, symbol, current_price):
+        """Met à jour le trailing stop dès le tick WebSocket, sans attendre la boucle principale."""
+        if not hasattr(self, 'trailing_stop_manager'):
+            return
+        if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
+            return
+
+        try:
+            changed = self.trailing_stop_manager.update_position(symbol, current_price)
+            eval_res = self._evaluate_exit_engine_for_symbol(symbol, current_price)
+            
+            save_interval = float(os.getenv('TRAILING_STOP_SAVE_INTERVAL_SECONDS', '1'))
+            now = time.time()
+            if changed or eval_res:
+                if now - self._last_trailing_stop_save >= save_interval:
+                    self._last_trailing_stop_save = now
+                    self.save_state()
+        except Exception as e:
+            print(f"⚠️ Erreur update trailing live {symbol}: {e}")
     
     def _check_paper_orders_for_symbol(self, symbol, current_price):
         """Vérifie et exécute les ordres paper pour un symbole au prix temps réel."""
@@ -1269,6 +1409,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'order_id': order_id, 'source': 'bot', 'paper': True,
                     'avg_entry_price': buy_price, 'status': 'filled'
                 }
+                position.update(self._calculate_fee_details(amount, current_price, buy_price))
                 self.state['positions'].append(position)
                 self.total_trades += 1
                 
@@ -1526,6 +1667,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     
     def intelligent_strategy(self, symbol, amount, current_price):
         """Stratégie intelligente - Support touch PRIORITAIRE"""
+        # --- Verrou par symbole : empêche deux threads d'exécuter simultanément ---
+        if symbol not in self._buy_locks:
+            self._buy_locks[symbol] = threading.Lock()
+        if not self._buy_locks[symbol].acquire(blocking=False):
+            # Un autre thread traite déjà ce symbole — on abandonne silencieusement
+            return
+        try:
+            return self._intelligent_strategy_locked(symbol, amount, current_price)
+        finally:
+            self._buy_locks[symbol].release()
+
+    def _intelligent_strategy_locked(self, symbol, amount, current_price):
+        """Corps de la stratégie exécuté sous verrou par symbole"""
         crypto = symbol.split('/')[0]
         market_context = self.get_market_context(symbol)
 
@@ -1568,13 +1722,32 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             )
             return
         
-        # 1. Vérifier position existante
+        # 1. VÉRIFICATIONS ABSOLUES DE SÉCURITÉ (REGIME & FALLING KNIFE)
+        # 1A. Détection de Régime (Bloquer SIDEWAYS_DOWN et BEAR)
+        regime_allowed, regime_reason = self.get_unified_trading_decision(symbol)
+        if not regime_allowed:
+            self.record_decision(
+                symbol, 'buy', False, f'regime_rejected_{regime_reason}',
+                {'price': current_price, 'market_context': market_context}, throttle_seconds=120
+            )
+            return
+
+        # 1B. Détection Couteau qui tombe (Falling Knife)
+        falling_knife = self._detect_falling_knife(symbol) if getattr(self, 'falling_knife_filter', True) else {'is_falling': False}
+        if falling_knife.get('is_falling'):
+            self.record_decision(
+                symbol, 'buy', False, f"falling_knife_detected_{falling_knife.get('reason')}",
+                {'price': current_price, 'falling_knife': falling_knife}, throttle_seconds=60
+            )
+            return
+
+        # 1C. Vérifier position existante et capital
         if not self.can_open_position(symbol):
             self.record_decision(
                 symbol, 'buy', False, 'position_or_capital_blocked',
                 {'price': current_price}, throttle_seconds=120
             )
-            return  # Silencieux - trop fréquent
+            return
 
         blocked, block_reason = self.should_block_entry_for_market_context(symbol, market_context, source='normal')
         if blocked:
@@ -1707,6 +1880,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 {'price': current_price, 'score': crypto_score, 'market_context': market_context}, throttle_seconds=120
             )
             return  # Silencieux - trop fréquent
+
+        # 6. CORE ML SUPRA-FILTER (Optionnel)
+        if self.ml_filter_enabled:
+            klines = self.get_klines(symbol, 50, '15m')
+            ml_win_prob = self.ml_engine.predict_win_probability(klines, current_price)
+            if ml_win_prob < self.ml_min_probability:
+                self.record_decision(
+                    symbol, 'buy', False, f'ml_filter_rejected_{ml_win_prob:.1f}%',
+                    {'price': current_price, 'ml_win_probability': ml_win_prob, 'min_probability': self.ml_min_probability},
+                    throttle_seconds=120
+                )
+                return
         
         # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
@@ -1918,43 +2103,52 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return 1.0
     
     def can_open_position(self, symbol):
-        """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE + vérifie capital"""
+        """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE + vérifie capital et positions ouvertes"""
         from utils.market_analyzer import MarketAnalyzer
         
-        # Calculer max_positions selon capital
+        # 1. Vérification en Paper Trading
+        if self.paper_trading:
+            open_paper_positions = [
+                p for p in self.state.get('positions', [])
+                if p.get('symbol') == symbol and p.get('side') == 'buy' and p.get('status') != 'closed'
+            ]
+            if open_paper_positions:
+                return False  # Déjà 1 position ouverte sur ce symbole en Paper Trading -> BLOQUER
+
+            total_open = len([
+                p for p in self.state.get('positions', [])
+                if p.get('side') == 'buy' and p.get('status') != 'closed'
+            ])
+            if total_open >= 3:
+                return False  # Maximum 3 positions globales simultanées atteint -> BLOQUER
+
+            min_cost = self.get_min_amount(symbol)['min_cost']
+            if self.paper_balance < min_cost:
+                return False  # Solde USD insuffisant -> BLOQUER
+
+            return True
+
+        # 2. Vérification en Trading Réel (Exchange Balance)
         try:
             total_capital = self.capital_manager.get_total_capital()
-            limits = MarketAnalyzer.get_position_limits(total_capital)
-            max_positions = limits['max_positions_per_crypto']
-        except:
-            max_positions = 4  # Fallback par défaut
-        
-        # Utiliser les vraies positions depuis l'exchange
-        try:
             balance = self.balance_manager.get_balance(force_refresh=True)
             crypto = symbol.split('/')[0]
             
-            # Position réelle = balance libre + verrouillée
             free_amount = balance.get(crypto, {}).get('free', 0)
             locked_amount = balance.get(crypto, {}).get('used', 0)
             total_holding = free_amount + locked_amount
             
-            # IGNORER LA POUSSIÈRE: Compter SEULEMENT si valeur >= minimum tradable
             if total_holding > 0.00001:
                 current_price = self.get_price(symbol)
                 position_value = total_holding * current_price
                 min_cost = self.get_min_amount(symbol)['min_cost']
                 
-                # Si valeur < minimum = poussière = ignorer complètement
                 if position_value < min_cost:
-                    return True  # Poussière ignorée, position autorisée
+                    return True  # Poussière ignorée
                 
-                # Position réelle détectée, vérifier limite
-                return False  # Position déjà ouverte, bloquer
+                return False  # Position réelle déjà ouverte, bloquer
             
-            # NOUVEAU: Vérifier capital USD disponible
-            quote = 'USD' if symbol.endswith('/USD') else 'USD'
-            usd_available = balance.get(quote, {}).get('free', 0)
+            usd_available = balance.get('USD', {}).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']
             
             if usd_available < min_cost:
@@ -1996,6 +2190,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     continue
 
                 self.trailing_stop_manager.update_position(symbol, current_price)
+                self._evaluate_exit_engine_for_symbol(symbol, current_price)
                 if not self.trailing_stop_manager.should_stop_loss(symbol, current_price):
                     continue
 
@@ -2084,30 +2279,46 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 return cached['decision'], cached['reason']
         
         # 2. LOGIQUE UNIFIÉE - Hiérarchie Institutionnelle
+        # 2. LOGIQUE UNIFIÉE - Hiérarchie Institutionnelle (Sécurité Régime Prioritaire)
         try:
-            # PRIORITÉ 1: RSI oversold extrême (< 25) - OVERRIDE TOUT
-            if self.is_extreme_oversold(symbol):
+            market_type = self.detect_market_regime(symbol)
+
+            # RÈGLE ABSOLUE 1: Si le marché est baissier ou sideway descendant, ACHATS STRICTEMENT BLOQUÉS
+            if market_type in ('BEAR', 'SIDEWAYS_DOWN'):
+                decision = False
+                reason = f"❌ {crypto}: Régime {market_type.replace('_', ' ')} (tendance baissière) - Achat bloqué"
+
+            # RÈGLE 2: RSI oversold extrême (< 25) en marché non-baissier
+            elif self.is_extreme_oversold(symbol):
                 decision = True
-                reason = f"✅ {crypto}: RSI oversold - Achat autorisé"
-            
-            # PRIORITÉ 2: Support fort - OVERRIDE marché baissier
+                reason = f"✅ {crypto}: RSI oversold en régime favorable - Achat autorisé"
+
+            # RÈGLE 3: Support fort en marché favorable (BULL, SIDEWAYS_UP, SIDEWAYS)
             elif self.is_near_strong_support(symbol):
                 decision = True
-                reason = f"✅ {crypto}: Support fort détecté - Achat autorisé"
-            
-            # PRIORITÉ 3: Régime de marché
-            else:
-                market_type = self.detect_market_regime(symbol)
-                
-                if market_type == 'BULL':
-                    decision = self.check_bullish_htf_bias(symbol)
-                    reason = f"✅ {crypto}: Marché haussier" if decision else f"❌ {crypto}: HTF baissier"
-                
-                elif market_type == 'BEAR':
-                    decision = False
-                    reason = f"❌ {crypto}: Marché baissier sans exception - Skip"
-                
-                else:  # SIDEWAYS
+                reason = f"✅ {crypto}: Support fort détecté en régime {market_type.replace('_', ' ')} - Achat autorisé"
+
+            # RÈGLE 4: Filtrage par régime haussier / latéral
+            elif market_type == 'BULL':
+                decision = self.check_bullish_htf_bias(symbol)
+                reason = f"✅ {crypto}: Marché haussier" if decision else f"❌ {crypto}: HTF baissier"
+
+            elif market_type == 'SIDEWAYS_UP':
+                decision = True
+                reason = f"✅ {crypto}: Sideway ascendant - Achat autorisé"
+
+            else:  # SIDEWAYS / FLAT
+                h1_klines = self.get_klines(symbol, 10, '1h')
+                if h1_klines and len(h1_klines) >= 3:
+                    h1_closes = [k['close'] for k in h1_klines]
+                    mom_1h = (h1_closes[-1] - h1_closes[0]) / h1_closes[0]
+                    if mom_1h < -0.004:
+                        decision = False
+                        reason = f"❌ {crypto}: Sideway plat avec baisse 1h récente ({mom_1h*100:.2f}%) - Achat bloqué"
+                    else:
+                        decision = True
+                        reason = f"✅ {crypto}: Sideway plat stable - Achat autorisé"
+                else:
                     decision = True
                     reason = f"✅ {crypto}: Marché latéral - Achat autorisé"
             
@@ -2143,9 +2354,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return decision
     
     def detect_market_regime(self, symbol):
-        """Détecte automatiquement le régime de marché"""
+        """Détecte automatiquement le régime de marché (BULL, BEAR, SIDEWAYS_UP, SIDEWAYS_DOWN, SIDEWAYS)"""
         daily_klines = self.get_klines(symbol, 50, '1d')
-        if len(daily_klines) < 50:
+        if len(daily_klines) < 20:
             return 'SIDEWAYS'
         
         closes = [k['close'] for k in daily_klines]
@@ -2158,6 +2369,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         elif current_price < ema_20 < ema_50:
             return 'BEAR'
         else:
+            # Analyser la pente court terme sur 1h
+            h1_klines = self.get_klines(symbol, 24, '1h')
+            if len(h1_klines) >= 12:
+                h1_closes = [k['close'] for k in h1_klines]
+                h1_ema20 = self.calculate_ema(h1_closes, 10)
+                h1_prev = self.calculate_ema(h1_closes[:-3], 10)
+                slope = (h1_ema20 - h1_prev) / h1_prev if h1_prev else 0
+                
+                if slope < -0.0002:  # Pente descendante > -0.02% sur 3h
+                    return 'SIDEWAYS_DOWN'
+                elif slope > 0.0002:  # Pente ascendante > +0.02% sur 3h
+                    return 'SIDEWAYS_UP'
             return 'SIDEWAYS'
     
     def check_bullish_htf_bias(self, symbol):
@@ -2237,6 +2460,25 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         existing_positions = [p for p in self.state.get('positions', []) 
                             if p['symbol'] == symbol and p['side'] == 'buy']
         position_count = len(existing_positions)
+
+        # Dernière barrière anti-double-buy: l'état peut avoir changé entre
+        # l'analyse du signal et l'exécution effective.
+        cooldown_remaining = self.get_symbol_cooldown_remaining(symbol)
+        if cooldown_remaining > 0:
+            self.record_decision(
+                symbol, 'buy_executed', False, 'symbol_cooldown_active_at_execution',
+                {'price': current_price, 'cooldown_remaining_seconds': cooldown_remaining},
+                throttle_seconds=0
+            )
+            return False
+
+        if not self.can_open_position(symbol):
+            self.record_decision(
+                symbol, 'buy_executed', False, 'position_blocked_at_execution',
+                {'price': current_price},
+                throttle_seconds=0
+            )
+            return False
              
         # Exécuter
         result = self.buy_market(symbol, position_data['position_size_crypto'])
@@ -2268,7 +2510,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 self.trailing_stop_manager.add_position(
                     symbol, current_price, 
                     trailing_percent=position_data.get('trailing_stop_percent'),
-                    support_price=position_data.get('support_price')
+                    support_price=position_data.get('support_price'),
+                    resistance_price=position_data.get('resistance_price')
                 )
             
             # Placer ordre de vente (paper ET réel)
@@ -2395,7 +2638,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if self.sell_market(symbol, amount_to_sell):
                 if hasattr(self, 'trailing_stop_manager'):
                     self.trailing_stop_manager.remove_position(symbol)
-                print(f"✅ Vente forcée exécutée avec succès pour {amount_to_sell:.6f} {base_currency}")
+                self.set_symbol_cooldown(symbol, 1800, reason='manual_force_sell')
+                print(f"✅ Vente forcée exécutée avec succès pour {amount_to_sell:.6f} {base_currency} (Cooldown 30m actif)")
             else:
                 print(f"❌ Échec de la vente forcée pour {symbol}")
                 
