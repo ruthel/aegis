@@ -7,7 +7,7 @@
   <title>Aegis Dashboard</title>
   <link rel="icon" href="{{ url_for('static', filename='brand/favicon.ico') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/aegis-mark-192.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=1.1.5">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=1.1.6">
   <!-- Chart.js Integration -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -315,6 +315,33 @@
             </div>
             <div class="metric-value" id="growthPerStake">--</div>
           </div>
+
+          <!-- Radar Prochain Achat -->
+          <div class="metric-card color-good" id="nextBuyRadarCard">
+            <div class="metric-card-top" style="margin-bottom: 6px;">
+              <div class="metric-label-container">
+                <span class="metric-icon-badge" style="background: rgba(16, 185, 129, 0.15);">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                    stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                  </svg>
+                </span>
+                <span class="metric-label">Prochain Achat Estimé</span>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div>
+                <div id="radarSymbol" style="font-size: 15px; font-weight: 800; color: #10b981; line-height: 1.1;">--</div>
+                <span id="radarDistance" style="font-size: 9px; color: var(--text-muted); display: block; margin-top: 2px;">--</span>
+              </div>
+              <div style="border-left: 1px solid rgba(255, 255, 255, 0.08); height: 28px; flex-shrink: 0;"></div>
+              <div style="text-align: right;">
+                <div id="radarEta" style="font-size: 14px; font-weight: 800; color: var(--text); line-height: 1.1;">dans ~15m</div>
+                <span id="radarMLProb" style="font-size: 9px; color: #10b981; font-weight: 700; display: block; margin-top: 2px;">ML --%</span>
+              </div>
+            </div>
+          </div>
         </div>
 
 
@@ -370,20 +397,35 @@
             <div class="panel-head"
               style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
               <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                <h2>Support Touch Pro</h2>
+                <h2>Contexte d'Entrée</h2>
                 <span id="supportLastRun" class="muted" style="font-size:11px;"></span>
               </div>
-              <button id="runBacktestBtn" class="btn" style="padding: 4px 12px; font-size: 11px;">🔄 Lancer
-                Backtest</button>
+              <button id="runBacktestBtn" class="btn" style="padding: 4px 12px; font-size: 11px;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                  style="margin-right:5px;vertical-align:-2px;">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <polyline points="21 3 21 9 15 9" />
+                </svg>
+                Lancer Backtest
+              </button>
             </div>
-            <div id="supportGrid" class="support-grid"></div>
+            <div id="entryContextGrid" class="entry-context-grid"></div>
           </div>
 
           <div class="span-12 panel">
-            <div class="panel-head">
-              <h2>Régime Marché</h2>
+            <div class="panel-head" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <h2>🧠 Core ML Engine <span class="badge good" style="font-size:10px; margin-left:6px;">🟢 Filtre Actif (En Direct)</span></h2>
+                <span id="mlModelStatus" class="muted" style="font-size:11px;">Entraîné sur 2 952 trades 2026 (26 Features Multi-Timeframe)</span>
+              </div>
             </div>
-            <div id="marketContextGrid" class="support-grid"></div>
+            <div id="mlGrid" class="support-grid"></div>
+
+            <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+              <h3 style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">📊 Analytics Quantitatives & Prévisions IA (Dataset 2026)</h3>
+              <div id="mlAnalyticsGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px;"></div>
+            </div>
           </div>
 
           <div class="span-7 panel">
@@ -695,7 +737,7 @@
     </main>
   </div>
 
-  <script src="{{ url_for('static', filename='dashboard.js') }}?v=1.1.9"></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}?v=1.2.0"></script>
 </body>
 
 </html>

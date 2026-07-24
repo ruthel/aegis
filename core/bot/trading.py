@@ -155,6 +155,18 @@ class TradingMixin:
                 if hasattr(self, 'notifier'):
                     self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
 
+                if hasattr(self, 'record_ml_exit_learning_sample'):
+                    self.record_ml_exit_learning_sample(
+                        symbol,
+                        price,
+                        amount,
+                        buy_price=buy_price,
+                        pnl=pnl,
+                        hold_time=hold_time,
+                        reason='market_sell',
+                        order=order
+                    )
+
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
             
@@ -405,6 +417,18 @@ class TradingMixin:
                             hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                         
                         self.notifier.notify_trade_sell(symbol, amount, current_price, amount * current_price, buy_price or current_price, pnl or 0, hold_time)
+
+                    if hasattr(self, 'record_ml_exit_learning_sample'):
+                        self.record_ml_exit_learning_sample(
+                            symbol,
+                            current_price,
+                            amount,
+                            buy_price=buy_price,
+                            pnl=pnl,
+                            hold_time=hold_time if 'hold_time' in locals() else None,
+                            reason='paper_limit_sell',
+                            order=order
+                        )
                     
                     # Enregistrer la vente
                     position = {
@@ -654,6 +678,18 @@ class TradingMixin:
                     hours = delta.total_seconds() / 3600
                     hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                 self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+
+            if hasattr(self, 'record_ml_exit_learning_sample'):
+                self.record_ml_exit_learning_sample(
+                    symbol,
+                    price,
+                    amount,
+                    buy_price=buy_price,
+                    pnl=pnl,
+                    hold_time=hold_time if 'hold_time' in locals() else None,
+                    reason='confirmed_exchange_sell',
+                    order={'id': str(order_id)}
+                )
 
             position = {
                 'symbol': symbol, 'side': 'sell', 'amount': amount,

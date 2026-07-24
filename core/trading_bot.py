@@ -26,6 +26,7 @@ from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
+from core.ml_live_logger import MLLiveLogger
 
 # Mixins
 from core.bot.trading import TradingMixin
@@ -46,12 +47,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.retry_delay = 5
         self.min_amounts = {}
         
-        # Configuration des fichiers selon le mode
+        # Configuration état selon le mode
         self.paper_trading = os.getenv('PAPER_TRADING', 'True') == 'True'
-        if self.paper_trading:
-            self.state_file = 'data/paper_bot_state.json'
-        else:
-            self.state_file = 'data/bot_state.json'
+        self._state_save_lock = threading.Lock()
         self.paper_balance = float(os.getenv('PAPER_BALANCE', '1000'))
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSS', '100'))
         self.max_daily_trades = int(os.getenv('MAX_DAILY_TRADES', '50'))
@@ -91,13 +89,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # NOUVEAU: Cache centralisé support touch (approche institutionnelle)
         self.support_touch_cache = {}  # {symbol: {'result': {...}, 'timestamp': float}}
         
-        # NOUVEAU: Cache de décisions unifié - Niveau Institutionnel
-        self.decision_cache = {}  # {symbol: {'decision': bool, 'reason': str, 'timestamp': float}}
         self._last_decision = {}  # Anti-spam logs
         self._decision_log_throttle = {}
-        self.decision_journal_file = os.getenv('DECISION_JOURNAL_FILE', 'data/decision_journal.jsonl')
         self.decision_journal_max = int(os.getenv('DECISION_JOURNAL_MAX', '5000'))
-        self._decision_journal_since_compact = 0
+        self.ml_live_logger = MLLiveLogger(
+            data_dir='data',
+            sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
+        )
+        self._ml_exit_learning_last = {}
         self._last_score_append = {}
         self.symbol_cooldown_seconds = int(os.getenv('SYMBOL_COOLDOWN_SECONDS', '300'))
         self.symbol_failure_cooldown_seconds = int(os.getenv('SYMBOL_FAILURE_COOLDOWN_SECONDS', '120'))
@@ -105,26 +104,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self._buy_locks: dict = {}
         self._last_trailing_stop_save = 0
         self.market_regime_filter = os.getenv('MARKET_REGIME_FILTER', 'True').lower() == 'true'
-        self.falling_knife_filter = os.getenv('FALLING_KNIFE_FILTER', 'True').lower() == 'true'
-        self.require_reversal_in_bear = os.getenv('REQUIRE_REVERSAL_CONFIRMATION_IN_BEAR', 'True').lower() == 'true'
         self.bear_mode_trade_multiplier = float(os.getenv('BEAR_MODE_TRADE_MULTIPLIER', '0.35'))
         self.bear_mode_min_confidence_bonus = float(os.getenv('BEAR_MODE_MIN_CONFIDENCE_BONUS', '20'))
-        self.bear_mode_support_touch_override = os.getenv('BEAR_MODE_SUPPORT_TOUCH_OVERRIDE', 'False').lower() == 'true'
-        self.bear_mode_allowed_pairs = {
-            pair.strip() for pair in os.getenv('BEAR_MODE_ALLOWED_PAIRS', 'BTC/USD,ETH/USD').split(',')
-            if pair.strip()
-        }
         self.market_context_cache_seconds = int(os.getenv('MARKET_CONTEXT_CACHE_SECONDS', '300'))
         self.market_context_cache = {}
         self.support_touch_adaptive_filter = os.getenv('SUPPORT_TOUCH_ADAPTIVE_FILTER', 'True').lower() == 'true'
         self.support_touch_backtest_interval = 5 * 60
-        self.support_touch_min_trades = int(os.getenv('SUPPORT_TOUCH_MIN_TRADES', '10'))
-        self.support_touch_min_winrate = float(os.getenv('SUPPORT_TOUCH_MIN_WINRATE', '50'))
-        self.support_touch_min_total_pnl = float(os.getenv('SUPPORT_TOUCH_MIN_TOTAL_PNL', '0'))
-        self.support_touch_min_avg_pnl = float(os.getenv('SUPPORT_TOUCH_MIN_AVG_PNL', '0'))
-        self.support_touch_fail_closed = os.getenv('SUPPORT_TOUCH_FAIL_CLOSED', 'True').lower() == 'true'
-        self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_FILE', 'data/support_touch_backtest.json')
+        self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_SOURCE', 'data/aegis_db.sqlite3')
         self.support_touch_backtest_timeout = int(os.getenv('SUPPORT_TOUCH_BACKTEST_TIMEOUT_SECONDS', '90'))
+        self.ml_live_analysis_interval = int(os.getenv('ML_LIVE_ANALYSIS_INTERVAL_SECONDS', '21600'))
+        self._last_ml_live_analysis = 0
+        self._ml_live_analysis_process = None
         
         # Ordres
         self.pending_orders = {}
@@ -140,13 +130,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.trailing_stop_manager = TrailingStopManager(float(os.getenv('TRAILING_STOP_PERCENT', '3')))
         self.correlation_manager = CorrelationManager()
         
-        # Exit Decision Engine (Phase 1: Shadow Mode)
+        # Exit Decision Engine fusionne au ML pour la gestion active des sorties
         exit_enabled = os.getenv('EXIT_ENGINE_ENABLED', 'True').lower() == 'true'
-        shadow_mode = os.getenv('EXIT_ENGINE_SHADOW_MODE', 'True').lower() == 'true'
         fragile_pct = float(os.getenv('PROFIT_FRAGILE_MAX_NET_PCT', '0.40'))
         time_stop_min = int(os.getenv('TIME_STOP_MINUTES', '12'))
         self.exit_decision_engine = ExitDecisionEngine(
-            shadow_mode=shadow_mode,
             fragile_max_net_pct=fragile_pct,
             time_stop_minutes=time_stop_min
         ) if exit_enabled else None
@@ -171,8 +159,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Core Machine Learning Engine
         from core.ml_engine import MLEngine
         self.ml_engine = MLEngine()
-        self.ml_filter_enabled = os.getenv('ML_FILTER_ENABLED', 'False').lower() == 'true'
         self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
+        self.ml_exit_entry_min_continue_prob = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
         
         # Gestionnaire de balance centralisé
         self.balance_manager = BalanceManager(self)
@@ -226,11 +214,328 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # NOUVEAU: Placer automatiquement les cryptos disponibles en mode vente au démarrage
         print("\n🔍 Vérification positions existantes...")
         self._optimize_all_positions_at_startup()
+
+        # Mettre à jour prédictions ML au démarrage
+        print("🧠 Calcul des prédictions ML en direct pour toutes les paires...")
+        self.update_ml_predictions_for_all_pairs()
         
         # Notification de démarrage
         mode = "PAPER" if self.paper_trading else "LIVE"
         self.notifier.notify(f"🤖 Bot démarré - {mode}")
         self.realtime_trading = True  # Init complète, activer le trading
+
+    def update_ml_predictions_for_all_pairs(self):
+        """Met à jour les prédictions ML pour toutes les paires actives en direct"""
+        if not hasattr(self, 'ml_engine') or self.ml_engine is None or not self.ml_engine.is_trained:
+            return
+
+        try:
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+            ml_preds = self.state.setdefault('ml_predictions', {})
+
+            for pair in trading_pairs:
+                pair_clean = pair.strip()
+                if '/' in pair_clean:
+                    symbol = pair_clean
+                elif pair_clean.endswith('USD'):
+                    symbol = f"{pair_clean[:-3]}/USD"
+                elif pair_clean.endswith('USDT'):
+                    symbol = f"{pair_clean[:-4]}/USDT"
+                else:
+                    symbol = f"{pair_clean[:3]}/{pair_clean[3:]}"
+
+                klines_15m = self.get_klines(symbol, 50, '15m')
+                if not klines_15m or len(klines_15m) < 20:
+                    continue
+                
+                klines_5m = self.get_klines(symbol, 30, '5m')
+                klines_1h = self.get_klines(symbol, 30, '1h')
+                curr_price = klines_15m[-1]['close']
+
+                trade_context = self._build_ml_trade_context()
+                prob = self.ml_engine.predict_win_probability(
+                    klines_15m,
+                    curr_price,
+                    klines_5m=klines_5m,
+                    klines_1h=klines_1h,
+                    trade_context=trade_context
+                )
+                rec = 'BUY_HIGH_CONFIDENCE' if prob >= self.ml_min_probability else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
+
+                ml_preds[symbol] = {
+                    'symbol': symbol,
+                    'p_win': prob,
+                    'recommendation': rec,
+                    'min_probability': self.ml_min_probability,
+                    'timestamp': datetime.now().isoformat()
+                }
+
+            self.save_state()
+        except Exception as e:
+            print(f"⚠️ Erreur mise à jour ML predictions: {e}")
+
+    def _build_ml_trade_context(self, position_data=None, account_balance=None):
+        """Construit les paramètres de trade utilisables par le ML sans fuite d'information future."""
+        try:
+            fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+            if fee_rate <= 0:
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+
+            if account_balance is None:
+                account_balance = self.get_account_balance()
+
+            position_value = None
+            if isinstance(position_data, dict):
+                position_value = position_data.get('position_size_usd')
+            if position_value is None:
+                position_value = float(os.getenv('TRADE_AMOUNT', '5'))
+
+            max_hold_candles = int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96'))
+            planned_hold_minutes = float(os.getenv('ML_PLANNED_HOLD_MINUTES', max_hold_candles * 15))
+            position_value = float(position_value or 0)
+            account_balance = float(account_balance or 0)
+
+            return {
+                'fee_rate': fee_rate,
+                'position_value_usd': position_value,
+                'account_balance': account_balance,
+                'position_value_pct_balance': (position_value / account_balance) * 100.0 if account_balance > 0 else 0.0,
+                'planned_hold_minutes': planned_hold_minutes
+            }
+        except Exception:
+            return None
+
+    def _build_ml_bot_context(
+        self,
+        symbol,
+        market_context=None,
+        falling_knife=None,
+        support_check=None,
+        support_metrics=None,
+        crypto_score=None,
+        dynamic_min_score=None,
+        technical_action=None,
+        technical_confidence=None,
+        technical_min_confidence=None
+    ):
+        """Expose au ML les signaux/verrous du bot sous forme de contexte structuré."""
+        context = dict(market_context or {})
+        falling = falling_knife if isinstance(falling_knife, dict) else context.get('falling_knife', {})
+        reversal = context.get('reversal', {})
+        support = support_check if isinstance(support_check, dict) else {}
+        support_bt = support_metrics if isinstance(support_metrics, dict) else {}
+
+        return {
+            'symbol_regime': context.get('symbol_regime'),
+            'btc_regime': context.get('btc_regime'),
+            'bear_mode': bool(context.get('bear_mode')),
+            'reversal_confirmed': bool(reversal.get('confirmed')),
+            'falling_knife_active': bool(falling.get('is_falling')),
+            'is_support_touch': bool(support.get('is_support_touch')),
+            'support_confidence': float(support.get('confidence') or 0.0),
+            'support_rebounds': float(support.get('rebounds') or support_bt.get('rebounds') or 0.0),
+            'support_backtest_winrate': float(
+                support_bt.get('win_rate') or support_bt.get('winrate') or support_bt.get('win_rate_pct') or 0.0
+            ),
+            'support_backtest_total_pnl': float(
+                support_bt.get('total_pnl_percent')
+                or support_bt.get('total_pnl')
+                or support_bt.get('total_pnl_pct')
+                or 0.0
+            ),
+            'support_backtest_avg_pnl': float(
+                support_bt.get('avg_pnl_percent')
+                or support_bt.get('avg_pnl')
+                or support_bt.get('average_pnl')
+                or 0.0
+            ),
+            'crypto_score': float(crypto_score or 0.0),
+            'dynamic_min_score': float(dynamic_min_score or 0.0),
+            'is_optimal_trading_time': 1.0 if self._is_optimal_trading_time() else 0.0,
+            'technical_action': technical_action,
+            'technical_confidence': float(technical_confidence or 0.0),
+            'technical_min_confidence': float(technical_min_confidence or 0.0),
+        }
+
+    def _predict_ml_exit_entry_forecast(self, symbol, current_price, position_data, entry_p_win=50.0, bot_context=None):
+        """Prévoit, au moment de l'entrée, si la future position aura assez de marge pour continuer."""
+        if not hasattr(self, 'ml_engine') or self.ml_engine is None:
+            return None
+
+        try:
+            tf = os.getenv('MAIN_TIMEFRAME', '15m')
+            klines = self.get_klines(symbol, 50, tf)
+            if not klines or len(klines) < 20:
+                return None
+
+            btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
+            fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+            if fee_rate <= 0:
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+
+            preview_position = dict(position_data or {})
+            preview_position.setdefault('buy_price', current_price)
+            preview_position.setdefault('avg_entry_price', current_price)
+            preview_position.setdefault('fee_rate', fee_rate)
+            preview_position.setdefault('duration_minutes', 0.0)
+
+            continuation_score = 50.0
+            if getattr(self, 'exit_decision_engine', None):
+                continuation_score = self.exit_decision_engine.compute_continuation_score(
+                    symbol, current_price, klines[-30:], btc_klines, preview_position
+                )
+
+            forecast = self.ml_engine.predict_exit_decision(
+                klines,
+                current_price,
+                preview_position,
+                continuation_score,
+                entry_p_win=entry_p_win,
+                btc_klines=btc_klines,
+                bot_context=bot_context
+            )
+            forecast['entry_continuation_score'] = continuation_score
+            forecast['min_continue_probability'] = self.ml_exit_entry_min_continue_prob
+            return forecast
+        except Exception as e:
+            print(f"⚠️ Erreur prévision ML sortie à l'entrée pour {symbol}: {e}")
+            return None
+
+    def _should_reject_entry_for_ml_exit(self, ml_exit_forecast):
+        """Retourne True si la prévision de sortie ML juge l'entrée trop fragile."""
+        if not ml_exit_forecast or not ml_exit_forecast.get('ml_exit_available'):
+            return False
+        return float(ml_exit_forecast.get('p_continue', 50.0)) < self.ml_exit_entry_min_continue_prob
+
+    def _build_ml_entry_decision_metrics(self, current_price, ml_win_prob, ml_exit_forecast, ml_bot_context=None, extra=None):
+        """Construit les métriques lisibles pour une décision finale ML d'entrée."""
+        context = ml_bot_context or {}
+        p_continue = None
+        if isinstance(ml_exit_forecast, dict):
+            p_continue = ml_exit_forecast.get('p_continue')
+
+        metrics = {
+            'price': current_price,
+            'ml_decision': {
+                'p_win': ml_win_prob,
+                'min_p_win': self.ml_min_probability,
+                'p_continue': p_continue,
+                'min_p_continue': self.ml_exit_entry_min_continue_prob,
+                'exit_recommendation': (ml_exit_forecast or {}).get('decision') if isinstance(ml_exit_forecast, dict) else None,
+                'exit_reason': (ml_exit_forecast or {}).get('reason') if isinstance(ml_exit_forecast, dict) else None,
+            },
+            'ml_inputs': {
+                'support_touch': bool(context.get('is_support_touch')),
+                'support_confidence': context.get('support_confidence'),
+                'support_backtest_winrate': context.get('support_backtest_winrate'),
+                'support_backtest_total_pnl': context.get('support_backtest_total_pnl'),
+                'crypto_score': context.get('crypto_score'),
+                'dynamic_min_score': context.get('dynamic_min_score'),
+                'technical_action': context.get('technical_action'),
+                'technical_confidence': context.get('technical_confidence'),
+                'technical_min_confidence': context.get('technical_min_confidence'),
+                'is_optimal_trading_time': context.get('is_optimal_trading_time'),
+                'symbol_regime': context.get('symbol_regime'),
+                'btc_regime': context.get('btc_regime'),
+                'bear_mode': context.get('bear_mode'),
+                'falling_knife_active': context.get('falling_knife_active'),
+            },
+            'ml_exit_entry_forecast': ml_exit_forecast,
+        }
+        if extra:
+            metrics.update(extra)
+        return metrics
+
+    def record_ml_entry_learning_sample(
+        self,
+        symbol,
+        decision,
+        current_price,
+        ml_win_prob,
+        ml_exit_forecast,
+        features=None,
+        bot_context=None,
+        trade_context=None,
+        reason=None
+    ):
+        """Enregistre un sample live ML sans influencer la décision du bot."""
+        try:
+            if not getattr(self, 'ml_live_logger', None):
+                return None
+            p_continue = None
+            if isinstance(ml_exit_forecast, dict):
+                p_continue = ml_exit_forecast.get('p_continue')
+            return self.ml_live_logger.record_entry_decision(
+                symbol=symbol,
+                decision=decision,
+                price=current_price,
+                p_win=ml_win_prob,
+                min_p_win=self.ml_min_probability,
+                p_continue=p_continue,
+                min_p_continue=self.ml_exit_entry_min_continue_prob,
+                features=features,
+                feature_names=getattr(self.ml_engine, 'feature_names', []),
+                bot_context=bot_context,
+                trade_context=trade_context,
+                exit_forecast=ml_exit_forecast,
+                reason=reason,
+                mode='paper' if self.paper_trading else 'live'
+            )
+        except Exception:
+            return None
+
+    def record_ml_exit_learning_sample(self, symbol, sell_price, amount, buy_price=None, pnl=None, hold_time=None, reason=None, order=None):
+        """Lie le résultat réel d'une sortie au sample d'entrée ML ouvert."""
+        try:
+            if not getattr(self, 'ml_live_logger', None):
+                return None
+            pnl_pct = None
+            if buy_price and buy_price > 0 and pnl is not None and amount:
+                cost_basis = float(buy_price) * float(amount)
+                pnl_pct = (float(pnl) / cost_basis) * 100.0 if cost_basis > 0 else None
+            return self.ml_live_logger.record_exit_outcome(
+                symbol=symbol,
+                sell_price=sell_price,
+                amount=amount,
+                buy_price=buy_price,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                hold_time=hold_time,
+                reason=reason,
+                order=order,
+                mode='paper' if self.paper_trading else 'live'
+            )
+        except Exception:
+            return None
+
+    def record_ml_exit_decision_learning_sample(self, symbol, current_price, exit_result, exit_features=None, entry_p_win=None):
+        """Enregistre les 37 features vues par le ML au moment d'une décision de sortie."""
+        try:
+            if not getattr(self, 'ml_live_logger', None):
+                return None
+            decision = (exit_result or {}).get('decision')
+            throttle_key = f"{symbol}:{decision}"
+            now = time.time()
+            if now - self._ml_exit_learning_last.get(throttle_key, 0) < 30:
+                return None
+            self._ml_exit_learning_last[throttle_key] = now
+            ml_exit = (exit_result or {}).get('ml_exit') or {}
+            return self.ml_live_logger.record_exit_decision(
+                symbol=symbol,
+                decision=decision,
+                current_price=current_price,
+                features=exit_features,
+                feature_names=getattr(self.ml_engine, 'exit_feature_names', []),
+                entry_p_win=entry_p_win,
+                continuation_score=(exit_result or {}).get('continuation_score'),
+                p_continue=ml_exit.get('p_continue'),
+                net_pnl_pct=(exit_result or {}).get('net_pnl_pct'),
+                duration_minutes=(exit_result or {}).get('duration_minutes'),
+                reason=(exit_result or {}).get('reason'),
+                mode='paper' if self.paper_trading else 'live'
+            )
+        except Exception:
+            return None
     
     def _place_paper_sell_order(self, symbol):
         """Redirige vers la méthode unifiée d'optimisation de position"""
@@ -383,23 +688,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     
     def load_state(self):
         loaded = False
-        for path in [self.state_file, self.state_file + '.tmp']:
-            if os.path.exists(path):
-                try:
-                    with open(path, 'r') as f:
-                        self.state = json.load(f)
-                    self._ensure_state_defaults()
-                    if self.paper_trading:
-                        self._restore_paper_balance()
-                    self._restore_trailing_stops_from_state()
-                    self.pending_orders = self.state.get('pending_orders', {})
-                    loaded = True
-                    break
-                except Exception as e:
-                    print(f"⚠️ Erreur chargement {path}: {e}")
+        state_key = 'paper' if self.paper_trading else 'live'
+        db_state = self.ml_live_logger.load_bot_state(state_key)
+        if isinstance(db_state, dict) and db_state:
+            self.state = db_state
+            loaded = True
+
         if not loaded:
             self.state = {'positions': [], 'last_update': None}
         self._ensure_state_defaults()
+        if self.paper_trading:
+            self._restore_paper_balance()
+        self._restore_trailing_stops_from_state()
+        self.pending_orders = self.state.get('pending_orders', {})
 
     def _ensure_state_defaults(self):
         self.state.setdefault('positions', [])
@@ -543,22 +844,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     for symbol, data in self.trailing_stop_manager.positions.items()
                 }
             self.state['last_update'] = datetime.now().isoformat()
-            # Écriture atomique avec retry pour éviter les conflits d'accès sur Windows (WinError 32)
-            tmp_file = self.state_file + '.tmp'
-            with open(tmp_file, 'w') as f:
-                json.dump(self.state, f, indent=2)
-            
-            success = False
-            for i in range(5):
-                try:
-                    os.replace(tmp_file, self.state_file)
-                    success = True
-                    break
-                except PermissionError:
-                    time.sleep(0.05)  # Attendre 50ms que l'autre processus relâche le fichier
-            
-            if not success:
-                os.replace(tmp_file, self.state_file)  # Ultime tentative pour remonter l'erreur si échec persistant
+            with self._state_save_lock:
+                state_key = 'paper' if self.paper_trading else 'live'
+                if self.ml_live_logger.save_bot_state(self.state, state_key):
+                    return
+                raise RuntimeError("SQLite bot_state save failed")
         except Exception as e:
             print(f"⚠️ Erreur sauvegarde état: {e}")
 
@@ -584,36 +874,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.state.setdefault('decision_journal', []).append(entry)
             self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
 
-            os.makedirs(os.path.dirname(self.decision_journal_file) or '.', exist_ok=True)
-            with open(self.decision_journal_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
-            self._compact_decision_journal_file()
-        except Exception:
-            pass
-
-    def _compact_decision_journal_file(self):
-        """Garde le JSONL borné sur disque sans le réécrire à chaque décision."""
-        try:
-            self._decision_journal_since_compact += 1
-            compact_every = max(100, self.decision_journal_max // 5)
-            if self._decision_journal_since_compact < compact_every:
-                return
-            self._decision_journal_since_compact = 0
-
-            if not os.path.exists(self.decision_journal_file):
-                return
-
-            with open(self.decision_journal_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-            keep = 20000
-            if len(lines) <= keep + compact_every:
-                return
-
-            temp_file = f"{self.decision_journal_file}.tmp"
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                f.writelines(lines[-keep:])
-            os.replace(temp_file, self.decision_journal_file)
+            if getattr(self, 'ml_live_logger', None):
+                self.ml_live_logger.record_decision_journal(
+                    entry,
+                    mode='paper' if self.paper_trading else 'live',
+                    max_entries=self.decision_journal_max
+                )
         except Exception:
             pass
 
@@ -774,8 +1040,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except Exception:
             btc_momentum = 0
 
-        falling = self._detect_falling_knife(symbol) if self.falling_knife_filter else {'is_falling': False, 'reason': 'disabled'}
-        reversal = self._has_reversal_confirmation(symbol) if self.require_reversal_in_bear else {'confirmed': True, 'reason': 'not_required'}
+        falling = self._detect_falling_knife(symbol)
+        reversal = self._has_reversal_confirmation(symbol)
         is_alt = symbol not in ('BTC/USD', 'BTC/USD')
         btc_bear = self._is_bear_regime(btc_regime) or btc_momentum <= -2
         symbol_bear = self._is_bear_regime(symbol_regime)
@@ -802,7 +1068,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             'reversal': reversal,
             'trade_multiplier': self.bear_mode_trade_multiplier if bear_mode else 1.0,
             'confidence_bonus': self.bear_mode_min_confidence_bonus if bear_mode else 0,
-            'support_touch_override_allowed': (not bear_mode) or self.bear_mode_support_touch_override,
             'reason': 'bear_mode' if bear_mode else 'normal_market'
         }
         self.state.setdefault('market_context', {})[symbol] = {
@@ -812,25 +1077,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.save_state()
         self.market_context_cache[symbol] = {'timestamp': now, 'context': context}
         return context
-
-    def should_block_entry_for_market_context(self, symbol, context, source='normal'):
-        """Retourne (blocked, reason) selon bear mode et falling knife."""
-        if not context.get('bear_mode'):
-            return False, 'normal_market'
-
-        allowed_pairs = {self._normalize_symbol(pair) for pair in self.bear_mode_allowed_pairs}
-        if symbol not in allowed_pairs:
-            return True, 'bear_mode_pair_not_allowed'
-
-        if source == 'support_touch' and not context.get('support_touch_override_allowed'):
-            return True, 'support_touch_disabled_in_bear_mode'
-
-        falling = context.get('falling_knife', {})
-        reversal = context.get('reversal', {})
-        if self.falling_knife_filter and falling.get('is_falling') and not reversal.get('confirmed'):
-            return True, f"falling_knife_without_reversal:{falling.get('reason')}"
-
-        return False, 'bear_mode_allowed_with_confirmation'
 
     def apply_market_context_position_adjustment(self, position_data, context):
         """Réduit la taille en bear mode sans recalculer tout le sizing."""
@@ -939,8 +1185,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if result.returncode != 0:
                 raise RuntimeError(result.stderr.strip() or result.stdout.strip() or 'backtest failed')
 
-            with open(self.support_touch_backtest_file, 'r', encoding='utf-8') as f:
-                backtest = json.load(f)
+            if getattr(self, 'ml_live_logger', None):
+                backtest = self.ml_live_logger.get_latest_support_touch_backtest()
+            else:
+                backtest = {}
+            if not backtest:
+                raise RuntimeError('support touch backtest DB result unavailable')
 
             pairs = {}
             for item in backtest.get('results', []):
@@ -962,67 +1212,26 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 except Exception as e:
                     self.logger.warning(f"Erreur détection régime pour Support Touch {symbol}: {e}")
 
-                # Seuils adaptatifs
-                d_trades = self.support_touch_min_trades
-                d_winrate = self.support_touch_min_winrate
-                d_total_pnl = self.support_touch_min_total_pnl
-                d_avg_pnl = self.support_touch_min_avg_pnl
-
-                if regime == 'BULL_TRENDING':
-                    d_winrate -= 5.0
-                    d_total_pnl -= 0.2
-                    d_avg_pnl -= 0.02
-                elif regime == 'BEAR_TRENDING':
-                    d_winrate += 10.0
-                    d_total_pnl += 1.0
-                    d_avg_pnl += 0.10
-                elif regime == 'HIGH_VOLATILITY':
-                    d_winrate += 5.0
-                    d_total_pnl += 0.5
-                    d_avg_pnl += 0.05
-
-                # Protection des seuils à des niveaux raisonnables
-                d_winrate = max(35.0, min(d_winrate, 85.0))
-                d_total_pnl = max(-1.0, d_total_pnl)
-                d_avg_pnl = max(-0.1, d_avg_pnl)
-
-                blockers = []
-                if trades < d_trades:
-                    blockers.append('insufficient_trades')
-                if win_rate < d_winrate:
-                    blockers.append('winrate_below_threshold')
-                if total_pnl < d_total_pnl:
-                    blockers.append('total_pnl_below_threshold')
-                if avg_pnl < d_avg_pnl:
-                    blockers.append('avg_pnl_below_threshold')
-
-                allowed = not blockers
                 pairs[symbol] = {
-                    'allowed': allowed,
-                    'reason': 'backtest_passed' if allowed else ','.join(blockers),
+                    'reason': 'ml_feature_only',
                     'trades': trades,
                     'win_rate': win_rate,
                     'total_pnl_percent': total_pnl,
                     'avg_pnl_percent': avg_pnl,
                     'regime': regime,
-                    'threshold_win_rate': d_winrate,
-                    'threshold_total_pnl': d_total_pnl,
-                    'threshold_avg_pnl': d_avg_pnl,
                     'last_checked': datetime.now().isoformat()
                 }
 
             self.state['support_touch_filter'] = {
                 'last_run_ts': time.time(),
                 'last_run': datetime.now().isoformat(),
-                'source_file': self.support_touch_backtest_file,
                 'pairs': pairs,
                 'last_error': None
             }
             self.save_state()
 
-            allowed_symbols = [symbol.split('/')[0] for symbol, data in pairs.items() if data['allowed']]
-            blocked_symbols = [symbol.split('/')[0] for symbol, data in pairs.items() if not data['allowed']]
-            print(f"🧪 Support Touch filter: OK {allowed_symbols or 'aucune'} | Bloqué {blocked_symbols or 'aucune'}")
+            symbols = [symbol.split('/')[0] for symbol in pairs]
+            print(f"🧪 Support Touch metrics ML: {symbols or 'aucune'}")
             return True
         except Exception as e:
             filter_state['last_error'] = str(e)
@@ -1031,21 +1240,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Backtest Support Touch indisponible: {e}")
             return False
 
-    def is_support_touch_allowed(self, symbol):
-        """Vérifie si Support Touch Pro peut override les filtres normaux pour ce symbole."""
-        if not self.support_touch_adaptive_filter:
-            return True, 'adaptive_filter_disabled', {}
-
-        refreshed = self.refresh_support_touch_filter()
-        if not refreshed and self.support_touch_fail_closed:
-            return False, 'backtest_unavailable_fail_closed', {}
-
+    def get_support_touch_metrics(self, symbol):
+        """Retourne les métriques Support Touch connues, sans les utiliser comme verrou d'entrée."""
         filter_state = self.state.get('support_touch_filter', {})
         pair_data = filter_state.get('pairs', {}).get(symbol)
-        if not pair_data:
-            return (not self.support_touch_fail_closed), 'no_backtest_result', {}
-
-        return bool(pair_data.get('allowed')), pair_data.get('reason', 'unknown'), pair_data
+        return pair_data if isinstance(pair_data, dict) else {}
     
     def get_min_amount(self, symbol):
         if symbol not in self.min_amounts:
@@ -1326,9 +1525,47 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             tf = os.getenv('MAIN_TIMEFRAME', '15m')
             klines = self.get_klines(symbol, 30, tf)
             btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
+            market_context = self.get_market_context(symbol)
+            bot_context = self._build_ml_bot_context(symbol, market_context=market_context)
+            preliminary_score = self.exit_decision_engine.compute_continuation_score(
+                symbol, current_price, klines, btc_klines, position_data
+            )
+            entry_p_win = 50.0
+            try:
+                entry_p_win = float(self.state.get('ml_predictions', {}).get(symbol, {}).get('p_win', 50.0))
+            except Exception:
+                entry_p_win = 50.0
+            ml_exit = None
+            ml_exit_features = None
+            if hasattr(self, 'ml_engine') and self.ml_engine is not None:
+                ml_exit_features = self.ml_engine.extract_exit_features(
+                    klines,
+                    current_price,
+                    position_data,
+                    preliminary_score,
+                    entry_p_win=entry_p_win,
+                    btc_klines=btc_klines,
+                    bot_context=bot_context
+                )
+                ml_exit = self.ml_engine.predict_exit_decision(
+                    klines,
+                    current_price,
+                    position_data,
+                    preliminary_score,
+                    entry_p_win=entry_p_win,
+                    btc_klines=btc_klines,
+                    bot_context=bot_context
+                )
             
             result = self.exit_decision_engine.evaluate_position(
-                symbol, current_price, position_data, klines, btc_klines
+                symbol, current_price, position_data, klines, btc_klines, ml_exit=ml_exit
+            )
+            self.record_ml_exit_decision_learning_sample(
+                symbol,
+                current_price,
+                result,
+                exit_features=ml_exit_features,
+                entry_p_win=entry_p_win
             )
             
             if 'exit_recommendations' not in self.state:
@@ -1342,17 +1579,87 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 reason=result['reason'],
                 metrics={
                     'decision': result['decision'],
+                    'rule_decision': result.get('rule_decision'),
                     'continuation_score': result['continuation_score'],
+                    'ml_exit': result.get('ml_exit', {}),
                     'net_pnl_pct': result['net_pnl_pct'],
-                    'duration_minutes': result['duration_minutes'],
-                    'shadow_mode': result['shadow_mode']
+                    'duration_minutes': result['duration_minutes']
                 },
                 throttle_seconds=30
             )
+            self._apply_ml_exit_management(symbol, current_price, result)
             return result
         except Exception as e:
             print(f"⚠️ Erreur évaluation ExitDecisionEngine {symbol}: {e}")
             return None
+
+    def _apply_ml_exit_management(self, symbol, current_price, exit_result):
+        """Applique les décisions de sortie fusionnées ML + règles quand le mode actif est autorisé."""
+        if not exit_result:
+            return False
+        if not hasattr(self, 'trailing_stop_manager') or symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
+            return False
+
+        decision = exit_result.get('decision')
+        position = self.trailing_stop_manager.positions[symbol]
+        fee_rate = float(position.get('fee_rate') or getattr(self, 'trading_fee', 0) or 0)
+        buy_price = float(position.get('buy_price') or current_price)
+        breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
+
+        if decision in ('FORCE_EXIT', 'TAKE_PROFIT'):
+            if not self._cancel_sell_orders_for_symbol(symbol):
+                return False
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            base_currency = symbol.split('/')[0]
+            available = balance.get(base_currency, {}).get('free', 0)
+            if available <= 0.00001:
+                return False
+            if self.sell_market(symbol, available):
+                self.trailing_stop_manager.remove_position(symbol)
+                self.record_decision(
+                    symbol, 'sell', True, f"ml_exit_{decision.lower()}",
+                    {
+                        'price': current_price,
+                        'decision': decision,
+                        'ml_exit': exit_result.get('ml_exit', {}),
+                        'net_pnl_pct': exit_result.get('net_pnl_pct'),
+                        'continuation_score': exit_result.get('continuation_score')
+                    },
+                    throttle_seconds=0
+                )
+                return True
+            return False
+
+        if decision in ('TIGHTEN_STOP', 'PROTECT_BREAKEVEN'):
+            min_gap_pct = float(os.getenv('ML_EXIT_MIN_STOP_GAP_PCT', '0.08'))
+            max_safe_stop = current_price * (1 - min_gap_pct / 100.0)
+            if decision == 'PROTECT_BREAKEVEN':
+                proposed_stop = min(max_safe_stop, breakeven_price)
+            else:
+                tighten_gap_pct = float(os.getenv('ML_EXIT_TIGHTEN_STOP_GAP_PCT', '0.18'))
+                proposed_stop = max(breakeven_price, current_price * (1 - tighten_gap_pct / 100.0))
+                proposed_stop = min(proposed_stop, max_safe_stop)
+
+            if proposed_stop > float(position.get('stop_price') or 0):
+                old_stop = position.get('stop_price')
+                position['stop_price'] = proposed_stop
+                position['ml_exit_managed'] = True
+                position['ml_exit_decision'] = decision
+                self.record_decision(
+                    symbol, 'exit_management', True, f"ml_exit_{decision.lower()}",
+                    {
+                        'price': current_price,
+                        'old_stop': old_stop,
+                        'new_stop': proposed_stop,
+                        'ml_exit': exit_result.get('ml_exit', {}),
+                        'net_pnl_pct': exit_result.get('net_pnl_pct'),
+                        'continuation_score': exit_result.get('continuation_score')
+                    },
+                    throttle_seconds=30
+                )
+                return True
+
+        return False
 
     def _update_trailing_stop_from_tick(self, symbol, current_price):
         """Met à jour le trailing stop dès le tick WebSocket, sans attendre la boucle principale."""
@@ -1614,6 +1921,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # NOUVEAU: Optimisations quotidiennes automatiques
                 self.run_daily_optimizations()
+                self.run_ml_live_analysis_if_due()
                 
                 time.sleep(0.5)
                 
@@ -1722,26 +2030,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             )
             return
         
-        # 1. VÉRIFICATIONS ABSOLUES DE SÉCURITÉ (REGIME & FALLING KNIFE)
-        # 1A. Détection de Régime (Bloquer SIDEWAYS_DOWN et BEAR)
-        regime_allowed, regime_reason = self.get_unified_trading_decision(symbol)
-        if not regime_allowed:
-            self.record_decision(
-                symbol, 'buy', False, f'regime_rejected_{regime_reason}',
-                {'price': current_price, 'market_context': market_context}, throttle_seconds=120
-            )
-            return
+        # 1. VÉRIFICATIONS ABSOLUES DE SÉCURITÉ (CAPITAL / BEAR CONTEXT)
 
-        # 1B. Détection Couteau qui tombe (Falling Knife)
-        falling_knife = self._detect_falling_knife(symbol) if getattr(self, 'falling_knife_filter', True) else {'is_falling': False}
-        if falling_knife.get('is_falling'):
-            self.record_decision(
-                symbol, 'buy', False, f"falling_knife_detected_{falling_knife.get('reason')}",
-                {'price': current_price, 'falling_knife': falling_knife}, throttle_seconds=60
-            )
-            return
+        # 1A. Détection Couteau qui tombe: feature ML uniquement, pas verrou dur.
+        falling_knife = self._detect_falling_knife(symbol)
 
-        # 1C. Vérifier position existante et capital
+        # 1B. Vérifier position existante et capital
         if not self.can_open_position(symbol):
             self.record_decision(
                 symbol, 'buy', False, 'position_or_capital_blocked',
@@ -1749,85 +2043,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             )
             return
 
-        blocked, block_reason = self.should_block_entry_for_market_context(symbol, market_context, source='normal')
-        if blocked:
-            self.record_decision(
-                symbol, 'buy', False, block_reason,
-                {'price': current_price, **market_context}, throttle_seconds=120
-            )
-            return
-        
-        # 2. SUPPORT TOUCH EN PREMIER (OVERRIDE TOUT)
         support_check = self.check_support_touch(symbol, current_price)
-        if support_check['is_support_touch']:
-            support_allowed, support_reason, support_metrics = self.is_support_touch_allowed(symbol)
-            support_context_blocked, support_context_reason = self.should_block_entry_for_market_context(
-                symbol, market_context, source='support_touch'
-            )
-            if support_context_blocked:
-                support_allowed = False
-                support_reason = support_context_reason
+        support_metrics = self.get_support_touch_metrics(symbol) if support_check.get('is_support_touch') else {}
 
-            if not support_allowed:
-                self.record_decision(
-                    symbol, 'support_touch_override', False, support_reason,
-                    {
-                        'price': current_price,
-                        'confidence': support_check['confidence'],
-                        'support_price': support_check['support_price'],
-                        'market_context': market_context,
-                        **support_metrics
-                    },
-                    throttle_seconds=120
-                )
-            else:
-                print(f"🎯 {crypto}: SUPPORT TOUCH PRO - {support_check['reason']}")  # SYNC - Important
-                signal_strength = support_check['confidence']
-                account_balance = self.get_account_balance()
-                position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
-                
-                # Apply confidence sizing factor
-                factor = self._confidence_sizing_factor(signal_strength)
-                if factor != 1.0:
-                    position_data['position_size_usd'] = round(position_data['position_size_usd'] * factor, 2)
-                    raw_crypto = position_data['position_size_crypto'] * factor
-                    position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
-                
-                position_data = self.apply_market_context_position_adjustment(position_data, market_context)
-                position_data['target_price'] = support_check['target_price']
-                position_data['stop_loss_price'] = support_check['stop_loss']
-                position_data['trailing_stop_percent'] = adaptive_trailing
-                position_data['support_price'] = support_check['support_price']
-                reason = f"Support PRO {support_check['support_price']:.2f} - {support_check['reason']}"
-                self.record_decision(
-                    symbol, 'buy', True, reason,
-                    {
-                        'price': current_price,
-                        'confidence': support_check['confidence'],
-                        'support_price': support_check['support_price'],
-                        'target_price': support_check['target_price'],
-                        'stop_loss': support_check['stop_loss'],
-                        'market_context': market_context,
-                        **support_metrics
-                    },
-                    throttle_seconds=0
-                )
-                self.execute_buy(symbol, position_data, current_price, reason)
-                return
-        
         # 3. SCORING PROFESSIONNEL (si pas de support touch)
         websocket_manager = getattr(self, 'websocket', None)
         crypto_score = self.market_analyzer.score_crypto(self, symbol, [], websocket_manager)
         self._append_score_history(symbol, crypto_score, current_price)
         dynamic_min_score = getattr(self.market_analyzer, 'last_dynamic_threshold', 10)
-        
-        if crypto_score < dynamic_min_score:
-            self.record_decision(
-                symbol, 'buy', False, 'score_below_dynamic_threshold',
-                {'price': current_price, 'score': crypto_score, 'min_score': dynamic_min_score},
-                throttle_seconds=120
-            )
-            return  # Silencieux - trop fréquent
         
         # 4. SIGNAL TECHNIQUE
         try:
@@ -1840,23 +2063,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             adaptive_threshold = min(adaptive_threshold, 95)
             global_signal = analysis['global_signal']
             
-            # REJET si signal insuffisant (seulement si pas de support touch)
-            if not (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
-                   global_signal['confidence'] >= adaptive_threshold):
-                self.record_decision(
-                    symbol, 'buy', False, 'technical_signal_below_threshold',
-                    {
-                        'price': current_price,
-                        'action': global_signal.get('action'),
-                        'confidence': global_signal.get('confidence'),
-                        'min_confidence': adaptive_threshold,
-                        'volatility': volatility,
-                        'score': crypto_score,
-                        'market_context': market_context
-                    },
-                    throttle_seconds=120
-                )
-                return  # Silencieux - trop fréquent
+            signal_action = global_signal.get('action')
+            signal_confidence = global_signal.get('confidence', 0)
                 
         except Exception as e:
             self.record_decision(
@@ -1865,51 +2073,132 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             )
             return  # Silencieux - trop fréquent
         
-        # 4. CONTEXTE MARCHÉ (Troisième filtre)
-        if not self.check_htf_bias(symbol):
-            self.record_decision(
-                symbol, 'buy', False, 'htf_bias_rejected',
-                {'price': current_price, 'score': crypto_score, 'market_context': market_context}, throttle_seconds=120
-            )
-            return  # Silencieux - trop fréquent
-        
-        # 5. TIMING OPTIMAL (Quatrième filtre)
-        if not self._is_optimal_trading_time():
-            self.record_decision(
-                symbol, 'buy', False, 'outside_optimal_trading_time',
-                {'price': current_price, 'score': crypto_score, 'market_context': market_context}, throttle_seconds=120
-            )
-            return  # Silencieux - trop fréquent
-
-        # 6. CORE ML SUPRA-FILTER (Optionnel)
-        if self.ml_filter_enabled:
-            klines = self.get_klines(symbol, 50, '15m')
-            ml_win_prob = self.ml_engine.predict_win_probability(klines, current_price)
-            if ml_win_prob < self.ml_min_probability:
-                self.record_decision(
-                    symbol, 'buy', False, f'ml_filter_rejected_{ml_win_prob:.1f}%',
-                    {'price': current_price, 'ml_win_probability': ml_win_prob, 'min_probability': self.ml_min_probability},
-                    throttle_seconds=120
-                )
-                return
-        
-        # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
-        print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
-        
-        # 6. Calculer position sizing optimal (COMBIEN)
+        # 6. Calculer position sizing avant le ML pour que le modèle voie la valeur réelle prévue.
         signal_strength = self.get_signal_strength(symbol, current_price)
         account_balance = self.get_account_balance()
         position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
-        
-        # Apply confidence sizing factor
+
         factor = self._confidence_sizing_factor(signal_strength)
         if factor != 1.0:
             position_data['position_size_usd'] = round(position_data['position_size_usd'] * factor, 2)
             raw_crypto = position_data['position_size_crypto'] * factor
             position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
-            
+
         position_data = self.apply_market_context_position_adjustment(position_data, market_context)
         position_data['trailing_stop_percent'] = adaptive_trailing
+        if support_check.get('is_support_touch'):
+            position_data['target_price'] = support_check.get('target_price')
+            position_data['stop_loss_price'] = support_check.get('stop_loss')
+            position_data['support_price'] = support_check.get('support_price')
+
+        # 6. Core ML actif: décision d'entrée + prévision de sortie
+        ml_win_prob = 50.0
+        ml_exit_forecast = None
+        ml_entry_features = None
+        ml_trade_context = None
+        ml_entry_learning_id = None
+        ml_bot_context = self._build_ml_bot_context(
+            symbol,
+            market_context=market_context,
+            falling_knife=falling_knife,
+            support_check=support_check,
+            support_metrics=support_metrics,
+            crypto_score=crypto_score,
+            dynamic_min_score=dynamic_min_score,
+            technical_action=global_signal.get('action'),
+            technical_confidence=global_signal.get('confidence'),
+            technical_min_confidence=adaptive_threshold
+        )
+        if hasattr(self, 'ml_engine') and self.ml_engine is not None:
+            try:
+                klines_15m = self.get_klines(symbol, 50, '15m')
+                klines_5m = self.get_klines(symbol, 30, '5m')
+                klines_1h = self.get_klines(symbol, 30, '1h')
+                ml_trade_context = self._build_ml_trade_context(position_data, account_balance)
+                ml_entry_features = self.ml_engine.extract_features_from_klines(
+                    klines_15m,
+                    current_price,
+                    klines_5m=klines_5m,
+                    klines_1h=klines_1h,
+                    trade_context=ml_trade_context,
+                    bot_context=ml_bot_context
+                )
+                ml_win_prob = self.ml_engine.predict_win_probability(
+                    klines_15m,
+                    current_price,
+                    klines_5m=klines_5m,
+                    klines_1h=klines_1h,
+                    trade_context=ml_trade_context,
+                    bot_context=ml_bot_context
+                )
+                ml_exit_forecast = self._predict_ml_exit_entry_forecast(
+                    symbol, current_price, position_data, entry_p_win=ml_win_prob, bot_context=ml_bot_context
+                )
+                recommendation = 'BUY_HIGH_CONFIDENCE' if ml_win_prob >= self.ml_min_probability else ('NEUTRAL' if ml_win_prob >= 50.0 else 'REJECT_RISK')
+                
+                ml_preds = self.state.setdefault('ml_predictions', {})
+                ml_preds[symbol] = {
+                    'symbol': symbol,
+                    'p_win': ml_win_prob,
+                    'recommendation': recommendation,
+                    'min_probability': self.ml_min_probability,
+                    'ml_exit_entry_forecast': ml_exit_forecast,
+                    'bot_context': ml_bot_context,
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.save_state()
+
+                if ml_win_prob < self.ml_min_probability:
+                    self.record_ml_entry_learning_sample(
+                        symbol,
+                        'rejected',
+                        current_price,
+                        ml_win_prob,
+                        ml_exit_forecast,
+                        features=ml_entry_features,
+                        bot_context=ml_bot_context,
+                        trade_context=ml_trade_context,
+                        reason=f'ml_filter_rejected_{ml_win_prob:.1f}%'
+                    )
+                    self.record_decision(
+                        symbol, 'buy', False, f'ml_filter_rejected_{ml_win_prob:.1f}%',
+                        self._build_ml_entry_decision_metrics(
+                            current_price,
+                            ml_win_prob,
+                            ml_exit_forecast,
+                            ml_bot_context
+                        ),
+                        throttle_seconds=120
+                    )
+                    return
+                if self._should_reject_entry_for_ml_exit(ml_exit_forecast):
+                    self.record_ml_entry_learning_sample(
+                        symbol,
+                        'rejected',
+                        current_price,
+                        ml_win_prob,
+                        ml_exit_forecast,
+                        features=ml_entry_features,
+                        bot_context=ml_bot_context,
+                        trade_context=ml_trade_context,
+                        reason=f"ml_exit_entry_rejected_{ml_exit_forecast.get('p_continue', 0):.1f}%"
+                    )
+                    self.record_decision(
+                        symbol, 'buy', False, f"ml_exit_entry_rejected_{ml_exit_forecast.get('p_continue', 0):.1f}%",
+                        self._build_ml_entry_decision_metrics(
+                            current_price,
+                            ml_win_prob,
+                            ml_exit_forecast,
+                            ml_bot_context
+                        ),
+                        throttle_seconds=120
+                    )
+                    return
+            except Exception as e:
+                print(f"⚠️ Erreur prédiction ML pour {symbol}: {e}")
+        
+        # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
+        print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
         
         # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
@@ -1920,6 +2209,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # 8. Exécuter achat avec données optimisées
         reason = f"Validation complète - Score {crypto_score}/100"
+        ml_entry_learning_id = self.record_ml_entry_learning_sample(
+            symbol,
+            'accepted',
+            current_price,
+            ml_win_prob,
+            ml_exit_forecast,
+            features=ml_entry_features,
+            bot_context=ml_bot_context,
+            trade_context=ml_trade_context,
+            reason=reason
+        )
         self.record_decision(
             symbol, 'buy', True, reason,
             {
@@ -1930,11 +2230,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 'min_confidence': adaptive_threshold,
                 'position_size_usd': position_data.get('position_size_usd'),
                 'position_size_crypto': position_data.get('position_size_crypto'),
+                **self._build_ml_entry_decision_metrics(current_price, ml_win_prob, ml_exit_forecast, ml_bot_context),
                 'market_context': market_context
             },
             throttle_seconds=0
         )
-        self.execute_buy(symbol, position_data, current_price, reason)
+        self.execute_buy(symbol, position_data, current_price, reason, ml_entry_learning_id=ml_entry_learning_id)
     
     def _confidence_sizing_factor(self, confidence):
         """Calcule un multiplicateur de position selon la confiance du signal"""
@@ -2008,6 +2309,40 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
         except Exception as e:
             print(f"⚠️ Erreur optimisations quotidiennes: {e}")
+
+    def run_ml_live_analysis_if_due(self):
+        """Lance l'analyse Phase 4B en arrière-plan sans bloquer le trading."""
+        try:
+            if self.ml_live_analysis_interval <= 0:
+                return False
+            now = time.time()
+            if self._ml_live_analysis_process and self._ml_live_analysis_process.poll() is None:
+                return False
+            if now - self._last_ml_live_analysis < self.ml_live_analysis_interval:
+                return False
+
+            self._last_ml_live_analysis = now
+            command = [
+                sys.executable,
+                'scripts/analyze_ml_live_performance.py',
+                '--max-replay',
+                os.getenv('ML_LIVE_ANALYSIS_MAX_REPLAY', '250')
+            ]
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            self._ml_live_analysis_process = subprocess.Popen(
+                command,
+                cwd=os.getcwd(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags
+            )
+            return True
+        except Exception as e:
+            print(f"⚠️ Analyse ML live indisponible: {e}")
+            return False
     
     def get_optimal_check_interval(self, all_pairs):
         """Calcule intervalle optimal selon volatilité multi-pairs - TOUTES les cryptos"""
@@ -2267,166 +2602,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         return ema
     
-    def get_unified_trading_decision(self, symbol):
-        """MÉTHODE UNIFIÉE - Niveau Hedge Fund - Élimine toutes contradictions"""
-        crypto = symbol.split('/')[0]
-        current_time = time.time()
-        
-        # 1. Vérifier cache (TTL 30 secondes) - Anti-over-trading
-        if symbol in self.decision_cache:
-            cached = self.decision_cache[symbol]
-            if current_time - cached['timestamp'] < 30:
-                return cached['decision'], cached['reason']
-        
-        # 2. LOGIQUE UNIFIÉE - Hiérarchie Institutionnelle
-        # 2. LOGIQUE UNIFIÉE - Hiérarchie Institutionnelle (Sécurité Régime Prioritaire)
-        try:
-            market_type = self.detect_market_regime(symbol)
-
-            # RÈGLE ABSOLUE 1: Si le marché est baissier ou sideway descendant, ACHATS STRICTEMENT BLOQUÉS
-            if market_type in ('BEAR', 'SIDEWAYS_DOWN'):
-                decision = False
-                reason = f"❌ {crypto}: Régime {market_type.replace('_', ' ')} (tendance baissière) - Achat bloqué"
-
-            # RÈGLE 2: RSI oversold extrême (< 25) en marché non-baissier
-            elif self.is_extreme_oversold(symbol):
-                decision = True
-                reason = f"✅ {crypto}: RSI oversold en régime favorable - Achat autorisé"
-
-            # RÈGLE 3: Support fort en marché favorable (BULL, SIDEWAYS_UP, SIDEWAYS)
-            elif self.is_near_strong_support(symbol):
-                decision = True
-                reason = f"✅ {crypto}: Support fort détecté en régime {market_type.replace('_', ' ')} - Achat autorisé"
-
-            # RÈGLE 4: Filtrage par régime haussier / latéral
-            elif market_type == 'BULL':
-                decision = self.check_bullish_htf_bias(symbol)
-                reason = f"✅ {crypto}: Marché haussier" if decision else f"❌ {crypto}: HTF baissier"
-
-            elif market_type == 'SIDEWAYS_UP':
-                decision = True
-                reason = f"✅ {crypto}: Sideway ascendant - Achat autorisé"
-
-            else:  # SIDEWAYS / FLAT
-                h1_klines = self.get_klines(symbol, 10, '1h')
-                if h1_klines and len(h1_klines) >= 3:
-                    h1_closes = [k['close'] for k in h1_klines]
-                    mom_1h = (h1_closes[-1] - h1_closes[0]) / h1_closes[0]
-                    if mom_1h < -0.004:
-                        decision = False
-                        reason = f"❌ {crypto}: Sideway plat avec baisse 1h récente ({mom_1h*100:.2f}%) - Achat bloqué"
-                    else:
-                        decision = True
-                        reason = f"✅ {crypto}: Sideway plat stable - Achat autorisé"
-                else:
-                    decision = True
-                    reason = f"✅ {crypto}: Marché latéral - Achat autorisé"
-            
-            # 3. Sauvegarder dans cache
-            self.decision_cache[symbol] = {
-                'decision': decision,
-                'reason': reason,
-                'timestamp': current_time
-            }
-            self.record_decision(
-                symbol, 'htf_filter', decision, reason,
-                {'market_regime': locals().get('market_type')},
-                throttle_seconds=120
-            )
-            
-            return decision, reason
-            
-        except Exception as e:
-            # Fallback sécurisé
-            decision = False
-            reason = f"❌ {crypto}: Erreur analyse - Skip"
-            self.record_decision(
-                symbol, 'htf_filter', False, reason,
-                {'error': str(e)}, throttle_seconds=120
-            )
-            return decision, reason
-    
-    def check_htf_bias(self, symbol):
-        """Filtre HTF unifié - REJET SILENCIEUX"""
-        decision, reason = self.get_unified_trading_decision(symbol)
-        
-        # PAS de log ici - seulement return silencieux
-        return decision
-    
-    def detect_market_regime(self, symbol):
-        """Détecte automatiquement le régime de marché (BULL, BEAR, SIDEWAYS_UP, SIDEWAYS_DOWN, SIDEWAYS)"""
-        daily_klines = self.get_klines(symbol, 50, '1d')
-        if len(daily_klines) < 20:
-            return 'SIDEWAYS'
-        
-        closes = [k['close'] for k in daily_klines]
-        ema_20 = self.calculate_ema(closes, 20)
-        ema_50 = self.calculate_ema(closes, 50)
-        current_price = closes[-1]
-        
-        if current_price > ema_20 > ema_50:
-            return 'BULL'
-        elif current_price < ema_20 < ema_50:
-            return 'BEAR'
-        else:
-            # Analyser la pente court terme sur 1h
-            h1_klines = self.get_klines(symbol, 24, '1h')
-            if len(h1_klines) >= 12:
-                h1_closes = [k['close'] for k in h1_klines]
-                h1_ema20 = self.calculate_ema(h1_closes, 10)
-                h1_prev = self.calculate_ema(h1_closes[:-3], 10)
-                slope = (h1_ema20 - h1_prev) / h1_prev if h1_prev else 0
-                
-                if slope < -0.0002:  # Pente descendante > -0.02% sur 3h
-                    return 'SIDEWAYS_DOWN'
-                elif slope > 0.0002:  # Pente ascendante > +0.02% sur 3h
-                    return 'SIDEWAYS_UP'
-            return 'SIDEWAYS'
-    
-    def check_bullish_htf_bias(self, symbol):
-        """Filtre HTF strict pour marché haussier"""
-        daily_klines = self.get_klines(symbol, 50, '1d')
-        closes = [k['close'] for k in daily_klines]
-        ema_50 = self.calculate_ema(closes, 50)
-        ema_200 = self.calculate_ema(closes, 200)
-        current_price = closes[-1]
-        
-        return current_price > ema_50 > ema_200
-    
-
-    
-    def is_near_strong_support(self, symbol):
-        """Vérifie proximité support fort - Algorithmic S/R"""
-        try:
-            klines = self.get_klines(symbol, 100, '4h')
-            if len(klines) < 20:
-                return False
-                
-            levels_data = self.pattern_analyzer.find_support_resistance_levels(klines)
-            current_price = self.get_price(symbol)
-            
-            for support in levels_data.get('support_levels', [])[:2]:
-                distance_pct = abs(current_price - support['price']) / current_price
-                if distance_pct <= 0.02 and support['strength'] >= 3:
-                    return True
-            return False
-        except:
-            return False
-    
-    def is_extreme_oversold(self, symbol):
-        """Vérifie RSI oversold extrême (< 25) - Niveau Institutionnel"""
-        try:
-            klines = self.get_klines(symbol, 30, '4h')
-            if len(klines) < 14:
-                return False
-            
-            closes = [k['close'] for k in klines]
-            rsi = self.multi_tf_analyzer.calculate_rsi(closes)
-            return rsi is not None and rsi < 25  # Seuil institutionnel
-        except:
-            return False
-    
-
     def _is_optimal_trading_time(self):
         """Vérifie si c'est un moment optimal pour trader (sessions actives)"""
         hour = datetime.now().hour
@@ -2454,7 +2629,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except:
             return 100  # Fallback
     
-    def execute_buy(self, symbol, position_data, current_price, reason):
+    def execute_buy(self, symbol, position_data, current_price, reason, ml_entry_learning_id=None):
         """Exécute l'achat avec données optimisées"""
         crypto = symbol.split('/')[0]
         existing_positions = [p for p in self.state.get('positions', []) 
@@ -2484,6 +2659,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         result = self.buy_market(symbol, position_data['position_size_crypto'])
         
         if result:
+            if ml_entry_learning_id and getattr(self, 'ml_live_logger', None):
+                try:
+                    self.ml_live_logger.mark_entry_opened(
+                        symbol,
+                        ml_entry_learning_id,
+                        order=result,
+                        price=current_price,
+                        amount=position_data.get('position_size_crypto')
+                    )
+                except Exception:
+                    pass
             self.set_symbol_cooldown(symbol, reason='buy_executed')
             avg_entry_price = self.get_real_buy_price(symbol)
             self.record_decision(
@@ -2539,25 +2725,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"❌ Échec de l'achat")
             
     def _poll_dashboard_commands(self):
-        """Lit et exécute les commandes envoyées depuis le dashboard"""
-        cmd_file = 'data/bot_commands.json'
-        if not os.path.exists(cmd_file) or os.path.getsize(cmd_file) == 0:
-            return
-            
+        """Lit et exécute les commandes envoyées depuis le dashboard."""
         try:
-            # Lire les commandes
-            with open(cmd_file, 'r', encoding='utf-8') as f:
-                commands = json.load(f)
-            
+            commands = self.ml_live_logger.claim_pending_bot_commands() if getattr(self, 'ml_live_logger', None) else []
             if not commands or not isinstance(commands, list):
                 return
-                
-            # Vider le fichier de commandes en réécrivant une liste vide
-            tmp_file = cmd_file + '.tmp'
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump([], f)
-            os.replace(tmp_file, cmd_file)
-            
+
             # Exécuter chaque commande
             for cmd in commands:
                 action = cmd.get('action')
@@ -2647,7 +2820,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"❌ Erreur lors du force sell: {e}")
 
     def _append_score_history(self, symbol, score, price):
-        """Historise le score crypto dans data/crypto_scores.jsonl (max 1 fois par 5 minutes par symbole)"""
+        """Historise le score crypto dans SQLite (max 1 fois par 5 minutes par symbole)."""
         try:
             now = time.time()
             last_append = self._last_score_append.get(symbol, 0)
@@ -2656,18 +2829,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
             self._last_score_append[symbol] = now
             
-            score_file = 'data/crypto_scores.jsonl'
-            os.makedirs(os.path.dirname(score_file) or '.', exist_ok=True)
-            
-            entry = {
-                'timestamp': datetime.now().isoformat(),
-                'symbol': symbol,
-                'score': int(score),
-                'price': float(price)
-            }
-            
-            with open(score_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(entry) + '\n')
+            if getattr(self, 'ml_live_logger', None):
+                self.ml_live_logger.record_crypto_score(symbol, score, price)
                 
         except Exception as e:
             print(f"⚠️ Erreur lors de l'historisation du score pour {symbol}: {e}")

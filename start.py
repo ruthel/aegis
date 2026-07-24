@@ -2,6 +2,14 @@
 """Point d'entrée unique Aegis — lance le dashboard, contrôle le bot depuis l'UI."""
 import os
 import sys
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*sklearn.utils.parallel.delayed.*",
+    category=UserWarning,
+    module="sklearn.utils.parallel"
+)
 
 from dotenv import load_dotenv
 load_dotenv(override=True)

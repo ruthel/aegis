@@ -2,7 +2,6 @@ import requests
 import os
 import time
 import threading
-import json
 from datetime import datetime, timedelta
 from config import BOT_NAME
 
@@ -19,8 +18,9 @@ class NotificationManager:
             'votre_chat_id' in self.chat_id
         )
         self.enabled = not is_placeholder
-        self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '300'))
+        self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '7200'))
         self.last_status_time = 0
+        self._status_lock = threading.Lock()
         self.bot_ref = None
         self.daily_stats = {'start_balance': 0, 'trades': [], 'start_time': None}
         self._last_update_id = None
@@ -185,33 +185,15 @@ class NotificationManager:
             self.notify(msg, "")
         
     def save_telegram_message_history(self, message_id, text, timestamp=None, direction="outgoing"):
-        """Enregistre tout message Telegram dans data/telegram_messages.jsonl et data/telegram_messages.json"""
+        """Enregistre tout message Telegram dans SQLite."""
         try:
-            os.makedirs('data', exist_ok=True)
-            entry = {
-                'message_id': message_id,
-                'timestamp': timestamp or int(datetime.now().timestamp()),
-                'direction': direction,
-                'text': text
-            }
-            # 1. Format JSONL primary: data/telegram_messages.jsonl
-            with open('data/telegram_messages.jsonl', 'a', encoding='utf-8') as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
-
-            # 2. Format JSON Array: data/telegram_messages.json
-            json_path = 'data/telegram_messages.json'
-            history = []
-            if os.path.exists(json_path):
-                try:
-                    with open(json_path, 'r', encoding='utf-8') as f:
-                        history = json.load(f)
-                        if not isinstance(history, list):
-                            history = []
-                except Exception:
-                    history = []
-            history.append(entry)
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+            if self.bot_ref and hasattr(self.bot_ref, 'ml_live_logger'):
+                self.bot_ref.ml_live_logger.record_telegram_message(
+                    message_id=message_id,
+                    text=text,
+                    timestamp=timestamp,
+                    direction=direction
+                )
         except Exception as e:
             print(f"⚠️ Erreur enregistrement historique Telegram: {e}")
 
@@ -598,32 +580,33 @@ class NotificationManager:
         return self.notify(message, "")
     
     def send_status_update(self):
-        """Envoie status périodique synchronisé sur XX:00 et XX:30"""
-        from datetime import datetime, timezone
-        
-        # Utiliser l'heure UTC pour cohérence
-        now_utc = datetime.now(timezone.utc)
-        current_minute = now_utc.minute
-        
-        # Vérifier si on est à une heure ronde (XX:00 ou XX:30)
-        if current_minute not in [0, 30]:
-            return  # Pas l'heure, skip
-        
-        # Anti-spam RENFORCÉ : éviter envois multiples dans la même minute
-        now = time.time()
-        if now - self.last_status_time < 60:  # 55 secondes minimum entre envois
-            return
-        
-        self.last_status_time = now
-        
+        """Envoie le status périodique selon TELEGRAM_STATUS_INTERVAL."""
+        with self._status_lock:
+            now = time.time()
+            logger = getattr(self.bot_ref, 'ml_live_logger', None) if self.bot_ref else None
+            if logger:
+                claimed = logger.claim_interval(
+                    'telegram_last_status_time',
+                    self.periodic_interval,
+                    now=now,
+                    initialize_only=self.last_status_time <= 0
+                )
+                self.last_status_time = now
+                if not claimed:
+                    return False
+            else:
+                if now - self.last_status_time < self.periodic_interval:
+                    return False
+                self.last_status_time = now
+
         if not self.bot_ref:
-            return
-        
+            return False
+
         try:
             status = self._build_status_message()
-            self.notify(status, "")
-        except Exception as e:
-            pass
+            return self.notify(status, "")
+        except Exception:
+            return False
             
     def _get_historical_performance(self):
         """Calcule les statistiques de performance réelles basées sur l'historique des positions du bot"""

@@ -444,18 +444,10 @@ function supportReasonLabel(reason) {
 }
 
 function supportReasonTooltip(reason, item = {}, thresholds = {}) {
-  const minTrades = item.threshold_trades ?? thresholds.min_trades ?? 10;
-  const minWinrate = item.threshold_win_rate ?? thresholds.min_winrate ?? 50;
-  const minTotalPnl = item.threshold_total_pnl ?? thresholds.min_total_pnl ?? 0;
-  const minAvgPnl = item.threshold_avg_pnl ?? thresholds.min_avg_pnl ?? 0;
-
   const tips = {
-    insufficient_trades: `Attendre plus de signaux backtest. Actuel: ${item.trades ?? 0}. Requis: ${minTrades}.`,
-    winrate_below_threshold: `Le taux de réussite est trop faible. Actuel: ${percent(item.win_rate)}. Requis: ${percent(minWinrate)} ou plus.`,
-    total_pnl_below_threshold: `Le profit total simulé est insuffisant. Actuel: ${percent(item.total_pnl_percent)}. Requis: ${percent(minTotalPnl)} ou plus.`,
-    avg_pnl_below_threshold: `Le gain moyen par trade est insuffisant. Actuel: ${percent(item.avg_pnl_percent)}. Requis: ${percent(minAvgPnl)} ou plus.`,
+    ml_feature_only: 'Ces statistiques sont transmises au ML comme contexte, sans bloquer directement le trade.',
     no_backtest_result: 'Aucun résultat backtest utilisable. Attendre le prochain backtest automatique ou relancer le bot.',
-    not_evaluated: 'La paire n’a pas encore été évaluée par le filtre Support Touch.',
+    not_evaluated: 'La paire n’a pas encore de métriques Support Touch.',
     backtest_error: 'Le backtest a échoué. Vérifier la connexion exchange et les logs.',
   };
   return tips[reason] || supportReasonLabel(reason);
@@ -482,8 +474,10 @@ function decisionReasonTitle(reason) {
   const labels = {
     score_below_dynamic_threshold: 'Score marché insuffisant',
     technical_signal_below_threshold: 'Signal technique trop faible',
-    bear_mode_pair_not_allowed: 'Paire bloquée en marché baissier',
-    falling_knife_without_reversal: 'Chute sans retournement confirmé',
+    technical_signal_not_buy: 'Signal technique sans achat',
+    technical_signal_confidence_below_threshold: 'Confiance technique trop faible',
+    technical_signal_not_buy_soft: 'Signal technique transmis au ML',
+    technical_signal_confidence_below_threshold_soft: 'Confiance technique transmise au ML',
     support_touch_disabled_in_bear_mode: 'Support Touch désactivé en bear mode',
     insufficient_trades: 'Backtest insuffisant',
     total_pnl_below_threshold: 'Profit backtest trop faible',
@@ -509,14 +503,33 @@ function decisionExplanation(item) {
   if (key === 'score_below_dynamic_threshold') {
     return `Le bot attend un meilleur score avant d’acheter. Score actuel ${number(metrics.score, 1)} / seuil ${number(metrics.min_score, 1)}.`;
   }
+  if (key.startsWith('ml_filter_rejected') || key.startsWith('support_touch_ml_entry_rejected')) {
+    const d = metrics.ml_decision || {};
+    const inputs = metrics.ml_inputs || {};
+    return `ML refuse l’entrée: P_win ${number(d.p_win, 1)}% < seuil ${number(d.min_p_win, 1)}%. Signal ${inputs.technical_action || '--'} ${number(inputs.technical_confidence, 1)}%, score ${number(inputs.crypto_score, 1)}, support ${inputs.support_touch ? 'oui' : 'non'}.`;
+  }
+  if (key.startsWith('ml_exit_entry_rejected') || key.startsWith('support_touch_ml_exit_rejected')) {
+    const d = metrics.ml_decision || {};
+    const inputs = metrics.ml_inputs || {};
+    return `ML refuse l’entrée car la sortie prévue est fragile: P_continue ${number(d.p_continue, 1)}% < seuil ${number(d.min_p_continue, 1)}%. Reco sortie ${d.exit_recommendation || '--'}; signal ${inputs.technical_action || '--'}, support ${inputs.support_touch ? 'oui' : 'non'}.`;
+  }
   if (key === 'technical_signal_below_threshold') {
+    if (metrics.action && !['BUY', 'STRONG_BUY'].includes(String(metrics.action))) {
+      return `Le signal technique indique ${metrics.action}, donc il ne demande pas encore d’achat. Confiance ${number(metrics.confidence, 1)}% / seuil ${number(metrics.min_confidence, 1)}%.`;
+    }
     return `Le signal technique ne confirme pas assez l’achat. Confiance ${number(metrics.confidence, 1)}% / seuil ${number(metrics.min_confidence, 1)}%.`;
   }
-  if (key === 'bear_mode_pair_not_allowed') {
-    return `Marché en mode BEAR: cette paire n’est pas dans la liste autorisée pour acheter prudemment.`;
+  if (key === 'technical_signal_not_buy') {
+    return `Le signal technique indique ${metrics.action || 'HOLD'}, donc il ne demande pas encore d’achat. Confiance ${number(metrics.confidence, 1)}% / seuil ${number(metrics.min_confidence, 1)}%.`;
   }
-  if (key === 'falling_knife_without_reversal') {
-    return `Le prix tombe encore et le retournement n’est pas confirmé. Le bot évite d’attraper une chute.`;
+  if (key === 'technical_signal_confidence_below_threshold') {
+    return `Le signal technique demande un achat, mais sa confiance est trop faible: ${number(metrics.confidence, 1)}% / seuil ${number(metrics.min_confidence, 1)}%.`;
+  }
+  if (key === 'technical_signal_not_buy_soft') {
+    return `Le signal technique indique ${metrics.action || 'HOLD'}; il ne bloque plus directement et part comme feature ML. Confiance ${number(metrics.confidence, 1)}% / seuil ${number(metrics.min_confidence, 1)}%.`;
+  }
+  if (key === 'technical_signal_confidence_below_threshold_soft') {
+    return `La confiance technique est sous le seuil; elle ne bloque plus directement et part comme feature ML: ${number(metrics.confidence, 1)}% / seuil ${number(metrics.min_confidence, 1)}%.`;
   }
   if (key === 'support_touch_disabled_in_bear_mode') {
     return `Même si un support est touché, l’override Support Touch est coupé pendant ce régime de marché.`;
@@ -540,7 +553,12 @@ function decisionExplanation(item) {
     return `L’ordre n’a pas été accepté ou exécuté. Vérifier minimum exchange, solde et permissions API.`;
   }
   if (item.allowed) {
-    return `Décision autorisée par les filtres actifs.`;
+    if (metrics.ml_decision) {
+      const d = metrics.ml_decision || {};
+      const inputs = metrics.ml_inputs || {};
+      return `Achat autorisé par le ML: P_win ${number(d.p_win, 1)}% / seuil ${number(d.min_p_win, 1)}%, P_continue ${number(d.p_continue, 1)}% / seuil ${number(d.min_p_continue, 1)}%. Signal ${inputs.technical_action || '--'}, score ${number(inputs.crypto_score, 1)}, support ${inputs.support_touch ? 'oui' : 'non'}.`;
+    }
+    return `Décision finale enregistrée par le bot.`;
   }
   return supportReasonLabel(key || reason || '--');
 }
@@ -551,6 +569,10 @@ function decisionMetricChips(item) {
   if (metrics.price !== undefined) chips.push(`Prix ${price(metrics.price)}`);
   if (metrics.score !== undefined || metrics.min_score !== undefined) chips.push(`Score ${number(metrics.score, 1)} / ${number(metrics.min_score, 1)}`);
   if (metrics.confidence !== undefined || metrics.min_confidence !== undefined) chips.push(`Confiance ${number(metrics.confidence, 1)}% / ${number(metrics.min_confidence, 1)}%`);
+  if (metrics.ml_decision?.p_win !== undefined) chips.push(`P_win ${number(metrics.ml_decision.p_win, 1)}% / ${number(metrics.ml_decision.min_p_win, 1)}%`);
+  if (metrics.ml_decision?.p_continue !== undefined) chips.push(`P_continue ${number(metrics.ml_decision.p_continue, 1)}% / ${number(metrics.ml_decision.min_p_continue, 1)}%`);
+  if (metrics.ml_inputs?.technical_action) chips.push(`Signal ${metrics.ml_inputs.technical_action}`);
+  if (metrics.ml_inputs?.support_touch) chips.push(`Support ML`);
   if (metrics.mode || metrics.market_context?.mode) chips.push(`Régime ${metrics.mode || metrics.market_context?.mode}`);
   if (metrics.trades !== undefined) chips.push(`${metrics.trades} trades`);
   return chips.map((chip) => `<span>${esc(chip)}</span>`).join('');
@@ -673,10 +695,9 @@ function renderCooldowns(cooldowns) {
 function renderSupportTouch(data) {
   const pairs = data.pairs || [];
   const thresholds = data.thresholds || {};
-  const allowed = pairs.filter((item) => item.allowed).length;
   const supportSummaryEl = $('supportSummary');
   if (supportSummaryEl) {
-    supportSummaryEl.textContent = `${allowed}/${pairs.length || 0}`;
+    supportSummaryEl.textContent = `${pairs.length || 0} features ML`;
   }
   $('supportLastRun').textContent = data.last_run ? `Dernier run ${dateWithRelative(data.last_run, false)}` : '';
 
@@ -712,13 +733,12 @@ function renderSupportTouch(data) {
       <section class="support-card">
         <header style="align-items: center;">
           <h3 style="display: flex; align-items: center; flex-wrap: wrap;">${esc(item.symbol)}${regimeText}</h3>
-          <span class="${badgeClass(item.allowed)}">${item.allowed ? 'OK' : 'Bloqué'}</span>
         </header>
         <div class="support-stats">
           <div><span>Trades</span><strong>${item.trades ?? 0}</strong></div>
           <div><span>Win rate</span><strong>${percent(item.win_rate)}</strong></div>
-          <div><span>Total</span><strong>${signedPercent(item.total_pnl_percent, 2)}</strong></div>
-          <div><span>Moyenne</span><strong>${signedPercent(item.avg_pnl_percent, 3)}</strong></div>
+              <div><span>Total</span><strong class="stat-percent">${signedPercent(item.total_pnl_percent, 2)}</strong></div>
+              <div><span>Moyenne</span><strong class="stat-percent">${signedPercent(item.avg_pnl_percent, 2)}</strong></div>
         </div>
         <div class="reason-list" aria-label="Raisons">${renderReasonChips(item.reason, item, thresholds)}</div>
       </section>
@@ -760,13 +780,12 @@ function renderMarketContext(context) {
 
     // Badge en haut à droite (Badge Mode)
     let headerBadgeClass = 'badge info';
-    if (mode === 'BULL') headerBadgeClass = 'badge success';
-    else if (mode === 'BEAR') headerBadgeClass = 'badge danger';
+    if (mode === 'BULL') headerBadgeClass = 'badge good';
+    else if (mode === 'BEAR') headerBadgeClass = 'badge bad';
     else if (mode === 'RANGE' || mode === 'SIDEWAYS') headerBadgeClass = 'badge warn';
 
     // Classes pour les badges de statut du bas
     const knifeClass = falling ? 'regime-flag-pill danger' : 'regime-flag-pill';
-    const supportClass = item.support_touch_override_allowed ? 'regime-flag-pill success' : 'regime-flag-pill danger';
 
     let modePillHtml = '';
     if (symbolBear) {
@@ -807,19 +826,151 @@ function renderMarketContext(context) {
           <div class="regime-metric-box">
             <span>Retournement</span>
             <strong style="color: ${reversal ? 'var(--good)' : 'var(--text-muted)'}">
-              ${reversal ? 'confirmé' : 'non'}
+              ${reversal ? 'OUI' : 'NON'}
             </strong>
           </div>
         </div>
 
         <div class="regime-flags">
-          <span class="${knifeClass}">Knife: ${falling ? 'oui' : 'non'}</span>
-          <span class="${supportClass}">Support: ${item.support_touch_override_allowed ? 'OK' : 'Bloqué'}</span>
+          <span class="${knifeClass}">Knife: ${falling ? 'OUI' : 'NON'}</span>
           ${modePillHtml}
         </div>
 
         <div class="regime-footer">
           <span>Mise à jour ${item.last_update ? relativeTime(item.last_update) : '--'}</span>
+        </div>
+      </section>
+    `;
+  }).join('');
+}
+
+function renderEntryContext(supportData = {}, marketContext = {}) {
+  supportData = supportData || {};
+  marketContext = marketContext || {};
+  const supportPairs = supportData.pairs || [];
+  const thresholds = supportData.thresholds || {};
+  const grid = $('entryContextGrid');
+
+  if ($('supportLastRun')) {
+    $('supportLastRun').textContent = supportData.last_run ? `Backtest ${dateWithRelative(supportData.last_run, false)}` : '';
+  }
+
+  const supportBySymbol = new Map(supportPairs.map((item) => [item.symbol, item]));
+  const symbols = Array.from(new Set([
+    ...supportPairs.map((item) => item.symbol),
+    ...Object.keys(marketContext || {}),
+  ])).sort();
+
+  if (!symbols.length) {
+    grid.innerHTML = '<p class="empty">Aucun contexte d’entrée calculé pour le moment</p>';
+    return;
+  }
+
+  grid.innerHTML = symbols.map((symbol) => {
+    const support = supportBySymbol.get(symbol) || {
+      symbol,
+      allowed: false,
+      reason: 'not_evaluated',
+      trades: 0,
+      win_rate: null,
+      total_pnl_percent: null,
+      avg_pnl_percent: null,
+    };
+    const item = marketContext?.[symbol] || {};
+    const symbolBear = Boolean(item.symbol_bear);
+    const btcBear = Boolean(item.btc_bear);
+    const bear = Boolean(item.bear_mode);
+    const falling = Boolean(item.falling_knife?.is_falling);
+    const reversal = Boolean(item.reversal?.confirmed);
+    const mode = item.mode || support.regime || (symbolBear ? 'BEAR' : 'NORMAL');
+    const modeClass = regimeClass(mode);
+    const multiplier = Number(item.trade_multiplier || 1);
+    const rawRegime = item.symbol_regime || support.regime || '--';
+    const cleanRegime = String(rawRegime).replace(/_/g, ' ');
+
+    let regimeColorClass = '';
+    if (rawRegime.includes('BULL') || rawRegime.includes('SIDEWAYS_UP')) {
+      regimeColorClass = 'regime-val-bull';
+    } else if (rawRegime.includes('BEAR') || rawRegime.includes('SIDEWAYS_DOWN')) {
+      regimeColorClass = 'regime-val-bear';
+    } else if (rawRegime.includes('SIDE') || rawRegime.includes('RANGE')) {
+      regimeColorClass = 'regime-val-side';
+    }
+
+    let headerBadgeClass = 'badge info';
+    if (mode === 'BULL') headerBadgeClass = 'badge good';
+    else if (mode === 'BEAR') headerBadgeClass = 'badge bad';
+    else if (mode === 'RANGE' || mode === 'SIDEWAYS') headerBadgeClass = 'badge warn';
+
+    const riskClass = (falling || symbolBear) ? 'entry-context-card risk' : modeClass;
+    const knifeClass = falling ? 'regime-flag-pill danger' : 'regime-flag-pill';
+
+    let modePillHtml = '';
+    if (symbolBear) {
+      modePillHtml = `<span class="regime-flag-pill danger">Bear Symbole</span>`;
+    } else if (bear && btcBear) {
+      modePillHtml = `<span class="regime-flag-pill warning">Frein BTC (${number(multiplier, 2)}x)</span>`;
+    } else if (Object.keys(item).length) {
+      modePillHtml = `<span class="regime-flag-pill success">Plein Régime</span>`;
+    }
+
+    return `
+      <section class="entry-context-card ${riskClass}">
+        <header class="entry-context-head">
+          <div>
+            <h3>${esc(symbol)}</h3>
+            <span class="live-source">BTC ${esc(item.btc_regime || '--')}</span>
+          </div>
+          <div class="entry-context-badges">
+            <span class="${headerBadgeClass}">${esc(mode)}</span>
+          </div>
+        </header>
+
+        <div class="entry-context-sections">
+          <div class="entry-context-block">
+            <div class="entry-context-title">Support Touch</div>
+            <div class="support-stats compact">
+              <div><span>Trades</span><strong>${support.trades ?? 0}</strong></div>
+              <div><span>Win</span><strong>${percent(support.win_rate)}</strong></div>
+              <div><span>Total</span><strong class="stat-percent">${signedPercent(support.total_pnl_percent, 2)}</strong></div>
+              <div><span>Moy.</span><strong class="stat-percent">${signedPercent(support.avg_pnl_percent, 2)}</strong></div>
+            </div>
+          </div>
+
+          <div class="entry-context-block">
+            <div class="entry-context-title">Régime Marché</div>
+            <div class="regime-hero compact">
+              <div>
+                <span>Symbole</span>
+                <strong class="${regimeColorClass}">${esc(cleanRegime)}</strong>
+              </div>
+              <span class="regime-momentum ${Number(item.btc_momentum_percent) >= 0 ? 'up' : 'down'}">
+                ${signedPercent(item.btc_momentum_percent, 2)}
+              </span>
+            </div>
+            <div class="regime-metrics compact">
+              <div class="regime-metric-box">
+                <span>Protection</span>
+                <strong style="color: ${multiplier < 1 ? 'var(--warn)' : 'var(--good)'}">
+                  ${multiplier < 1 ? `${number(multiplier, 2)}x` : '1,00x'}
+                </strong>
+              </div>
+              <div class="regime-metric-box">
+                <span>Retour</span>
+                <strong style="color: ${reversal ? 'var(--good)' : 'var(--text-muted)'}">
+                  ${reversal ? 'OUI' : 'NON'}
+                </strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="entry-context-foot">
+          <div class="regime-flags">
+            <span class="${knifeClass}">Knife: ${falling ? 'OUI' : 'NON'}</span>
+            ${modePillHtml}
+          </div>
+          ${support.reason && support.reason !== 'ml_feature_only' ? `<div class="reason-list compact" aria-label="Raisons">${renderReasonChips(support.reason, support, thresholds)}</div>` : ''}
         </div>
       </section>
     `;
@@ -857,7 +1008,7 @@ function renderLive(data) {
 
   const grid = $('wsGrid');
   if (!entries.length) {
-    grid.innerHTML = '<p class="empty">Aucun tick WebSocket enregistré. Redémarre le bot pour activer live_status.json.</p>';
+    grid.innerHTML = '<p class="empty">Aucun tick WebSocket enregistré. Redémarre le bot pour activer le statut live.</p>';
     return;
   }
   // Vérifier si toutes les cartes existent déjà pour faire une mise à jour en place
@@ -1084,11 +1235,12 @@ async function refresh() {
   const coolCountEl = $('cooldownCount');
   if (coolCountEl) coolCountEl.textContent = data.cooldowns.length;
 
-  renderLive(data.live);
-  renderPositions(data.positions, data.live?.symbols);
-  renderCooldowns(data.cooldowns);
-  renderSupportTouch(data.support_touch);
-  renderMarketContext(data.market_context);
+  try { renderLive(data.live); } catch (e) { console.error('renderLive failed', e); }
+  try { renderPositions(data.positions, data.live?.symbols); } catch (e) { console.error('renderPositions failed', e); }
+  try { renderCooldowns(data.cooldowns); } catch (e) { console.error('renderCooldowns failed', e); }
+  try { renderEntryContext(data.support_touch, data.market_context); } catch (e) { console.error('renderEntryContext failed', e); }
+  try { fetchMLStatus(); } catch (e) { console.error('fetchMLStatus failed', e); }
+  try { renderNextBuyRadar(data.next_buy_forecast); } catch (e) { console.error('renderNextBuyRadar failed', e); }
   let decisionsData = data.decisions;
   let totalDecisions = data.total_decisions || decisionsData.length;
 
@@ -1105,8 +1257,8 @@ async function refresh() {
     }
   }
 
-  renderDecisions(decisionsData, totalDecisions);
-  renderLogs(data.logs);
+  try { renderDecisions(decisionsData, totalDecisions); } catch (e) { console.error('renderDecisions failed', e); }
+  try { renderLogs(data.logs); } catch (e) { console.error('renderLogs failed', e); }
 }
 
 // ===== NOUVEAU: Fonctions Analytics =====
@@ -1809,17 +1961,77 @@ setTimeout(() => {
 // Console refresh every 1s always
 setInterval(refreshConsole, 1000);
 
-// WebSocket live prices
+// WebSocket live prices + ML predictions en temps réel
 function connectLiveWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
   ws.onmessage = (event) => {
-    try { renderLive(JSON.parse(event.data)); } catch (e) { }
+    try {
+      const data = JSON.parse(event.data);
+      // Message ML dédié poussé par le serveur toutes les ~3s
+      if (data.__type === 'ml_predictions') {
+        renderMLFromWs(data.predictions);
+      } else {
+        // Message prix en direct normal
+        renderLive(data);
+      }
+    } catch (e) { }
   };
   ws.onclose = () => setTimeout(connectLiveWs, 2000);
   ws.onerror = () => ws.close();
 }
 connectLiveWs();
+
+function renderMLFromWs(predictions) {
+  if (!predictions || typeof predictions !== 'object') return;
+  const container = $('mlGrid');
+  if (!container) return;
+
+  const pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD'];
+  const minProb = 65;
+
+  container.innerHTML = pairs.map(symbol => {
+    const item = predictions[symbol] || {};
+    const pWin = item.p_win !== undefined ? Number(item.p_win) : null;
+    if (pWin === null) return '';
+
+    const rec = item.recommendation || 'NEUTRAL';
+    let badgeClass = 'warn';
+    let badgeLabel = 'NEUTRE (50–65%)';
+    let badgeColor = '#f59e0b';
+
+    if (rec === 'BUY_HIGH_CONFIDENCE') {
+      badgeClass = 'good';
+      badgeLabel = 'ACHAT RECOMMANDÉ';
+      badgeColor = '#10b981';
+    } else if (rec === 'REJECT_RISK') {
+      badgeClass = 'bad';
+      badgeLabel = 'RISQUE ÉLEVÉ (<50%)';
+      badgeColor = '#ef4444';
+    }
+
+    return `
+      <div class="support-card" style="border-left: 3px solid ${badgeColor}; padding: 12px; background: rgba(255, 255, 255, 0.02); border-radius: 8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-weight:700; font-size:13px; color:var(--text);">${symbol}</span>
+          <span class="badge ${badgeClass}" style="font-size:10px; padding:2px 8px;">${badgeLabel}</span>
+        </div>
+        <div style="margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
+            <span style="color:var(--text-muted);">Probabilité de Gain (P_win)</span>
+            <span style="font-weight:700; color:${badgeColor};">${number(pWin, 1)}%</span>
+          </div>
+          <div style="background:rgba(255,255,255,0.06); height:6px; border-radius:3px; overflow:hidden;">
+            <div style="background:${badgeColor}; height:100%; width:${Math.min(100, Math.max(0, pWin))}%; transition:width 0.5s ease;"></div>
+          </div>
+        </div>
+        <div style="font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between;">
+          <span>Seuil Requis: ${item.min_probability || minProb}%</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
 
 // Slow poll for non-live data (positions, decisions, etc.) every 3s
 setInterval(safeRefresh, 3000);
@@ -2194,9 +2406,129 @@ const runBacktestBtn = $('runBacktestBtn');
 if (runBacktestBtn) {
   runBacktestBtn.addEventListener('click', startManualBacktest);
 }
-pollBacktestStatus();
+async function fetchMLStatus() {
+  try {
+    const res = await fetch('/api/ml_status', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderMLEngine(data);
+  } catch (e) {
+    // Silencieux
+  }
+}
 
-window.addEventListener('hashchange', () => setView(currentHashView()));
-initializeCustomDropdowns();
-setView(currentHashView());
-safeRefresh();
+function renderMLEngine(data) {
+  const container = $('mlGrid');
+  if (!container) return;
+
+  const statusEl = $('mlModelStatus');
+  if (statusEl) {
+    if (data.is_trained) {
+      statusEl.textContent = `Entraîné sur ${data.total_samples || 2952} trades (01/01/2026 -> aujourd'hui)`;
+    } else {
+      statusEl.textContent = `Modèle non initialisé`;
+    }
+  }
+
+  const pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD'];
+  const preds = data.live_predictions || {};
+
+  container.innerHTML = pairs.map(symbol => {
+    const item = preds[symbol] || {};
+    const pWin = item.p_win !== undefined ? Number(item.p_win) : 50.0;
+    const rec = item.recommendation || 'NEUTRAL';
+
+    let badgeClass = 'warn';
+    let badgeLabel = 'NEUTRE (50-65%)';
+    let badgeColor = '#f59e0b'; // Warn orange
+
+    if (rec === 'BUY_HIGH_CONFIDENCE') {
+      badgeClass = 'good';
+      badgeLabel = 'ACHAT RECOMMANDÉ';
+      badgeColor = '#10b981'; // Good green
+    } else if (rec === 'REJECT_RISK') {
+      badgeClass = 'bad';
+      badgeLabel = 'RISQUE ÉLEVÉ (<50%)';
+      badgeColor = '#ef4444'; // Bad red
+    }
+
+    return `
+      <div class="support-card" style="border-left: 3px solid ${badgeColor}; padding: 12px; background: rgba(255, 255, 255, 0.02); border-radius: 8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-weight:700; font-size:13px; color:var(--text);">${symbol}</span>
+          <span class="badge ${badgeClass}" style="font-size:10px; padding:2px 8px;">${badgeLabel}</span>
+        </div>
+        <div style="margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
+            <span style="color:var(--text-muted);">Probabilité de Gain (P_win)</span>
+            <span style="font-weight:700; color:${badgeColor};">${number(pWin, 1)}%</span>
+          </div>
+          <div style="background:rgba(255,255,255,0.06); height:6px; border-radius:3px; overflow:hidden;">
+            <div style="background:${badgeColor}; height:100%; width:${Math.min(100, Math.max(0, pWin))}%; transition:width 0.5s ease;"></div>
+          </div>
+        </div>
+        <div style="font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between;">
+          <span>Seuil Requis: ${data.min_probability || 65}%</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const analyticsContainer = $('mlAnalyticsGrid');
+  if (analyticsContainer && data.analytics) {
+    const a = data.analytics;
+    analyticsContainer.innerHTML = `
+      <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:2px;">Précision Hors-Échantillon</span>
+        <span style="font-size:15px; font-weight:800; color:#10b981;">${a.test_precision}% Test</span>
+      </div>
+      <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:2px;">Gain / Perte Moyen Net</span>
+        <span style="font-size:14px; font-weight:800; color:var(--text);">+${a.avg_win}% / ${a.avg_loss}%</span>
+      </div>
+      <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:2px;">Risk-Reward & Profit Factor</span>
+        <span style="font-size:14px; font-weight:800; color:#3b82f6;">${a.risk_reward}x (PF ${a.profit_factor})</span>
+      </div>
+      <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:2px;">Meilleur Jour Découvert</span>
+        <span style="font-size:13px; font-weight:700; color:#f59e0b;">${a.best_day}</span>
+      </div>
+      <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:2px;">Heures Idéales Trading</span>
+        <span style="font-size:12px; font-weight:700; color:var(--text);">${a.best_hours}</span>
+      </div>
+      <div style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; display:block; margin-bottom:2px;">Prévision Gain Hebdo (1k USD)</span>
+        <span style="font-size:14px; font-weight:800; color:#10b981;">${a.weekly_forecast_usd}</span>
+      </div>
+    `;
+  }
+}
+
+function renderNextBuyRadar(forecastData) {
+  if (!forecastData || !forecastData.candidate) {
+    if ($('radarSymbol')) $('radarSymbol').textContent = '--';
+    if ($('radarDistance')) $('radarDistance').textContent = 'Aucune prédiction ML active';
+    if ($('radarEta')) $('radarEta').textContent = '--';
+    if ($('radarMLProb')) $('radarMLProb').textContent = 'ML --%';
+    return;
+  }
+
+  const c = forecastData.candidate;
+  if ($('radarSymbol')) $('radarSymbol').textContent = c.symbol;
+  if ($('radarDistance')) {
+    $('radarDistance').textContent = c.wait_reasons?.length
+      ? c.wait_reasons.join(' · ')
+      : 'Seuils ML atteints';
+  }
+  if ($('radarEta')) {
+    $('radarEta').textContent = c.ready
+      ? 'Prêt ML maintenant'
+      : 'En attente ML';
+  }
+  if ($('radarMLProb')) {
+    const pContinue = c.p_continue !== null && c.p_continue !== undefined ? ` / P_continue ${number(c.p_continue, 1)}%` : '';
+    $('radarMLProb').textContent = `P_win ${number(c.p_win, 1)}%${pContinue}`;
+  }
+}

@@ -1,6 +1,6 @@
-# 🤖 Aegis Trading Bot v2
+# 🤖 Aegis Trading Bot v3
 
-Bot de trading spot multi-exchange avec stratégies intelligentes, risk management, optimisations temps réel et dashboard web de monitoring avancé.
+Bot de trading spot multi-exchange avec **cerveau ML entrée/sortie**, 52 features d'entrée, 37 features de sortie, risk management institutionnel, optimisations temps réel et dashboard web premium avec prédictions ML en temps réel via WebSocket.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -41,6 +41,20 @@ python run.py
 - **Position Sizing Institutionnel** : Basé sur Kelly Criterion, volatilité et corrélation
 - **Risk Management Pro** : Stop-loss adaptatif, trailing stop, circuit breakers
 - **Edge Detection** : Identification automatique des avantages statistiques
+
+### 🧠 Architecture ML Entrée/Sortie
+Le bot ne fonctionne plus comme une cascade de verrous durs. Les anciens signaux métier sont désormais transmis au ML comme features, afin que le modèle décide sur l'ensemble du contexte au lieu de subir des blocages séparés.
+
+| Couche | Rôle |
+|--------|------|
+| Sécurités pré-ML | Cooldown, position déjà ouverte, capital disponible, minimums exchange |
+| Features d'entrée ML | Régime symbole/BTC, bear mode, reversal, falling knife, Support Touch, score crypto, signal technique, timing, frais, valeur position |
+| Décision d'entrée ML | Achat seulement si `P_win >= 65%` et continuation attendue suffisante |
+| Gestion de sortie ML | `HOLD`, `PROTECT_BREAKEVEN`, `TIGHTEN_STOP`, `TAKE_PROFIT`, `FORCE_EXIT` |
+
+Support Touch n'est plus un fast-path d'exécution. Il reste utile comme source statistique pour le modèle : nombre de trades, win rate, PnL total, PnL moyen et régime récent.
+
+
 
 ### 💰 Capital Manager Automatique (8+ USD)
 - **Détection Auto Capital** : Analyse automatique du capital spot
@@ -85,8 +99,9 @@ python start.py
 
 **Fonctionnalités Dashboard :**
 - **Live** : Flux WebSocket temps réel, positions ouvertes avec P&L latent, prix actuels, **Contrôle Manuel (Manual Override : Force BUY / Force SELL / Pause)**
-- **Dashboard** : 5 cartes métriques sur une ligne (Solde, PnL, Trades/WinRate, Croissance/Balance, Rendement/Mise)
-- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss fusionnés, graphique PnL, heatmaps par crypto/jour/heure, **Graphique d'Historique des Scores Crypto**
+- **Dashboard** : 6 cartes métriques (Solde, PnL, Trades/WinRate, Croissance/Balance, Rendement/Mise, **🔮 Radar Prochain Achat**)
+- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, heatmaps par crypto/jour/heure
+- **🧠 Core ML Engine** : modèle d'entrée RandomForest 52 features, modèle de sortie 37 features, P_win temps réel, état réel du prochain achat et décisions finales ML
 - **Trades** : Historique complet des trades fermés, export CSV
 - **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel
 - **Console** : Logs bot en temps réel avec autoscroll et filtrage
@@ -153,7 +168,8 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 ```
 aegis/
 ├── core/                        # Cœur du bot (pattern Mixin)
-│   ├── trading_bot.py          # Bot principal multi-exchange
+│   ├── trading_bot.py          # Bot principal — orchestration trading + décisions ML
+│   ├── ml_engine.py            # 🧠 Core ML Engine (RandomForest, 52 features entrée + sorties ML)
 │   ├── bot/trading.py          # TradingMixin - Ordres & exécution
 │   ├── bot/sync.py             # SyncMixin - Synchronisation exchange
 │   ├── bot/analysis.py         # AnalysisMixin - Analyses & prévisions
@@ -166,17 +182,54 @@ aegis/
 │   ├── position_manager.py     # Position sizing + récupération positions bloquées
 │   ├── pattern_analyzer.py     # Patterns + Support/Résistance + Niveaux dynamiques
 │   ├── market_analyzer.py      # Scoring cryptos + métriques marché
+│   ├── exit_engine.py          # ExitDecisionEngine (ContinuationScore 0-100)
 │   └── capital_manager.py      # Gestion capital + frais dynamiques
+├── scripts/
+│   └── train_ml_model.py       # Entraînement récursif Grid Search MLEngine
+├── data/
+│   ├── aegis_model.joblib   # Modèle d'entrée ML entraîné (52 features)
+│   └── aegis_db.sqlite3        # DB SQLite: ML, Support Touch, Telegram, metadata
 ├── config.py                   # Configuration centralisée (.env)
 ├── run.py                      # Point d'entrée sécurisé
 ├── start.py                    # Lance dashboard + bot ensemble
 ├── dashboard/                  # Interface web Flask
-│   ├── app.py                  # Serveur Flask + routes API
+│   ├── app.py                  # Serveur Flask + routes API + WebSocket ML
 │   ├── templates/index.html    # UI premium (glassmorphism, dark mode)
 │   └── static/
-│       ├── dashboard.js        # Logique frontend (WebSocket, Chart.js)
+│       ├── dashboard.js        # Logique frontend (WebSocket, Chart.js, ML Radar)
 │       └── dashboard.css       # Styles premium
 ```
+
+### Base SQLite Aegis
+
+La mémoire structurée du bot est centralisée dans `data/aegis_db.sqlite3`.
+SQLite est configuré en mode WAL pour permettre au dashboard, au bot et aux scripts de lire pendant que des écritures courtes sont en cours.
+
+Fichiers attendus :
+- `data/aegis_db.sqlite3` : base principale.
+- `data/aegis_db.sqlite3-wal` : journal temporaire des écritures récentes.
+- `data/aegis_db.sqlite3-shm` : fichier de coordination entre lecteurs et écrivains.
+
+Tables principales :
+- `bot_state` : une ligne par mode trading (`paper`, `live`) avec `paper_balance` et `initial_balance`.
+- `bot_app_state` : état applicatif persistant, par exemple `telegram_last_status_time`.
+- `bot_processes` : état des processus dashboard/bot (`pid`, `started_at`, `command`).
+- `bot_daily_stats` : statistiques journalières de risque (`trades_count`, `total_loss`, `total_profit`, `emergency_stop`).
+- `bot_positions`, `bot_pending_orders`, `bot_trailing_stops`, `bot_symbol_cooldowns`, `bot_exit_recommendations` : état trading relationnel avec colonnes métier.
+- `bot_market_context` : contexte marché live par symbole.
+- `ml_live_predictions` : dernières prédictions ML live par symbole avec `p_win`, `p_continue` et prévision de sortie.
+- `bot_decision_journal` : journal des décisions finales du bot.
+- `ml_entry_decisions`, `ml_exit_decisions`, `ml_trade_outcomes` : mémoire ML entrée/sortie/résultat.
+- `ml_open_entries` : lien entre une entrée acceptée encore ouverte et sa future sortie.
+- `ml_entry_feature_values`, `ml_exit_feature_values` : features ML normalisées en lignes `event_id/feature_name/feature_value`.
+- `bot_live_status`, `bot_live_status_symbols` : statut live WebSocket consommé par le dashboard.
+- `bot_commands` : commandes envoyées par le dashboard au bot.
+- `crypto_score_history` : historique des scores crypto utilisés par l'analytics.
+- `support_touch_results`, `telegram_messages` : backtests et messages Telegram.
+
+Il ne faut pas supprimer `-wal` ou `-shm` pendant que le bot, le dashboard ou un script d'analyse tourne. SQLite lit automatiquement la base principale + le WAL. Le contenu du WAL est fusionné dans `aegis_db.sqlite3` lors d'un checkpoint automatique, à la fermeture propre des connexions, ou manuellement avec `PRAGMA wal_checkpoint(TRUNCATE);` quand tous les processus Aegis sont arrêtés.
+
+Chaque table applicative possède `created_at` et `updated_at`. Les triggers SQLite remplissent `created_at` à la création et rafraîchissent `updated_at` lors des modifications.
 
 ## 🔥 Optimisations Niveau 2
 
@@ -267,12 +320,12 @@ python run.py  # Démarrage direct
 ```env
 TELEGRAM_BOT_TOKEN=votre_token
 TELEGRAM_CHAT_ID=votre_chat_id
-TELEGRAM_STATUS_INTERVAL=300     # Status toutes les 5min
+TELEGRAM_STATUS_INTERVAL=7200    # Status toutes les 2h
 ```
 
 ### Logs & Données
 - **Logs temps réel** : `tail -f bot.log`
-- **État bot** : `data/bot_state.json`
+- **État bot et données runtime** : `data/aegis_db.sqlite3` (`bot_state`, positions, décisions, commandes, statut live, scores, ML)
 - **Historique** : section Orders / Trade History de votre exchange
 
 ## 🖥️ Hébergement Cloud Recommandé

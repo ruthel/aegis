@@ -5,6 +5,7 @@ from collections import deque
 from datetime import datetime
 from queue import Queue
 import websocket
+from core.ml_live_logger import MLLiveLogger
 
 try:
     import orjson as json
@@ -39,7 +40,7 @@ class WebSocketManager:
         self.last_tick_ts = {}
         self.last_analysis_ts = {}
         self.market_meta = {}
-        self.live_status_file = os.getenv('LIVE_STATUS_FILE', 'data/live_status.json')
+        self.live_logger = MLLiveLogger(data_dir='data', sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
         self.live_status_interval = float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '1'))
         self._last_live_status_write = 0
         
@@ -370,13 +371,7 @@ class WebSocketManager:
                     **meta,
                 }
 
-            directory = os.path.dirname(self.live_status_file)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            temp_file = f"{self.live_status_file}.tmp"
-            with open(temp_file, 'wb') as f:
-                f.write(JSON_DUMPS(status))
-            os.replace(temp_file, self.live_status_file)
+            self.live_logger.save_live_status(status)
         except Exception:
             pass
     

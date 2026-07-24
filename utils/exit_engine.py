@@ -4,18 +4,22 @@ import json
 from datetime import datetime
 import numpy as np
 
+EXIT_DECISION_RANK = {
+    "HOLD": 0,
+    "PROTECT_BREAKEVEN": 1,
+    "TIGHTEN_STOP": 2,
+    "TAKE_PROFIT": 3,
+    "FORCE_EXIT": 4,
+}
+
 class ExitDecisionEngine:
     """
     Exit Decision Engine for Aegis Bot.
     Evaluates open positions in real time, computes a Continuation Score (0-100),
     and determines recommended exit management actions.
-    
-    Supports Shadow Mode (EXIT_ENGINE_SHADOW_MODE=True) where recommendations
-    are calculated, displayed, and logged without executing trades directly.
     """
     
-    def __init__(self, shadow_mode=True, fragile_max_net_pct=0.40, time_stop_minutes=12):
-        self.shadow_mode = shadow_mode
+    def __init__(self, fragile_max_net_pct=0.40, time_stop_minutes=12):
         self.fragile_max_net_pct = fragile_max_net_pct
         self.time_stop_minutes = time_stop_minutes
         
@@ -151,7 +155,21 @@ class ExitDecisionEngine:
         final_score = max(0, min(100, int(score)))
         return final_score
 
-    def evaluate_position(self, symbol, current_price, position_data, klines, btc_klines=None):
+    def _fuse_ml_exit_decision(self, rule_decision, rule_reason, ml_exit):
+        if not ml_exit or not ml_exit.get('ml_exit_available'):
+            return rule_decision, rule_reason
+
+        ml_decision = ml_exit.get('decision', 'HOLD')
+        rule_rank = EXIT_DECISION_RANK.get(rule_decision, 0)
+        ml_rank = EXIT_DECISION_RANK.get(ml_decision, 0)
+
+        if ml_rank > rule_rank:
+            return ml_decision, f"{ml_exit.get('reason', 'ml_exit')}+rules:{rule_reason}"
+        if ml_rank < rule_rank:
+            return rule_decision, f"{rule_reason}+ml:{ml_exit.get('reason', 'ml_exit')}"
+        return rule_decision, f"{rule_reason}+{ml_exit.get('reason', 'ml_exit')}"
+
+    def evaluate_position(self, symbol, current_price, position_data, klines, btc_klines=None, ml_exit=None):
         """
         Evaluates position state and returns recommendation dictionary.
         
@@ -224,15 +242,20 @@ class ExitDecisionEngine:
             decision = "HOLD"
             reason = "strong_continuation_override"
 
+        rule_decision = decision
+        rule_reason = reason
+        decision, reason = self._fuse_ml_exit_decision(rule_decision, rule_reason, ml_exit)
+
         result = {
             "symbol": symbol,
             "decision": decision,
+            "rule_decision": rule_decision,
             "continuation_score": score,
             "net_pnl_pct": round(net_pnl_pct, 4),
             "gross_pnl_pct": round(gross_pnl_pct, 4),
             "duration_minutes": round(duration_minutes, 1),
             "reason": reason,
-            "shadow_mode": self.shadow_mode,
+            "ml_exit": ml_exit or {},
             "timestamp": datetime.now().isoformat()
         }
         return result

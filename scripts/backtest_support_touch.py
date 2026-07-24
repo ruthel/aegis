@@ -321,7 +321,7 @@ def parse_args():
     parser.add_argument('--breakeven-lock', type=float, default=float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0')), help='Breakeven lock profit % (0=fees, 1=fees+1%)')
     parser.add_argument('--breakeven-use-resistance', action='store_true', default=be_use_res_default, help='Use dynamic Resistance level for Breakeven Stop')
     
-    parser.add_argument('--output', default='data/support_touch_backtest.json')
+    parser.add_argument('--output', default='data/aegis_db.sqlite3')
     return parser.parse_args()
 
 
@@ -363,9 +363,18 @@ def main():
         'results': results,
     }
 
-    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
-    with open(args.output, 'w', encoding='utf-8') as file:
-        json.dump(summary, file, indent=2)
+    run_id = None
+    try:
+        from core.ml_live_logger import MLLiveLogger
+        data_dir = os.path.dirname(args.output) or 'data'
+        logger = MLLiveLogger(
+            data_dir=data_dir,
+            sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(data_dir, 'aegis_db.sqlite3'))
+        )
+        run_id = logger.record_support_touch_backtest(summary)
+        logger.close()
+    except Exception:
+        pass
 
     total_trades = sum(item['trades'] for item in results)
     total_wins = sum(item['wins'] for item in results)
@@ -375,7 +384,7 @@ def main():
         f"win {(total_wins / total_trades * 100) if total_trades else 0:.1f}% | "
         f"total {total_pnl:+.2f}%"
     )
-    print(f"Saved: {args.output}")
+    print(f"Saved DB: {run_id or 'aegis_db.sqlite3'}")
 
 
 if __name__ == '__main__':

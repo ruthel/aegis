@@ -1,10 +1,10 @@
-import json
 import time
 import os
 from datetime import datetime, timedelta
 from config import TRADING_PAIRS
 import statistics
 import numpy as np
+from core.ml_live_logger import MLLiveLogger
 
 class RiskManager:
     def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500):
@@ -14,6 +14,10 @@ class RiskManager:
         self.max_daily_trades = max_daily_trades
         self.max_daily_loss = max_daily_loss
         self.emergency_stop_loss = emergency_stop_loss
+        self.db_logger = MLLiveLogger(
+            data_dir='data',
+            sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
+        )
         self.daily_stats = self.load_daily_stats()
         # Adaptive Thresholds integration
         self.performance_history = []
@@ -73,15 +77,16 @@ class RiskManager:
     
     def load_daily_stats(self):
         """Charge les statistiques du jour"""
+        today = datetime.now().strftime('%Y-%m-%d')
         try:
-            with open('data/daily_stats.json', 'r') as f:
-                stats = json.load(f)
-                # Vérifier si c'est un nouveau jour
-                if stats.get('date') != datetime.now().strftime('%Y-%m-%d'):
-                    return self.reset_daily_stats()
+            stats = self.db_logger.load_daily_stats(today)
+            if stats and stats.get('date') == today:
                 return stats
-        except:
-            return self.reset_daily_stats()
+        except Exception:
+            pass
+        stats = self.reset_daily_stats()
+        self.db_logger.save_daily_stats(stats)
+        return stats
     
     def reset_daily_stats(self):
         """Remet à zéro les stats du jour"""
@@ -95,8 +100,7 @@ class RiskManager:
     
     def save_daily_stats(self):
         """Sauvegarde les stats"""
-        with open('data/daily_stats.json', 'w') as f:
-            json.dump(self.daily_stats, f, indent=2)
+        self.db_logger.save_daily_stats(self.daily_stats)
     
     def can_trade(self):
         """Vérifie si le trading est autorisé"""

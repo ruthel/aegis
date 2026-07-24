@@ -5,6 +5,7 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 """
 import sys
 import os
+from datetime import datetime
 
 # Forcer stdout/stderr unbuffered pour que les logs arrivent en temps réel
 os.environ['PYTHONUNBUFFERED'] = '1'
@@ -12,30 +13,8 @@ os.environ['PYTHONUNBUFFERED'] = '1'
 from dotenv import load_dotenv
 
 def clean_bot_states():
-    """Nettoie les états du bot selon le mode (paper/live)"""
-    # Vérifier le mode paper trading
-    paper_trading = os.getenv('PAPER_TRADING', 'False').lower() == 'true'
-    
-    if paper_trading:
-        # En paper trading, nettoyer seulement les fichiers paper
-        state_files = [
-            'data/paper_bot_state.json',
-            'data/paper_cache.json', 
-            'data/paper_temp_state.json',
-            'data/paper_positions.json'
-        ]
-    else:
-        # En trading réel, ne PAS nettoyer les fichiers (préserver l'état)
-        return
-    
-    cleaned = 0
-    for state_file in state_files:
-        if os.path.exists(state_file):
-            try:
-                os.remove(state_file)
-                cleaned += 1
-            except Exception as e:
-                print(f"⚠️ Erreur nettoyage {state_file}: {e}")
+    """Historique: les états runtime sont maintenant dans SQLite."""
+    return
     
 
 # Vider le terminal au démarrage (seulement si terminal disponible)
@@ -53,29 +32,34 @@ def main():
     """Point d'entrée principal"""
     import os as _os
     _os.makedirs('data', exist_ok=True)
-    
+
+    from core.ml_live_logger import MLLiveLogger
+    process_logger = MLLiveLogger(data_dir='data', sqlite_file=_os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+
     # Vérification de sécurité : s'assurer qu'aucune autre instance du bot ne tourne
-    pid_path = 'data/bot.pid'
-    if _os.path.exists(pid_path):
+    tracked = process_logger.get_bot_process_state()
+    old_pid = tracked.get('pid')
+    if old_pid:
         try:
-            with open(pid_path, 'r') as f:
-                old_pid = int(f.read().strip())
             if old_pid != _os.getpid():
                 try:
                     # check si le processus est actif
                     _os.kill(old_pid, 0)
                     print(f"❌ ERREUR: Une autre instance du bot Aegis est déjà en cours d'exécution (PID {old_pid}).")
-                    print("   Veuillez arrêter l'autre instance ou supprimer data/bot.pid avant de démarrer.")
+                    print("   Veuillez arrêter l'autre instance depuis le dashboard avant de démarrer.")
+                    process_logger.close()
                     sys.exit(1)
                 except (ProcessLookupError, OSError):
-                    # Le PID est orphelin, on peut écraser
-                    pass
-        except ValueError:
-            # Fichier corrompu, on continue
+                    process_logger.clear_bot_process_state()
+        except Exception:
             pass
 
     print("🚀 Démarrage du bot Aegis...")
-    open(pid_path, 'w').write(str(_os.getpid()))
+    process_logger.set_bot_process_state({
+        'pid': _os.getpid(),
+        'started_at': datetime.now().isoformat(),
+        'command': ' '.join(sys.argv) or 'run.py',
+    })
     
     # Charger la configuration locale en dernier pour les secrets non versionnés.
     load_dotenv(override=True)
@@ -108,10 +92,16 @@ def main():
         bot.run()
     except KeyboardInterrupt:
         print("\n🛑 Arrêt du bot...")
+        process_logger.clear_bot_process_state()
+        process_logger.close()
         sys.exit(0)
     except Exception as e:
         print(f"❌ Erreur: {e}")
+        process_logger.clear_bot_process_state()
+        process_logger.close()
         sys.exit(1)
+    finally:
+        process_logger.close()
 
 if __name__ == "__main__":
     main()

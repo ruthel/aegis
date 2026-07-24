@@ -4,9 +4,13 @@ Ce fichier regroupe les ameliorations proposees pour mieux detecter si un mouvem
 
 Important: le bot ne peut pas savoir avec certitude si le prix va monter ou descendre. L'objectif est de mesurer des probabilites et d'adapter la gestion du risque.
 
-## 1. Ajouter Un ExitDecisionEngine
+Statut 2026-07-23: les idees principales de ce document ont ete implementees. L'ExitDecisionEngine est maintenant greffe au cerveau ML: le bot utilise le ML pour filtrer les entrees et gerer les sorties. Il n'y a plus de shadow mode pour les sorties.
 
-Objectif: separer la logique d'entree et la logique de gestion apres achat.
+## 1. ExitDecisionEngine Integre au ML
+
+Objectif initial: separer la logique d'entree et la logique de gestion apres achat.
+
+Etat actuel: implemente et fusionne avec le ML. Le moteur de sortie ne doit plus etre considere comme une feature separee a activer en observation.
 
 Aujourd'hui, le bot detecte une entree puis laisse surtout le trailing stop gerer la sortie. Une meilleure architecture serait:
 
@@ -287,22 +291,23 @@ Impact attendu:
 - pouvoir comparer les recommandations avec le resultat reel
 - faciliter le backtest des sorties
 
-## 9. Phase Observation Avant Execution
+## 9. Observation Et Calibration Continue
 
-Objectif: eviter d'activer trop vite une logique de sortie agressive.
+Objectif initial: eviter d'activer trop vite une logique de sortie agressive.
 
-Plan:
+Etat actuel: la sortie ML est active. La prochaine etape n'est donc plus un shadow mode, mais une calibration continue:
 
-1. Calculer les recommandations sans agir.
-2. Logger les recommandations dans le decision log.
-3. Comparer avec ce qui s'est passe reellement.
-4. Activer seulement les protections de stop.
-5. Activer les sorties automatiques plus tard.
+1. Logger les 52 features d'entree au moment exact de chaque decision.
+2. Logger les 37 features de sortie a chaque decision importante.
+3. Comparer prediction, decision et resultat final reel.
+4. Detecter les regimes ou le modele se trompe.
+5. Re-entrainer seulement si un challenger bat le modele actif.
 
 Impact attendu:
 
-- risque trading quasi nul au debut
 - donnees utiles pour calibrer les seuils
+- moins d'ecart entre backtest et live
+- amelioration du ML sans revenir a des verrous durs
 
 ## 10. Backtest Des Regles De Sortie
 
@@ -336,39 +341,36 @@ Impact attendu:
 - eviter les intuitions trompeuses
 - choisir les seuils avec des donnees
 
-## 11. Parametres Proposes
+## 11. Parametres Encore Utiles
 
-Exemple de configuration future:
+Les anciens toggles d'activation globale ML et shadow mode ne sont plus necessaires. Les parametres utiles doivent piloter les seuils et le risque, pas reactiver/desactiver le cerveau ML.
 
 ```env
 EXIT_ENGINE_ENABLED=True
-CONTINUATION_SCORE_ENABLED=True
-PROFIT_FRAGILE_ENABLED=True
 PROFIT_FRAGILE_MAX_NET_PCT=0.40
-PROFIT_FRAGILE_MIN_SCORE_HOLD=65
-PROFIT_FRAGILE_EXIT_SCORE=35
-DYNAMIC_TRAILING_ENABLED=True
-RESISTANCE_REJECTION_EXIT=True
 TIME_STOP_ENABLED=True
 TIME_STOP_MINUTES=12
+ML_MIN_PROBABILITY=65
+ML_EXIT_ENTRY_MIN_CONTINUE_PROB=50
+TELEGRAM_STATUS_INTERVAL=7200
 ```
 
 ## 12. Priorite Recommandee
 
 Ordre recommande:
 
-1. Ajouter `exit_decision` en mode observation seulement.
-2. Ajouter `ContinuationScore`.
-3. Ajouter le mode `Profit Fragile` pour serrer le stop, sans vendre directement.
-4. Ajouter la detection de rejet resistance.
-5. Backtester.
-6. Activer les sorties automatiques seulement si les logs montrent un vrai avantage.
+1. Construire un dataset live avec les 52 features d'entree et les 37 features de sortie.
+2. Enregistrer aussi les candidats refuses pour savoir si le ML rate des opportunites.
+3. Comparer `P_win`, continuation prevue, sortie choisie et resultat final.
+4. Faire une validation walk-forward.
+5. Utiliser un systeme champion/challenger avant de remplacer le modele actif.
+6. Optimiser PnL net, profit factor et drawdown, pas seulement le win rate.
+7. Ajouter ensuite le position sizing ML si les decisions sont bien calibrees.
 
 La meilleure amelioration pour le probleme actuel est:
 
 ```text
-Profit fragile + ContinuationScore + stop dynamique
+Dataset live complet + walk-forward + champion/challenger
 ```
 
-Ce trio devrait reduire les trades qui passent verts puis finissent rouges, tout en laissant respirer les mouvements vraiment solides.
-
+La sortie ML existe deja. Le prochain gain vient de la qualite des donnees et de la comparaison stricte entre ce que le ML croyait et ce qui s'est vraiment passe.
