@@ -1,6 +1,6 @@
 # 🤖 Aegis Trading Bot v3
 
-Bot de trading spot multi-exchange avec **cerveau ML entrée/sortie**, 52 features d'entrée, 37 features de sortie, risk management institutionnel, optimisations temps réel et dashboard web premium avec prédictions ML en temps réel via WebSocket.
+Bot de trading spot multi-exchange avec **cerveau ML entrée/sortie**, 52 features d'entrée, 37 features de sortie, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -50,9 +50,10 @@ Le bot ne fonctionne plus comme une cascade de verrous durs. Les anciens signaux
 | Sécurités pré-ML | Cooldown, position déjà ouverte, capital disponible, minimums exchange |
 | Features d'entrée ML | Régime symbole/BTC, bear mode, reversal, falling knife, Support Touch, score crypto, signal technique, timing, frais, valeur position |
 | Décision d'entrée ML | Achat seulement si `P_win >= 65%` et continuation attendue suffisante |
-| Gestion de sortie ML | `HOLD`, `PROTECT_BREAKEVEN`, `TIGHTEN_STOP`, `TAKE_PROFIT`, `FORCE_EXIT` |
+| Gestion de sortie ML | `HOLD` ou `FORCE_EXIT` ; les anciennes règles de protection sont retirées du chemin actif |
 
 Support Touch n'est plus un fast-path d'exécution. Il reste utile comme source statistique pour le modèle : nombre de trades, win rate, PnL total, PnL moyen et régime récent.
+Les stops, objectifs et métriques de continuation restent visibles comme contexte de suivi, mais ne déclenchent plus de vente automatique quand `ML_OWNS_EXITS=true`.
 
 
 
@@ -87,24 +88,23 @@ BTC/USD 67,234 | Signal: BUY | Edge: 78% | R/R: 1:2.5
 └──────────────────────────────────────────────────┘
 ```
 
-### 🖥️ Dashboard Web de Monitoring (`dashboard/`)
+### 🖥️ UI Web de Monitoring (`ui/`)
 
-Interface web premium (Flask + WebSocket) pour surveiller et piloter le bot en temps réel.
+Interface web premium (Flask + React/Vite SPA + WebSocket) pour surveiller et piloter le bot en temps réel.
 
 ```
-# Démarrer le dashboard + bot
+# Démarrer le ui + bot
 python start.py
 # → http://127.0.0.1:8080
 ```
 
-**Fonctionnalités Dashboard :**
-- **Live** : Flux WebSocket temps réel, positions ouvertes avec P&L latent, prix actuels, **Contrôle Manuel (Manual Override : Force BUY / Force SELL / Pause)**
-- **Dashboard** : 6 cartes métriques (Solde, PnL, Trades/WinRate, Croissance/Balance, Rendement/Mise, **🔮 Radar Prochain Achat**)
-- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, heatmaps par crypto/jour/heure
-- **🧠 Core ML Engine** : modèle d'entrée RandomForest 52 features, modèle de sortie 37 features, P_win temps réel, état réel du prochain achat et décisions finales ML
-- **Trades** : Historique complet des trades fermés, export CSV
-- **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel
-- **Console** : Logs bot en temps réel avec autoscroll et filtrage
+- **Live** : Flux WebSocket temps réel, positions ouvertes, volumes affichés en USD, cooldowns opérationnels, contexte d'entrée, décisions finales et alertes.
+- **UI** : cartes métriques principales, **Core ML Engine**, contexte d'entrée, marché live, positions et console d'alertes.
+- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, historique des scores crypto par symbole/période, heatmaps par crypto/jour/heure.
+- **🧠 Core ML Engine** : modèle d'entrée RandomForest 52 features, modèle de sortie 37 features, P_win temps réel, état réel du prochain achat et décisions finales ML (`HOLD`/`FORCE_EXIT`).
+- **Trades** : Historique des trades fermés + positions ouvertes affichées avec statut `OPEN`.
+- **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel.
+- **Console** : Logs bot en temps réel avec autoscroll, limite de lignes et filtrage visuel.
 - **Bot Control** : Démarrer/arrêter le bot sans console CMD visible (pythonw.exe sur Windows)
 
 
@@ -191,19 +191,19 @@ aegis/
 │   └── aegis_db.sqlite3        # DB SQLite: ML, Support Touch, Telegram, metadata
 ├── config.py                   # Configuration centralisée (.env)
 ├── run.py                      # Point d'entrée sécurisé
-├── start.py                    # Lance dashboard + bot ensemble
-├── dashboard/                  # Interface web Flask
-│   ├── app.py                  # Serveur Flask + routes API + WebSocket ML
-│   ├── templates/index.html    # UI premium (glassmorphism, dark mode)
-│   └── static/
-│       ├── dashboard.js        # Logique frontend (WebSocket, Chart.js, ML Radar)
-│       └── dashboard.css       # Styles premium
+├── start.py                    # Lance ui + bot ensemble
+├── ui/                  # Interface web Flask + SPA React
+│   ├── app.py                  # Serveur Flask + routes API + WebSocket ui
+│   ├── frontend/               # React + Vite + TypeScript + shadcn/Radix + Zustand
+│   ├── static/spa/             # Build SPA servi en production par Flask
+│   ├── templates/index.html    # Ancien ui HTML conservé en fallback
+│   └── static/ui.*      # Assets legacy conservés en fallback
 ```
 
 ### Base SQLite Aegis
 
 La mémoire structurée du bot est centralisée dans `data/aegis_db.sqlite3`.
-SQLite est configuré en mode WAL pour permettre au dashboard, au bot et aux scripts de lire pendant que des écritures courtes sont en cours.
+SQLite est configuré en mode WAL pour permettre au ui, au bot et aux scripts de lire pendant que des écritures courtes sont en cours.
 
 Fichiers attendus :
 - `data/aegis_db.sqlite3` : base principale.
@@ -212,24 +212,51 @@ Fichiers attendus :
 
 Tables principales :
 - `bot_state` : une ligne par mode trading (`paper`, `live`) avec `paper_balance` et `initial_balance`.
-- `bot_app_state` : état applicatif persistant, par exemple `telegram_last_status_time`.
-- `bot_processes` : état des processus dashboard/bot (`pid`, `started_at`, `command`).
+- `bot_app_state` : état applicatif persistant, par exemple `telegram_last_daily_status_day`.
+- `bot_processes` : état des processus ui/bot (`pid`, `started_at`, `command`).
 - `bot_daily_stats` : statistiques journalières de risque (`trades_count`, `total_loss`, `total_profit`, `emergency_stop`).
 - `bot_positions`, `bot_pending_orders`, `bot_trailing_stops`, `bot_symbol_cooldowns`, `bot_exit_recommendations` : état trading relationnel avec colonnes métier.
 - `bot_market_context` : contexte marché live par symbole.
 - `ml_live_predictions` : dernières prédictions ML live par symbole avec `p_win`, `p_continue` et prévision de sortie.
-- `bot_decision_journal` : journal des décisions finales du bot.
+- `bot_decision_journal` : journal des décisions finales du bot. Les états opérationnels comme cooldown actif ne sont plus enregistrés comme décisions rejetées.
 - `ml_entry_decisions`, `ml_exit_decisions`, `ml_trade_outcomes` : mémoire ML entrée/sortie/résultat.
 - `ml_open_entries` : lien entre une entrée acceptée encore ouverte et sa future sortie.
 - `ml_entry_feature_values`, `ml_exit_feature_values` : features ML normalisées en lignes `event_id/feature_name/feature_value`.
-- `bot_live_status`, `bot_live_status_symbols` : statut live WebSocket consommé par le dashboard.
-- `bot_commands` : commandes envoyées par le dashboard au bot.
+- `bot_live_status`, `bot_live_status_subscriptions`, `bot_live_status_symbols` : statut live WebSocket normalisé consommé par le ui.
+- `bot_commands` : commandes envoyées par le ui au bot.
 - `crypto_score_history` : historique des scores crypto utilisés par l'analytics.
 - `support_touch_results`, `telegram_messages` : backtests et messages Telegram.
 
-Il ne faut pas supprimer `-wal` ou `-shm` pendant que le bot, le dashboard ou un script d'analyse tourne. SQLite lit automatiquement la base principale + le WAL. Le contenu du WAL est fusionné dans `aegis_db.sqlite3` lors d'un checkpoint automatique, à la fermeture propre des connexions, ou manuellement avec `PRAGMA wal_checkpoint(TRUNCATE);` quand tous les processus Aegis sont arrêtés.
+Il ne faut pas supprimer `-wal` ou `-shm` pendant que le bot, le ui ou un script d'analyse tourne. SQLite lit automatiquement la base principale + le WAL. Le contenu du WAL est fusionné dans `aegis_db.sqlite3` lors d'un checkpoint automatique, à la fermeture propre des connexions, ou manuellement avec `PRAGMA wal_checkpoint(TRUNCATE);` quand tous les processus Aegis sont arrêtés.
 
-Chaque table applicative possède `created_at` et `updated_at`. Les triggers SQLite remplissent `created_at` à la création et rafraîchissent `updated_at` lors des modifications.
+Chaque table applicative possède `created_at` et `updated_at`, remplis par le code applicatif au moment des écritures.
+
+Les tables runtime et ML ne stockent plus de colonnes payload `*_data` ou `payload_data`. Les champs variables sont normalisés en colonnes dédiées ou en tables clé/valeur comme `bot_decision_metrics`, `ml_entry_feature_values` et `ml_exit_feature_values`.
+
+Une couche ORM SQLAlchemy existe dans `core/db_orm.py`. Elle crée les tables au démarrage avec `Base.metadata.create_all(...)` et pilote `bot_state`, positions, ordres, trailing stops, cooldowns, recommandations de sortie, contexte marché, prédictions live, événements ML entrée/sortie, features ML, outcomes, Telegram, tables d'analyse Phase 4/5, `support_touch_results`, metadata ML, journal de décisions et tables `bot_live_status*`. Les migrations historiques gardent encore du SQL direct.
+
+### UI SPA React
+
+Le ui moderne est dans `ui/frontend` :
+- React + Vite + TypeScript.
+- `pnpm` comme gestionnaire de paquets.
+- `axios` pour les appels REST.
+- `zustand` pour l'état global.
+- shadcn/Radix pour les dropdowns et composants UI.
+- `lucide-react` pour les icônes.
+- amCharts 5 pour les graphiques analytics.
+- Police principale : Outfit.
+
+Build :
+```bash
+cd ui/frontend
+pnpm install
+pnpm build
+```
+
+Le build est écrit dans `ui/static/spa`. Si ce dossier contient `index.html`, Flask sert la SPA React; sinon il retombe sur l'ancien template HTML.
+
+Les endpoints `/api/status` et `/api/ml_status` sont aussi poussés via `/ws/live` pour éviter un polling HTTP trop agressif. Les vues console et analytics gardent des appels ciblés quand leurs données spécifiques sont demandées.
 
 ## 🔥 Optimisations Niveau 2
 
@@ -320,7 +347,8 @@ python run.py  # Démarrage direct
 ```env
 TELEGRAM_BOT_TOKEN=votre_token
 TELEGRAM_CHAT_ID=votre_chat_id
-TELEGRAM_STATUS_INTERVAL=7200    # Status toutes les 2h
+TELEGRAM_DAILY_STATUS_ENABLED=True
+TELEGRAM_DAILY_STATUS_HOUR=8     # Bilan quotidien automatique a 08h
 ```
 
 ### Logs & Données
@@ -635,11 +663,11 @@ python -m cProfile -o profile.stats run.py
 ---
 
 **Version** : 2.3 Professional Aegis  
-**Architecture** : Modulaire consolidée (6 classes vs 12) + Dashboard Web  
+**Architecture** : Modulaire consolidée (6 classes vs 12) + UI Web  
 **Code** : -500 lignes redondantes éliminées  
 **Performance** : Intervalle adaptatif + sessions optimisées  
 **Déploiement** : AWS EU + Render + Local  
 **Latence** : 10-30ms (optimisé Europe)  
-**Dashboard** : Flask + WebSocket + Chart.js — http://127.0.0.1:8080  
+**UI** : Flask + WebSocket + Chart.js — http://127.0.0.1:8080  
 **Revenus** : Trading spot  
 **Sécurité** : IP statique + CloudWatch  

@@ -67,11 +67,18 @@ class TradingMixin:
                 print(f"✅ {action_text} exécuté: {amount:.6f} {symbol}")
             
             if order:
+                exec_price = order.get('price', price)
+                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                if fee_rate <= 0:
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                buy_fee = amount * exec_price * fee_rate
+
                 position = {
                     'symbol': symbol, 'side': 'buy', 'amount': amount,
-                    'price': order.get('price', price), 'timestamp': datetime.now().isoformat(),
+                    'price': exec_price, 'timestamp': datetime.now().isoformat(),
                     'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
-                    'averaging': allow_averaging
+                    'averaging': allow_averaging, 'status': 'executed',
+                    'fee_rate': fee_rate, 'fee': buy_fee, 'position_size_crypto': amount, 'position_size_usd': exec_price * amount
                 }
                 if 'positions' not in self.state:
                     self.state['positions'] = []
@@ -103,7 +110,7 @@ class TradingMixin:
                 self.notifier.notify_error("Fonds insuffisants", str(e))
             return None
     
-    def sell_market(self, symbol, amount):
+    def sell_market(self, symbol, amount, reason=""):
         price = self.get_price(symbol)
         buy_price = self.get_real_buy_price(symbol)
         
@@ -125,17 +132,37 @@ class TradingMixin:
                 order = self.safe_request(self.exchange.create_market_sell_order, symbol, amount)
             
             if order:
-                position = {
-                    'symbol': symbol, 'side': 'sell', 'amount': amount,
-                    'price': order.get('price', price), 'timestamp': datetime.now().isoformat(),
-                    'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
-                    'avg_entry_price': buy_price
-                }
-                if self.paper_trading:
-                    position.update(self._calculate_fee_details(
-                        amount, order.get('price', price), buy_price
-                    ))
-                self.state['positions'].append(position)
+                # Mettre à jour la position sell existante → 'executed' au lieu d'insérer un doublon
+                updated = False
+                target_sym = str(symbol).replace('/', '').upper()
+                for p in reversed(self.state.get('positions', [])):
+                    p_sym = str(p.get('symbol', '')).replace('/', '').upper()
+                    if p_sym == target_sym and p.get('side') == 'sell':
+                        p['status'] = 'executed'
+                        p['price'] = order.get('price', price)
+                        p['amount'] = amount
+                        p['order_id'] = order.get('id', p.get('order_id'))
+                        p['avg_entry_price'] = buy_price
+                        p['closed_at'] = datetime.now().isoformat()
+                        if self.paper_trading:
+                            p.update(self._calculate_fee_details(
+                                amount, order.get('price', price), buy_price
+                            ))
+                        updated = True
+                        break
+                if not updated:
+                    position = {
+                        'symbol': symbol, 'side': 'sell', 'amount': amount,
+                        'price': order.get('price', price), 'timestamp': datetime.now().isoformat(),
+                        'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
+                        'avg_entry_price': buy_price, 'status': 'executed',
+                        'closed_at': datetime.now().isoformat()
+                    }
+                    if self.paper_trading:
+                        position.update(self._calculate_fee_details(
+                            amount, order.get('price', price), buy_price
+                        ))
+                    self.state['positions'].append(position)
                 self.save_state()
                 self.total_trades += 1
                 
@@ -169,6 +196,8 @@ class TradingMixin:
 
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
+                    
+                self._close_buy_positions(symbol, amount, price)
             
             return order
         except Exception as e:
@@ -228,8 +257,16 @@ class TradingMixin:
             if self.paper_trading:
                 order = {'id': f'limit_sell_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}
                 self.pending_orders[order['id']] = {
-                    'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
+                    'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell', 'status': 'opened'
                 }
+                position = {
+                    'symbol': symbol, 'side': 'sell', 'amount': amount,
+                    'price': price, 'timestamp': __import__('datetime').datetime.now().isoformat(),
+                    'order_id': order['id'], 'source': 'bot', 'paper': True,
+                    'status': 'opened',
+                    'position_size_crypto': amount, 'position_size_usd': amount * price
+                }
+                self.state.setdefault('positions', []).append(position)
                 print(f"🧪 PAPER - Ordre limite VENTE: {amount:.6f} {symbol} @ {price:.6f} ({notional_value:.2f} USD)")
                 return order
             else:
@@ -253,8 +290,17 @@ class TradingMixin:
                     'timestamp': time.time(),
                     'symbol': symbol,
                     'side': 'sell',
-                    'source': 'bot'
+                    'source': 'bot',
+                    'status': 'opened'
                 }
+                position = {
+                    'symbol': symbol, 'side': 'sell', 'amount': amount,
+                    'price': price, 'timestamp': __import__('datetime').datetime.now().isoformat(),
+                    'order_id': str(order['id']), 'source': 'bot', 'paper': False,
+                    'status': 'opened',
+                    'position_size_crypto': amount, 'position_size_usd': amount * price
+                }
+                self.state.setdefault('positions', []).append(position)
                 
                 # 🔥 NOTIFICATION ORDRE LIMITE (TOUJOURS)
                 if hasattr(self, 'notifier'):
@@ -314,7 +360,10 @@ class TradingMixin:
     def _get_state_weighted_average_buy_price(self, symbol):
         events = [
             p for p in self.state.get('positions', [])
-            if p.get('symbol') == symbol and p.get('side') in ['buy', 'sell']
+            if p.get('symbol') == symbol and (
+                p.get('side') == 'buy' or
+                (p.get('side') == 'sell' and p.get('status') in ('executed', 'filled'))
+            )
         ]
         events.sort(key=lambda p: p.get('timestamp', ''))
         return self._calculate_weighted_average_from_events(events)
@@ -691,16 +740,33 @@ class TradingMixin:
                     order={'id': str(order_id)}
                 )
 
-            position = {
-                'symbol': symbol, 'side': 'sell', 'amount': amount,
-                'price': price, 'timestamp': datetime.fromtimestamp(timestamp / 1000).isoformat(),
-                'order_id': execution['trade_ids'][0] if execution.get('trade_ids') else str(order_id),
-                'exchange_order_id': str(order_id), 'trade_ids': execution.get('trade_ids', []),
-                'source': 'bot_confirmed', 'paper': False,
-                'fee': execution.get('fee', 0),
-                'avg_entry_price': buy_price
-            }
-            self.state['positions'].append(position)
+            found = False
+            for p in reversed(self.state.get('positions', [])):
+                if p.get('order_id') == str(order_id) and p.get('status') == 'opened':
+                    p['status'] = 'executed'
+                    p['price'] = price
+                    p['amount'] = amount
+                    p['exchange_order_id'] = str(order_id)
+                    p['trade_ids'] = execution.get('trade_ids', [])
+                    p['fee'] = execution.get('fee', 0)
+                    p['position_size_crypto'] = amount
+                    p['position_size_usd'] = amount * price
+                    p['avg_entry_price'] = buy_price
+                    found = True
+                    break
+            
+            if not found:
+                position = {
+                    'symbol': symbol, 'side': 'sell', 'amount': amount,
+                    'price': price, 'timestamp': datetime.fromtimestamp(timestamp / 1000).isoformat(),
+                    'order_id': str(order_id),
+                    'exchange_order_id': str(order_id), 'trade_ids': execution.get('trade_ids', []),
+                    'source': 'bot_confirmed', 'paper': False,
+                    'fee': execution.get('fee', 0),
+                    'avg_entry_price': buy_price, 'status': 'executed'
+                }
+                self.state.setdefault('positions', []).append(position)
+                
             self.save_state()
             print(f"✅ Ordre limite VENTE confirmé: {amount:.6f} {symbol.split('/')[0]} @ {price:.2f}")
             return True

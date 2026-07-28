@@ -3,11 +3,14 @@ Gestionnaire d'événements macro - Détection automatique via données crypto
 """
 import time
 import os
+import json
+import sqlite3
 from datetime import datetime
 from core.managers.notification import NotificationManager
 
 class MacroEventManager:
     """Détecte et gère les événements macro via analyse des patterns crypto"""
+    _active_events_by_type = {}
     
     def __init__(self):
         self.current_event = None
@@ -63,6 +66,144 @@ class MacroEventManager:
             {"date": "2026-11-10T13:30:00", "event": "INFLATION_DATA", "description": "Publication indice des prix CPI (USA)"},
             {"date": "2026-12-10T13:30:00", "event": "INFLATION_DATA", "description": "Publication indice des prix CPI (USA)"},
         ]
+        self._hydrate_active_event_from_store()
+
+    def _is_same_event_active(self, event_type, now=None):
+        """Retourne True si le même événement est déjà actif et non expiré."""
+        if not event_type:
+            return False
+        now = now or time.time()
+        active = self._active_events_by_type.get(event_type)
+        if active:
+            started_at = float(active.get('started_at') or 0)
+            duration_hours = float(active.get('duration_hours') or 0)
+            if started_at and duration_hours and now < started_at + duration_hours * 3600:
+                return True
+            self._active_events_by_type.pop(event_type, None)
+
+        if self.current_event == event_type and self.event_start_time:
+            duration_hours = float(self.get_adjustments(event_type).get('duration_hours') or 0)
+            if duration_hours and now < float(self.event_start_time) + duration_hours * 3600:
+                return True
+        persistent = self._read_persistent_active_event(event_type)
+        if persistent:
+            started_at = float(persistent.get('started_at') or 0)
+            duration_hours = float(persistent.get('duration_hours') or 0)
+            if started_at and duration_hours and now < started_at + duration_hours * 3600:
+                self._active_events_by_type[event_type] = persistent
+                return True
+            self._clear_persistent_active_event(event_type)
+        return False
+
+    def _mark_event_active(self, event_type, started_at, event_info):
+        duration_hours = float((event_info or {}).get('duration_hours') or 0)
+        payload = {
+            'started_at': float(started_at or time.time()),
+            'duration_hours': duration_hours,
+        }
+        self._active_events_by_type[event_type] = payload
+        self._write_persistent_active_event(event_type, payload)
+
+    def _event_state_key(self, event_type):
+        return f"macro_active_event:{event_type}"
+
+    def _with_app_state(self, callback):
+        db_path = os.getenv('AEGIS_DB_PATH', 'data/aegis_db.sqlite3')
+        try:
+            with sqlite3.connect(db_path, timeout=5) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_app_state (
+                        state_key TEXT PRIMARY KEY,
+                        state_value TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                """)
+                return callback(conn)
+        except Exception:
+            return None
+
+    def _read_persistent_active_event(self, event_type):
+        def read(conn):
+            row = conn.execute(
+                "SELECT state_value FROM bot_app_state WHERE state_key=?",
+                (self._event_state_key(event_type),)
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            return json.loads(row[0])
+        return self._with_app_state(read)
+
+    def _read_any_persistent_active_event(self):
+        def read(conn):
+            rows = conn.execute(
+                "SELECT state_key, state_value FROM bot_app_state WHERE state_key LIKE 'macro_active_event:%'"
+            ).fetchall()
+            events = []
+            for key, value in rows:
+                try:
+                    event_type = key.split(':', 1)[1]
+                    payload = json.loads(value or '{}')
+                    events.append((event_type, payload))
+                except Exception:
+                    continue
+            return events
+        return self._with_app_state(read) or []
+
+    def _hydrate_active_event_from_store(self):
+        now = time.time()
+        for event_type, payload in self._read_any_persistent_active_event():
+            started_at = float(payload.get('started_at') or 0)
+            duration_hours = float(payload.get('duration_hours') or 0)
+            if not started_at or not duration_hours:
+                self._clear_persistent_active_event(event_type)
+                continue
+            if now >= started_at + duration_hours * 3600:
+                self._clear_persistent_active_event(event_type)
+                continue
+
+            self._active_events_by_type[event_type] = payload
+            self.current_event = event_type
+            self.current_event_info = self.event_adjustments.get(event_type)
+            self.event_start_time = started_at
+            break
+
+    def _write_persistent_active_event(self, event_type, payload):
+        def write(conn):
+            stamp = datetime.now().isoformat()
+            conn.execute(
+                """
+                INSERT INTO bot_app_state (state_key, state_value, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    state_value = excluded.state_value,
+                    updated_at = excluded.updated_at
+                """,
+                (self._event_state_key(event_type), json.dumps(payload), stamp, stamp)
+            )
+            return True
+        return self._with_app_state(write)
+
+    def _clear_persistent_active_event(self, event_type):
+        def clear(conn):
+            conn.execute("DELETE FROM bot_app_state WHERE state_key=?", (self._event_state_key(event_type),))
+            return True
+        return self._with_app_state(clear)
+
+    def _format_macro_event_line(self, event_type, event_info, notification_status=None, calendar=False):
+        """Construit une ligne unique pour éviter les blocs multi-lignes dans bot.log."""
+        prefix = "🚨 MACRO EVENT CALENDRIER DÉTECTÉ" if calendar else "🚨 MACRO EVENT DÉTECTÉ"
+        parts = [
+            f"{prefix}: {event_type}",
+            f"📋 {event_info.get('description', event_type)}",
+            f"🎁 Bonus score: +{event_info.get('score_bonus', 0)}",
+            f"🎯 Réduction seuil: -{event_info.get('threshold_reduction', 0)}",
+            f"⏰ Durée estimée: {event_info.get('duration_hours', 0)}h",
+        ]
+        if notification_status:
+            parts.append(notification_status)
+        parts.append(f"🎯 Ajustement macro: -{event_info.get('threshold_reduction', 0)} (Événement: {event_type})")
+        return " | ".join(parts)
     
     def _check_calendar_events(self):
         """Vérifie si un événement du calendrier 2026 est imminent (2h) ou en cours"""
@@ -113,6 +254,8 @@ class MacroEventManager:
                 except Exception as e:
                     print(f"   ⚠️ Erreur notification fin: {e}")
                 
+                self._active_events_by_type.pop(self.current_event, None)
+                self._clear_persistent_active_event(self.current_event)
                 self.current_event = None
                 self.current_event_info = None
                 self.event_start_time = None
@@ -120,26 +263,31 @@ class MacroEventManager:
         # B. Vérification PRIORITAIRE du calendrier macro-économique 2026
         cal_event, cal_info, cal_start_ts = self._check_calendar_events()
         if cal_event:
+            if self._is_same_event_active(cal_event):
+                self.current_event = cal_event
+                self.current_event_info = cal_info
+                if not self.event_start_time:
+                    self.event_start_time = cal_start_ts
+                return self.current_event
+
             # Si c'est un nouvel événement macro du calendrier
             if self.current_event != cal_event:
                 self.current_event = cal_event
                 self.current_event_info = cal_info
                 self.event_start_time = cal_start_ts
                 self.last_detection_time = time.time()
-                
-                print(f"🚨 MACRO EVENT CALENDRIER DÉTECTÉ: {cal_event}")
-                print(f"   📋 {cal_info['description']}")
-                print(f"   🎁 Bonus score: +{cal_info['score_bonus']}")
-                print(f"   🎯 Réduction seuil: -{cal_info['threshold_reduction']}")
+                self._mark_event_active(cal_event, cal_start_ts, cal_info)
                 
                 # Notification Telegram directe
+                notification_status = None
                 try:
                     notifier = NotificationManager()
                     if notifier.enabled:
                         notifier.notify_macro_event_start(cal_event, cal_info)
-                        print(f"   📨 Notification Telegram envoyée")
+                        notification_status = "📨 Notification Telegram envoyée"
                 except Exception as e:
-                    print(f"   ⚠️ Erreur notification: {e}")
+                    notification_status = f"⚠️ Erreur notification: {e}"
+                print(self._format_macro_event_line(cal_event, cal_info, notification_status, calendar=True))
             return self.current_event
 
         # C. Repli sur la détection automatique par patterns
@@ -166,26 +314,30 @@ class MacroEventManager:
             detected_event = None
         
         if detected_event and not self.current_event:
+            if self._is_same_event_active(detected_event):
+                self.current_event = detected_event
+                self.current_event_info = self.event_adjustments[detected_event]
+                active = self._active_events_by_type.get(detected_event, {})
+                self.event_start_time = active.get('started_at') or time.time()
+                return self.current_event
+
             self.current_event = detected_event
             self.event_start_time = time.time()
             self.last_detection_time = time.time()
             
             event_info = self.event_adjustments[detected_event]
             self.current_event_info = event_info
+            self._mark_event_active(detected_event, self.event_start_time, event_info)
             
-            print(f"🚨 MACRO EVENT DÉTECTÉ: {detected_event}")
-            print(f"   📋 {event_info['description']}")
-            print(f"   🎁 Bonus score: +{event_info['score_bonus']}")
-            print(f"   🎯 Réduction seuil: -{event_info['threshold_reduction']}")
-            print(f"   ⏰ Durée estimée: {event_info['duration_hours']}h")
-            
+            notification_status = None
             try:
                 notifier = NotificationManager()
                 if notifier.enabled:
                     notifier.notify_macro_event_start(detected_event, event_info)
-                    print(f"   📨 Notification Telegram envoyée")
+                    notification_status = "📨 Notification Telegram envoyée"
             except Exception as e:
-                print(f"   ⚠️ Erreur notification: {e}")
+                notification_status = f"⚠️ Erreur notification: {e}"
+            print(self._format_macro_event_line(detected_event, event_info, notification_status))
         
         return self.current_event
     
@@ -235,6 +387,7 @@ class MacroEventManager:
         
         event_info = self.event_adjustments[event_type]
         self.current_event_info = event_info
+        self._mark_event_active(event_type, self.event_start_time, event_info)
         
         print(f"🔧 MACRO EVENT FORCÉ: {event_type}")
         print(f"   📋 {event_info['description']}")
@@ -246,6 +399,8 @@ class MacroEventManager:
         """Annule l'événement macro actuel"""
         if self.current_event:
             print(f"🔄 ANNULATION MACRO EVENT: {self.current_event}")
+            self._active_events_by_type.pop(self.current_event, None)
+            self._clear_persistent_active_event(self.current_event)
             self.current_event = None
             self.current_event_info = None
             self.event_start_time = None

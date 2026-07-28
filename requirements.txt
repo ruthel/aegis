@@ -8,5 +8,6 @@ orjson>=3.10.0
 scipy==1.14.1
 websocket-client>=1.6.4
 python-telegram-bot>=20.7
+SQLAlchemy>=2.0.0
 
 flask-sock>=0.7

@@ -1,6 +1,6 @@
 # Feuille de Route & Etat d'Avancement — Ameliorations Bot Aegis
 
-Derniere mise a jour : 2026-07-23
+Derniere mise a jour : 2026-07-27
 
 ---
 
@@ -12,6 +12,11 @@ Derniere mise a jour : 2026-07-23
 * **Phase 3 (Suppression des anciens verrous durs)** : ✅ **Termine**
 * **Phase 4 (Dataset live & apprentissage controle)** : ✅ **Termine**
 * **Phase 5 (Walk-forward, champion/challenger, calibration PnL)** : ⏳ **Planifie**
+* **Phase 6 (Position sizing ML & allocation dynamique)** : 🔜 **A planifier**
+* **Phase 7 (Execution intelligente & microstructure marche)** : 🔜 **A planifier**
+* **Phase 8 (Robustesse production & observabilite)** : 🔜 **A planifier**
+* **Phase 9 (Modeles avances : XGBoost / ensembles / deep learning prudent)** : 🔜 **Recherche**
+* **Phase 10 (Autonomie controlee & gouvernance risque)** : 🔜 **Vision long terme**
 
 ---
 
@@ -29,10 +34,9 @@ Derniere mise a jour : 2026-07-23
 
 Le moteur de sortie n'est plus un module en shadow mode. Il est greffe au cerveau ML et sert directement a gerer la sortie d'une position.
 
-- [x] **Decisions de sortie actives** : `HOLD`, `PROTECT_BREAKEVEN`, `TIGHTEN_STOP`, `TAKE_PROFIT`, `FORCE_EXIT`.
+- [x] **Decisions de sortie actives** : le chemin live est maintenant pilote par le ML en mode simple `HOLD` / `FORCE_EXIT`.
 - [x] **ContinuationScore** : score de sante du mouvement base sur momentum, EMA, VWAP, structure bougies, volume, RSI et contexte BTC.
-- [x] **Mode profit fragile** : protection des petits gains quand le mouvement devient faible.
-- [x] **Time stop intelligent** : sortie/protection si la position stagne trop longtemps avec score faible.
+- [x] **Anciennes protections retirees du chemin actif** : profit fragile, time stop, trailing stop et objectifs paper ne vendent plus automatiquement quand `ML_OWNS_EXITS=true`.
 - [x] **Shadow mode supprime** : `EXIT_ENGINE_SHADOW_MODE` n'est plus necessaire.
 - [x] **Journalisation finale** : le decision log doit afficher les decisions finales utiles, pas chaque signal intermediaire transmis comme feature.
 
@@ -47,7 +51,7 @@ Le bot ne fonctionne plus comme une cascade de 7 verrous. Les anciens verrous me
 | Pre-ML operationnel | cooldown, position/capital, minimums exchange, securites d'execution |
 | Features ML | regime symbole/BTC, bear mode, reversal, falling knife, Support Touch, score crypto, signal technique, timing, frais, valeur position, contexte de sortie |
 | Decision entree | `P_win >= 65%` + probabilite de continuation suffisante |
-| Decision sortie | moteur ML de gestion de position actif |
+| Decision sortie | ML actif : `HOLD` ou `FORCE_EXIT`; stops/objectifs servent au suivi, pas a vendre seuls |
 
 ### Resultats de reference apres fusion entree + sortie ML
 
@@ -61,7 +65,7 @@ Lecture : le systeme retenu fait moins de trades, mais avec une qualite moyenne 
 
 - [x] **Mode ML actif par defaut** : les toggles `ML_FILTER_ENABLED`, `ML_SHADOW_MODE`, `ML_EXIT_ENTRY_FILTER_ENABLED` et `ML_OWNS_ENTRY_FILTERS` ont ete retires.
 - [x] **Modele entree** : RandomForest, 52 features, seuil P_win 65%.
-- [x] **Modele sortie** : 37 features, gestion active des positions.
+- [x] **Modele sortie** : 37 features, gestion active des positions en `HOLD` / `FORCE_EXIT`.
 - [x] **Support Touch** : conserve uniquement comme source statistique ML, plus comme fast-path.
 - [x] **Falling knife / bear context / HTF / timing** : conserves comme features ML quand utiles, plus comme blocages durs redondants.
 
@@ -72,9 +76,9 @@ Lecture : le systeme retenu fait moins de trades, mais avec une qualite moyenne 
 - [x] Suppression du fast-path Support Touch et des verdicts `allowed/blocked` durs.
 - [x] Suppression des blocages durs avant ML sur contexte bear et falling knife, remplaces par features ML.
 - [x] Suppression des logs intermediaires `htf_filter`, `support_touch_override`, `ml_feature_only` et equivalents.
-- [x] Nettoyage dashboard : retrait des badges "Feature ML", correction du rendu Decision Log et Contexte d'entree.
+- [x] Nettoyage ui : retrait des badges "Feature ML", correction du rendu Decision Log et Contexte d'entree.
 - [x] Radar prochain achat : remplacement des ETA hasardeux par l'etat ML reel (`Pret ML maintenant` / `En attente ML`) et les raisons (`P_win`, continuation, seuils).
-- [x] Telegram : intervalle de status augmente a 2h via `TELEGRAM_STATUS_INTERVAL=7200`.
+- [x] Telegram : status automatique remplace par un bilan quotidien a 08h (`TELEGRAM_DAILY_STATUS_HOUR=8`); `/status` reste disponible a la demande.
 
 ---
 
@@ -86,24 +90,37 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 - [x] **SQLite WAL structure** : base locale avec `journal_mode=WAL`, `busy_timeout=5000`, convention `{domain}_{entity_plural}` et tables relationnelles ML, Telegram et bot.
 - [x] **Documentation WAL/SHM** : `README.md` explique le role de `aegis_db.sqlite3`, `aegis_db.sqlite3-wal`, `aegis_db.sqlite3-shm`, et le moment ou le WAL est fusionne dans la base principale.
 - [x] **Telegram dans `aegis_db`** : messages entrants/sortants stockes dans la table `telegram_messages`; les anciens fichiers JSON Telegram ont ete retires.
-- [x] **Process dashboard/bot dans `aegis_db`** : les anciens `data/bot_process.json`, `data/bot.pid` et `bot_process_state` sont remplaces par la table `bot_processes`.
+- [x] **Process ui/bot dans `aegis_db`** : les anciens `data/bot_process.json`, `data/bot.pid` et `bot_process_state` sont remplaces par la table `bot_processes`.
 - [x] **Bot state relationnel dans `aegis_db`** : `bot_state` garde uniquement les lignes de mode trading (`paper`, `live`); positions, ordres, trailing stops, cooldowns et recommandations de sortie ont leurs tables dediees.
-- [x] **Etat app separe** : `bot_app_state` garde les valeurs applicatives persistantes comme `telegram_last_status_time`, sans polluer `bot_state` avec des colonnes NULL.
+- [x] **Etat app separe** : `bot_app_state` garde les valeurs applicatives persistantes comme `telegram_last_daily_status_day`, sans polluer `bot_state` avec des colonnes NULL.
 - [x] **Audit timestamps global** : toutes les tables applicatives ont `created_at` et `updated_at`; `last_update` n'est plus stocke comme ligne separee dans `bot_state`.
 - [x] **Features ML relationnelles** : les 52 features d'entree et les features de sortie sont sauvegardees dans `ml_entry_feature_values` et `ml_exit_feature_values`.
 - [x] **Contexte/predictions normalises** : `bot_market_context` expose regime, bear mode et signaux cles; `ml_live_predictions` expose `p_win`, `p_continue` et la prevision de sortie.
 - [x] **Support Touch dans `aegis_db`** : backtests stockes dans une table unique `support_touch_results`.
 - [x] **Metadata ML dans `aegis_db`** : snapshots de modele stockes dans `ml_model_metadata` et importances dans `ml_feature_importances`.
 - [x] **Lien entree acceptee -> sortie reelle** : stocker l'entree ouverte dans la table SQLite `ml_open_entries`, puis fermer le sample au moment de la vente.
-- [x] **Runtime JSON supprime** : decisions dashboard, commandes bot, statut live WebSocket, scores crypto et entrees ML ouvertes sont lus/ecrits dans `data/aegis_db.sqlite3`.
+- [x] **Runtime JSON supprime** : decisions ui, commandes bot, statut live WebSocket, scores crypto et entrees ML ouvertes sont lus/ecrits dans `data/aegis_db.sqlite3`.
+- [x] **Statut live normalise** : `bot_live_status` ne stocke plus de blob complet; subscriptions et métriques symboles sont dans des colonnes/tables dédiées.
+- [x] **Suppression des payloads dupliques** : les colonnes `*_data` et `payload_data` ont ete retirees des tables applicatives; les valeurs variables sont normalisees en colonnes ou tables de métriques/features.
 - [x] **Stats journalieres dans `aegis_db`** : les statistiques de risque journalieres sont stockees dans la table `bot_daily_stats`.
-- [x] **Journal live des decisions de sortie** : sauvegarder les 37 features de sortie, la decision ML et l'etat courant (`HOLD`, `PROTECT_BREAKEVEN`, `TIGHTEN_STOP`, `TAKE_PROFIT`, `FORCE_EXIT`).
+- [x] **Schema ORM actif** : SQLAlchemy crée les tables au démarrage avec `Base.metadata.create_all(...)`; le fichier SQL de référence a été retiré.
+- [x] **ORM SQLAlchemy progressif** : `core/db_orm.py` modèle et pilote maintenant l'état bot relationnel, les événements ML entrée/sortie, features, outcomes, Telegram, commandes, live status, stats, scores, Support Touch, metadata ML, journal de décisions et tables d'analyse Phase 4/5. Le SQL direct restant sert surtout aux migrations historiques et aux lectures analytiques.
+- [x] **Journal live des decisions de sortie** : sauvegarder les 37 features de sortie, la decision ML et l'etat courant (`HOLD` ou `FORCE_EXIT`).
 - [x] **Resultat final des trades** : enregistrer prix d'achat, prix de vente, PnL, PnL %, duree et raison de sortie quand le trade ferme.
 - [x] **Candidats refuses conserves** : enregistrer les refus ML comme `candidate_rejected_pending_replay` pour analyse future.
 - [x] **Labelliser les candidats refuses** : `scripts/analyze_ml_live_performance.py` cree `ml_rejected_replay_results` et rejoue les refus des que les bougies futures sont disponibles.
 - [x] **Comparer prediction vs resultat reel** : calibration par buckets `P_win` dans `ml_prediction_calibration`, avec Brier score, win rate live et PnL moyen dans `ml_analysis_runs`.
 - [x] **Detection de drift marche** : `ml_drift_alerts` signale `ok`, `warning` ou `insufficient_live_outcomes` selon les resultats live disponibles.
 - [x] **Automatisation periodique** : `run_ml_live_analysis_if_due()` lance `scripts/analyze_ml_live_performance.py` en arriere-plan selon `ML_LIVE_ANALYSIS_INTERVAL_SECONDS`.
+- [x] **UI SPA React** : migration du ui vers React + Vite + TypeScript, pnpm, axios, zustand, shadcn/Radix, lucide-react, Outfit et amCharts 5.
+- [x] **Rendu ui aligne legacy** : sections Core ML Engine, Contexte d'entree, Decisions, Marche Live, Cooldowns, Positions, Alertes, Console et Analytics reproduites en SPA avec design dense.
+- [x] **Historique des scores crypto** : courbe amCharts connectee a `/api/analytics/scores`, filtres symbole/periode en dropdown shadcn, axe temporel propre et tooltip score/prix.
+- [x] **Decision log final uniquement** : les cooldowns operationnels ne sont plus enregistres comme decisions rejetees/approuvees; ils restent visibles dans la section Cooldowns.
+- [x] **Nettoyage runtime temporaire** : purge ponctuelle des tables `bot_decision_journal`, `bot_decision_metrics`, `ml_entry_decisions`, `ml_exit_decisions`, `ml_entry_feature_values`, `ml_rejected_replay_results`, `ml_raw_events` et `ml_prediction_calibration` apres changement de semantics.
+- [x] **Logs bot moins bruyants** : suppression des logs de trade sizing (`💰 Trade: ...`) et filtrage des timeouts WebSocket ping/pong redondants.
+- [x] **Sorties ML-only consolidees** : `ExitDecisionEngine` ne produit plus de decision par règles; il calcule les métriques utiles et applique uniquement la decision ML. Les ordres objectifs paper restaurés sont des references UI (`ml_exit_target_reference`) et non des vendeurs automatiques.
+- [x] **Trades UI ouverts** : la page `/trades` affiche aussi les positions ouvertes avec statut `OPEN`, en plus des trades fermés.
+- [x] **Marche Live en USD** : le volume affiche maintenant `Volume USD`; l'UI utilise le volume quote si disponible ou calcule `volume base * prix live`.
 
 ---
 
@@ -112,15 +129,81 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 - [ ] **Walk-forward validation** : entrainer sur une periode, tester sur la periode suivante, puis avancer la fenetre.
 - [ ] **Champion / challenger** : ne remplacer le modele actif que si le challenger bat le champion sur win rate, PnL net, profit factor et drawdown.
 - [ ] **Objectif PnL net** : optimiser le modele sur PnL net et drawdown, pas seulement sur accuracy/win rate.
-- [ ] **Calibration des seuils** : recalibrer `P_win`, `P_continue`, time stop et force exit selon les resultats live.
-- [ ] **Position sizing ML** : faire apprendre au modele quand reduire ou augmenter la taille de position selon la qualite du setup.
+- [ ] **Calibration des seuils** : recalibrer `P_win`, `P_continue` et le seuil `FORCE_EXIT` selon les resultats live.
+- [ ] **Replay des erreurs** : comparer les trades acceptes, refuses, conserves et vendus pour identifier les refus rates, les achats trop tot et les sorties trop rapides.
+- [ ] **Promotion automatique controlee** : basculer vers le challenger seulement apres un nombre minimum de trades, une periode minimum et une amelioration nette statistiquement utile.
+- [ ] **Rollback modele** : revenir automatiquement au champion precedent si le nouveau modele degrade le PnL net, le drawdown ou le profit factor live.
 
 ---
 
-## Idees Futures
+## 🔜 Phase 6 : Position Sizing ML & Allocation Dynamique
 
-- [ ] Re-entrainement periodique controle, avec validation obligatoire avant promotion.
-- [ ] Tableau dashboard "Prediction vs resultat" par symbole, regime, heure et type de sortie.
-- [ ] Alertes Telegram uniquement pour decisions finales importantes ou drift ML.
-- [ ] Export CSV/Parquet du dataset live pour audit externe.
-- [ ] Dashboard multi-bot si plusieurs instances Aegis tournent en parallele.
+Objectif : ne plus seulement decider **si** le bot entre, mais aussi **combien** il engage selon la qualite du setup.
+
+- [ ] **Sizing par confiance ML** : taille plus faible pour setup limite, taille normale pour setup solide, taille reduite en regime instable.
+- [ ] **Sizing par volatilite** : ajuster le montant selon ATR, spread, liquidite, volume USD et distance au risque.
+- [ ] **Budget par symbole** : eviter que BTC/ETH/SOL/ADA consomment trop de capital simultanement quand ils sont fortement correles.
+- [ ] **Kelly fractionne ML** : utiliser une version prudente du Kelly Criterion basee sur win rate live, reward/risk net et drawdown recent.
+- [ ] **UI allocation** : montrer pourquoi le bot a choisi 30 USD, 45 USD ou 80 USD au lieu d'un montant fixe.
+
+Impact attendu : moins de pertes lourdes sur setups incertains, meilleur rendement quand le ML est vraiment confiant.
+
+---
+
+## 🔜 Phase 7 : Execution Intelligente & Microstructure Marche
+
+Objectif : ameliorer le prix reel d'achat/vente sans ajouter de verrous durs.
+
+- [ ] **Slippage tracking** : mesurer ecart entre prix prevu, prix demande et prix execute.
+- [ ] **Spread-aware execution** : eviter les executions quand le spread est temporairement trop large.
+- [ ] **Volume USD minimum dynamique** : adapter les executions a la liquidite live.
+- [ ] **Ordres adaptatifs** : choisir entre market, limit agressif ou attente courte selon urgence ML et carnet.
+- [ ] **Retry propre** : si l'ordre rate, ne pas dupliquer l'achat; enregistrer l'echec comme sample d'execution.
+- [ ] **Prix d'entree attendu vs obtenu** : alimenter le dataset ML avec la qualite d'execution.
+
+Impact attendu : moins de frais implicites, moins d'achats au mauvais tick, meilleur PnL net sans changer la logique ML.
+
+---
+
+## 🔜 Phase 8 : Robustesse Production & Observabilite
+
+Objectif : rendre le bot plus stable, plus lisible et plus facile a auditer pendant plusieurs jours de fonctionnement.
+
+- [ ] **Health checks internes** : verifier DB, WebSocket, exchange, Telegram, modele ML charge et boucle bot active.
+- [ ] **Alertes Telegram utiles** : envoyer seulement les decisions finales importantes, erreurs critiques, drift ML et changement champion/challenger.
+- [ ] **Dashboard prediction vs resultat** : tableau par symbole, regime, heure, P_win, P_continue, decision sortie et resultat final.
+- [ ] **Audit trail complet** : relier decision entree -> features -> ordre -> position -> decision sortie -> outcome.
+- [ ] **Export dataset** : CSV/Parquet pour audit externe et entrainement hors bot.
+- [ ] **Sauvegarde DB** : snapshot `aegis_db.sqlite3` avec checkpoint WAL quand tous les processus sont arretes.
+
+Impact attendu : moins de zones floues, diagnostic plus rapide, meilleure confiance avant passage en live reel.
+
+---
+
+## 🔬 Phase 9 : Modeles Avances
+
+Objectif : tester des modeles plus performants que RandomForest sans casser le modele actif.
+
+- [ ] **XGBoost challenger** : comparer contre RandomForest sur les memes splits walk-forward.
+- [ ] **Ensembles** : combiner RandomForest + XGBoost + modele simple calibre si l'ensemble reduit les faux positifs.
+- [ ] **Calibration probabiliste** : isotonic/logistic calibration pour que `70%` veuille vraiment dire environ 70% de reussite.
+- [ ] **Selection de features** : retirer les features inutiles ou bruitees qui degradent le live.
+- [ ] **Deep learning prudent** : tester seulement si le dataset devient assez grand et stable; pas de remplacement sans preuve walk-forward.
+- [ ] **Modele par regime** : specialiser certains challengers pour bull, range, bear weak, sideways down.
+
+Impact attendu : meilleure qualite de probabilite, moins de trades perdants, mais uniquement si les tests live/OOF battent le champion.
+
+---
+
+## 🔒 Phase 10 : Autonomie Controlee & Gouvernance Risque
+
+Objectif : permettre au bot de s'ameliorer avec ses donnees sans devenir opaque ou dangereux.
+
+- [ ] **Auto-retraining planifie** : reentrainement periodique avec validation obligatoire, sans edition manuelle du code.
+- [ ] **Promotion avec garde-fous** : minimum trades, minimum jours, drawdown max, PnL net positif, profit factor minimum.
+- [ ] **Mode safe fallback** : repasser au champion stable ou reduire le sizing si drift, erreurs exchange ou pertes consecutives.
+- [ ] **Journal de gouvernance** : enregistrer chaque promotion, rollback, changement de seuil et raison.
+- [ ] **Limites capital strictes** : perte journaliere, perte hebdo, nombre max de positions, exposition max par crypto.
+- [ ] **UI multi-bot** : surveiller plusieurs instances Aegis si besoin, sans melanger les datasets.
+
+Impact attendu : apprentissage autonome, mais sous controle explicite, avec rollback et audit.

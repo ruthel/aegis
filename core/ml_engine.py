@@ -58,7 +58,11 @@ class MLEngine:
             'is_optimal_trading_time', 'trading_session_code',
             'minutes_to_session_close',
             'technical_action_code', 'technical_confidence',
-            'technical_min_confidence', 'technical_confidence_edge'
+            'technical_min_confidence', 'technical_confidence_edge',
+            # Phase 5: ajout uniquement en fin de schema pour compatibilite champion.
+            'rsi_4h', 'ema20_slope_4h', 'ema50_slope_4h', 'price_change_3b_4h',
+            'daily_recovery_score', 'multi_tf_reversal_score',
+            'multi_tf_trend_alignment', 'volume_recovery_score'
         ]
         self.exit_feature_names = [
             'entry_p_win', 'continuation_score', 'gross_pnl_pct', 'net_pnl_pct',
@@ -255,12 +259,55 @@ class MLEngine:
         ema_prev = np.mean(closes[-(period+3):-3])
         return float((ema - ema_prev) / (ema_prev + 1e-9) * 100.0)
 
+    def _timeframe_snapshot(
+        self,
+        klines: Optional[List[Dict]],
+        fallback_rsi: float,
+        fallback_ema20_slope: float,
+        fallback_change: float
+    ) -> Dict[str, float]:
+        if not klines or len(klines) < 15:
+            return {
+                'rsi': fallback_rsi,
+                'ema20_slope': fallback_ema20_slope,
+                'ema50_slope': fallback_ema20_slope * 0.8,
+                'price_change_3b': fallback_change,
+                'volume_ratio': 1.0,
+                'recovery_score': 0.0,
+            }
+
+        closes = np.array([float(k['close']) for k in klines], dtype=np.float64)
+        volumes = np.array([float(k.get('volume', 0.0) or 0.0) for k in klines], dtype=np.float64)
+        highs = np.array([float(k['high']) for k in klines], dtype=np.float64)
+        lows = np.array([float(k['low']) for k in klines], dtype=np.float64)
+        rsi = self._calc_rsi(closes, 14)
+        ema20_slope = self._calc_ema_slope(closes, 20)
+        ema50_slope = self._calc_ema_slope(closes, 50) if len(closes) >= 50 else ema20_slope
+        price_change_3b = (closes[-1] - closes[-4]) / (closes[-4] + 1e-9) * 100.0 if len(closes) >= 4 else 0.0
+        avg_vol = np.mean(volumes[-20:]) if len(volumes) >= 20 else np.mean(volumes) if len(volumes) else 0.0
+        volume_ratio = float(volumes[-1] / (avg_vol + 1e-9)) if avg_vol > 0 else 1.0
+
+        lookback = min(len(closes), 30)
+        recent_low = float(np.min(lows[-lookback:]))
+        recent_high = float(np.max(highs[-lookback:]))
+        recovery_score = ((closes[-1] - recent_low) / (recent_high - recent_low + 1e-9)) * 100.0
+        return {
+            'rsi': float(rsi),
+            'ema20_slope': float(ema20_slope),
+            'ema50_slope': float(ema50_slope),
+            'price_change_3b': float(price_change_3b),
+            'volume_ratio': volume_ratio,
+            'recovery_score': float(recovery_score),
+        }
+
     def extract_features_from_klines(
         self,
         klines: List[Dict],
         current_price: Optional[float] = None,
         klines_5m: Optional[List[Dict]] = None,
         klines_1h: Optional[List[Dict]] = None,
+        klines_4h: Optional[List[Dict]] = None,
+        klines_1d: Optional[List[Dict]] = None,
         trade_context: Optional[Dict] = None,
         bot_context: Optional[Dict] = None
     ) -> Optional[np.ndarray]:
@@ -365,6 +412,32 @@ class MLEngine:
                 ema50_slope_1h = ema20_slope * 0.8
                 price_change_3b_1h = price_change_3b * 2.0
 
+            tf_4h = self._timeframe_snapshot(klines_4h, rsi_1h, ema20_slope_1h, price_change_3b_1h)
+            tf_1d = self._timeframe_snapshot(klines_1d, rsi_1h, ema20_slope_1h, price_change_3b_1h)
+            rsi_4h = tf_4h['rsi']
+            ema20_slope_4h = tf_4h['ema20_slope']
+            ema50_slope_4h = tf_4h['ema50_slope']
+            price_change_3b_4h = tf_4h['price_change_3b']
+            daily_recovery_score = tf_1d['recovery_score']
+
+            positive_frames = [
+                price_change_3b_5m > 0,
+                price_change_3b > 0,
+                price_change_3b_1h > 0,
+                price_change_3b_4h > 0,
+                tf_1d['price_change_3b'] > 0,
+            ]
+            slope_frames = [
+                ema9_slope_5m > 0,
+                ema20_slope > 0,
+                ema20_slope_1h > 0,
+                ema20_slope_4h > 0,
+                tf_1d['ema20_slope'] > 0,
+            ]
+            multi_tf_reversal_score = (sum(positive_frames) + sum(slope_frames)) / 10.0 * 100.0
+            multi_tf_trend_alignment = sum(1 if flag else -1 for flag in slope_frames)
+            volume_recovery_score = min(300.0, max(0.0, (volume_ratio + tf_4h['volume_ratio'] + tf_1d['volume_ratio']) / 3.0 * 100.0))
+
             features = np.array([
                 rsi, ema9_slope, ema20_slope, ema_cross_diff,
                 atr_percent, volume_ratio, candle_body_pct, candle_wick_top,
@@ -399,7 +472,10 @@ class MLEngine:
                 bot_features['technical_action_code'],
                 bot_features['technical_confidence'],
                 bot_features['technical_min_confidence'],
-                bot_features['technical_confidence_edge']
+                bot_features['technical_confidence_edge'],
+                rsi_4h, ema20_slope_4h, ema50_slope_4h, price_change_3b_4h,
+                daily_recovery_score, multi_tf_reversal_score,
+                multi_tf_trend_alignment, volume_recovery_score
             ], dtype=np.float64)
 
             return features
@@ -408,7 +484,7 @@ class MLEngine:
             self.logger.error(f"Erreur d'extraction des caractéristiques ML: {e}")
             return None
 
-    def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini') -> bool:
+    def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini', sample_weight: Optional[np.ndarray] = None) -> bool:
         """Entraîne le classifieur Random Forest avec hyperparamètres configurables"""
         if not SKLEARN_AVAILABLE:
             self.logger.warning("scikit-learn n'est pas disponible pour l'entraînement ML.")
@@ -430,7 +506,7 @@ class MLEngine:
                 random_state=42,
                 n_jobs=-1
             )
-            self.model.fit(X_scaled, y)
+            self.model.fit(X_scaled, y, sample_weight=sample_weight)
             self.is_trained = True
 
             self.save_model()
@@ -592,12 +668,19 @@ class MLEngine:
             probs = self.exit_model.predict_proba(X)[0]
             p_continue = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
 
-            if p_continue < 35.0:
+            buy_price = float(position_data.get('buy_price') or position_data.get('avg_entry_price') or current_price)
+            fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0))
+            breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
+            net_pnl_pct = ((current_price - breakeven_price) / max(buy_price, 1e-9)) * 100.0
+
+            sell_threshold = float(os.getenv('ML_EXIT_SELL_THRESHOLD', '35.0'))
+            profit_protect_min_net = float(os.getenv('ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT', '0.05'))
+            profit_protect_threshold = float(os.getenv('ML_EXIT_PROFIT_PROTECT_THRESHOLD', '70.0'))
+            if net_pnl_pct >= profit_protect_min_net:
+                sell_threshold = max(sell_threshold, profit_protect_threshold)
+
+            if p_continue < sell_threshold:
                 decision = 'FORCE_EXIT'
-            elif p_continue < 50.0:
-                decision = 'TIGHTEN_STOP'
-            elif p_continue < 62.0:
-                decision = 'PROTECT_BREAKEVEN'
             else:
                 decision = 'HOLD'
 
@@ -605,7 +688,7 @@ class MLEngine:
                 'ml_exit_available': True,
                 'p_continue': round(p_continue, 1),
                 'decision': decision,
-                'reason': f'ml_continue_{p_continue:.1f}%'
+                'reason': f'ml_continue_{p_continue:.1f}%_threshold_{sell_threshold:.1f}%'
             }
         except Exception as e:
             self.logger.error(f"Erreur prédiction ML sortie: {e}")
@@ -622,6 +705,8 @@ class MLEngine:
         current_price: Optional[float] = None,
         klines_5m: Optional[List[Dict]] = None,
         klines_1h: Optional[List[Dict]] = None,
+        klines_4h: Optional[List[Dict]] = None,
+        klines_1d: Optional[List[Dict]] = None,
         trade_context: Optional[Dict] = None,
         bot_context: Optional[Dict] = None
     ) -> float:
@@ -634,6 +719,8 @@ class MLEngine:
             current_price,
             klines_5m=klines_5m,
             klines_1h=klines_1h,
+            klines_4h=klines_4h,
+            klines_1d=klines_1d,
             trade_context=trade_context,
             bot_context=bot_context
         )
@@ -685,13 +772,14 @@ class MLEngine:
                 metadata['exit_feature_importance'] = sorted(exit_importance.items(), key=lambda x: x[1], reverse=True)
                 metadata['exit_n_features'] = len(self.exit_feature_names)
             try:
+                if os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
+                    return True
                 from core.ml_live_logger import MLLiveLogger
-                logger = MLLiveLogger(
+                with MLLiveLogger(
                     data_dir=self.model_dir,
                     sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(self.model_dir, 'aegis_db.sqlite3'))
-                )
-                logger.record_ml_model_metadata(metadata, model_path=self.model_path)
-                logger.close()
+                ) as logger:
+                    logger.record_ml_model_metadata(metadata, model_path=self.model_path)
             except Exception:
                 pass
 
@@ -718,22 +806,50 @@ class MLEngine:
                 self.exit_model.n_jobs = 1
             self.is_trained = self.model is not None
             self.is_exit_trained = self.exit_model is not None
+
+            # Re-publier les feature importances en BD au chargement (ex: après reset DB)
+            try:
+                importance = {}
+                if self.model is not None and hasattr(self.model, 'feature_importances_'):
+                    for name, imp in zip(self.feature_names, self.model.feature_importances_):
+                        importance[name] = round(float(imp), 4)
+                metadata = {
+                    'trained_at': datetime.now().isoformat(),
+                    'feature_importance': sorted(importance.items(), key=lambda x: x[1], reverse=True),
+                    'n_features': len(self.feature_names),
+                }
+                if self.exit_model is not None and hasattr(self.exit_model, 'feature_importances_'):
+                    exit_importance = {}
+                    for name, imp in zip(self.exit_feature_names, self.exit_model.feature_importances_):
+                        exit_importance[name] = round(float(imp), 4)
+                    metadata['exit_feature_importance'] = sorted(exit_importance.items(), key=lambda x: x[1], reverse=True)
+                    metadata['exit_n_features'] = len(self.exit_feature_names)
+                if not os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
+                    from core.ml_live_logger import MLLiveLogger
+                    with MLLiveLogger(
+                        data_dir=self.model_dir,
+                        sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(self.model_dir, 'aegis_db.sqlite3'))
+                    ) as logger:
+                        logger.record_ml_model_metadata(metadata, model_path=self.model_path)
+            except Exception:
+                pass
+
             return self.is_trained
         except Exception as e:
             self.logger.error(f"Erreur de chargement du modèle ML: {e}")
             self.is_trained = False
             return False
 
+
     def get_feature_importance(self) -> List[Tuple[str, float]]:
         """Retourne l'importance des variables sous forme d'une liste (nom, importance)"""
         try:
             from core.ml_live_logger import MLLiveLogger
-            logger = MLLiveLogger(
+            with MLLiveLogger(
                 data_dir=self.model_dir,
                 sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(self.model_dir, 'aegis_db.sqlite3'))
-            )
-            meta = logger.get_latest_ml_model_metadata()
-            logger.close()
+            ) as logger:
+                meta = logger.get_latest_ml_model_metadata()
             return meta.get('feature_importance', [])
         except:
             return []
@@ -742,12 +858,11 @@ class MLEngine:
         """Retourne l'importance des variables du modèle ML de sortie."""
         try:
             from core.ml_live_logger import MLLiveLogger
-            logger = MLLiveLogger(
+            with MLLiveLogger(
                 data_dir=self.model_dir,
                 sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(self.model_dir, 'aegis_db.sqlite3'))
-            )
-            meta = logger.get_latest_ml_model_metadata()
-            logger.close()
+            ) as logger:
+                meta = logger.get_latest_ml_model_metadata()
             return meta.get('exit_feature_importance', [])
         except:
             return []

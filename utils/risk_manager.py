@@ -26,6 +26,13 @@ class RiskManager:
         self.adaptive_thresholds = {}
         self.last_optimization = 0
         self.base_multiplier = 1800  # 30min si check_interval=1s
+
+    def close(self):
+        try:
+            if getattr(self, 'db_logger', None):
+                self.db_logger.close()
+        except Exception:
+            pass
         
     def calculate_volatility(self, bot, symbol, periods=20):
         """Calcule la volatilité réelle sur les dernières périodes"""
@@ -608,10 +615,20 @@ class TrailingStopManager:
     def __init__(self, trailing_percent=3.0):
         self.trailing_percent = trailing_percent
         self.positions = {}  # {symbol: {'buy_price': price, 'highest_price': price, 'stop_price': price, 'trailing_percent': percent}}
+
+    def _normalize_trailing_percent(self, value):
+        """Convertit les anciens ratios SQLite (0.005) en pourcentage attendu (0.5)."""
+        try:
+            percent = float(value)
+        except (TypeError, ValueError):
+            percent = float(self.trailing_percent)
+        if 0 < percent < 0.05:
+            percent *= 100.0
+        return max(0.05, min(percent, 25.0))
     
     def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None, resistance_price=None, fee_rate=None):
         """Ajoute une nouvelle position avec trailing stop adaptatif, support technique et résistance"""
-        percent = trailing_percent if trailing_percent is not None else self.trailing_percent
+        percent = self._normalize_trailing_percent(trailing_percent if trailing_percent is not None else self.trailing_percent)
         stop_price = buy_price * (1 - percent / 100)
         if fee_rate is None:
             fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100
@@ -643,7 +660,8 @@ class TrailingStopManager:
             
         position = self.positions[symbol]
         changed = False
-        initial_percent = position.get('initial_trailing_percent', self.trailing_percent)
+        initial_percent = self._normalize_trailing_percent(position.get('initial_trailing_percent', self.trailing_percent))
+        position['initial_trailing_percent'] = initial_percent
         
         # Calcul du profit latent en pourcentage
         profit_pct = ((current_price - position['buy_price']) / position['buy_price']) * 100
@@ -711,7 +729,8 @@ class TrailingStopManager:
         # Le pourcentage de trailing ne peut que se resserrer (diminuer), jamais s'élargir
         # Cela évite qu'une baisse de profit_pct entre deux paliers ne produise
         # un stop calculé avec un écart plus grand → stop qui "descend" par rapport au précédent
-        current_trailing = position.get('trailing_percent', initial_percent)
+        current_trailing = self._normalize_trailing_percent(position.get('trailing_percent', initial_percent))
+        position['trailing_percent'] = current_trailing
         if percent > current_trailing:
             percent = current_trailing
 

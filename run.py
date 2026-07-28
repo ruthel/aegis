@@ -6,9 +6,37 @@ Démarrage sécurisé avec vérifications et gestion d'erreurs
 import sys
 import os
 from datetime import datetime
+import builtins
 
 # Forcer stdout/stderr unbuffered pour que les logs arrivent en temps réel
 os.environ['PYTHONUNBUFFERED'] = '1'
+
+_ORIGINAL_PRINT = builtins.print
+
+
+def install_timestamped_print():
+    """Préfixe les logs du bot avec une date et heure complètes dans bot.log."""
+    if getattr(builtins.print, '_aegis_timestamped', False):
+        return
+
+    def timestamped_print(*args, **kwargs):
+        sep = kwargs.pop('sep', ' ')
+        end = kwargs.pop('end', '\n')
+        file = kwargs.pop('file', sys.stdout)
+        flush = kwargs.pop('flush', False)
+        message = sep.join(str(arg) for arg in args)
+        if not message:
+            return
+
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        lines = [line for line in message.splitlines() if line.strip()]
+        if not lines:
+            return
+        stamped = '\n'.join(f"{timestamp} {line}" if line else line for line in lines)
+        _ORIGINAL_PRINT(stamped, end=end, file=file, flush=flush, **kwargs)
+
+    timestamped_print._aegis_timestamped = True
+    builtins.print = timestamped_print
 
 from dotenv import load_dotenv
 
@@ -30,6 +58,7 @@ if not sys.stdout or not sys.stdout.isatty():
 # Charger les variables d'environnement
 def main():
     """Point d'entrée principal"""
+    install_timestamped_print()
     import os as _os
     _os.makedirs('data', exist_ok=True)
 
@@ -46,7 +75,7 @@ def main():
                     # check si le processus est actif
                     _os.kill(old_pid, 0)
                     print(f"❌ ERREUR: Une autre instance du bot Aegis est déjà en cours d'exécution (PID {old_pid}).")
-                    print("   Veuillez arrêter l'autre instance depuis le dashboard avant de démarrer.")
+                    print("   Veuillez arrêter l'autre instance depuis le ui avant de démarrer.")
                     process_logger.close()
                     sys.exit(1)
                 except (ProcessLookupError, OSError):
@@ -64,7 +93,7 @@ def main():
     # Charger la configuration locale en dernier pour les secrets non versionnés.
     load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
-    load_dotenv('.env.dashboard', override=True)
+    load_dotenv('.env.ui', override=True)
     
     # Import du bot (après vérification config)
     try:
@@ -72,6 +101,7 @@ def main():
     except ImportError as e:
         print(f"❌ Erreur import: {e}")
         print("📝 Vérifiez que tous les modules sont installés: pip install -r requirements.txt")
+        process_logger.close()
         sys.exit(1)
     
     # Récupération configuration selon exchange
@@ -87,11 +117,12 @@ def main():
     testnet = os.getenv('TESTNET', 'False').lower() == 'true'
     
     # Démarrage du bot
+    bot = None
     try:
         bot = TradingBot(api_key, api_secret, testnet)
         bot.run()
     except KeyboardInterrupt:
-        print("\n🛑 Arrêt du bot...")
+        print("🛑 Arrêt du bot...")
         process_logger.clear_bot_process_state()
         process_logger.close()
         sys.exit(0)
@@ -101,6 +132,11 @@ def main():
         process_logger.close()
         sys.exit(1)
     finally:
+        try:
+            if bot and hasattr(bot, 'shutdown'):
+                bot.shutdown()
+        except Exception:
+            pass
         process_logger.close()
 
 if __name__ == "__main__":

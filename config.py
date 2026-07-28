@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 load_dotenv('.env.local', override=True)
-load_dotenv('.env.dashboard', override=True)
+load_dotenv('.env.ui', override=True)
 
 # ===== EXCHANGE =====
 EXCHANGE = os.getenv('EXCHANGE', 'binance').lower()  # binance ou kraken
@@ -78,7 +78,8 @@ MIN_CRYPTO_SCORE = int(os.getenv('MIN_CRYPTO_SCORE', '40'))  # Adaptatif par dé
 BOT_NAME = os.getenv('BOT_NAME', 'Aegis')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
-TELEGRAM_STATUS_INTERVAL = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '7200'))
+TELEGRAM_DAILY_STATUS_ENABLED = os.getenv('TELEGRAM_DAILY_STATUS_ENABLED', 'True').lower() == 'true'
+TELEGRAM_DAILY_STATUS_HOUR = int(os.getenv('TELEGRAM_DAILY_STATUS_HOUR', '8'))
 ML_LIVE_ANALYSIS_INTERVAL_SECONDS = int(os.getenv('ML_LIVE_ANALYSIS_INTERVAL_SECONDS', '21600'))
 ML_LIVE_ANALYSIS_MAX_REPLAY = int(os.getenv('ML_LIVE_ANALYSIS_MAX_REPLAY', '250'))
 

@@ -2079,7 +2079,6 @@ class MarketAnalyzer:
         if macro_mgr.current_event:
             adjustments = macro_mgr.get_adjustments()
             base_min -= adjustments.get('threshold_reduction', 0)
-            print(f"   🎯 Ajustement macro: -{adjustments.get('threshold_reduction', 0)} (Événement: {macro_mgr.current_event})")
         
         # 4. Disponibilité cryptos
         if available_count < 2:

@@ -44,9 +44,9 @@ Modifications:
 
 Fichiers modifies:
 
-- `dashboard/app.py`
-- `dashboard/static/dashboard.js`
-- `dashboard/templates/index.html`
+- `ui/app.py`
+- `ui/static/ui.js`
+- `ui/templates/index.html`
 
 ## 3. Card Live: Croissance / Balance Brut Et Net
 
@@ -65,9 +65,9 @@ Modifications:
 
 Fichiers modifies:
 
-- `dashboard/app.py`
-- `dashboard/static/dashboard.js`
-- `dashboard/templates/index.html`
+- `ui/app.py`
+- `ui/static/ui.js`
+- `ui/templates/index.html`
 
 ## 4. Trailing Stop Plus Reactif
 
@@ -114,7 +114,7 @@ Fichiers modifies:
 
 - `.env`
 - `config.py`
-- `dashboard/app.py`
+- `ui/app.py`
 - `core/trading_bot.py`
 - `utils/risk_manager.py`
 - `data/paper_bot_state.json`
@@ -174,7 +174,7 @@ Verification finale:
 - positions paper sans execution correspondante: 0
 - lignes JSONL cassees: 0
 
-## 7. Dashboard: Axe X Du Graphique Des Scores
+## 7. UI: Axe X Du Graphique Des Scores
 
 Objectif: rendre les heures du graphique plus lisibles.
 
@@ -187,8 +187,8 @@ Modifications:
 
 Fichiers modifies:
 
-- `dashboard/static/dashboard.js`
-- `dashboard/templates/index.html`
+- `ui/static/ui.js`
+- `ui/templates/index.html`
 
 ## 8. Latence De Vente Forcee
 
@@ -196,7 +196,7 @@ Objectif: reduire la sensation de latence au clic sur vente forcee.
 
 Constat:
 
-- Le dashboard ecrit une commande dans `data/bot_commands.json`.
+- Le ui ecrit une commande dans `data/bot_commands.json`.
 - Le bot execute ensuite la commande lors de sa boucle.
 - En paper, la vente forcee faisait un refresh balance inutile avant de vendre.
 
@@ -205,14 +205,14 @@ Modifications:
 - En paper trading, la vente forcee evite le refresh balance exchange.
 - Les commandes `force_sell` sont prioritaires.
 - Le bot relit les commandes plusieurs fois dans la boucle.
-- Le dashboard affiche immediatement une confirmation visuelle.
-- Le dashboard force des refreshs rapides apres envoi de commande.
+- Le ui affiche immediatement une confirmation visuelle.
+- Le ui force des refreshs rapides apres envoi de commande.
 
 Fichiers modifies:
 
 - `core/trading_bot.py`
-- `dashboard/static/dashboard.js`
-- `dashboard/templates/index.html`
+- `ui/static/ui.js`
+- `ui/templates/index.html`
 
 ## 9. Menu Trois Points Deplace Sur Les Positions
 
@@ -236,9 +236,9 @@ Modifications:
 
 Fichiers modifies:
 
-- `dashboard/static/dashboard.js`
-- `dashboard/static/dashboard.css`
-- `dashboard/templates/index.html`
+- `ui/static/ui.js`
+- `ui/static/ui.css`
+- `ui/templates/index.html`
 
 ## 10. Validations Techniques
 
@@ -246,10 +246,10 @@ Commandes de validation executees pendant la session:
 
 ```powershell
 python -m py_compile core\bot\trading.py core\trading_bot.py
-python -m py_compile dashboard\app.py
+python -m py_compile ui\app.py
 python -m py_compile core\trading_bot.py utils\risk_manager.py
-python -m py_compile utils\risk_manager.py core\trading_bot.py dashboard\app.py config.py
-node --check dashboard\static\dashboard.js
+python -m py_compile utils\risk_manager.py core\trading_bot.py ui\app.py config.py
+node --check ui\static\ui.js
 ```
 
 Les validations lancees apres les derniers changements sont passees.

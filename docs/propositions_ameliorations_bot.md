@@ -4,21 +4,21 @@ Ce fichier regroupe les ameliorations proposees pour mieux detecter si un mouvem
 
 Important: le bot ne peut pas savoir avec certitude si le prix va monter ou descendre. L'objectif est de mesurer des probabilites et d'adapter la gestion du risque.
 
-Statut 2026-07-23: les idees principales de ce document ont ete implementees. L'ExitDecisionEngine est maintenant greffe au cerveau ML: le bot utilise le ML pour filtrer les entrees et gerer les sorties. Il n'y a plus de shadow mode pour les sorties.
+Statut 2026-07-27: les idees principales de ce document ont ete implementees puis simplifiees. Le bot utilise le ML pour filtrer les entrees et gerer les sorties. L'ExitDecisionEngine ne decide plus par regles; il calcule seulement des metriques utiles au ML. En live, la sortie active est `HOLD` ou `FORCE_EXIT`.
 
 ## 1. ExitDecisionEngine Integre au ML
 
 Objectif initial: separer la logique d'entree et la logique de gestion apres achat.
 
-Etat actuel: implemente et fusionne avec le ML. Le moteur de sortie ne doit plus etre considere comme une feature separee a activer en observation.
+Etat actuel: implemente et fusionne avec le ML. Le moteur de sortie ne doit plus etre considere comme une feature separee a activer en observation, ni comme un second decideur par regles.
 
-Aujourd'hui, le bot detecte une entree puis laisse surtout le trailing stop gerer la sortie. Une meilleure architecture serait:
+Ancienne architecture proposee:
 
 ```text
 Signal d'achat -> position ouverte -> ExitDecisionEngine -> decision de gestion
 ```
 
-Decisions possibles:
+Decisions initialement envisagees:
 
 ```text
 HOLD
@@ -37,6 +37,14 @@ TAKE_PROFIT: rejet clair proche resistance
 FORCE_EXIT: retournement BTC + score continuation tres faible
 ```
 
+Architecture active actuelle:
+
+```text
+Signal d'achat -> ML entree -> position ouverte -> features de sortie -> ML sortie -> HOLD ou FORCE_EXIT
+```
+
+Les anciennes actions `PROTECT_BREAKEVEN`, `TIGHTEN_STOP` et `TAKE_PROFIT` ne sont plus des actions live. Les stops, objectifs, continuation score et signaux de fragilite restent utiles comme contexte et donnees d'apprentissage, mais ne vendent pas seuls lorsque `ML_OWNS_EXITS=true`.
+
 Impact attendu:
 
 - moins de trades verts qui finissent rouges
@@ -46,7 +54,7 @@ Impact attendu:
 
 ## 2. Ajouter Un ContinuationScore
 
-Objectif: calculer apres achat si le mouvement reste sain.
+Objectif: calculer apres achat si le mouvement reste sain. Dans l'architecture actuelle, ce score nourrit le ML de sortie au lieu de declencher directement une action.
 
 Score propose: 0 a 100.
 
@@ -91,7 +99,7 @@ Risque:
 
 ## 3. Mode Profit Fragile
 
-Objectif: gerer les trades qui sont legerement verts mais pas encore solides.
+Objectif historique: gerer les trades qui sont legerement verts mais pas encore solides. Dans la version actuelle, ce n'est plus une regle automatique; le contexte est transmis au ML.
 
 Zone proposee:
 
@@ -145,7 +153,7 @@ Risque:
 
 ## 4. Stop Dynamique Selon La Qualite Du Mouvement
 
-Objectif: remplacer un trailing trop fixe par un trailing adapte.
+Objectif historique: remplacer un trailing trop fixe par un trailing adapte. Dans la version actuelle, le trailing ne vend plus automatiquement quand `ML_OWNS_EXITS=true`.
 
 Exemple:
 
@@ -177,7 +185,7 @@ Mitigation:
 
 ## 5. Detection De Rejet Resistance
 
-Objectif: detecter quand le prix echoue sous une resistance.
+Objectif historique: detecter quand le prix echoue sous une resistance. Le signal reste utile au ML, mais ne force plus `TAKE_PROFIT`.
 
 Signaux:
 
@@ -213,7 +221,7 @@ Risque:
 
 ## 6. Time Stop Intelligent
 
-Objectif: sortir ou proteger les trades qui stagnent.
+Objectif historique: sortir ou proteger les trades qui stagnent. Le temps de position reste une feature ML, mais ne force plus une vente.
 
 Regles possibles:
 
@@ -278,16 +286,16 @@ Evenement propose:
 {
   "action": "exit_decision",
   "symbol": "ETH/USD",
-  "decision": "TIGHTEN_STOP",
+  "decision": "HOLD",
   "continuation_score": 42,
   "pnl_net_pct": 0.18,
-  "reason": "profit_fragile_momentum_weak"
+  "reason": "ml_continue_68.4%"
 }
 ```
 
 Impact attendu:
 
-- comprendre pourquoi le bot a tenu, vendu ou serre le stop
+- comprendre pourquoi le bot a tenu ou vendu
 - pouvoir comparer les recommandations avec le resultat reel
 - faciliter le backtest des sorties
 
@@ -295,7 +303,7 @@ Impact attendu:
 
 Objectif initial: eviter d'activer trop vite une logique de sortie agressive.
 
-Etat actuel: la sortie ML est active. La prochaine etape n'est donc plus un shadow mode, mais une calibration continue:
+Etat actuel: la sortie ML est active en `HOLD` / `FORCE_EXIT`. La prochaine etape n'est donc plus un shadow mode, mais une calibration continue:
 
 1. Logger les 52 features d'entree au moment exact de chaque decision.
 2. Logger les 37 features de sortie a chaque decision importante.
@@ -352,7 +360,8 @@ TIME_STOP_ENABLED=True
 TIME_STOP_MINUTES=12
 ML_MIN_PROBABILITY=65
 ML_EXIT_ENTRY_MIN_CONTINUE_PROB=50
-TELEGRAM_STATUS_INTERVAL=7200
+TELEGRAM_DAILY_STATUS_ENABLED=True
+TELEGRAM_DAILY_STATUS_HOUR=8
 ```
 
 ## 12. Priorite Recommandee

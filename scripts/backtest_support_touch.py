@@ -367,12 +367,11 @@ def main():
     try:
         from core.ml_live_logger import MLLiveLogger
         data_dir = os.path.dirname(args.output) or 'data'
-        logger = MLLiveLogger(
+        with MLLiveLogger(
             data_dir=data_dir,
             sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(data_dir, 'aegis_db.sqlite3'))
-        )
-        run_id = logger.record_support_touch_backtest(summary)
-        logger.close()
+        ) as logger:
+            run_id = logger.record_support_touch_backtest(summary)
     except Exception:
         pass
 

@@ -7,6 +7,7 @@ et sauvegarde le modèle entraîné dans data/aegis_model.joblib.
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,80 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.ml_engine import MLEngine
 from utils.pattern_analyzer import PatternAnalyzer
 from scripts.backtest_support_touch import detect_trade_signal, simulate_trade
+
+
+def aggregate_ohlcv(klines, group_size):
+    if not klines or group_size <= 1:
+        return list(klines or [])
+    grouped = []
+    for start in range(0, len(klines), group_size):
+        chunk = klines[start:start + group_size]
+        if len(chunk) < group_size:
+            continue
+        grouped.append({
+            'timestamp': chunk[-1]['timestamp'],
+            'open': float(chunk[0]['open']),
+            'high': max(float(k['high']) for k in chunk),
+            'low': min(float(k['low']) for k in chunk),
+            'close': float(chunk[-1]['close']),
+            'volume': sum(float(k.get('volume', 0.0) or 0.0) for k in chunk),
+        })
+    return grouped
+
+
+def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl_pct=0.0):
+    if not db_path or not os.path.exists(db_path):
+        return [], [], []
+
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        """
+        SELECT entry_id, pnl_pct, would_win
+        FROM ml_rejected_replay_results
+        WHERE replay_status = 'replayed'
+          AND pnl_pct IS NOT NULL
+        ORDER BY timestamp ASC
+        LIMIT ?
+        """,
+        (int(max_samples),)
+    ).fetchall()
+
+    neutral_defaults = {
+        'rsi_4h': 50.0,
+        'ema20_slope_4h': 0.0,
+        'ema50_slope_4h': 0.0,
+        'price_change_3b_4h': 0.0,
+        'daily_recovery_score': 50.0,
+        'multi_tf_reversal_score': 0.0,
+        'multi_tf_trend_alignment': 0.0,
+        'volume_recovery_score': 100.0,
+    }
+    samples = []
+    labels = []
+    weights = []
+    for row in rows:
+        pnl_pct = float(row['pnl_pct'])
+        if abs(pnl_pct) < float(min_pnl_pct):
+            continue
+        feature_rows = con.execute(
+            """
+            SELECT feature_name, feature_value
+            FROM ml_entry_feature_values
+            WHERE event_id = ?
+            """,
+            (row['entry_id'],)
+        ).fetchall()
+        values = {r['feature_name']: r['feature_value'] for r in feature_rows}
+        if not values:
+            continue
+        samples.append([float(values.get(name, neutral_defaults.get(name, 0.0)) or 0.0) for name in feature_names])
+        labels.append(1 if int(row['would_win'] or 0) == 1 else 0)
+        # A replayed missed winner is useful, but should not overpower the full historical set.
+        weights.append(1.5 if pnl_pct > 0 else 1.0)
+
+    con.close()
+    return samples, labels, weights
 
 
 def simple_regime(history):
@@ -88,11 +163,13 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
     }
 
 
-def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date="2026-01-01"):
+def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None):
+    if not start_date:
+        start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
     dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     start_ts = int(dt.timestamp() * 1000)
     
-    print(f"Telechargement de l'historique {timeframe} pour {symbol} depuis {start_date}...")
+    print(f"Telechargement de l'historique {timeframe} pour {symbol} depuis {start_date} (1 an)...")
     all_klines = []
     since = start_ts
     limit = 1000
@@ -112,7 +189,7 @@ def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date="202
                     'volume': float(r[5])
                 })
             since = raw[-1][0] + 1
-            if len(raw) < limit or len(all_klines) >= 30000:
+            if len(raw) < limit or len(all_klines) >= 45000:
                 break
             time.sleep(0.05)
         except Exception as e:
@@ -127,9 +204,11 @@ def main():
     load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
 
-    parser = argparse.ArgumentParser(description='Entrainement Multi-Timeframe du Core ML Engine sur les donnees 2026.')
+    default_1year_start = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+
+    parser = argparse.ArgumentParser(description='Entrainement Multi-Timeframe du Core ML Engine sur 1 an de donnees glissantes.')
     parser.add_argument('--pairs', default='BTC/USDT,ETH/USDT,SOL/USDT,ADA/USDT')
-    parser.add_argument('--start-date', default='2026-01-01')
+    parser.add_argument('--start-date', default=default_1year_start, help='Date de debut de l\'historique YYYY-MM-DD (par defaut: 1 an glissant).')
     parser.add_argument('--stop-percent', type=float, default=1.0)
     parser.add_argument('--trailing-percent', type=float, default=2.5)
     parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96')))
@@ -137,6 +216,12 @@ def main():
     parser.add_argument('--training-account-balance', type=float, default=float(os.getenv('PAPER_BALANCE', '1000')))
     parser.add_argument('--training-position-value-usd', type=float, default=float(os.getenv('TRADE_AMOUNT', '5')))
     parser.add_argument('--output-dir', default='data')
+    parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+    parser.add_argument('--include-replay-learning', action='store_true', help='Ajoute les refus rejoues Phase 5 au dataset.')
+    parser.add_argument('--max-replay-samples', type=int, default=1000)
+    parser.add_argument('--min-replay-abs-pnl', type=float, default=0.0)
+    parser.add_argument('--challenger', action='store_true', help='Sauvegarde dans aegis_challenger.joblib au lieu de remplacer le champion.')
+    parser.add_argument('--promote', action='store_true', help='Autorise le remplacement du modele actif aegis_model.joblib.')
     args = parser.parse_args()
 
     exchange = ccxt.binance({'enableRateLimit': True})
@@ -152,7 +237,11 @@ def main():
     y_labels = []
     trade_count = 0
 
-    print("Preparation des donnees d'entrainement ML Multi-Timeframes (5m, 15m, 1H)...")
+    if args.challenger and not args.promote:
+        ml_engine.model_path = os.path.join(args.output_dir, 'aegis_challenger.joblib')
+        os.environ['ML_SKIP_MODEL_METADATA'] = '1'
+
+    print("Preparation des donnees d'entrainement ML Multi-Timeframes (5m, 15m, 1H, 4H, 1D)...")
 
     for symbol in pairs:
         klines_15m = btc_history if symbol == 'BTC/USDT' and btc_history is not None else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=args.start_date)
@@ -176,9 +265,11 @@ def main():
                 continue
             support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
 
-            # Extrait les klines 5m et 1h synchronisées
+            # Extrait les klines multi-timeframe synchronisees depuis l'historique 15m.
             history_5m = [k for k in klines_15m[max(0, index-20):index]] # Approx slice pour vitesse
-            history_1h = [k for k in klines_15m[max(0, index-100):index]]
+            history_1h = aggregate_ohlcv(history, 4)[-60:]
+            history_4h = aggregate_ohlcv(history, 16)[-60:]
+            history_1d = aggregate_ohlcv(history, 96)[-60:]
             planned_hold_minutes = args.max_hold_candles * 15.0
             planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
             trade_context = {
@@ -202,6 +293,8 @@ def main():
                 current_price,
                 klines_5m=history_5m,
                 klines_1h=history_1h,
+                klines_4h=history_4h,
+                klines_1d=history_1d,
                 trade_context=trade_context,
                 bot_context=bot_context
             )
@@ -238,15 +331,42 @@ def main():
 
     X = np.array(X_samples)
     y = np.array(y_labels)
+    historical_X = X.copy()
+    historical_y = y.copy()
+    sample_weights = np.ones(len(y), dtype=np.float64)
 
-    wins = int(np.sum(y == 1))
-    losses = int(np.sum(y == 0))
-    win_rate = (wins / len(y)) * 100.0 if len(y) else 0
+    replay_added = 0
+    if args.include_replay_learning:
+        replay_X, replay_y, replay_weights = load_phase5_replay_samples(
+            args.db,
+            ml_engine.feature_names,
+            max_samples=args.max_replay_samples,
+            min_pnl_pct=args.min_replay_abs_pnl
+        )
+        if replay_X:
+            replay_X = np.array(replay_X, dtype=np.float64)
+            replay_y = np.array(replay_y, dtype=np.int64)
+            replay_weights = np.array(replay_weights, dtype=np.float64)
+            X = np.vstack([X, replay_X])
+            y = np.concatenate([y, replay_y])
+            sample_weights = np.concatenate([sample_weights, replay_weights])
+            replay_added = len(replay_y)
+            print(f"  Phase 5 replay learning : {replay_added} refus rejoues ajoutes au dataset.")
+            replay_classes = sorted(set(int(v) for v in replay_y.tolist()))
+            if len(replay_classes) < 2:
+                print("  Note: les replays ajoutes ne contiennent qu'une classe; le dataset historique garde l'equilibre global.")
+        else:
+            print("  Phase 5 replay learning : aucun replay exploitable trouve.")
+
+    wins = int(np.sum(historical_y == 1))
+    losses = int(np.sum(historical_y == 0))
+    win_rate = (wins / len(historical_y)) * 100.0 if len(historical_y) else 0
 
     print(f"\nDonnees generees pour l'entrainement ML :")
-    print(f"  Total Echantillons : {len(y)} trades historiques (2026)")
+    print(f"  Total Echantillons : {len(historical_y)} trades historiques (2026)")
     print(f"  Trades Gagnants (1) : {wins} ({win_rate:.1f}%)")
     print(f"  Trades Perdants (0) : {losses}")
+    print(f"  Replay Phase 5 ajoutes : {replay_added}")
 
     # =========================================================================
     # ENTRAINEMENT RECURSIF & OPTIMISATION D'HYPERPARAMETRES (WALK-FORWARD)
@@ -256,9 +376,10 @@ def main():
     print("="*60)
 
     # 1. Split Chronologique (80% Train / 20% Out-of-Sample Test)
-    split_idx = int(len(X) * 0.8)
-    X_train, X_test = X[:split_idx], X[split_idx:]
-    y_train, y_test = y[:split_idx], y[split_idx:]
+    split_idx = int(len(historical_X) * 0.8)
+    X_train, X_test = historical_X[:split_idx], historical_X[split_idx:]
+    y_train, y_test = historical_y[:split_idx], historical_y[split_idx:]
+    w_train = np.ones(len(y_train), dtype=np.float64)
 
     print(f"  • Echantillons Entrainement (In-Sample): {len(X_train)}")
     print(f"  • Echantillons Test Hors-Echantillon (Out-of-Sample): {len(X_test)}")
@@ -296,21 +417,29 @@ def main():
             random_state=42,
             n_jobs=-1
         )
-        rf.fit(X_train_scaled, y_train)
+        rf.fit(X_train_scaled, y_train, sample_weight=w_train)
 
         y_pred = rf.predict(X_test_scaled)
         acc = accuracy_score(y_test, y_pred) * 100.0
         prec = precision_score(y_test, y_pred, zero_division=0) * 100.0
+        trades_taken = int(np.sum(y_pred == 1))
+        winning_trades = int(np.sum((y_pred == 1) & (y_test == 1)))
 
         # Score combine: 50% Precision + 50% Accuracy sur le test hors-echantillon
         combined_score = (acc * 0.5) + (prec * 0.5)
 
-        print(f"  [Iter {i}/{len(param_grid)}] Trees={params['n_estimators']} Depth={params['max_depth']} -> Test Acc: {acc:.1f}%, Test Prec: {prec:.1f}% (Score: {combined_score:.1f})")
+        print(f"  [Iter {i}/{len(param_grid)}] Trees={params['n_estimators']} Depth={params['max_depth']} -> Trades Pris: {trades_taken}/{len(X_test)} ({winning_trades} gagnants) | Test Acc: {acc:.1f}%, Test Prec: {prec:.1f}% (Score: {combined_score:.1f})")
 
         if combined_score > best_score:
             best_score = combined_score
             best_params = params
-            best_stats = {'accuracy': acc, 'precision': prec}
+            best_stats = {
+                'accuracy': acc,
+                'precision': prec,
+                'trades_taken': trades_taken,
+                'winning_trades': winning_trades,
+                'total_test': len(X_test)
+            }
 
     print("\n" + "="*60)
     print("CHAMPION OPTIMAL SELECTIONNE PAR RECHERCHE RECURSIVE :")
@@ -320,6 +449,7 @@ def main():
     print(f"  • Critere : {best_params['criterion']}")
     print(f"  • Precision Hors-Echantillon (Test) : {best_stats['precision']:.1f}%")
     print(f"  • Precision Globale (Accuracy Test) : {best_stats['accuracy']:.1f}%")
+    print(f"  • Trades Validés (Hors-Échantillon) : {best_stats['trades_taken']}/{best_stats['total_test']} ({best_stats['winning_trades']} gagnants)")
     print("="*60)
 
     # 3. Entrainement final du modele Champion sur le jeu complet et Sauvegarde
@@ -330,10 +460,13 @@ def main():
         max_depth=best_params['max_depth'],
         min_samples_split=best_params['min_samples_split'],
         criterion=best_params['criterion']
+        , sample_weight=sample_weights
     )
 
     if success:
         print(f"\n[SUCCESS] Modele ML Optimal entraine et sauvegarde dans '{ml_engine.model_path}'!")
+        if args.challenger and not args.promote:
+            print("Modele actif conserve: challenger cree pour comparaison avant promotion.")
         print("\nImportance des 5 meilleures variables (Feature Importance) :")
         for name, imp in ml_engine.get_feature_importance()[:5]:
             print(f"   - {name}: {imp*100:.1f}%")

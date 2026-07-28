@@ -4,14 +4,6 @@ import json
 from datetime import datetime
 import numpy as np
 
-EXIT_DECISION_RANK = {
-    "HOLD": 0,
-    "PROTECT_BREAKEVEN": 1,
-    "TIGHTEN_STOP": 2,
-    "TAKE_PROFIT": 3,
-    "FORCE_EXIT": 4,
-}
-
 class ExitDecisionEngine:
     """
     Exit Decision Engine for Aegis Bot.
@@ -157,28 +149,18 @@ class ExitDecisionEngine:
 
     def _fuse_ml_exit_decision(self, rule_decision, rule_reason, ml_exit):
         if not ml_exit or not ml_exit.get('ml_exit_available'):
-            return rule_decision, rule_reason
+            return "HOLD", "ml_exit_unavailable"
 
         ml_decision = ml_exit.get('decision', 'HOLD')
-        rule_rank = EXIT_DECISION_RANK.get(rule_decision, 0)
-        ml_rank = EXIT_DECISION_RANK.get(ml_decision, 0)
-
-        if ml_rank > rule_rank:
-            return ml_decision, f"{ml_exit.get('reason', 'ml_exit')}+rules:{rule_reason}"
-        if ml_rank < rule_rank:
-            return rule_decision, f"{rule_reason}+ml:{ml_exit.get('reason', 'ml_exit')}"
-        return rule_decision, f"{rule_reason}+{ml_exit.get('reason', 'ml_exit')}"
+        ml_reason = ml_exit.get('reason', 'ml_exit')
+        return ml_decision, ml_reason
 
     def evaluate_position(self, symbol, current_price, position_data, klines, btc_klines=None, ml_exit=None):
         """
         Evaluates position state and returns recommendation dictionary.
         
-        Decisions:
-          - HOLD: Strong momentum & health
-          - PROTECT_BREAKEVEN: Lock breakeven as score softens
-          - TIGHTEN_STOP: Net profit in fragile zone (0 to +0.40%) & weak score
-          - TAKE_PROFIT: Clear rejection near resistance with profit > +0.25%
-          - FORCE_EXIT: Time limit reached with low score, or strong score breakdown
+        The former rule engine is no longer authoritative. It only computes
+        position metrics and forwards the ML exit decision.
         """
         buy_price = float(position_data.get('buy_price', current_price))
         fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100))
@@ -204,52 +186,12 @@ class ExitDecisionEngine:
             except Exception:
                 duration_minutes = 0
 
-        resistance_price = position_data.get('resistance_price')
-        
-        # Decision Logic Evaluation
-        decision = "HOLD"
-        reason = "momentum_healthy"
-        
-        # 1. Check Resistance Rejection
-        if resistance_price and float(resistance_price) > buy_price:
-            dist_to_res_pct = ((float(resistance_price) - current_price) / current_price) * 100
-            if dist_to_res_pct < 0.2 and net_pnl_pct >= 0.20 and score < 60:
-                decision = "TAKE_PROFIT"
-                reason = "resistance_rejection_near_target"
-
-        # 2. Check Fragile Profit Zone (0.0% <= net_pnl <= fragile_max_net_pct)
-        if decision == "HOLD" and 0.0 <= net_pnl_pct <= self.fragile_max_net_pct:
-            if score < 45:
-                decision = "TIGHTEN_STOP"
-                reason = "fragile_profit_weak_score"
-            elif score < 60:
-                decision = "PROTECT_BREAKEVEN"
-                reason = "fragile_profit_moderate_score"
-
-        # 3. Check Time Stop (Stagnation)
-        if duration_minutes >= self.time_stop_minutes:
-            if net_pnl_pct <= 0.15 and score < 60:
-                decision = "FORCE_EXIT" if net_pnl_pct <= 0.0 else "TIGHTEN_STOP"
-                reason = f"time_stop_stagnation_{int(duration_minutes)}m"
-
-        # 4. Severe Score Breakdown
-        if score < 30 and net_pnl_pct < 0:
-            decision = "FORCE_EXIT"
-            reason = "severe_score_breakdown"
-
-        # Higher Score Overrides
-        if score >= 75 and decision in ["TIGHTEN_STOP", "PROTECT_BREAKEVEN"]:
-            decision = "HOLD"
-            reason = "strong_continuation_override"
-
-        rule_decision = decision
-        rule_reason = reason
-        decision, reason = self._fuse_ml_exit_decision(rule_decision, rule_reason, ml_exit)
+        decision, reason = self._fuse_ml_exit_decision("HOLD", "rules_disabled", ml_exit)
 
         result = {
             "symbol": symbol,
             "decision": decision,
-            "rule_decision": rule_decision,
+            "rule_decision": None,
             "continuation_score": score,
             "net_pnl_pct": round(net_pnl_pct, 4),
             "gross_pnl_pct": round(gross_pnl_pct, 4),

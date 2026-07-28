@@ -18,8 +18,10 @@ class NotificationManager:
             'votre_chat_id' in self.chat_id
         )
         self.enabled = not is_placeholder
-        self.periodic_interval = int(os.getenv('TELEGRAM_STATUS_INTERVAL', '7200'))
+        self.daily_status_enabled = os.getenv('TELEGRAM_DAILY_STATUS_ENABLED', 'true').lower() == 'true'
+        self.daily_status_hour = int(os.getenv('TELEGRAM_DAILY_STATUS_HOUR', '8'))
         self.last_status_time = 0
+        self.last_status_day = None
         self._status_lock = threading.Lock()
         self.bot_ref = None
         self.daily_stats = {'start_balance': 0, 'trades': [], 'start_time': None}
@@ -54,7 +56,6 @@ class NotificationManager:
         
         # Petit délai au démarrage pour s'assurer que le bot est initialisé
         time.sleep(2)
-        print("🤖 Écouteur de commandes Telegram démarré.")
         
         while self.enabled:
             try:
@@ -235,7 +236,7 @@ class NotificationManager:
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
     
-    def notify_trade_sell(self, symbol, amount, price, total, buy_price, pnl, hold_time):
+    def notify_trade_sell(self, symbol, amount, price, total, buy_price, pnl, hold_time, reason=None):
         """Notification vente (le profit pnl est déjà déduit des frais)"""
         crypto = symbol.split('/')[0]
         
@@ -259,11 +260,15 @@ class NotificationManager:
             emoji = "⚪"
             sign = ""
 
-        msg = f"🔴 VENTE {crypto}\n\n"
+        title = "🔴 SORTIE" if reason else "🔴 VENTE"
+        msg = f"{title} {crypto}\n\n"
         msg += f"💰 Montant: {amount:.6f} {crypto}\n"
         msg += f"💵 Prix: {price:.2f} USD\n"
         msg += f"📊 Total: {total:.2f} USD\n\n"
         msg += f"💸 P&L: {emoji} {pnl:+.2f} USD ({sign}{pnl_pct:.2f}%)\n"
+        if reason:
+            readable_reason = str(reason).replace('_', ' ')
+            msg += f"🧠 Raison: {readable_reason}\n"
         if hold_time and hold_time != "N/A":
             msg += f"⏱️ Détention: {hold_time}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
@@ -580,24 +585,28 @@ class NotificationManager:
         return self.notify(message, "")
     
     def send_status_update(self):
-        """Envoie le status périodique selon TELEGRAM_STATUS_INTERVAL."""
+        """Envoie un seul bilan Telegram quotidien apres TELEGRAM_DAILY_STATUS_HOUR."""
         with self._status_lock:
-            now = time.time()
+            if not self.daily_status_enabled:
+                return False
+
+            now_dt = datetime.now()
+            if now_dt.hour < self.daily_status_hour:
+                return False
+
+            day_key = now_dt.strftime('%Y-%m-%d')
+            if self.last_status_day == day_key:
+                return False
+
             logger = getattr(self.bot_ref, 'ml_live_logger', None) if self.bot_ref else None
+            store_key = 'telegram_last_daily_status_day'
             if logger:
-                claimed = logger.claim_interval(
-                    'telegram_last_status_time',
-                    self.periodic_interval,
-                    now=now,
-                    initialize_only=self.last_status_time <= 0
-                )
-                self.last_status_time = now
+                claimed = logger.claim_daily_key(store_key, day_key)
+                self.last_status_day = day_key
                 if not claimed:
                     return False
             else:
-                if now - self.last_status_time < self.periodic_interval:
-                    return False
-                self.last_status_time = now
+                self.last_status_day = day_key
 
         if not self.bot_ref:
             return False

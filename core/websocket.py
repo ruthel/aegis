@@ -7,6 +7,8 @@ from queue import Queue
 import websocket
 from core.ml_live_logger import MLLiveLogger
 
+websocket.enableTrace(False)
+
 try:
     import orjson as json
     JSON_LOADS = lambda x: json.loads(x)
@@ -126,7 +128,8 @@ class WebSocketManager:
 
     def _connect_kraken(self):
         """Connexion WebSocket Kraken"""
-        print(f"WS Kraken: connexion wss://ws.kraken.com avec {self.symbols}")
+        if os.getenv('WS_CONNECTION_DEBUG', 'false').lower() == 'true':
+            print(f"WS Kraken: connexion wss://ws.kraken.com avec {self.symbols}")
         url = "wss://ws.kraken.com"
 
         self.ws = websocket.WebSocketApp(
@@ -150,7 +153,8 @@ class WebSocketManager:
         self.reconnect_attempts = 0
         self.is_ws_connected = True
         self.last_connected_ts = time.time()
-        print("WS Kraken: connexion ouverte, souscription...")
+        if os.getenv('WS_CONNECTION_DEBUG', 'false').lower() == 'true':
+            print("WS Kraken: connexion ouverte, souscription...")
 
         # Convertir symboles en format Kraken
         pairs = []
@@ -331,7 +335,7 @@ class WebSocketManager:
         self.write_live_status()
 
     def write_live_status(self):
-        """Écrit une télémétrie WebSocket légère pour le dashboard."""
+        """Écrit une télémétrie WebSocket légère pour le ui."""
         try:
             status = {
                 'timestamp': datetime.now().isoformat(),
@@ -387,7 +391,9 @@ class WebSocketManager:
     
     def on_error(self, ws, error):
         """Gere les erreurs WebSocket"""
-        print(f"WS erreur: {error}")
+        message = str(error)
+        if 'ping/pong timed out' not in message.lower():
+            print(f"WS erreur: {message}")
         self.is_ws_connected = False
     
     def on_close(self, ws, close_status_code, close_msg):
@@ -472,9 +478,9 @@ class WebSocketManager:
                 if candles:
                     self.klines[symbol] = deque(candles, maxlen=100)
                     self.prices[symbol] = candles[-1]['close']
-                    print(f'WS preload: {symbol} {len(candles)} bougies @ {candles[-1]["close"]}')
             except Exception as e:
-                print(f'WS preload erreur {symbol}: {e}')
+                if os.getenv('WS_PRELOAD_DEBUG', 'false').lower() == 'true':
+                    print(f'WS preload erreur {symbol}: {e}')
 
     def get_klines(self, symbol, count=50):
         """Récupère les dernières bougies"""
@@ -495,3 +501,5 @@ class WebSocketManager:
             self.ws.close()
         if self.ws_user:
             self.ws_user.close()
+        if getattr(self, 'live_logger', None):
+            self.live_logger.close()

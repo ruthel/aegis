@@ -60,9 +60,9 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 
 ---
 
-## 5. Dashboard — Analytics ML & Prévisions Hebdomadaires
+## 5. UI — Analytics ML & Prévisions Hebdomadaires
 
-**Objectif :** Afficher sur le Dashboard toutes les statistiques quantitatives calculées sur le dataset 2026.
+**Objectif :** Afficher sur le UI toutes les statistiques quantitatives calculées sur le dataset 2026.
 
 **Métriques ajoutées dans la section "📊 Analytics Quantitatives & Prévisions IA" :**
 - Précision Hors-Échantillon : **67.1% Test**
@@ -73,15 +73,15 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 - Prévision Gain Hebdo (Solde $1k) : **+$150 à +$285 USD**
 
 **Fichiers modifiés :**
-- `dashboard/templates/index.html`
-- `dashboard/static/dashboard.js`
-- `dashboard/app.py` (endpoint `/api/ml_status`)
+- `ui/templates/index.html`
+- `ui/static/ui.js`
+- `ui/app.py` (endpoint `/api/ml_status`)
 
 ---
 
 ## 6. Widget "🔮 Radar Prochain Achat (Next Buy Forecast)"
 
-**Objectif :** Afficher en temps réel sur le Dashboard quelle crypto le bot surveille et quand il est susceptible d'acheter.
+**Objectif :** Afficher en temps réel sur le UI quelle crypto le bot surveille et quand il est susceptible d'acheter.
 
 **Informations affichees :**
 - Symbole candidat #1 (ex: `ETH/USD`)
@@ -90,9 +90,9 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 - Plus de compte a rebours artificiel si le ML n'a pas de setup valide
 
 **Fichiers modifiés :**
-- `dashboard/app.py` (fonction `compute_next_buy_forecast`)
-- `dashboard/templates/index.html` (carte `#nextBuyRadarCard`)
-- `dashboard/static/dashboard.js` (fonction `renderNextBuyRadar`)
+- `ui/app.py` (fonction `compute_next_buy_forecast`)
+- `ui/templates/index.html` (carte `#nextBuyRadarCard`)
+- `ui/static/ui.js` (fonction `renderNextBuyRadar`)
 
 ---
 
@@ -101,25 +101,25 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 **Objectif :** Remplacer le polling HTTP (toutes les X secondes) par un push WebSocket instantané.
 
 **Architecture :**
-- Le serveur Dashboard charge `MLEngine` une fois en mémoire au démarrage (`_get_ws_ml_engine()`).
+- Le serveur UI charge `MLEngine` une fois en mémoire au démarrage (`_get_ws_ml_engine()`).
 - Toutes les 3 secondes, il fetche les bougies 5m, 15m, 1H depuis Kraken via CCXT.
 - Il calcule `P_win` pour les 4 paires et pousse un message `{'__type': 'ml_predictions', 'predictions': {...}}` via WebSocket.
 - Le client JS reçoit et affiche instantanément sans dépendre du fichier d'état du bot.
 
 **Fichiers modifiés :**
-- `dashboard/app.py` (route `/ws/live`, fonctions `_get_ws_ml_engine`)
-- `dashboard/static/dashboard.js` (fonctions `connectLiveWs`, `renderMLFromWs`)
+- `ui/app.py` (route `/ws/live`, fonctions `_get_ws_ml_engine`)
+- `ui/static/ui.js` (fonctions `connectLiveWs`, `renderMLFromWs`)
 
 ---
 
 ## 8. Cache ML en Mémoire (Anti-Régression `50%`)
 
-**Objectif :** Empêcher le Dashboard de revenir aux valeurs par défaut `50%` quand le fichier d'état est momentanément vide.
+**Objectif :** Empêcher le UI de revenir aux valeurs par défaut `50%` quand le fichier d'état est momentanément vide.
 
 **Solution :** `ML_PREDS_CACHE` — dictionnaire module-level qui conserve les dernières vraies valeurs calculées. Il n'est jamais réinitialisé à des valeurs hardcodées.
 
 **Fichiers modifiés :**
-- `dashboard/app.py`
+- `ui/app.py`
 
 ---
 
@@ -145,7 +145,7 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 - Suppression de `EXIT_ENGINE_SHADOW_MODE` : la sortie ML est active, pas en observation.
 - Suppression des blocages durs redondants avant ML : Support Touch fast-path, HTF hard lock, falling knife hard lock et bear context hard lock.
 - Decision log recentre sur les decisions finales et leurs raisons ML.
-- Dashboard nettoye : retrait des badges "Feature ML" / "ml feature only", correction du contexte d'entree et du rendu des decisions.
+- UI nettoye : retrait des badges "Feature ML" / "ml feature only", correction du contexte d'entree et du rendu des decisions.
 - Sauvegarde d'etat rendue robuste avec fichiers temporaires uniques et lock interne.
 - Intervalle Telegram status augmente a 2h.
 
@@ -162,8 +162,8 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 - Documentation ajoutee dans `README.md` pour expliquer `data/aegis_db.sqlite3`, `data/aegis_db.sqlite3-wal`, `data/aegis_db.sqlite3-shm` et le checkpoint WAL vers la base principale.
 - Tables SQLite : `bot_state`, `bot_positions`, `bot_pending_orders`, `bot_trailing_stops`, `bot_symbol_cooldowns`, `bot_exit_recommendations`, `bot_market_context`, `ml_live_predictions`, `bot_decision_journal`, `ml_raw_events`, `ml_entry_decisions`, `ml_entry_feature_values`, `ml_exit_decisions`, `ml_exit_feature_values`, `ml_trade_outcomes`, `ml_open_entries`, `telegram_messages`, `support_touch_results`, `ml_model_metadata`, `ml_feature_importances`, `ml_analysis_runs`, `ml_prediction_calibration`, `ml_rejected_replay_results`, `ml_drift_alerts`.
 - Historique Telegram entrant/sortant ajoute a `data/aegis_db.sqlite3`; les anciens fichiers JSON Telegram ont ete retires.
-- Anti-doublon status Telegram : `telegram_last_status_time` est stocke dans `bot_state` avec `mode='app'` pour respecter `TELEGRAM_STATUS_INTERVAL=7200` meme apres redemarrage.
-- Etat du process dashboard/bot deplace de `data/bot_process.json`, `data/bot.pid` et `bot_process_state` vers `bot_state` avec `mode='process'`.
+- Anti-doublon status Telegram : l'etat applicatif Telegram est stocke dans `bot_app_state`. Le status automatique est maintenant un bilan quotidien apres 08h (`telegram_last_daily_status_day`), tandis que `/status` reste disponible a la demande.
+- Etat du process ui/bot deplace de `data/bot_process.json`, `data/bot.pid` et `bot_process_state` vers `bot_state` avec `mode='process'`.
 - Etat trading recree proprement : `bot_state` garde une ligne par mode avec colonnes pour les scalaires, tandis que positions, ordres, trailing stops, cooldowns, recommandations de sortie, contexte marche, predictions ML live et journal de decisions ont leurs tables dediees.
 - Audit global ajoute : toutes les tables applicatives ont `created_at` et `updated_at`; la ligne `last_update` a ete retiree de `bot_state` car `updated_at` porte deja cette information.
 - Normalisation ML ajoutee : `ml_entry_feature_values` et `ml_exit_feature_values` permettent d'analyser chaque feature par `event_id` et `feature_name`; `bot_market_context` et `ml_live_predictions` exposent les champs metier principaux en colonnes.
@@ -191,8 +191,20 @@ Support Touch ne produit plus de verdict `allowed/blocked` ni de fast-path. Son 
 - Les refus recents sont marques `pending_more_candles` tant que l'horizon de replay n'est pas complet.
 - Table SQLite `ml_open_entries` pour lier une entree acceptee a sa future sortie.
 - Enregistrement des 52 features d'entree pour les achats acceptes et les candidats refuses.
-- Enregistrement des 37 features de sortie au moment des decisions `HOLD`, `PROTECT_BREAKEVEN`, `TIGHTEN_STOP`, `TAKE_PROFIT`, `FORCE_EXIT`.
+- Enregistrement des 37 features de sortie au moment des decisions ML de sortie.
 - Enregistrement du resultat final : prix d'achat, prix de vente, PnL, PnL %, duree, raison de sortie.
 
 **Important :**
 Cette phase est non intrusive : elle ne change pas les seuils, ne force aucune entree/sortie et ne remplace pas encore le modele actif. Elle prepare le dataset live pour le futur reentrainement champion/challenger.
+
+## 14. Mise a Jour 2026-07-27 — Sorties Simplifiees ML-only
+
+**Objectif :** eviter une double decision entre le ML et les anciennes regles de gestion de sortie.
+
+**Modifications :**
+- Le chemin actif de sortie est maintenant `HOLD` ou `FORCE_EXIT`.
+- `ExitDecisionEngine` garde les calculs utiles au modele (`ContinuationScore`, PnL net/brut, duree), mais ne produit plus de decision par regles.
+- Les anciennes actions `PROTECT_BREAKEVEN`, `TIGHTEN_STOP` et `TAKE_PROFIT` ne sont plus appliquees en live.
+- Les stops, trailing stops et objectifs paper sont ignores comme declencheurs automatiques quand `ML_OWNS_EXITS=true`.
+- La page `/trades` affiche les positions ouvertes avec le statut `OPEN`.
+- `Marche Live` affiche le volume en USD.

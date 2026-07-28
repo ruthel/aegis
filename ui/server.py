@@ -1,19 +1,19 @@
-"""Dashboard Flask pour Aegis Trading Bot"""
+"""UI Flask pour Aegis Trading Bot"""
 from __future__ import annotations
 
 import os
 import re
 import signal
-import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 try:
@@ -37,54 +37,40 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / 'data'
-ENV_DASHBOARD = ROOT / '.env.dashboard'
+ENV_DASHBOARD = ROOT / '.env.ui'
 BOT_LOG_FILE = ROOT / 'bot.log'
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
+BOT_START_LOCK = threading.Lock()
+BOT_START_LOCK_FILE = DATA_DIR / 'bot_start.lock'
 
 
 def aegis_db_path() -> Path:
     return project_path(os.getenv('ML_LIVE_SQLITE_FILE'), DATA_DIR / 'aegis_db.sqlite3')
 
 
-def read_db_json(query: str, params=()):
-    try:
-        db_path = aegis_db_path()
-        if not db_path.exists():
-            return {}
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(query, params).fetchone()
-        return json_loads(row[0]) if row and row[0] else {}
-    except Exception:
-        return {}
-
-
 def latest_support_touch_backtest():
     try:
         from core.ml_live_logger import MLLiveLogger
-        logger = MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path()))
-        data = logger.get_latest_support_touch_backtest()
-        logger.close()
-        return data
+        with MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path())) as logger:
+            return logger.get_latest_support_touch_backtest()
     except Exception:
         return {}
 
 
 def latest_ml_metadata():
-    return read_db_json(
-        """
-        SELECT metadata_data FROM ml_model_metadata
-        ORDER BY datetime(trained_at) DESC, datetime(stored_at) DESC
-        LIMIT 1
-        """
-    )
+    try:
+        with db_logger() as logger:
+            return logger.get_latest_ml_model_metadata()
+    except Exception:
+        return {}
 
 
 def db_logger():
     from core.ml_live_logger import MLLiveLogger
     return MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path()))
 
-# ML Engine chargé une seule fois au démarrage du Dashboard (en dehors du bot)
+# ML Engine chargé une seule fois au démarrage du UI (en dehors du bot)
 _ws_ml_engine = None
 _ws_ml_engine_loaded = False
 
@@ -106,9 +92,10 @@ def _get_ws_ml_engine():
 
 load_dotenv(ROOT / '.env', override=True)
 load_dotenv(ROOT / '.env.local', override=True)
-load_dotenv(ROOT / '.env.dashboard', override=True)
+load_dotenv(ROOT / '.env.ui', override=True)
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 sock = Sock(app)
 
 # Suppression de la bannière Flask au démarrage et du bruit des requêtes HTTP (GET/POST) dans la console
@@ -141,8 +128,8 @@ CONFIG_FIELDS = {
     'BEAR_MODE_TRADE_MULTIPLIER': {'type': 'float', 'label': 'Multiplicateur bear', 'section': 'Bear Mode', 'min': 0.05, 'max': 1, 'restart': 'bot'},
     'BEAR_MODE_MIN_CONFIDENCE_BONUS': {'type': 'float', 'label': 'Bonus confiance bear', 'section': 'Bear Mode', 'min': 0, 'max': 80, 'restart': 'bot'},
     'MIN_CRYPTO_SCORE': {'type': 'int', 'label': 'Score crypto min.', 'section': 'Scoring', 'min': 0, 'max': 100, 'restart': 'bot'},
-    'DASHBOARD_PORT': {'type': 'int', 'label': 'Port dashboard', 'section': 'Dashboard', 'min': 1024, 'max': 65535, 'restart': 'dashboard'},
-    'LIVE_STATUS_INTERVAL_SECONDS': {'type': 'float', 'label': 'Refresh live status sec.', 'section': 'Dashboard', 'min': 0.25, 'max': 60, 'restart': 'bot'},
+    'DASHBOARD_PORT': {'type': 'int', 'label': 'Port ui', 'section': 'UI', 'min': 1024, 'max': 65535, 'restart': 'ui'},
+    'LIVE_STATUS_INTERVAL_SECONDS': {'type': 'float', 'label': 'Refresh live status sec.', 'section': 'UI', 'min': 0.25, 'max': 60, 'restart': 'bot'},
 }
 
 SECRET_KEYS = (
@@ -230,7 +217,7 @@ def write_dashboard_env(updates):
     current.update(updates)
 
     lines = [
-        '# Reglages modifiables depuis le dashboard Aegis.',
+        '# Reglages modifiables depuis le ui Aegis.',
         '# Ne mettez jamais de cle API ou secret dans ce fichier.',
         '',
     ]
@@ -261,7 +248,7 @@ def config_payload():
             'section': meta['section'],
             'type': meta['type'],
             'value': value,
-            'source': 'dashboard' if name in dashboard_values else 'env',
+            'source': 'ui' if name in dashboard_values else 'env',
             'restart': meta.get('restart', 'bot'),
             'min': meta.get('min'),
             'max': meta.get('max'),
@@ -276,7 +263,7 @@ def config_payload():
         'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         'fields': fields,
         'secrets': secrets,
-        'message': 'Les changements sont ecrits dans .env.dashboard. Redemarrage requis selon le champ.',
+        'message': 'Les changements sont ecrits dans .env.ui. Redemarrage requis selon le champ.',
     }
 
 
@@ -293,15 +280,17 @@ def read_bot_control_file():
 
 
 def write_bot_control_state(payload):
-    logger = None
-    try:
-        logger = db_logger()
-        return logger.set_bot_process_state(payload)
-    except Exception:
-        return False
-    finally:
-        if logger:
-            logger.close()
+    for _ in range(5):
+        logger = None
+        try:
+            logger = db_logger()
+            return logger.set_bot_process_state(payload)
+        except Exception:
+            time.sleep(0.2)
+        finally:
+            if logger:
+                logger.close()
+    return False
 
 
 def clear_bot_control_state():
@@ -316,6 +305,11 @@ def clear_bot_control_state():
             logger.close()
 
 
+def invalidate_bot_status_cache():
+    BOT_STATUS_CACHE['timestamp'] = 0.0
+    BOT_STATUS_CACHE['payload'] = None
+
+
 def process_exists(pid):
     try:
         os.kill(int(pid), 0)
@@ -324,17 +318,60 @@ def process_exists(pid):
         return False
 
 
+def find_bot_processes():
+    """Retourne les PID run.py Aegis actifs, même si bot_processes est vide."""
+    try:
+        root_text = str(ROOT).replace('\\', '\\\\')
+        if os.name == 'nt':
+            command = (
+                "Get-CimInstance Win32_Process | "
+                f"Where-Object {{ $_.CommandLine -match '{root_text}.*run\\.py' }} | "
+                "Select-Object -ExpandProperty ProcessId"
+            )
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', command],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return [
+                int(line.strip()) for line in result.stdout.splitlines()
+                if line.strip().isdigit() and int(line.strip()) != os.getpid()
+            ]
+        result = subprocess.run(
+            ['pgrep', '-f', f'{ROOT}.*run.py'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return [
+            int(line.strip()) for line in result.stdout.splitlines()
+            if line.strip().isdigit() and int(line.strip()) != os.getpid()
+        ]
+    except Exception:
+        return []
+
+
 def bot_is_running():
     try:
         tracked = read_bot_control_file()
         pid = tracked.get('pid')
-        if not pid:
-            return False
-        os.kill(pid, 0)
-        return True
+        if pid and process_exists(pid):
+            return True
     except Exception:
         clear_bot_control_state()
-        return False
+        invalidate_bot_status_cache()
+    orphan_pids = find_bot_processes()
+    if orphan_pids:
+        write_bot_control_state({
+            'pid': orphan_pids[0],
+            'started_at': datetime.now().isoformat(),
+            'command': 'recovered_existing_run.py_process',
+        })
+        return True
+    clear_bot_control_state()
+    invalidate_bot_status_cache()
+    return False
 
 
 def bot_status_payload(force=False):
@@ -345,6 +382,7 @@ def bot_status_payload(force=False):
     tracked = read_bot_control_file()
     payload = {
         'running': running,
+        'pid': tracked.get('pid') if running else None,
         'started_at': tracked.get('started_at'),
         'mode': 'subprocess',
     }
@@ -354,6 +392,7 @@ def bot_status_payload(force=False):
 
 
 def stop_bot_processes():
+    invalidate_bot_status_cache()
     stopped = []
     try:
         tracked = read_bot_control_file()
@@ -369,16 +408,20 @@ def stop_bot_processes():
                     pass
             stopped.append(pid)
             clear_bot_control_state()
+            invalidate_bot_status_cache()
     except Exception:
         pass
 
-    # Tuer également tout processus bot orphelin en arrière-plan
+    # Tuer également les run.py Aegis orphelins, sans tuer tous les pythonw.exe.
     try:
-        if os.name == 'nt':
-            cmd = 'cmd /c "taskkill /F /IM pythonw.exe"'
-            subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
-        else:
-            subprocess.run(["pkill", "-f", "run.py"], capture_output=True, timeout=5)
+        for orphan_pid in find_bot_processes():
+            if orphan_pid not in stopped:
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/PID', str(orphan_pid), '/T', '/F'],
+                                   capture_output=True, timeout=5)
+                else:
+                    os.kill(orphan_pid, signal.SIGTERM)
+                stopped.append(orphan_pid)
     except Exception:
         pass
 
@@ -386,46 +429,101 @@ def stop_bot_processes():
 
 
 def start_bot_process():
-    if bot_is_running():
-        return {'started': False, 'already_running': True}
+    invalidate_bot_status_cache()
+    if not BOT_START_LOCK.acquire(blocking=False):
+        return {'started': False, 'already_running': True, 'reason': 'start_already_in_progress'}
 
-    python_exe = sys.executable
-    if os.name == 'nt':
-        python_exe = python_exe.replace('python.exe', 'pythonw.exe')
-    command = [python_exe, str(ROOT / 'run.py')]
-    BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = None
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            lock_fd = os.open(str(BOT_START_LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(lock_fd, str(os.getpid()).encode('utf-8'))
+        except FileExistsError:
+            if bot_is_running():
+                return {'started': False, 'already_running': True, 'reason': 'start_lock_active'}
+            try:
+                BOT_START_LOCK_FILE.unlink()
+                lock_fd = os.open(str(BOT_START_LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(lock_fd, str(os.getpid()).encode('utf-8'))
+            except Exception:
+                return {'started': False, 'already_running': True, 'reason': 'start_lock_active'}
 
-    creationflags = 0
-    if os.name == 'nt':
-        creationflags = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.CREATE_NO_WINDOW
-            | subprocess.DETACHED_PROCESS
-        )
+        if bot_is_running():
+            return {'started': False, 'already_running': True}
 
-    env = os.environ.copy()
-    env['PYTHONIOENCODING'] = 'utf-8'
-    env['PYTHONUNBUFFERED'] = '1'
+        python_exe = sys.executable
+        if os.name == 'nt':
+            python_exe = python_exe.replace('python.exe', 'pythonw.exe')
+        command = [python_exe, str(ROOT / 'run.py')]
+        BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
-        process = subprocess.Popen(
-            command,
-            cwd=str(ROOT),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
-            env=env,
-        )
+        creationflags = 0
+        if os.name == 'nt':
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+                | subprocess.DETACHED_PROCESS
+            )
 
-    payload = {
-        'pid': process.pid,
-        'started_at': datetime.now().isoformat(),
-        'command': ' '.join(command),
-    }
-    write_bot_control_state(payload)
-    return {'started': True, 'pid': process.pid}
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUNBUFFERED'] = '1'
+
+        with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+            process = subprocess.Popen(
+                command,
+                cwd=str(ROOT),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+                close_fds=True,
+                env=env,
+            )
+
+        payload = {
+            'pid': process.pid,
+            'started_at': datetime.now().isoformat(),
+            'command': ' '.join(command),
+        }
+        state_saved = write_bot_control_state(payload)
+        for _ in range(50):
+            if process.poll() is not None:
+                clear_bot_control_state()
+                invalidate_bot_status_cache()
+                return {
+                    'started': False,
+                    'pid': process.pid,
+                    'exit_code': process.returncode,
+                    'state_saved': state_saved,
+                }
+            tracked = read_bot_control_file()
+            tracked_pid = tracked.get('pid')
+            if process_exists(process.pid) and str(tracked_pid) == str(process.pid):
+                break
+            time.sleep(0.1)
+        invalidate_bot_status_cache()
+        status = bot_status_payload(force=True)
+        return {
+            'started': bool(status.get('running')),
+            'pid': process.pid,
+            'state_saved': state_saved,
+            'status': status,
+        }
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+        try:
+            BOT_START_LOCK_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        BOT_START_LOCK.release()
 
 
 def project_path(value, fallback):
@@ -455,6 +553,13 @@ LEGACY_DECISION_PREFIXES = (
     'outside_optimal_trading_time',
     'htf_bias_rejected',
 )
+OPERATIONAL_DECISION_REASONS = {
+    'symbol_cooldown_active',
+    'symbol_cooldown_active_at_execution',
+    'position_or_capital_blocked',
+    'position_blocked_at_execution',
+}
+OPERATIONAL_DECISION_ACTIONS = {'cooldown'}
 
 
 def is_dashboard_decision(entry):
@@ -464,11 +569,40 @@ def is_dashboard_decision(entry):
 
     if action in LEGACY_DECISION_ACTIONS:
         return False
+    if action in OPERATIONAL_DECISION_ACTIONS or reason in OPERATIONAL_DECISION_REASONS:
+        return False
+    if action == 'exit_decision':
+        decision = str(metrics.get('decision') or '').upper()
+        return decision == 'FORCE_EXIT'
     if reason.startswith(LEGACY_DECISION_PREFIXES):
         return False
     if action == 'buy' and not entry.get('allowed') and not metrics.get('ml_decision'):
-        return reason in {'symbol_cooldown_active', 'position_or_capital_blocked', 'order_failed'}
+        return reason in {'order_failed'}
     return True
+
+
+def compact_dashboard_decisions(entries, limit=20):
+    """Keep useful decisions while collapsing repetitive ML HOLD surveillance."""
+    compacted_reversed = []
+    seen_hold_symbols = set()
+
+    for entry in reversed(entries):
+        action = entry.get('action')
+        metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
+        decision = str(metrics.get('decision') or '').upper()
+        symbol = entry.get('symbol') or ''
+
+        if action == 'exit_decision' and decision == 'HOLD':
+            key = symbol or 'unknown'
+            if key in seen_hold_symbols:
+                continue
+            seen_hold_symbols.add(key)
+
+        compacted_reversed.append(entry)
+        if len(compacted_reversed) >= limit:
+            break
+
+    return list(reversed(compacted_reversed))
 
 
 def env_bool(name, default='False'):
@@ -489,9 +623,8 @@ def load_bot_state(fallback=None):
     mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
     try:
         from core.ml_live_logger import MLLiveLogger
-        logger = MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path()))
-        state = logger.load_bot_state(mode_key)
-        logger.close()
+        with MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path())) as logger:
+            state = logger.load_bot_state(mode_key)
         if state:
             return state
     except Exception:
@@ -516,9 +649,10 @@ def trade_stats(positions):
         if not symbol or amount <= 0 or px <= 0:
             continue
 
-        if side == 'buy':
+        status = pos.get('status')
+        if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({'amount': amount, 'price': px, 'ts': pos.get('timestamp')})
-        elif side == 'sell':
+        elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
             queue = buys.get(symbol, [])
             while remaining > 1e-12 and queue:
@@ -580,10 +714,17 @@ def trade_stats(positions):
     }
 
 
-def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit_recommendations=None):
+def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit_recommendations=None, live_symbols=None):
+    open_sell_symbols = set(
+        p.get('symbol') for p in positions
+        if p.get('side') == 'sell' and p.get('status') == 'opened'
+    )
     by_symbol = {}
     for position in sorted(positions, key=lambda item: item.get('timestamp', '')):
         symbol = position.get('symbol')
+        if symbol not in open_sell_symbols:
+            continue
+
         side = position.get('side')
         amount = float(position.get('amount') or 0)
         price = float(position.get('price') or 0)
@@ -597,11 +738,12 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
             'last_update': position.get('timestamp'),
         })
 
-        if side == 'buy':
+        status = position.get('status')
+        if side == 'buy' and not position.get('closed_at'):
             data['amount'] += amount
             data['cost'] += amount * price
             data['last_update'] = position.get('timestamp')
-        elif side == 'sell' and data['amount'] > 0:
+        elif side == 'sell' and status in ('executed', 'filled') and data['amount'] > 0:
             sold = min(amount, data['amount'])
             average = data['cost'] / data['amount'] if data['amount'] else 0
             data['amount'] -= sold
@@ -625,7 +767,7 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
             is_trailing = True
             trailing_percent = float(trailing_stops[data['symbol']].get('trailing_percent', trailing_percent))
             
-        # Chercher le prix de vente cible dans les ordres en attente (Paper / CCXT)
+        # Chercher le prix de vente cible dans les ordres en attente (Paper / CCXT / Positions DB)
         target_price = None
         if pending_orders:
             for oid, od in pending_orders.items():
@@ -633,6 +775,13 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
                     order_info = od.get('order', od)
                     target_price = float(order_info.get('price') or 0)
                     break
+
+        if not target_price or target_price <= 0:
+            for p in positions:
+                if p.get('symbol') == data['symbol'] and p.get('side') == 'sell' and p.get('status') == 'opened':
+                    target_price = float(p.get('price') or 0)
+                    if target_price > 0:
+                        break
                     
         # Fallback si aucun ordre de vente n'est encore placé
         if not target_price or target_price <= 0:
@@ -641,6 +790,20 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
             
         fee_pct = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) * 2
         entry_val = data['amount'] * avg_entry
+        current_price = None
+        if live_symbols and isinstance(live_symbols, dict):
+            live_item = live_symbols.get(data['symbol']) or live_symbols.get(data['symbol'].replace('/', ''))
+            if isinstance(live_item, dict):
+                try:
+                    current_price = float(live_item.get('price') or 0) or None
+                except Exception:
+                    current_price = None
+        current_value = data['amount'] * current_price if current_price else None
+        fee_value = entry_val * (fee_pct / 100.0)
+        pnl_gross = (current_value - entry_val) if current_value is not None else None
+        pnl_gross_pct = (pnl_gross / entry_val * 100.0) if pnl_gross is not None and entry_val > 0 else None
+        pnl_net = (pnl_gross - fee_value) if pnl_gross is not None else None
+        pnl_net_pct = (pnl_net / entry_val * 100.0) if pnl_net is not None and entry_val > 0 else None
         exit_rec = None
         if exit_recommendations and isinstance(exit_recommendations, dict):
             exit_rec = exit_recommendations.get(data['symbol'])
@@ -656,15 +819,24 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
         result.append({
             'symbol': data['symbol'],
             'amount': data['amount'],
+            'price': avg_entry,
             'avg_entry_price': avg_entry,
             'entry_value': entry_val,
+            'timestamp': data['last_update'],
             'last_update': data['last_update'],
             'stop_loss_price': stop_loss_price,
             'is_trailing': is_trailing,
             'trailing_percent': trailing_percent,
             'target_price': target_price,
             'trading_fee_pct': fee_pct,
-            'trading_fee_value': entry_val * (fee_pct / 100.0),
+            'trading_fee_value': fee_value,
+            'fee': fee_value,
+            'current_price': current_price,
+            'current_value': current_value,
+            'pnl_gross': pnl_gross,
+            'pnl_gross_pct': pnl_gross_pct,
+            'pnl_net': pnl_net,
+            'pnl_net_pct': pnl_net_pct,
             'exit_recommendation': exit_rec
         })
     return sorted(result, key=lambda item: item['symbol'])
@@ -748,8 +920,26 @@ def live_status():
 
 # ===== NOUVEAU: Fonctions pour les nouvelles fonctionnalités =====
 
+def _calc_net_pnl(pos_sell, entry_price, sell_price, filled_amount):
+    """Calcule le PnL Net en déduisant les frais réels de transaction (Maker/Taker)."""
+    pnl_gross = filled_amount * (sell_price - entry_price)
+    fee_rate = pos_sell.get('fee_rate') if isinstance(pos_sell, dict) else None
+    if fee_rate is not None:
+        fees = (entry_price * filled_amount * float(fee_rate)) + (sell_price * filled_amount * float(fee_rate))
+    else:
+        total_fee = float(pos_sell.get('fee') or 0) if isinstance(pos_sell, dict) else 0
+        orig_amount = float(pos_sell.get('amount') or filled_amount) if isinstance(pos_sell, dict) else filled_amount
+        if total_fee > 0 and orig_amount > 0:
+            fees = total_fee * (filled_amount / orig_amount)
+        else:
+            default_fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+            fees = filled_amount * (entry_price + sell_price) * default_fee_rate
+    pnl_net = pnl_gross - fees
+    return pnl_gross, fees, pnl_net
+
+
 def compute_advanced_metrics(positions, paper_balance):
-    """Calcule les metriques avancees: Sharpe, Profit Factor, Max Drawdown, Kelly, Expectancy"""
+    """Calcule les metriques avancees: Sharpe, Profit Factor, Max Drawdown, Kelly, Expectancy sur PnL NET"""
     buys = {}
     trades = []  # [{pnl, symbol, buy_price, sell_price, amount, buy_time, sell_time}]
 
@@ -761,21 +951,25 @@ def compute_advanced_metrics(positions, paper_balance):
         if not symbol or amount <= 0 or px <= 0:
             continue
 
-        if side == 'buy':
+        status = pos.get('status')
+        if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({
                 'amount': amount, 'price': px, 'ts': pos.get('timestamp')
             })
-        elif side == 'sell':
+        elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
             queue = buys.get(symbol, [])
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl = filled * (px - entry['price'])
-                pnl_pct = ((px - entry['price']) / entry['price']) * 100
+                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled)
+                entry_cost = filled * entry['price']
+                pnl_net_pct = (pnl_net / entry_cost * 100) if entry_cost > 0 else 0
                 trades.append({
-                    'pnl': pnl,
-                    'pnl_pct': pnl_pct,
+                    'pnl': pnl_net,
+                    'pnl_pct': pnl_net_pct,
+                    'pnl_gross': pnl_gross,
+                    'fees': fees,
                     'symbol': symbol,
                     'buy_price': entry['price'],
                     'sell_price': px,
@@ -850,7 +1044,7 @@ def compute_advanced_metrics(positions, paper_balance):
     return {
         'sharpe_ratio': round(sharpe, 2),
         'profit_factor': round(profit_factor, 2) if profit_factor != float('inf') else 999.99,
-        'max_drawdown': round(max_dd, 2),
+'max_drawdown': round(max_dd, 2),
         'kelly_percent': round(kelly * 100, 1),
         'expectancy': round(expectancy, 4),
         'avg_win': round(avg_win, 4),
@@ -860,66 +1054,107 @@ def compute_advanced_metrics(positions, paper_balance):
 
 
 def compute_trade_history(positions):
-    """Extrait l'historique complet des trades (buy/sell pairs)"""
-    buys = {}
+    """
+    Formule exacte :
+    1. Un trade est défini par un ordre SELL (1 sell = 1 trade).
+    2. Le prix moyen d'entrée d'un trade est le prix moyen des achats non encore vendus.
+    """
     trades = []
+    positions_by_symbol = {}
+    for p in sorted(positions, key=lambda x: x.get('timestamp', '')):
+        sym = p.get('symbol')
+        if sym:
+            positions_by_symbol.setdefault(sym, []).append(p)
 
-    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
-        symbol = pos.get('symbol')
-        side = pos.get('side')
-        amount = float(pos.get('amount') or 0)
-        px = float(pos.get('price') or 0)
-        if not symbol or amount <= 0 or px <= 0:
-            continue
+    for symbol, sym_positions in positions_by_symbol.items():
+        buy_queue = []
 
-        if side == 'buy':
-            buys.setdefault(symbol, []).append({
-                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
-            })
-        elif side == 'sell':
-            remaining = amount
-            queue = buys.get(symbol, [])
-            while remaining > 1e-12 and queue:
-                entry = queue[0]
-                filled = min(remaining, entry['amount'])
-                entry_value = filled * entry['price']
-                pnl_gross = filled * (px - entry['price'])
-                fee_rate = pos.get('fee_rate')
-                if fee_rate is not None:
-                    fees = (entry['price'] * filled * float(fee_rate)) + (px * filled * float(fee_rate))
-                else:
-                    total_fee = float(pos.get('fee') or 0)
-                    fees = total_fee * (filled / amount) if amount > 0 else 0
-                pnl_net = pnl_gross - fees
-                pnl_gross_pct = (pnl_gross / entry_value) * 100 if entry_value else 0
-                pnl_net_pct = (pnl_net / entry_value) * 100 if entry_value else 0
-                trades.append({
-                    'symbol': symbol,
-                    'buy_price': round(entry['price'], 2),
-                    'sell_price': round(px, 2),
-                    'amount': round(filled, 8),
-                    'pnl_gross': round(pnl_gross, 4),
-                    'fees': round(fees, 4),
-                    'pnl_net': round(pnl_net, 4),
-                    'pnl_gross_pct': round(pnl_gross_pct, 2),
-                    'pnl_net_pct': round(pnl_net_pct, 2),
-                    'fee_rate': float(fee_rate) if fee_rate is not None else None,
-                    'pnl': round(pnl_net, 4),
-                    'pnl_pct': round(pnl_net_pct, 2),
-                    'buy_time': entry.get('ts'),
-                    'sell_time': pos.get('timestamp'),
-                    'profitable': pnl_net >= -0.005,
+        for pos in sym_positions:
+            side = pos.get('side')
+            amount = float(pos.get('amount') or 0)
+            px = float(pos.get('price') or 0)
+            status = pos.get('status')
+            if amount <= 0 or px <= 0:
+                continue
+
+            if side == 'buy':
+                buy_queue.append({
+                    'amount': amount,
+                    'price': px,
+                    'timestamp': pos.get('timestamp'),
+                    'order_id': pos.get('order_id')
                 })
-                entry['amount'] -= filled
-                remaining -= filled
-                if entry['amount'] <= 1e-12:
-                    queue.pop(0)
+            elif side == 'sell':
+                tot_amount = sum(b['amount'] for b in buy_queue)
+                tot_cost = sum(b['amount'] * b['price'] for b in buy_queue)
+                avg_buy_price = tot_cost / tot_amount if tot_amount > 0 else px
 
-    return sorted(trades, key=lambda t: t.get('sell_time', ''), reverse=True)
+                if status == 'opened':
+                    trades.append({
+                        'symbol': symbol,
+                        'side': 'buy',
+                        'status': 'open',
+                        'price': round(avg_buy_price, 8),
+                        'buy_price': round(avg_buy_price, 8),
+                        'sell_price': round(px, 8),
+                        'target_price': round(px, 8),
+                        'amount': round(amount, 8),
+                        'entry_value': round(amount * avg_buy_price, 4),
+                        'pnl': None,
+                        'pnl_pct': None,
+                        'buy_time': buy_queue[0]['timestamp'] if buy_queue else pos.get('timestamp'),
+                        'timestamp': pos.get('timestamp'),
+                        'order_id': pos.get('order_id'),
+                        'profitable': None,
+                    })
+                elif status in ('executed', 'filled'):
+                    entry_value = amount * avg_buy_price
+                    pnl_gross = amount * (px - avg_buy_price)
+                    fee_rate = pos.get('fee_rate')
+                    if fee_rate is not None:
+                        fees = (avg_buy_price * amount * float(fee_rate)) + (px * amount * float(fee_rate))
+                    else:
+                        total_fee = float(pos.get('fee') or 0)
+                        fees = total_fee * (amount / tot_amount) if tot_amount > 0 else 0
+
+                    pnl_net = pnl_gross - fees
+                    pnl_gross_pct = (pnl_gross / entry_value) * 100 if entry_value else 0
+                    pnl_net_pct = (pnl_net / entry_value) * 100 if entry_value else 0
+
+                    trades.append({
+                        'symbol': symbol,
+                        'side': '--',
+                        'status': 'closed',
+                        'buy_price': round(avg_buy_price, 8),
+                        'sell_price': round(px, 8),
+                        'amount': round(amount, 8),
+                        'pnl_gross': round(pnl_gross, 4),
+                        'fees': round(fees, 4),
+                        'pnl_net': round(pnl_net, 4),
+                        'pnl_gross_pct': round(pnl_gross_pct, 2),
+                        'pnl_net_pct': round(pnl_net_pct, 2),
+                        'pnl': round(pnl_net, 4),
+                        'pnl_pct': round(pnl_net_pct, 2),
+                        'buy_time': buy_queue[0]['timestamp'] if buy_queue else pos.get('timestamp'),
+                        'sell_time': pos.get('timestamp'),
+                        'timestamp': pos.get('timestamp'),
+                        'profitable': pnl_net >= -0.005,
+                    })
+
+                    rem = amount
+                    while rem > 1e-12 and buy_queue:
+                        item = buy_queue[0]
+                        take = min(rem, item['amount'])
+                        item['amount'] -= take
+                        rem -= take
+                        if item['amount'] <= 1e-12:
+                            buy_queue.pop(0)
+
+    return sorted(trades, key=lambda t: t.get('timestamp') or t.get('buy_time') or '', reverse=True)
 
 
 def compute_heatmap(positions):
-    """Calcule les stats par crypto, par jour, par heure"""
+    """Calcule les stats par crypto, par jour, par heure sur PnL NET"""
     buys = {}
     trades = []
 
@@ -931,20 +1166,23 @@ def compute_heatmap(positions):
         if not symbol or amount <= 0 or px <= 0:
             continue
 
-        if side == 'buy':
+        status = pos.get('status')
+        if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({
                 'amount': amount, 'price': px, 'ts': pos.get('timestamp')
             })
-        elif side == 'sell':
+        elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
             queue = buys.get(symbol, [])
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl = filled * (px - entry['price'])
+                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled)
                 trades.append({
                     'symbol': symbol,
-                    'pnl': pnl,
+                    'pnl': pnl_net,
+                    'pnl_gross': pnl_gross,
+                    'fees': fees,
                     'buy_time': entry.get('ts'),
                     'sell_time': pos.get('timestamp'),
                 })
@@ -1072,7 +1310,7 @@ def compute_capital_breakdown(state, positions, paper_balance):
 
 
 def compute_pnl_history(state):
-    """Extrait l'historique P&L sous forme de courbe de P&L réalisé cumulé"""
+    """Extrait l'historique P&L sous forme de courbe de P&L réalisé cumulé NET"""
     positions = state.get('positions', [])
     initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
 
@@ -1088,7 +1326,8 @@ def compute_pnl_history(state):
         if not symbol or amount <= 0 or px <= 0:
             continue
 
-        if side == 'buy':
+        status = pos.get('status')
+        if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({
                 'amount': amount, 'price': px, 'ts': pos.get('timestamp')
             })
@@ -1099,14 +1338,15 @@ def compute_pnl_history(state):
                 'pnl': round(cumulative_pnl, 2),
                 'event': f"Achat {symbol.split('/')[0]} @ {px:.2f}",
             })
-        elif side == 'sell':
+        elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
             queue = buys.get(symbol, [])
             trade_pnl = 0.0
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                trade_pnl += filled * (px - entry['price'])
+                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled)
+                trade_pnl += pnl_net
                 remaining -= filled
                 entry['amount'] -= filled
                 if entry['amount'] <= 1e-12:
@@ -1132,7 +1372,18 @@ def compute_pnl_history(state):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    spa_index = ROOT / 'ui' / 'public' / 'spa' / 'index.html'
+    if spa_index.exists():
+        return send_from_directory(spa_index.parent, 'index.html')
+    return jsonify({'error': 'Frontend non compilé. Veuillez exécuter pnpm build dans ui/app.'}), 500
+
+
+@app.route('/analytics')
+@app.route('/trades')
+@app.route('/console')
+@app.route('/config')
+def spa_route():
+    return index()
 
 
 def compute_next_buy_forecast(state):
@@ -1210,20 +1461,25 @@ def compute_next_buy_forecast(state):
     }
 
 
-@app.route('/api/status')
-def api_status():
+def dashboard_status_payload():
     state = load_bot_state({'positions': []})
     mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
-    logger = db_logger()
-    decisions = [entry for entry in logger.get_decision_journal(mode_key, 80) if is_dashboard_decision(entry)][-20:]
-    positions = weighted_positions(state.get('positions', []), state.get('trailing_stops'), state.get('pending_orders'), state.get('exit_recommendations'))
+    live = live_status()
+    with db_logger() as logger:
+        raw_decisions = logger.get_decision_journal(mode_key, 300)
+        decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], 20)
+        total_decisions = logger.count_decision_journal(mode_key)
+    positions = weighted_positions(
+        state.get('positions', []),
+        state.get('trailing_stops'),
+        state.get('pending_orders'),
+        state.get('exit_recommendations'),
+        live.get('symbols', {})
+    )
 
     stats = trade_stats(state.get('positions', []))
-    
-    total_decisions = logger.count_decision_journal(mode_key)
-    logger.close()
 
-    response = jsonify({
+    return {
         'bot': {
             'name': os.getenv('BOT_NAME', 'Aegis'),
             'mode': 'paper' if env_bool('PAPER_TRADING', 'True') else 'live',
@@ -1239,7 +1495,7 @@ def api_status():
         'positions': positions,
         'cooldowns': cooldowns(state),
         'market_context': state.get('market_context', {}),
-        'live': live_status(),
+        'live': live,
         'support_touch': support_touch(state),
         'next_buy_forecast': compute_next_buy_forecast(state),
         'decisions': decisions,
@@ -1248,7 +1504,12 @@ def api_status():
         'config': {
             'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         },
-    })
+    }
+
+
+@app.route('/api/status')
+def api_status():
+    response = jsonify(dashboard_status_payload())
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -1265,14 +1526,13 @@ def api_decisions():
             limit = 80
 
     mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
-    logger = db_logger()
-    if limit == 100000:
-        raw_decisions = logger.get_decision_journal(mode_key, limit)
-    else:
-        raw_decisions = logger.get_decision_journal(mode_key, max(limit * 20, limit))
-    decisions = [entry for entry in raw_decisions if is_dashboard_decision(entry)][-limit:]
-    total_count = logger.count_decision_journal(mode_key)
-    logger.close()
+    with db_logger() as logger:
+        if limit == 100000:
+            raw_decisions = logger.get_decision_journal(mode_key, limit)
+        else:
+            raw_decisions = logger.get_decision_journal(mode_key, max(limit * 20, limit))
+        decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], limit)
+        total_count = logger.count_decision_journal(mode_key)
 
     return jsonify({
         'decisions': decisions,
@@ -1302,7 +1562,7 @@ def api_config_update():
             errors[name] = 'champ non autorise'
             continue
         if is_secret_key(name):
-            errors[name] = 'secret non modifiable depuis le dashboard'
+            errors[name] = 'secret non modifiable depuis le ui'
             continue
         try:
             updates[name] = normalize_config_value(name, value)
@@ -1325,7 +1585,9 @@ def api_bot_status():
 @app.route('/api/bot/start', methods=['POST'])
 def api_bot_start():
     result = start_bot_process()
-    return jsonify({'ok': True, **result, 'status': bot_status_payload(force=True)})
+    status = result.get('status') or bot_status_payload(force=True)
+    ok = bool(result.get('started') or result.get('already_running') or status.get('running'))
+    return jsonify({'ok': ok, **result, 'status': status})
 
 
 @app.route('/api/bot/stop', methods=['POST'])
@@ -1339,7 +1601,9 @@ def api_bot_restart():
     stopped = stop_bot_processes()
     time.sleep(1)
     started = start_bot_process()
-    return jsonify({'ok': True, 'stopped': stopped, **started, 'status': bot_status_payload(force=True)})
+    status = started.get('status') or bot_status_payload(force=True)
+    ok = bool(started.get('started') or status.get('running'))
+    return jsonify({'ok': ok, 'stopped': stopped, **started, 'status': status})
 
 
 @app.route('/api/bot/command', methods=['POST'])
@@ -1352,9 +1616,8 @@ def api_bot_command():
         if not action:
             return jsonify({'ok': False, 'error': 'action is required'}), 400
             
-        logger = db_logger()
-        logger.add_bot_command(action, symbol=symbol, seconds=data.get('seconds'), payload=data)
-        logger.close()
+        with db_logger() as logger:
+            logger.add_bot_command(action, symbol=symbol, seconds=data.get('seconds'), payload=data)
         
         return jsonify({'ok': True, 'message': f'Command {action} scheduled for {symbol}'})
     except Exception as e:
@@ -1410,31 +1673,66 @@ def api_analytics():
     return response
 
 
-@app.route('/api/ml_status')
-def api_ml_status():
+def sanitize_ml_predictions(predictions):
+    """Retire les champs ML vides avant exposition dans /api/ml_status."""
+    if not isinstance(predictions, dict):
+        return {}
+
+    cleaned = {}
+    for symbol, item in predictions.items():
+        if not isinstance(item, dict):
+            continue
+
+        row = {}
+        for key in ('symbol', 'p_win', 'recommendation', 'min_probability', 'timestamp'):
+            value = item.get(key)
+            if value is not None:
+                row[key] = value
+
+        exit_forecast = item.get('ml_exit_entry_forecast') or item.get('exit_forecast')
+        exit_row = {}
+        if isinstance(exit_forecast, dict):
+            for key in ('p_continue', 'min_p_continue', 'decision', 'reason', 'entry_price'):
+                value = exit_forecast.get(key)
+                if value is not None:
+                    exit_row[key] = value
+
+        for key in ('p_continue', 'min_p_continue', 'exit_decision', 'exit_reason', 'entry_price'):
+            value = item.get(key)
+            if value is not None:
+                row[key] = value
+
+        if exit_row:
+            row['exit_forecast'] = exit_row
+
+        if row:
+            cleaned[symbol] = row
+
+    return cleaned
+
+
+def ml_status_payload():
     """Endpoint pour le Core ML Engine avec statistiques complètes et prévisions"""
     global ML_PREDS_CACHE
     state = load_bot_state({'positions': [], 'ml_predictions': {}})
     ml_preds = state.get('ml_predictions', {})
+    clean_ml_preds = sanitize_ml_predictions(ml_preds)
 
-    # Mettre à jour le cache uniquement si les prédictions sont réelles (non vides)
-    if ml_preds:
-        ML_PREDS_CACHE = ml_preds
-    else:
-        # Utiliser le cache des dernières vraies valeurs — jamais de valeurs hardcodées
-        ml_preds = ML_PREDS_CACHE
+    # Afficher uniquement les prédictions produites par le bot réel.
+    # Le ui ne doit pas recalculer ou garder un cache qui diverge de l'exécution.
+    ML_PREDS_CACHE = clean_ml_preds
 
     meta = latest_ml_metadata()
     
     is_trained = (DATA_DIR / 'aegis_model.joblib').exists()
     
-    response = jsonify({
+    return {
         'is_trained': is_trained,
         'trained_at': meta.get('trained_at'),
         'total_samples': 2952 if is_trained else 0,
         'min_probability': float(os.getenv('ML_MIN_PROBABILITY', '65.0')),
         'top_features': meta.get('feature_importance', [])[:6],
-        'live_predictions': ml_preds,
+        'live_predictions': clean_ml_preds,
         'analytics': {
             'test_precision': 67.1,
             'test_accuracy': 65.1,
@@ -1450,7 +1748,12 @@ def api_ml_status():
             'weekly_forecast_pct': '+15% à +28%',
             'weekly_forecast_usd': '+$150 à +$285 USD'
         }
-    })
+    }
+
+
+@app.route('/api/ml_status')
+def api_ml_status():
+    response = jsonify(ml_status_payload())
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -1467,9 +1770,8 @@ def api_analytics_scores():
         
     cutoff = datetime.now() - timedelta(hours=hours)
     try:
-        logger = db_logger()
-        results = logger.get_crypto_scores(symbol, since_iso=cutoff.isoformat())
-        logger.close()
+        with db_logger() as logger:
+            results = logger.get_crypto_scores(symbol, since_iso=cutoff.isoformat())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
         
@@ -1483,19 +1785,31 @@ def api_trades():
     positions = state.get('positions', [])
     trades = compute_trade_history(positions)
 
-    # Filtres optionnels
+    raw_buys = [p for p in positions if p.get('side') == 'buy']
+    raw_sells = [p for p in positions if p.get('side') == 'sell']
+
+    # Trier par date récente en premier par défaut (Timestamp DESC)
+    trades.sort(key=lambda x: str(x.get('timestamp') or x.get('buy_time') or x.get('sell_time') or ''), reverse=True)
+    raw_buys.sort(key=lambda x: str(x.get('timestamp') or ''), reverse=True)
+    raw_sells.sort(key=lambda x: str(x.get('timestamp') or ''), reverse=True)
+
     symbol_filter = request.args.get('symbol', '').upper()
     profitable_filter = request.args.get('profitable', '')
 
     if symbol_filter:
-        trades = [t for t in trades if symbol_filter in t['symbol'].upper()]
+        trades = [t for t in trades if symbol_filter in t.get('symbol', '').upper()]
+        raw_buys = [b for b in raw_buys if symbol_filter in b.get('symbol', '').upper()]
+        raw_sells = [s for s in raw_sells if symbol_filter in s.get('symbol', '').upper()]
+
     if profitable_filter == 'win':
-        trades = [t for t in trades if t['profitable']]
+        trades = [t for t in trades if t.get('profitable')]
     elif profitable_filter == 'loss':
-        trades = [t for t in trades if not t['profitable']]
+        trades = [t for t in trades if t.get('profitable') is False]
 
     response = jsonify({
         'trades': trades,
+        'buys': raw_buys,
+        'sells': raw_sells,
         'total': len(trades),
     })
     response.headers['Cache-Control'] = 'no-store'
@@ -1548,10 +1862,14 @@ def api_support_touch_backtest_status():
 @sock.route('/ws/live')
 def ws_live(ws):
     import json as _json
-    last_data = None
+    last_live_data = None
+    last_status_data = None
+    last_ml_status_data = None
     last_status_push = 0.0
-    last_ml_push = 0.0
-    ML_PUSH_INTERVAL = 3.0  # Pousser les prédictions ML toutes les 3 secondes
+    last_dashboard_status_push = 0.0
+    last_ml_status_push = 0.0
+    STATUS_PUSH_INTERVAL = 5.0
+    ML_STATUS_PUSH_INTERVAL = 10.0
 
     while True:
         try:
@@ -1560,53 +1878,26 @@ def ws_live(ws):
             # --- Prix en direct depuis SQLite ---
             if now - last_status_push >= 1.0:
                 last_status_push = now
-                raw = _json.dumps(live_status(), ensure_ascii=False)
-                if raw != last_data:
-                    last_data = raw
+                raw = _json.dumps({'__type': 'live', 'live': live_status()}, ensure_ascii=False)
+                if raw != last_live_data:
+                    last_live_data = raw
                     ws.send(raw)
 
-            # --- Prédictions ML en temps réel ---
-            if now - last_ml_push >= ML_PUSH_INTERVAL:
-                last_ml_push = now
-                engine = _get_ws_ml_engine()
-                if engine is not None:
-                    try:
-                        import ccxt as _ccxt
-                        exchange = _ccxt.kraken({'enableRateLimit': True})
-                        pairs_env = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
-                        preds = {}
-                        min_prob = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
-                        for pair in pairs_env:
-                            pair_clean = pair.strip()
-                            if '/' in pair_clean:
-                                symbol = pair_clean
-                            elif pair_clean.endswith('USD'):
-                                symbol = f"{pair_clean[:-3]}/USD"
-                            elif pair_clean.endswith('USDT'):
-                                symbol = f"{pair_clean[:-4]}/USDT"
-                            else:
-                                symbol = f"{pair_clean[:3]}/{pair_clean[3:]}"
+            # --- Statut ui complet, remplace le polling /api/status ---
+            if now - last_dashboard_status_push >= STATUS_PUSH_INTERVAL:
+                last_dashboard_status_push = now
+                raw = _json.dumps({'__type': 'status', 'payload': dashboard_status_payload()}, ensure_ascii=False)
+                if raw != last_status_data:
+                    last_status_data = raw
+                    ws.send(raw)
 
-                            try:
-                                raw_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
-                                klines_15m = [{'timestamp': r[0], 'open': float(r[1]), 'high': float(r[2]), 'low': float(r[3]), 'close': float(r[4]), 'volume': float(r[5])} for r in raw_15m]
-                                raw_5m = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=30)
-                                klines_5m = [{'timestamp': r[0], 'open': float(r[1]), 'high': float(r[2]), 'low': float(r[3]), 'close': float(r[4]), 'volume': float(r[5])} for r in raw_5m]
-                                raw_1h = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=30)
-                                klines_1h = [{'timestamp': r[0], 'open': float(r[1]), 'high': float(r[2]), 'low': float(r[3]), 'close': float(r[4]), 'volume': float(r[5])} for r in raw_1h]
-                                curr_price = klines_15m[-1]['close']
-                                prob = engine.predict_win_probability(klines_15m, curr_price, klines_5m=klines_5m, klines_1h=klines_1h)
-                                rec = 'BUY_HIGH_CONFIDENCE' if prob >= min_prob else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
-                                preds[symbol] = {'symbol': symbol, 'p_win': round(prob, 1), 'recommendation': rec, 'min_probability': min_prob, 'timestamp': datetime.now().isoformat()}
-                            except Exception:
-                                continue
-
-                        if preds:
-                            global ML_PREDS_CACHE
-                            ML_PREDS_CACHE = preds
-                            ws.send(_json.dumps({'__type': 'ml_predictions', 'predictions': preds}))
-                    except Exception:
-                        pass
+            # --- Statut ML complet, remplace le polling /api/ml_status ---
+            if now - last_ml_status_push >= ML_STATUS_PUSH_INTERVAL:
+                last_ml_status_push = now
+                raw = _json.dumps({'__type': 'ml_status', 'payload': ml_status_payload()}, ensure_ascii=False)
+                if raw != last_ml_status_data:
+                    last_ml_status_data = raw
+                    ws.send(raw)
 
         except Exception:
             pass

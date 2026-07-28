@@ -287,7 +287,7 @@ class DisplayMixin:
                     min_conf = prediction.get('min_confidence', 60)
                     self.async_print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}{sr_info}")
                 elif prediction['status'] == 'WAITING':
-                    self.async_print(f"⏳ {crypto}: {prediction['time_estimate']} | {prediction['reason']}{sr_info}")
+                    pass
     
     def show_strategy_execution(self, symbol, price, change_24h, vol_display):
         """Affiche l'exécution d'une stratégie"""

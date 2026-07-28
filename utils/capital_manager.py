@@ -482,7 +482,7 @@ class CapitalManager:
         if not dust_detected:
             return
         
-        print(f"\n🧹 DUST DÉTECTÉ (valeurs trop petites pour trader):")
+        print(f"🧹 DUST DÉTECTÉ (valeurs trop petites pour trader):")
         total_dust_usd = 0
         
         for asset, data in dust_detected.items():
@@ -522,7 +522,7 @@ class CapitalManager:
             if dust_detected:
                 self.show_dust_summary(dust_detected)
                 
-                print(f"\n🔧 ACTIONS RECOMMANDÉES:")
+                print(f"🔧 ACTIONS RECOMMANDÉES:")
                 print(f"   1. Consolider manuellement les petits montants sur l'exchange")
                 print(f"   2. Ou ignorer (le bot ne tentera pas de trader ces montants)")
                 

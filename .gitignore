@@ -9,7 +9,7 @@ __pycache__/
 # Environment
 .env
 .env.local
-.env.dashboard
+.env.ui
 .env.production
 
 # IDE
@@ -33,6 +33,7 @@ bot_state.json
 Thumbs.db
 
 # Distribution
+node_modules/
 build/
 dist/
 *.egg-info/

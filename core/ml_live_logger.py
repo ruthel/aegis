@@ -1,3 +1,4 @@
+import ast
 import json
 import math
 import os
@@ -6,6 +7,42 @@ import threading
 import time
 import uuid
 from datetime import datetime
+
+from sqlalchemy import delete, func, select, text, update
+
+from core.db_orm import (
+    Base,
+    BotAppState,
+    BotCommand,
+    BotDecisionJournal,
+    BotDecisionMetric,
+    BotDailyStat,
+    BotExitRecommendation,
+    BotLiveStatus,
+    BotLiveStatusSubscription,
+    BotLiveStatusSymbol,
+    BotMarketContext,
+    BotPosition,
+    BotProcess,
+    BotState,
+    BotSymbolCooldown,
+    BotTrailingStop,
+    CryptoScoreHistory,
+    MlFeatureImportance,
+    MlEntryDecision,
+    MlEntryFeatureValue,
+    MlExitDecision,
+    MlExitFeatureValue,
+    MlOpenEntry,
+    MlLivePrediction,
+    MlModelMetadata,
+    MlRawEvent,
+    MlTradeOutcome,
+    SupportTouchResult,
+    TelegramMessage,
+    create_session_factory,
+    now_iso,
+)
 
 
 class MLLiveLogger:
@@ -16,6 +53,7 @@ class MLLiveLogger:
         self.sqlite_file = sqlite_file or os.path.join(data_dir, 'aegis_db.sqlite3')
         self._lock = threading.Lock()
         self._conn = None
+        self._Session = create_session_factory(self.sqlite_file)
         os.makedirs(self.data_dir, exist_ok=True)
         self._init_sqlite()
 
@@ -158,8 +196,11 @@ class MLLiveLogger:
             os.makedirs(os.path.dirname(self.sqlite_file) or '.', exist_ok=True)
             with self._lock:
                 conn = self._get_conn()
-                conn.execute('PRAGMA journal_mode=WAL')
-                conn.execute('PRAGMA busy_timeout=5000')
+                conn.execute('PRAGMA busy_timeout=30000')
+                try:
+                    conn.execute('PRAGMA journal_mode=WAL')
+                except sqlite3.OperationalError:
+                    pass
                 conn.execute('PRAGMA synchronous=NORMAL')
                 self._migrate_table_name(conn, 'ml_events', 'ml_raw_events')
                 self._migrate_table_name(conn, 'app_state', 'bot_app_state')
@@ -180,8 +221,14 @@ class MLLiveLogger:
                 self._migrate_bot_state_columns(conn)
                 self._migrate_bot_process_to_bot_state(conn)
                 self._ensure_column(conn, 'bot_market_context', 'symbol_regime', 'TEXT')
+                self._ensure_column(conn, 'bot_market_context', 'context_mode', 'TEXT')
                 self._ensure_column(conn, 'bot_market_context', 'btc_regime', 'TEXT')
                 self._ensure_column(conn, 'bot_market_context', 'bear_mode', 'INTEGER')
+                self._ensure_column(conn, 'bot_market_context', 'symbol_bear', 'INTEGER')
+                self._ensure_column(conn, 'bot_market_context', 'btc_bear', 'INTEGER')
+                self._ensure_column(conn, 'bot_market_context', 'trade_multiplier', 'REAL')
+                self._ensure_column(conn, 'bot_market_context', 'btc_momentum_percent', 'REAL')
+                self._ensure_column(conn, 'bot_market_context', 'symbol_momentum_percent', 'REAL')
                 self._ensure_column(conn, 'bot_market_context', 'confidence_bonus', 'REAL')
                 self._ensure_column(conn, 'bot_market_context', 'reversal_confirmed', 'INTEGER')
                 self._ensure_column(conn, 'bot_market_context', 'falling_knife_active', 'INTEGER')
@@ -191,443 +238,28 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_live_predictions', 'exit_reason', 'TEXT')
                 self._ensure_column(conn, 'ml_live_predictions', 'entry_price', 'REAL')
                 conn.execute('DROP TABLE IF EXISTS support_touch_trade_results')
-                conn.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS ml_raw_events (
-                        event_id TEXT PRIMARY KEY,
-                        event_type TEXT NOT NULL,
-                        timestamp TEXT NOT NULL,
-                        symbol TEXT,
-                        mode TEXT,
-                        payload_data TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_entry_decisions (
-                        event_id TEXT PRIMARY KEY,
-                        timestamp TEXT NOT NULL,
-                        mode TEXT,
-                        symbol TEXT NOT NULL,
-                        decision TEXT NOT NULL,
-                        reason TEXT,
-                        price REAL,
-                        p_win REAL,
-                        min_p_win REAL,
-                        p_continue REAL,
-                        min_p_continue REAL,
-                        label_status TEXT,
-                        features_data TEXT,
-                        bot_context_data TEXT,
-                        trade_context_data TEXT,
-                        exit_forecast_data TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_entry_feature_values (
-                        event_id TEXT NOT NULL,
-                        feature_name TEXT NOT NULL,
-                        feature_value REAL,
-                        feature_text TEXT,
-                        PRIMARY KEY (event_id, feature_name)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_open_entries (
-                        symbol TEXT PRIMARY KEY,
-                        entry_id TEXT NOT NULL,
-                        opened_at TEXT NOT NULL,
-                        order_id TEXT,
-                        price REAL,
-                        amount REAL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_exit_decisions (
-                        event_id TEXT PRIMARY KEY,
-                        timestamp TEXT NOT NULL,
-                        mode TEXT,
-                        symbol TEXT NOT NULL,
-                        entry_id TEXT,
-                        decision TEXT,
-                        reason TEXT,
-                        current_price REAL,
-                        entry_p_win REAL,
-                        continuation_score REAL,
-                        p_continue REAL,
-                        net_pnl_pct REAL,
-                        duration_minutes REAL,
-                        features_data TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_exit_feature_values (
-                        event_id TEXT NOT NULL,
-                        feature_name TEXT NOT NULL,
-                        feature_value REAL,
-                        feature_text TEXT,
-                        PRIMARY KEY (event_id, feature_name)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_trade_outcomes (
-                        event_id TEXT PRIMARY KEY,
-                        timestamp TEXT NOT NULL,
-                        mode TEXT,
-                        symbol TEXT NOT NULL,
-                        entry_id TEXT,
-                        sell_price REAL,
-                        buy_price REAL,
-                        amount REAL,
-                        pnl REAL,
-                        pnl_pct REAL,
-                        hold_time TEXT,
-                        reason TEXT,
-                        order_id TEXT,
-                        label_status TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS telegram_messages (
-                        event_id TEXT PRIMARY KEY,
-                        timestamp TEXT NOT NULL,
-                        telegram_ts INTEGER,
-                        message_id TEXT,
-                        direction TEXT NOT NULL,
-                        text TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_live_status (
-                        key TEXT PRIMARY KEY,
-                        timestamp TEXT,
-                        exchange TEXT,
-                        connected INTEGER,
-                        running INTEGER,
-                        mode_name TEXT,
-                        reconnect_attempts INTEGER,
-                        queue_size INTEGER,
-                        queue_maxsize INTEGER,
-                        worker_alive INTEGER,
-                        ws_thread_alive INTEGER,
-                        status_data TEXT NOT NULL,
-                        updated_at TEXT,
-                        created_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_live_status_symbols (
-                        status_key TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        price REAL,
-                        tick_count INTEGER,
-                        kline_count INTEGER,
-                        last_tick TEXT,
-                        last_analysis TEXT,
-                        symbol_data TEXT NOT NULL,
-                        updated_at TEXT,
-                        created_at TEXT,
-                        PRIMARY KEY (status_key, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_commands (
-                        command_id TEXT PRIMARY KEY,
-                        action TEXT NOT NULL,
-                        symbol TEXT,
-                        seconds REAL,
-                        status TEXT NOT NULL,
-                        command_ts REAL,
-                        command_data TEXT NOT NULL,
-                        created_at TEXT,
-                        updated_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS crypto_score_history (
-                        score_id TEXT PRIMARY KEY,
-                        timestamp TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        score INTEGER,
-                        price REAL,
-                        created_at TEXT,
-                        updated_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_state (
-                        mode TEXT PRIMARY KEY,
-                        paper_balance REAL,
-                        initial_balance REAL,
-                        updated_at TEXT NOT NULL,
-                        created_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_app_state (
-                        state_key TEXT PRIMARY KEY,
-                        state_value TEXT,
-                        created_at TEXT,
-                        updated_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_processes (
-                        process_key TEXT PRIMARY KEY,
-                        pid INTEGER,
-                        started_at TEXT,
-                        command TEXT,
-                        created_at TEXT,
-                        updated_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_daily_stats (
-                        stat_date TEXT PRIMARY KEY,
-                        trades_count INTEGER,
-                        total_loss REAL,
-                        total_profit REAL,
-                        emergency_stop INTEGER,
-                        stats_data TEXT NOT NULL,
-                        created_at TEXT,
-                        updated_at TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_positions (
-                        mode TEXT NOT NULL,
-                        idx INTEGER NOT NULL,
-                        symbol TEXT,
-                        side TEXT,
-                        amount REAL,
-                        price REAL,
-                        status TEXT,
-                        order_id TEXT,
-                        timestamp TEXT,
-                        closed_at TEXT,
-                        sell_price REAL,
-                        fee REAL,
-                        fee_rate REAL,
-                        position_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, idx)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_pending_orders (
-                        mode TEXT NOT NULL,
-                        order_id TEXT NOT NULL,
-                        symbol TEXT,
-                        side TEXT,
-                        order_type TEXT,
-                        amount REAL,
-                        price REAL,
-                        status TEXT,
-                        created_at TEXT,
-                        order_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, order_id)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_trailing_stops (
-                        mode TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        stop_price REAL,
-                        highest_price REAL,
-                        buy_price REAL,
-                        trailing_percent REAL,
-                        initial_trailing_percent REAL,
-                        breakeven_active INTEGER,
-                        resistance_price REAL,
-                        stop_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_symbol_cooldowns (
-                        mode TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        cooldown_until REAL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_exit_recommendations (
-                        mode TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        decision TEXT,
-                        continuation_score REAL,
-                        net_pnl_pct REAL,
-                        reason TEXT,
-                        recommendation_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_decision_journal (
-                        mode TEXT NOT NULL,
-                        idx INTEGER NOT NULL,
-                        timestamp TEXT,
-                        symbol TEXT,
-                        action TEXT,
-                        allowed INTEGER,
-                        reason TEXT,
-                        entry_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, idx)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS bot_market_context (
-                        mode TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        symbol_regime TEXT,
-                        btc_regime TEXT,
-                        bear_mode INTEGER,
-                        confidence_bonus REAL,
-                        reversal_confirmed INTEGER,
-                        falling_knife_active INTEGER,
-                        context_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_live_predictions (
-                        mode TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        p_win REAL,
-                        p_continue REAL,
-                        recommendation TEXT,
-                        min_probability REAL,
-                        min_p_continue REAL,
-                        exit_decision TEXT,
-                        exit_reason TEXT,
-                        entry_price REAL,
-                        prediction_ts TEXT,
-                        prediction_data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (mode, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS support_touch_results (
-                        run_id TEXT NOT NULL,
-                        generated_at TEXT,
-                        exchange TEXT,
-                        run_timeframe TEXT,
-                        candle_limit INTEGER,
-                        run_total_trades INTEGER,
-                        run_total_wins INTEGER,
-                        run_win_rate REAL,
-                        run_total_pnl_percent REAL,
-                        settings_data TEXT,
-                        symbol TEXT NOT NULL,
-                        timeframe TEXT,
-                        candles INTEGER,
-                        trades INTEGER,
-                        wins INTEGER,
-                        losses INTEGER,
-                        win_rate REAL,
-                        total_pnl_percent REAL,
-                        avg_pnl_percent REAL,
-                        best_trade_percent REAL,
-                        worst_trade_percent REAL,
-                        result_data TEXT NOT NULL,
-                        stored_at TEXT NOT NULL,
-                        PRIMARY KEY (run_id, symbol)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_model_metadata (
-                        model_id TEXT PRIMARY KEY,
-                        trained_at TEXT,
-                        model_path TEXT,
-                        n_features INTEGER,
-                        exit_n_features INTEGER,
-                        metadata_data TEXT NOT NULL,
-                        stored_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_feature_importances (
-                        model_id TEXT NOT NULL,
-                        scope TEXT NOT NULL,
-                        rank INTEGER NOT NULL,
-                        feature_name TEXT NOT NULL,
-                        importance REAL NOT NULL,
-                        PRIMARY KEY (model_id, scope, rank)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_analysis_runs (
-                        run_id TEXT PRIMARY KEY,
-                        generated_at TEXT NOT NULL,
-                        accepted_entries INTEGER NOT NULL,
-                        closed_entries INTEGER NOT NULL,
-                        rejected_entries INTEGER NOT NULL,
-                        rejected_replayed INTEGER NOT NULL,
-                        brier_score REAL,
-                        calibration_mae REAL,
-                        live_win_rate REAL,
-                        avg_pnl_pct REAL,
-                        drift_status TEXT NOT NULL,
-                        notes_data TEXT,
-                        stored_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_prediction_calibration (
-                        run_id TEXT NOT NULL,
-                        bucket_label TEXT NOT NULL,
-                        min_p_win REAL NOT NULL,
-                        max_p_win REAL NOT NULL,
-                        entries INTEGER NOT NULL,
-                        closed_entries INTEGER NOT NULL,
-                        predicted_avg REAL,
-                        realized_win_rate REAL,
-                        avg_pnl_pct REAL,
-                        calibration_error REAL,
-                        PRIMARY KEY (run_id, bucket_label)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_rejected_replay_results (
-                        entry_id TEXT PRIMARY KEY,
-                        run_id TEXT NOT NULL,
-                        symbol TEXT NOT NULL,
-                        timestamp TEXT NOT NULL,
-                        entry_price REAL,
-                        p_win REAL,
-                        p_continue REAL,
-                        replay_status TEXT NOT NULL,
-                        replay_method TEXT,
-                        exit_time TEXT,
-                        exit_price REAL,
-                        pnl_pct REAL,
-                        would_win INTEGER,
-                        reason TEXT,
-                        updated_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ml_drift_alerts (
-                        alert_id TEXT PRIMARY KEY,
-                        run_id TEXT NOT NULL,
-                        generated_at TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        message TEXT NOT NULL,
-                        metrics_data TEXT,
-                        stored_at TEXT NOT NULL
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_ml_raw_events_type_time ON ml_raw_events(event_type, timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_ml_entry_symbol_time ON ml_entry_decisions(symbol, timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_ml_exit_symbol_time ON ml_exit_decisions(symbol, timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_ml_entry_feature_name ON ml_entry_feature_values(feature_name);
-                    CREATE INDEX IF NOT EXISTS idx_ml_exit_feature_name ON ml_exit_feature_values(feature_name);
-                    CREATE INDEX IF NOT EXISTS idx_ml_outcome_entry ON ml_trade_outcomes(entry_id);
-                    CREATE INDEX IF NOT EXISTS idx_telegram_messages_time ON telegram_messages(timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_telegram_messages_direction ON telegram_messages(direction);
-                    CREATE INDEX IF NOT EXISTS idx_crypto_score_symbol_time ON crypto_score_history(symbol, timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_bot_commands_status ON bot_commands(status, command_ts);
-                    CREATE INDEX IF NOT EXISTS idx_support_touch_results_symbol ON support_touch_results(symbol);
-                    CREATE INDEX IF NOT EXISTS idx_support_touch_results_time ON support_touch_results(generated_at);
-                    CREATE INDEX IF NOT EXISTS idx_ml_model_metadata_trained ON ml_model_metadata(trained_at);
-                    CREATE INDEX IF NOT EXISTS idx_ml_rejected_replay_status ON ml_rejected_replay_results(replay_status);
-                    CREATE INDEX IF NOT EXISTS idx_ml_analysis_runs_time ON ml_analysis_runs(generated_at);
-                    CREATE INDEX IF NOT EXISTS idx_bot_state_mode ON bot_state(mode);
-                    CREATE INDEX IF NOT EXISTS idx_bot_processes_pid ON bot_processes(pid);
-                    CREATE INDEX IF NOT EXISTS idx_bot_positions_symbol ON bot_positions(mode, symbol);
-                    CREATE INDEX IF NOT EXISTS idx_bot_positions_order ON bot_positions(mode, order_id);
-                    CREATE INDEX IF NOT EXISTS idx_bot_pending_orders_symbol ON bot_pending_orders(mode, symbol);
-                    CREATE INDEX IF NOT EXISTS idx_bot_decision_journal_time ON bot_decision_journal(mode, timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_bot_market_context_symbol ON bot_market_context(mode, symbol);
-                    CREATE INDEX IF NOT EXISTS idx_ml_live_predictions_symbol ON ml_live_predictions(mode, symbol);
-                    """
-                )
+                Base.metadata.create_all(self._Session.kw['bind'])
                 self._migrate_app_state_to_bot_state(conn)
                 self._migrate_runtime_rows_out_of_bot_state(conn)
                 self._compact_bot_state_schema(conn)
+                self._migrate_live_status_schema(conn)
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bot_live_status_symbols_symbol
+                    ON bot_live_status_symbols (symbol)
+                    """
+                )
+                self._migrate_runtime_payload_schema(conn)
+                self._migrate_ml_payload_schema(conn)
                 self._migrate_bot_state_tables(conn)
                 conn.execute('DROP TABLE IF EXISTS bot_state_sections')
                 self._ensure_audit_columns(conn)
                 conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"⚠️ SQLite init failed: {type(exc).__name__}: {exc}")
+
+    def _orm_session(self):
+        return self._Session()
 
     def _quote_ident(self, name):
         return '"' + str(name).replace('"', '""') + '"'
@@ -1065,38 +697,315 @@ class MLLiveLogger:
         except Exception:
             pass
 
-    def _migrate_support_touch_results(self, conn):
+    def _migrate_live_status_schema(self, conn):
         try:
-            conn.executescript(
+            def table_columns(table):
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,)
+                ).fetchone()
+                if not exists:
+                    return None
+                return [row[1] for row in conn.execute(f'PRAGMA table_info({table})')]
+
+            def column_expr(columns, name, default='NULL'):
+                return name if columns and name in columns else default
+
+            status_columns = table_columns('bot_live_status')
+            symbol_columns = table_columns('bot_live_status_symbols')
+            subscription_columns = table_columns('bot_live_status_subscriptions')
+            required_status = {
+                'key', 'timestamp', 'exchange', 'connected', 'running', 'mode_name',
+                'reconnect_attempts', 'queue_size', 'queue_maxsize', 'worker_alive',
+                'ws_thread_alive', 'created_at', 'updated_at'
+            }
+            required_symbol = {
+                'status_key', 'symbol', 'price', 'tick_count', 'kline_count',
+                'analysis_trigger_countdown', 'price_change_since_analysis_percent',
+                'last_tick', 'last_tick_age_seconds', 'last_analysis',
+                'last_analysis_age_seconds', 'bid', 'ask', 'spread', 'spread_percent',
+                'volume_24h', 'candle_timestamp', 'candle_open', 'candle_high',
+                'candle_low', 'candle_volume', 'source', 'created_at', 'updated_at'
+            }
+            required_subscription = {'status_key', 'symbol', 'created_at', 'updated_at'}
+            needs_migration = (
+                (status_columns is not None and (
+                    'status_data' in status_columns or not required_status.issubset(set(status_columns))
+                ))
+                or (symbol_columns is not None and (
+                    'symbol_data' in symbol_columns or not required_symbol.issubset(set(symbol_columns))
+                ))
+                or (subscription_columns is not None and not required_subscription.issubset(set(subscription_columns)))
+            )
+            if not needs_migration:
+                return
+
+            status_rows = []
+            symbol_rows = []
+            if status_columns:
+                status_rows = conn.execute(
+                    f"""
+                    SELECT {column_expr(status_columns, 'key')},
+                           {column_expr(status_columns, 'timestamp')},
+                           {column_expr(status_columns, 'exchange')},
+                           {column_expr(status_columns, 'connected')},
+                           {column_expr(status_columns, 'running')},
+                           {column_expr(status_columns, 'mode_name')},
+                           {column_expr(status_columns, 'reconnect_attempts')},
+                           {column_expr(status_columns, 'queue_size')},
+                           {column_expr(status_columns, 'queue_maxsize')},
+                           {column_expr(status_columns, 'worker_alive')},
+                           {column_expr(status_columns, 'ws_thread_alive')},
+                           {column_expr(status_columns, 'status_data')},
+                           {column_expr(status_columns, 'created_at', "datetime('now')")},
+                           {column_expr(status_columns, 'updated_at', "datetime('now')")}
+                    FROM bot_live_status
+                    """
+                ).fetchall()
+
+            if symbol_columns:
+                symbol_rows = conn.execute(
+                    f"""
+                    SELECT {column_expr(symbol_columns, 'status_key')},
+                           {column_expr(symbol_columns, 'symbol')},
+                           {column_expr(symbol_columns, 'price')},
+                           {column_expr(symbol_columns, 'tick_count')},
+                           {column_expr(symbol_columns, 'kline_count')},
+                           {column_expr(symbol_columns, 'last_tick')},
+                           {column_expr(symbol_columns, 'last_analysis')},
+                           {column_expr(symbol_columns, 'symbol_data')},
+                           {column_expr(symbol_columns, 'created_at', "datetime('now')")},
+                           {column_expr(symbol_columns, 'updated_at', "datetime('now')")}
+                    FROM bot_live_status_symbols
+                    """
+                ).fetchall()
+
+            conn.execute('DROP TABLE IF EXISTS bot_live_status')
+            conn.execute('DROP TABLE IF EXISTS bot_live_status_symbols')
+            conn.execute('DROP TABLE IF EXISTS bot_live_status_subscriptions')
+            conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS support_touch_results (
-                    run_id TEXT NOT NULL,
-                    generated_at TEXT,
+                CREATE TABLE bot_live_status (
+                    key TEXT PRIMARY KEY,
+                    timestamp TEXT,
                     exchange TEXT,
-                    run_timeframe TEXT,
-                    candle_limit INTEGER,
-                    run_total_trades INTEGER,
-                    run_total_wins INTEGER,
-                    run_win_rate REAL,
-                    run_total_pnl_percent REAL,
-                    settings_data TEXT,
-                    symbol TEXT NOT NULL,
-                    timeframe TEXT,
-                    candles INTEGER,
-                    trades INTEGER,
-                    wins INTEGER,
-                    losses INTEGER,
-                    win_rate REAL,
-                    total_pnl_percent REAL,
-                    avg_pnl_percent REAL,
-                    best_trade_percent REAL,
-                    worst_trade_percent REAL,
-                    result_data TEXT NOT NULL,
-                    stored_at TEXT NOT NULL,
-                    PRIMARY KEY (run_id, symbol)
-                );
+                    connected INTEGER,
+                    running INTEGER,
+                    mode_name TEXT,
+                    reconnect_attempts INTEGER,
+                    queue_size INTEGER,
+                    queue_maxsize INTEGER,
+                    worker_alive INTEGER,
+                    ws_thread_alive INTEGER,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE bot_live_status_subscriptions (
+                    status_key TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (status_key, symbol)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE bot_live_status_symbols (
+                    status_key TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    price REAL,
+                    tick_count INTEGER,
+                    kline_count INTEGER,
+                    analysis_trigger_countdown INTEGER,
+                    price_change_since_analysis_percent REAL,
+                    last_tick TEXT,
+                    last_tick_age_seconds REAL,
+                    last_analysis TEXT,
+                    last_analysis_age_seconds REAL,
+                    bid REAL,
+                    ask REAL,
+                    spread REAL,
+                    spread_percent REAL,
+                    volume_24h REAL,
+                    candle_timestamp TEXT,
+                    candle_open REAL,
+                    candle_high REAL,
+                    candle_low REAL,
+                    candle_volume REAL,
+                    source TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (status_key, symbol)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bot_live_status_symbols_symbol
+                ON bot_live_status_symbols (symbol)
+                """
+            )
+            for row in status_rows:
+                (
+                    key, timestamp, exchange, connected, running, mode_name,
+                    reconnect_attempts, queue_size, queue_maxsize, worker_alive,
+                    ws_thread_alive, status_data, created_at, updated_at
+                ) = row
+                subscribed = []
+                if status_data:
+                    try:
+                        subscribed = json.loads(status_data).get('subscribed_symbols') or []
+                    except Exception:
+                        subscribed = []
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO bot_live_status
+                    (key, timestamp, exchange, connected, running, mode_name,
+                     reconnect_attempts, queue_size, queue_maxsize, worker_alive,
+                     ws_thread_alive, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        key, timestamp, exchange, connected, running, mode_name,
+                        reconnect_attempts, queue_size, queue_maxsize, worker_alive,
+                        ws_thread_alive, created_at, updated_at
+                    )
+                )
+                for symbol in subscribed:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO bot_live_status_subscriptions
+                        (status_key, symbol, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (key, str(symbol), created_at, updated_at)
+                    )
+            for row in symbol_rows:
+                status_key, symbol, price, tick_count, kline_count, last_tick, last_analysis, symbol_data, created_at, updated_at = row
+                data = {}
+                if symbol_data:
+                    try:
+                        data = json.loads(symbol_data)
+                    except Exception:
+                        data = {}
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO bot_live_status_symbols
+                    (status_key, symbol, price, tick_count, kline_count,
+                     analysis_trigger_countdown, price_change_since_analysis_percent,
+                     last_tick, last_tick_age_seconds, last_analysis,
+                     last_analysis_age_seconds, bid, ask, spread, spread_percent,
+                     volume_24h, candle_timestamp, candle_open, candle_high,
+                     candle_low, candle_volume, source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        status_key,
+                        symbol,
+                        self._clean(data.get('price', price)),
+                        data.get('tick_count', tick_count),
+                        data.get('kline_count', kline_count),
+                        data.get('analysis_trigger_countdown'),
+                        self._clean(data.get('price_change_since_analysis_percent')),
+                        data.get('last_tick', last_tick),
+                        self._clean(data.get('last_tick_age_seconds')),
+                        data.get('last_analysis', last_analysis),
+                        self._clean(data.get('last_analysis_age_seconds')),
+                        self._clean(data.get('bid')),
+                        self._clean(data.get('ask')),
+                        self._clean(data.get('spread')),
+                        self._clean(data.get('spread_percent')),
+                        self._clean(data.get('volume_24h')),
+                        data.get('candle_timestamp'),
+                        self._clean(data.get('candle_open')),
+                        self._clean(data.get('candle_high')),
+                        self._clean(data.get('candle_low')),
+                        self._clean(data.get('candle_volume')),
+                        data.get('source'),
+                        created_at,
+                        updated_at,
+                    )
+                )
+        except Exception:
+            pass
+
+    def _migrate_runtime_payload_schema(self, conn):
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_decision_metrics (
+                    mode TEXT NOT NULL,
+                    idx INTEGER NOT NULL,
+                    metric_name TEXT NOT NULL,
+                    metric_value REAL,
+                    metric_text TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (mode, idx, metric_name)
+                )
+                """
+            )
+            for table, column in (
+                ('bot_commands', 'command_data'),
+                ('bot_daily_stats', 'stats_data'),
+                ('bot_positions', 'position_data'),
+                ('bot_trailing_stops', 'stop_data'),
+                ('bot_exit_recommendations', 'recommendation_data'),
+                ('bot_market_context', 'context_data'),
+                ('ml_live_predictions', 'prediction_data'),
+                ('bot_decision_journal', 'entry_data'),
+            ):
+                self._drop_column(conn, table, column)
+            for table, column_type in (
+                ('bot_positions', ('position_size_usd', 'REAL')),
+                ('bot_positions', ('position_size_crypto', 'REAL')),
+                ('bot_positions', ('risk_reward_ratio', 'REAL')),
+                ('bot_positions', ('target_price', 'REAL')),
+                ('bot_positions', ('reason', 'TEXT')),
+            ):
+                column, col_type = column_type
+                self._ensure_column(conn, table, column, col_type)
+        except Exception:
+            pass
+
+    def _migrate_ml_payload_schema(self, conn):
+        try:
+            for table, column in (
+                ('ml_raw_events', 'payload_data'),
+                ('ml_entry_decisions', 'features_data'),
+                ('ml_entry_decisions', 'bot_context_data'),
+                ('ml_entry_decisions', 'trade_context_data'),
+                ('ml_entry_decisions', 'exit_forecast_data'),
+                ('ml_exit_decisions', 'features_data'),
+                ('support_touch_results', 'settings_data'),
+                ('support_touch_results', 'result_data'),
+                ('ml_model_metadata', 'metadata_data'),
+                ('ml_analysis_runs', 'notes_data'),
+                ('ml_drift_alerts', 'metrics_data'),
+            ):
+                self._drop_column(conn, table, column)
+            for table, column, col_type in (
+                ('ml_analysis_runs', 'message', 'TEXT'),
+                ('ml_analysis_runs', 'method', 'TEXT'),
+                ('ml_drift_alerts', 'accepted_entries', 'INTEGER'),
+                ('ml_drift_alerts', 'closed_entries', 'INTEGER'),
+                ('ml_drift_alerts', 'rejected_entries', 'INTEGER'),
+                ('ml_drift_alerts', 'rejected_replayed', 'INTEGER'),
+                ('ml_drift_alerts', 'live_win_rate', 'REAL'),
+                ('ml_drift_alerts', 'calibration_mae', 'REAL'),
+                ('ml_drift_alerts', 'avg_pnl_pct', 'REAL'),
+            ):
+                self._ensure_column(conn, table, column, col_type)
+        except Exception:
+            pass
+
+    def _migrate_support_touch_results(self, conn):
+        try:
             has_runs = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='support_touch_backtests'"
             ).fetchone()
@@ -1104,6 +1013,36 @@ class MLLiveLogger:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='support_touch_pair_results'"
             ).fetchone()
             if has_runs and has_pairs:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS support_touch_results (
+                        run_id TEXT NOT NULL,
+                        generated_at TEXT,
+                        exchange TEXT,
+                        run_timeframe TEXT,
+                        candle_limit INTEGER,
+                        run_total_trades INTEGER,
+                        run_total_wins INTEGER,
+                        run_win_rate REAL,
+                        run_total_pnl_percent REAL,
+                        settings_data TEXT,
+                        symbol TEXT NOT NULL,
+                        timeframe TEXT,
+                        candles INTEGER,
+                        trades INTEGER,
+                        wins INTEGER,
+                        losses INTEGER,
+                        win_rate REAL,
+                        total_pnl_percent REAL,
+                        avg_pnl_percent REAL,
+                        best_trade_percent REAL,
+                        worst_trade_percent REAL,
+                        result_data TEXT NOT NULL,
+                        stored_at TEXT NOT NULL,
+                        PRIMARY KEY (run_id, symbol)
+                    );
+                    """
+                )
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO support_touch_results
@@ -1133,10 +1072,10 @@ class MLLiveLogger:
         if self._conn is None:
             self._conn = sqlite3.connect(
                 self.sqlite_file,
-                timeout=5,
+                timeout=30,
                 check_same_thread=False
             )
-            self._conn.execute('PRAGMA busy_timeout=5000')
+            self._conn.execute('PRAGMA busy_timeout=30000')
         return self._conn
 
     def close(self):
@@ -1145,129 +1084,107 @@ class MLLiveLogger:
                 if self._conn is not None:
                     self._conn.close()
                     self._conn = None
+                try:
+                    engine = self._Session.kw.get('bind')
+                    if engine is not None:
+                        engine.dispose()
+                except Exception:
+                    pass
         except Exception:
             pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return False
 
     def __del__(self):
         self.close()
 
     def _insert_sqlite_event(self, event):
         try:
-            conn = self._get_conn()
             event_type = event.get('event_type')
-            payload = json.dumps(event, ensure_ascii=False)
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO ml_raw_events
-                (event_id, event_type, timestamp, symbol, mode, payload_data)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.get('event_id'),
-                    event_type,
-                    event.get('timestamp'),
-                    event.get('symbol'),
-                    event.get('mode'),
-                    payload
-                )
-            )
+            with self._orm_session() as session:
+                session.merge(MlRawEvent(
+                    event_id=event.get('event_id'),
+                    event_type=event_type,
+                    timestamp=event.get('timestamp'),
+                    symbol=event.get('symbol'),
+                    mode=event.get('mode'),
+                ))
 
-            if event_type == 'entry_decision':
-                self._insert_entry_decision(conn, event)
-            elif event_type == 'entry_opened':
-                self._insert_open_entry(conn, event)
-            elif event_type == 'exit_decision':
-                self._insert_exit_decision(conn, event)
-            elif event_type == 'exit_outcome':
-                self._insert_trade_outcome(conn, event)
-            elif event_type == 'telegram_message':
-                self._insert_telegram_message(conn, event)
-            conn.commit()
+                if event_type == 'entry_decision':
+                    self._insert_entry_decision(session, event)
+                elif event_type == 'entry_opened':
+                    self._insert_open_entry(session, event)
+                elif event_type == 'exit_decision':
+                    self._insert_exit_decision(session, event)
+                elif event_type == 'exit_outcome':
+                    self._insert_trade_outcome(session, event)
+                elif event_type == 'telegram_message':
+                    self._insert_telegram_message(session, event)
+                session.commit()
         except Exception:
-            try:
-                self._get_conn().rollback()
-            except Exception:
-                pass
+            pass
 
-    def _insert_entry_decision(self, conn, event):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO ml_entry_decisions
-            (event_id, timestamp, mode, symbol, decision, reason, price, p_win,
-             min_p_win, p_continue, min_p_continue, label_status, features_data,
-             bot_context_data, trade_context_data, exit_forecast_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.get('event_id'),
-                event.get('timestamp'),
-                event.get('mode'),
-                event.get('symbol'),
-                event.get('decision'),
-                event.get('reason'),
-                event.get('price'),
-                event.get('p_win'),
-                event.get('min_p_win'),
-                event.get('p_continue'),
-                event.get('min_p_continue'),
-                event.get('label_status'),
-                json.dumps(event.get('features') or {}, ensure_ascii=False),
-                json.dumps(event.get('bot_context') or {}, ensure_ascii=False),
-                json.dumps(event.get('trade_context') or {}, ensure_ascii=False),
-                json.dumps(event.get('exit_forecast') or {}, ensure_ascii=False),
-            )
-        )
-        self._insert_feature_values(conn, 'ml_entry_feature_values', event.get('event_id'), event.get('features') or {})
+    def _insert_entry_decision(self, session, event):
+        session.merge(MlEntryDecision(
+            event_id=event.get('event_id'),
+            timestamp=event.get('timestamp'),
+            mode=event.get('mode'),
+            symbol=event.get('symbol'),
+            decision=event.get('decision'),
+            reason=event.get('reason'),
+            price=event.get('price'),
+            p_win=event.get('p_win'),
+            min_p_win=event.get('min_p_win'),
+            p_continue=event.get('p_continue'),
+            min_p_continue=event.get('min_p_continue'),
+            label_status=event.get('label_status'),
+        ))
+        self._insert_feature_values(session, MlEntryFeatureValue, event.get('event_id'), event.get('features') or {})
 
-    def _insert_feature_values(self, conn, table_name, event_id, features):
+    def _insert_feature_values(self, session, model, event_id, features):
         if not event_id or not isinstance(features, dict):
             return
-        conn.execute(f"DELETE FROM {table_name} WHERE event_id = ?", (event_id,))
+        session.execute(delete(model).where(model.event_id == event_id))
         for name, value in features.items():
             clean_value = self._clean(value)
             numeric = clean_value if isinstance(clean_value, (int, float)) and not isinstance(clean_value, bool) else None
             text_value = None if numeric is not None or clean_value is None else str(clean_value)
-            conn.execute(
-                f"""
-                INSERT OR REPLACE INTO {table_name}
-                (event_id, feature_name, feature_value, feature_text)
-                VALUES (?, ?, ?, ?)
-                """,
-                (event_id, str(name), numeric, text_value)
-            )
+            session.add(model(
+                event_id=event_id,
+                feature_name=str(name),
+                feature_value=numeric,
+                feature_text=text_value,
+            ))
 
     def get_state_value(self, key, default=None):
         try:
-            with self._lock:
-                row = self._get_conn().execute(
-                    """
-                    SELECT state_value FROM bot_app_state
-                    WHERE state_key = ?
-                    """
-                    ,
-                    (str(key),)
-                ).fetchone()
-            return row[0] if row else default
+            with self._orm_session() as session:
+                row = session.get(BotAppState, str(key))
+                return row.state_value if row else default
         except Exception:
             return default
 
     def set_state_value(self, key, value):
         try:
-            now = datetime.now().isoformat()
-            with self._lock:
-                conn = self._get_conn()
-                conn.execute(
-                    """
-                    INSERT INTO bot_app_state
-                    (state_key, state_value, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(state_key) DO UPDATE SET
-                        state_value = excluded.state_value,
-                        updated_at = excluded.updated_at
-                    """,
-                    (str(key), str(value), now, now)
-                )
-                conn.commit()
+            now = now_iso()
+            with self._orm_session() as session:
+                row = session.get(BotAppState, str(key))
+                if row:
+                    row.state_value = str(value)
+                    row.updated_at = now
+                else:
+                    session.add(BotAppState(
+                        state_key=str(key),
+                        state_value=str(value),
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                session.commit()
             return True
         except Exception:
             return False
@@ -1275,501 +1192,138 @@ class MLLiveLogger:
     def claim_interval(self, key, interval_seconds, now=None, initialize_only=False):
         """Atomically claim a periodic action slot across threads/processes."""
         now = float(now if now is not None else time.time())
+        session = None
         try:
             with self._lock:
-                conn = self._get_conn()
-                conn.execute('BEGIN IMMEDIATE')
-                row = conn.execute(
-                    "SELECT state_value FROM bot_app_state WHERE state_key = ?",
-                    (str(key),)
-                ).fetchone()
-                last_value = float(row[0]) if row and row[0] is not None else None
+                session = self._orm_session()
+                session.execute(text('BEGIN IMMEDIATE'))
+                row = session.get(BotAppState, str(key))
+                last_value = float(row.state_value) if row and row.state_value is not None else None
+                stamp = now_iso()
                 if last_value is None:
-                    conn.execute(
-                        """
-                        INSERT INTO bot_app_state
-                        (state_key, state_value, created_at, updated_at)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(state_key) DO UPDATE SET
-                            state_value = excluded.state_value,
-                            updated_at = excluded.updated_at
-                        """,
-                        (str(key), str(now), datetime.now().isoformat(), datetime.now().isoformat())
-                    )
-                    conn.commit()
+                    session.add(BotAppState(
+                        state_key=str(key),
+                        state_value=str(now),
+                        created_at=stamp,
+                        updated_at=stamp,
+                    ))
+                    session.commit()
+                    session.close()
                     return not initialize_only
 
                 if now - last_value < float(interval_seconds):
-                    conn.commit()
+                    session.commit()
+                    session.close()
                     return False
 
-                conn.execute(
-                    """
-                    INSERT INTO bot_app_state
-                    (state_key, state_value, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(state_key) DO UPDATE SET
-                        state_value = excluded.state_value,
-                        updated_at = excluded.updated_at
-                    """,
-                    (str(key), str(now), datetime.now().isoformat(), datetime.now().isoformat())
-                )
-                conn.commit()
+                row.state_value = str(now)
+                row.updated_at = stamp
+                session.commit()
+                session.close()
                 return True
-        except Exception:
+        except Exception as exc:
             try:
-                self._get_conn().rollback()
+                session.rollback()
+                session.close()
             except Exception:
                 pass
+            print(f"⚠️ SQLite claim_interval failed: {type(exc).__name__}: {exc}")
             return False
 
-    def _state_value_column(self, key):
-        safe = ''.join(ch if ch.isalnum() else '_' for ch in str(key).strip().lower()).strip('_')
-        return safe or 'value'
+    def claim_daily_key(self, key, day_key):
+        """Atomically claim a once-per-day action slot across threads/processes."""
+        session = None
+        try:
+            with self._lock:
+                session = self._orm_session()
+                session.execute(text('BEGIN IMMEDIATE'))
+                row = session.get(BotAppState, str(key))
+                stamp = now_iso()
+                if row and row.state_value == str(day_key):
+                    session.commit()
+                    session.close()
+                    return False
+
+                if row:
+                    row.state_value = str(day_key)
+                    row.updated_at = stamp
+                else:
+                    session.add(BotAppState(
+                        state_key=str(key),
+                        state_value=str(day_key),
+                        created_at=stamp,
+                        updated_at=stamp,
+                    ))
+                session.commit()
+                session.close()
+                return True
+        except Exception as exc:
+            try:
+                session.rollback()
+                session.close()
+            except Exception:
+                pass
+            print(f"⚠️ SQLite claim_daily_key failed: {type(exc).__name__}: {exc}")
+            return False
 
     def get_bot_process_state(self, key='dashboard_bot'):
         try:
-            with self._lock:
-                row = self._get_conn().execute(
-                    """
-                    SELECT pid, started_at, command, updated_at
-                    FROM bot_processes
-                    WHERE process_key = ?
-                    """,
-                    (key,)
-                ).fetchone()
+            with self._orm_session() as session:
+                row = session.get(BotProcess, key)
             if not row:
                 return {}
             return {
-                'pid': row[0],
-                'started_at': row[1],
-                'command': row[2],
-                'updated_at': row[3],
+                'pid': row.pid,
+                'started_at': row.started_at,
+                'command': row.command,
+                'updated_at': row.updated_at,
             }
         except Exception:
             return {}
 
     def set_bot_process_state(self, payload, key='dashboard_bot'):
         try:
-            now = datetime.now().isoformat()
-            with self._lock:
-                self._get_conn().execute(
-                    """
-                    INSERT INTO bot_processes
-                    (process_key, pid, started_at, command, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(process_key) DO UPDATE SET
-                        pid = excluded.pid,
-                        started_at = excluded.started_at,
-                        command = excluded.command,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        key,
-                        payload.get('pid') if isinstance(payload, dict) else None,
-                        payload.get('started_at') if isinstance(payload, dict) else None,
-                        payload.get('command') if isinstance(payload, dict) else None,
-                        now,
-                        now,
-                    )
-                )
-                self._get_conn().commit()
+            now = now_iso()
+            pid = payload.get('pid') if isinstance(payload, dict) else None
+            started_at = payload.get('started_at') if isinstance(payload, dict) else None
+            command = payload.get('command') if isinstance(payload, dict) else None
+            with self._orm_session() as session:
+                row = session.get(BotProcess, key)
+                if row:
+                    row.pid = pid
+                    row.started_at = started_at
+                    row.command = command
+                    row.updated_at = now
+                else:
+                    session.add(BotProcess(
+                        process_key=key,
+                        pid=pid,
+                        started_at=started_at,
+                        command=command,
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                session.commit()
             return True
         except Exception:
             return False
 
     def clear_bot_process_state(self, key='dashboard_bot'):
         try:
-            with self._lock:
-                self._get_conn().execute(
-                    "DELETE FROM bot_processes WHERE process_key = ?",
-                    (key,)
-                )
-                self._get_conn().commit()
+            with self._orm_session() as session:
+                row = session.get(BotProcess, key)
+                if row:
+                    session.delete(row)
+                session.commit()
             return True
         except Exception:
             return False
 
     def load_bot_state(self, key='paper'):
-        try:
-            with self._lock:
-                state_row = self._get_conn().execute(
-                    """
-                    SELECT paper_balance, initial_balance, updated_at
-                    FROM bot_state
-                    WHERE mode = ?
-                    """,
-                    (key,)
-                ).fetchone()
-                context_rows = self._get_conn().execute(
-                    """
-                    SELECT symbol, context_data
-                    FROM bot_market_context
-                    WHERE mode = ?
-                    """,
-                    (key,)
-                ).fetchall()
-                prediction_rows = self._get_conn().execute(
-                    """
-                    SELECT symbol, prediction_data
-                    FROM ml_live_predictions
-                    WHERE mode = ?
-                    """,
-                    (key,)
-                ).fetchall()
-                journal_rows = self._get_conn().execute(
-                    """
-                    SELECT entry_data
-                    FROM bot_decision_journal
-                    WHERE mode = ?
-                    ORDER BY idx ASC
-                    """,
-                    (key,)
-                ).fetchall()
-                position_rows = self._get_conn().execute(
-                    """
-                    SELECT position_data
-                    FROM bot_positions
-                    WHERE mode = ?
-                    ORDER BY idx ASC
-                    """,
-                    (key,)
-                ).fetchall()
-                order_rows = self._get_conn().execute(
-                    """
-                    SELECT order_id, order_data
-                    FROM bot_pending_orders
-                    WHERE mode = ?
-                    ORDER BY order_id ASC
-                    """,
-                    (key,)
-                ).fetchall()
-                stop_rows = self._get_conn().execute(
-                    """
-                    SELECT symbol, stop_data
-                    FROM bot_trailing_stops
-                    WHERE mode = ?
-                    ORDER BY symbol ASC
-                    """,
-                    (key,)
-                ).fetchall()
-                cooldown_rows = self._get_conn().execute(
-                    """
-                    SELECT symbol, cooldown_until
-                    FROM bot_symbol_cooldowns
-                    WHERE mode = ?
-                    ORDER BY symbol ASC
-                    """,
-                    (key,)
-                ).fetchall()
-                exit_rows = self._get_conn().execute(
-                    """
-                    SELECT symbol, recommendation_data
-                    FROM bot_exit_recommendations
-                    WHERE mode = ?
-                    ORDER BY symbol ASC
-                    """,
-                    (key,)
-                ).fetchall()
-            if not state_row:
-                return None
-            state = {
-                'paper_balance': state_row[0],
-                'initial_balance': state_row[1],
-            }
-            market_context = {}
-            for symbol, context_data in context_rows:
-                try:
-                    market_context[symbol] = json.loads(context_data)
-                except Exception:
-                    pass
-            if market_context:
-                state['market_context'] = market_context
-            ml_predictions = {}
-            for symbol, prediction_data in prediction_rows:
-                try:
-                    ml_predictions[symbol] = json.loads(prediction_data)
-                except Exception:
-                    pass
-            if ml_predictions:
-                state['ml_predictions'] = ml_predictions
-            positions = []
-            for item in position_rows:
-                try:
-                    positions.append(json.loads(item[0]))
-                except Exception:
-                    continue
-            state['positions'] = positions
-            pending_orders = {}
-            for order_id, order_data in order_rows:
-                try:
-                    pending_orders[str(order_id)] = json.loads(order_data)
-                except Exception:
-                    continue
-            state['pending_orders'] = pending_orders
-            trailing_stops = {}
-            for symbol, stop_data in stop_rows:
-                try:
-                    trailing_stops[symbol] = json.loads(stop_data)
-                except Exception:
-                    continue
-            state['trailing_stops'] = trailing_stops
-            state['symbol_cooldowns'] = {
-                symbol: cooldown_until
-                for symbol, cooldown_until in cooldown_rows
-            }
-            exit_recommendations = {}
-            for symbol, recommendation_data in exit_rows:
-                try:
-                    exit_recommendations[symbol] = json.loads(recommendation_data)
-                except Exception:
-                    continue
-            state['exit_recommendations'] = exit_recommendations
-            if journal_rows:
-                journal = []
-                for item in journal_rows:
-                    try:
-                        journal.append(json.loads(item[0]))
-                    except Exception:
-                        continue
-                state['decision_journal'] = journal
-            return state
-        except Exception:
-            return None
+        return self._load_bot_state_orm(key)
 
     def save_bot_state(self, state, key='paper'):
-        try:
-            (
-                clean_state,
-                positions,
-                pending_orders,
-                trailing_stops,
-                symbol_cooldowns,
-                exit_recommendations,
-                market_context,
-                ml_predictions,
-                decision_journal
-            ) = self._split_bot_state(state or {})
-            now = datetime.now().isoformat()
-            with self._lock:
-                conn = self._get_conn()
-                conn.execute(
-                    """
-                    INSERT INTO bot_state
-                    (mode, paper_balance, initial_balance, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(mode) DO UPDATE SET
-                        paper_balance = excluded.paper_balance,
-                        initial_balance = excluded.initial_balance,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        key,
-                        self._clean(clean_state.get('paper_balance')),
-                        self._clean(clean_state.get('initial_balance')),
-                        now,
-                        now,
-                    )
-                )
-                conn.execute("DELETE FROM bot_positions WHERE mode = ?", (key,))
-                for idx, position in enumerate(positions):
-                    if not isinstance(position, dict):
-                        continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_positions
-                        (mode, idx, symbol, side, amount, price, status, order_id,
-                         timestamp, closed_at, sell_price, fee, fee_rate,
-                         position_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            idx,
-                            position.get('symbol'),
-                            position.get('side'),
-                            self._clean(position.get('amount')),
-                            self._clean(position.get('price')),
-                            position.get('status'),
-                            str(position.get('order_id')) if position.get('order_id') is not None else None,
-                            position.get('timestamp'),
-                            position.get('closed_at'),
-                            self._clean(position.get('sell_price')),
-                            self._clean(position.get('fee')),
-                            self._clean(position.get('fee_rate')),
-                            json.dumps(position, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_pending_orders WHERE mode = ?", (key,))
-                for order_id, order_data in pending_orders.items():
-                    if not isinstance(order_data, dict):
-                        continue
-                    order = order_data.get('order') if isinstance(order_data.get('order'), dict) else {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_pending_orders
-                        (mode, order_id, symbol, side, order_type, amount, price,
-                         status, created_at, order_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            str(order_id),
-                            order_data.get('symbol') or order.get('symbol'),
-                            order_data.get('side') or order.get('side'),
-                            order_data.get('type') or order.get('type'),
-                            self._clean(order_data.get('amount') or order.get('amount')),
-                            self._clean(order_data.get('price') or order.get('price')),
-                            order_data.get('status') or order.get('status'),
-                            order_data.get('timestamp') or order_data.get('created_at') or order.get('timestamp'),
-                            json.dumps(order_data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_trailing_stops WHERE mode = ?", (key,))
-                for symbol, stop_data in trailing_stops.items():
-                    if not isinstance(stop_data, dict):
-                        continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_trailing_stops
-                        (mode, symbol, stop_price, highest_price, buy_price,
-                         trailing_percent, initial_trailing_percent,
-                         breakeven_active, resistance_price, stop_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            self._clean(stop_data.get('stop_price')),
-                            self._clean(stop_data.get('highest_price')),
-                            self._clean(stop_data.get('buy_price')),
-                            self._clean(stop_data.get('trailing_percent')),
-                            self._clean(stop_data.get('initial_trailing_percent')),
-                            1 if stop_data.get('breakeven_active') else 0,
-                            self._clean(stop_data.get('resistance_price')),
-                            json.dumps(stop_data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_symbol_cooldowns WHERE mode = ?", (key,))
-                for symbol, cooldown_until in symbol_cooldowns.items():
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_symbol_cooldowns
-                        (mode, symbol, cooldown_until, updated_at)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (key, symbol, self._clean(cooldown_until), now)
-                    )
-                conn.execute("DELETE FROM bot_exit_recommendations WHERE mode = ?", (key,))
-                for symbol, recommendation in exit_recommendations.items():
-                    if not isinstance(recommendation, dict):
-                        continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_exit_recommendations
-                        (mode, symbol, decision, continuation_score, net_pnl_pct,
-                         reason, recommendation_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            recommendation.get('decision'),
-                            self._clean(recommendation.get('continuation_score')),
-                            self._clean(recommendation.get('net_pnl_pct')),
-                            recommendation.get('reason'),
-                            json.dumps(recommendation, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_market_context WHERE mode = ?", (key,))
-                for symbol, data in market_context.items():
-                    if not isinstance(data, dict):
-                        data = {}
-                    reversal = data.get('reversal') if isinstance(data.get('reversal'), dict) else {}
-                    falling = data.get('falling_knife') if isinstance(data.get('falling_knife'), dict) else {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_market_context
-                        (mode, symbol, symbol_regime, btc_regime, bear_mode,
-                         confidence_bonus, reversal_confirmed, falling_knife_active,
-                         context_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            data.get('symbol_regime'),
-                            data.get('btc_regime'),
-                            1 if data.get('bear_mode') else 0,
-                            self._clean(data.get('confidence_bonus')),
-                            1 if reversal.get('confirmed') else 0,
-                            1 if falling.get('is_falling') else 0,
-                            json.dumps(data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM ml_live_predictions WHERE mode = ?", (key,))
-                for symbol, data in ml_predictions.items():
-                    if not isinstance(data, dict):
-                        data = {}
-                    exit_forecast = data.get('exit_forecast') if isinstance(data.get('exit_forecast'), dict) else {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO ml_live_predictions
-                        (mode, symbol, p_win, p_continue, recommendation,
-                         min_probability, min_p_continue, exit_decision,
-                         exit_reason, entry_price, prediction_ts,
-                         prediction_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            data.get('p_win') if isinstance(data, dict) else None,
-                            data.get('p_continue') or exit_forecast.get('p_continue'),
-                            data.get('recommendation') if isinstance(data, dict) else None,
-                            data.get('min_probability') if isinstance(data, dict) else None,
-                            data.get('min_p_continue') or exit_forecast.get('min_p_continue'),
-                            data.get('exit_decision') or exit_forecast.get('decision'),
-                            data.get('exit_reason') or exit_forecast.get('reason'),
-                            self._clean(data.get('price') or data.get('entry_price') or exit_forecast.get('entry_price')),
-                            data.get('timestamp') if isinstance(data, dict) else None,
-                            json.dumps(data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_decision_journal WHERE mode = ?", (key,))
-                for idx, entry in enumerate(decision_journal):
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_decision_journal
-                        (mode, idx, timestamp, symbol, action, allowed, reason, entry_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            idx,
-                            entry.get('timestamp') if isinstance(entry, dict) else None,
-                            entry.get('symbol') if isinstance(entry, dict) else None,
-                            entry.get('action') if isinstance(entry, dict) else None,
-                            1 if isinstance(entry, dict) and entry.get('allowed') else 0 if isinstance(entry, dict) and 'allowed' in entry else None,
-                            entry.get('reason') if isinstance(entry, dict) else None,
-                            json.dumps(entry, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.commit()
-            return True
-        except Exception:
-            try:
-                self._get_conn().rollback()
-            except Exception:
-                pass
-            return False
+        return self._save_bot_state_orm(state, key)
 
     def _split_bot_state(self, state):
         clean_state = dict(state)
@@ -1811,390 +1365,483 @@ class MLLiveLogger:
             decision_journal
         )
 
-    def _migrate_bot_state_tables(self, conn):
+    def _load_bot_state_orm(self, key='paper'):
         try:
-            old_sections = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_state_sections'"
-            ).fetchone()
-            if old_sections:
-                for mode, section, section_data, updated_at in conn.execute(
-                    "SELECT mode, section, section_data, updated_at FROM bot_state_sections"
-                ).fetchall():
-                    try:
-                        data = json.loads(section_data)
-                    except Exception:
-                        data = {}
-                    if section == 'market_context' and isinstance(data, dict):
-                        conn.execute("DELETE FROM bot_market_context WHERE mode = ?", (mode,))
-                        for symbol, context in data.items():
-                            if not isinstance(context, dict):
-                                context = {}
-                            reversal = context.get('reversal') if isinstance(context.get('reversal'), dict) else {}
-                            falling = context.get('falling_knife') if isinstance(context.get('falling_knife'), dict) else {}
-                            conn.execute(
-                                """
-                                INSERT OR REPLACE INTO bot_market_context
-                                (mode, symbol, symbol_regime, btc_regime, bear_mode,
-                                 confidence_bonus, reversal_confirmed,
-                                 falling_knife_active, context_data, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    mode,
-                                    symbol,
-                                    context.get('symbol_regime'),
-                                    context.get('btc_regime'),
-                                    1 if context.get('bear_mode') else 0,
-                                    self._clean(context.get('confidence_bonus')),
-                                    1 if reversal.get('confirmed') else 0,
-                                    1 if falling.get('is_falling') else 0,
-                                    json.dumps(context, ensure_ascii=False),
-                                    updated_at,
-                                )
-                            )
-                    elif section == 'ml_predictions' and isinstance(data, dict):
-                        conn.execute("DELETE FROM ml_live_predictions WHERE mode = ?", (mode,))
-                        for symbol, prediction in data.items():
-                            if not isinstance(prediction, dict):
-                                prediction = {}
-                            exit_forecast = prediction.get('exit_forecast') if isinstance(prediction.get('exit_forecast'), dict) else {}
-                            conn.execute(
-                                """
-                                INSERT OR REPLACE INTO ml_live_predictions
-                                (mode, symbol, p_win, p_continue, recommendation,
-                                 min_probability, min_p_continue, exit_decision,
-                                 exit_reason, entry_price, prediction_ts,
-                                 prediction_data, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    mode,
-                                    symbol,
-                                    prediction.get('p_win') if isinstance(prediction, dict) else None,
-                                    prediction.get('p_continue') or exit_forecast.get('p_continue'),
-                                    prediction.get('recommendation') if isinstance(prediction, dict) else None,
-                                    prediction.get('min_probability') if isinstance(prediction, dict) else None,
-                                    prediction.get('min_p_continue') or exit_forecast.get('min_p_continue'),
-                                    prediction.get('exit_decision') or exit_forecast.get('decision'),
-                                    prediction.get('exit_reason') or exit_forecast.get('reason'),
-                                    self._clean(prediction.get('price') or prediction.get('entry_price') or exit_forecast.get('entry_price')),
-                                    prediction.get('timestamp') if isinstance(prediction, dict) else None,
-                                    json.dumps(prediction, ensure_ascii=False),
-                                    updated_at,
-                                )
-                            )
+            with self._orm_session() as session:
+                state_row = session.get(BotState, key)
+                if not state_row:
+                    return None
+                context_rows = session.scalars(
+                    select(BotMarketContext).where(BotMarketContext.mode == key).order_by(BotMarketContext.symbol.asc())
+                ).all()
+                prediction_rows = session.scalars(
+                    select(MlLivePrediction).where(MlLivePrediction.mode == key).order_by(MlLivePrediction.symbol.asc())
+                ).all()
+                position_rows = session.scalars(
+                    select(BotPosition).where(BotPosition.mode == key).order_by(BotPosition.idx.asc())
+                ).all()
+                order_rows = []
+                stop_rows = session.scalars(
+                    select(BotTrailingStop).where(BotTrailingStop.mode == key).order_by(BotTrailingStop.symbol.asc())
+                ).all()
+                cooldown_rows = session.scalars(
+                    select(BotSymbolCooldown).where(BotSymbolCooldown.mode == key).order_by(BotSymbolCooldown.symbol.asc())
+                ).all()
+                exit_rows = session.scalars(
+                    select(BotExitRecommendation).where(BotExitRecommendation.mode == key).order_by(BotExitRecommendation.symbol.asc())
+                ).all()
+                open_entry_rows = []
+                if not position_rows:
+                    open_entry_rows = session.scalars(
+                        select(MlOpenEntry).order_by(MlOpenEntry.opened_at.asc())
+                    ).all()
 
-            bot_state_columns = [row[1] for row in conn.execute('PRAGMA table_info(bot_state)')]
-            if 'state_key' not in bot_state_columns or 'value_data' not in bot_state_columns:
-                return
-            modes = [row[0] for row in conn.execute("SELECT DISTINCT mode FROM bot_state").fetchall()]
-            for key in modes:
-                state = {}
-                for state_key, value_data in conn.execute(
-                    "SELECT state_key, value_data FROM bot_state WHERE mode = ?",
-                    (key,)
-                ).fetchall():
-                    try:
-                        state[state_key] = json.loads(value_data)
-                    except Exception:
-                        state[state_key] = value_data
-                if not any(name in state for name in (
-                    'support_touch_filter', 'market_context', 'ml_predictions',
-                    'decision_journal', 'positions', 'pending_orders',
-                    'trailing_stops', 'symbol_cooldowns', 'exit_recommendations'
-                )):
-                    continue
-                (
-                    clean_state,
-                    positions,
-                    pending_orders,
-                    trailing_stops,
-                    symbol_cooldowns,
-                    exit_recommendations,
-                    market_context,
-                    ml_predictions,
-                    decision_journal
-                ) = self._split_bot_state(state)
-                now = datetime.now().isoformat()
-                conn.execute("DELETE FROM bot_state WHERE mode = ?", (key,))
-                for state_key, value in clean_state.items():
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_state
-                        (mode, state_key, value_data, updated_at)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (key, state_key, json.dumps(value, ensure_ascii=False), now)
-                    )
-                conn.execute("DELETE FROM bot_positions WHERE mode = ?", (key,))
-                for idx, position in enumerate(positions):
-                    if not isinstance(position, dict):
+            state = {
+                'paper_balance': state_row.paper_balance,
+                'initial_balance': state_row.initial_balance,
+            }
+            market_context = {}
+            for row in context_rows:
+                symbol_regime = row.symbol_regime
+                inferred_mode = row.context_mode
+                if not inferred_mode:
+                    regime_text = str(symbol_regime or '')
+                    if 'BULL' in regime_text or 'UP' in regime_text:
+                        inferred_mode = 'BULL'
+                    elif 'BEAR' in regime_text or 'DOWN' in regime_text:
+                        inferred_mode = 'BEAR'
+                    elif 'SIDE' in regime_text or 'RANGE' in regime_text:
+                        inferred_mode = 'RANGE'
+                    else:
+                        inferred_mode = 'BEAR' if row.bear_mode else 'NORMAL'
+                market_context[row.symbol] = {
+                    'mode': inferred_mode,
+                    'symbol_regime': symbol_regime,
+                    'btc_regime': row.btc_regime,
+                    'bear_mode': bool(row.bear_mode),
+                    'symbol_bear': bool(row.symbol_bear),
+                    'btc_bear': bool(row.btc_bear),
+                    'trade_multiplier': row.trade_multiplier if row.trade_multiplier is not None else 1.0,
+                    'btc_momentum_percent': row.btc_momentum_percent if row.btc_momentum_percent is not None else 0.0,
+                    'symbol_momentum_percent': row.symbol_momentum_percent if row.symbol_momentum_percent is not None else 0.0,
+                    'confidence_bonus': row.confidence_bonus,
+                    'reversal': {'confirmed': bool(row.reversal_confirmed)},
+                    'falling_knife': {'is_falling': bool(row.falling_knife_active)},
+                }
+            if market_context:
+                state['market_context'] = market_context
+
+            ml_predictions = {}
+            for row in prediction_rows:
+                ml_predictions[row.symbol] = {
+                    'p_win': row.p_win,
+                    'p_continue': row.p_continue,
+                    'recommendation': row.recommendation,
+                    'min_probability': row.min_probability,
+                    'min_p_continue': row.min_p_continue,
+                    'exit_decision': row.exit_decision,
+                    'exit_reason': row.exit_reason,
+                    'entry_price': row.entry_price,
+                    'timestamp': row.prediction_ts,
+                    'exit_forecast': {
+                        'p_continue': row.p_continue,
+                        'min_p_continue': row.min_p_continue,
+                        'decision': row.exit_decision,
+                        'reason': row.exit_reason,
+                        'entry_price': row.entry_price,
+                    }
+                }
+            if ml_predictions:
+                state['ml_predictions'] = ml_predictions
+
+            state['positions'] = [
+                {
+                    'symbol': row.symbol,
+                    'side': row.side,
+                    'amount': row.amount,
+                    'price': row.price,
+                    'status': row.status,
+                    'order_id': row.order_id,
+                    'timestamp': row.timestamp,
+                    'closed_at': row.closed_at,
+                    'fee': row.fee,
+                    'fee_rate': row.fee_rate,
+                    'position_size_usd': row.position_size_usd or (float(row.amount or 0) * float(row.price or 0)),
+                    'position_size_crypto': row.position_size_crypto or float(row.amount or 0),
+                    'risk_reward_ratio': row.risk_reward_ratio,
+                    'target_price': row.target_price,
+                    'reason': row.reason,
+                }
+                for row in position_rows
+            ]
+            if not state['positions'] and open_entry_rows:
+                restored_positions = []
+                restored_stops = {}
+                restored_orders = {}
+                for idx, row in enumerate(open_entry_rows):
+                    if not row.symbol or not row.amount or not row.price:
                         continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_positions
-                        (mode, idx, symbol, side, amount, price, status, order_id,
-                         timestamp, closed_at, sell_price, fee, fee_rate,
-                         position_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            idx,
-                            position.get('symbol'),
-                            position.get('side'),
-                            self._clean(position.get('amount')),
-                            self._clean(position.get('price')),
-                            position.get('status'),
-                            str(position.get('order_id')) if position.get('order_id') is not None else None,
-                            position.get('timestamp'),
-                            position.get('closed_at'),
-                            self._clean(position.get('sell_price')),
-                            self._clean(position.get('fee')),
-                            self._clean(position.get('fee_rate')),
-                            json.dumps(position, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_pending_orders WHERE mode = ?", (key,))
-                for order_id, order_data in pending_orders.items():
-                    if not isinstance(order_data, dict):
-                        continue
-                    order = order_data.get('order') if isinstance(order_data.get('order'), dict) else {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_pending_orders
-                        (mode, order_id, symbol, side, order_type, amount, price,
-                         status, created_at, order_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            str(order_id),
-                            order_data.get('symbol') or order.get('symbol'),
-                            order_data.get('side') or order.get('side'),
-                            order_data.get('type') or order.get('type'),
-                            self._clean(order_data.get('amount') or order.get('amount')),
-                            self._clean(order_data.get('price') or order.get('price')),
-                            order_data.get('status') or order.get('status'),
-                            order_data.get('timestamp') or order_data.get('created_at') or order.get('timestamp'),
-                            json.dumps(order_data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_trailing_stops WHERE mode = ?", (key,))
-                for symbol, stop_data in trailing_stops.items():
-                    if not isinstance(stop_data, dict):
-                        continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_trailing_stops
-                        (mode, symbol, stop_price, highest_price, buy_price,
-                         trailing_percent, initial_trailing_percent,
-                         breakeven_active, resistance_price, stop_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            self._clean(stop_data.get('stop_price')),
-                            self._clean(stop_data.get('highest_price')),
-                            self._clean(stop_data.get('buy_price')),
-                            self._clean(stop_data.get('trailing_percent')),
-                            self._clean(stop_data.get('initial_trailing_percent')),
-                            1 if stop_data.get('breakeven_active') else 0,
-                            self._clean(stop_data.get('resistance_price')),
-                            json.dumps(stop_data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_symbol_cooldowns WHERE mode = ?", (key,))
-                for symbol, cooldown_until in symbol_cooldowns.items():
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_symbol_cooldowns
-                        (mode, symbol, cooldown_until, updated_at)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (key, symbol, self._clean(cooldown_until), now)
-                    )
-                conn.execute("DELETE FROM bot_exit_recommendations WHERE mode = ?", (key,))
-                for symbol, recommendation in exit_recommendations.items():
-                    if not isinstance(recommendation, dict):
-                        continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_exit_recommendations
-                        (mode, symbol, decision, continuation_score, net_pnl_pct,
-                         reason, recommendation_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            recommendation.get('decision'),
-                            self._clean(recommendation.get('continuation_score')),
-                            self._clean(recommendation.get('net_pnl_pct')),
-                            recommendation.get('reason'),
-                            json.dumps(recommendation, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_market_context WHERE mode = ?", (key,))
-                for symbol, data in market_context.items():
-                    if not isinstance(data, dict):
-                        data = {}
-                    reversal = data.get('reversal') if isinstance(data.get('reversal'), dict) else {}
-                    falling = data.get('falling_knife') if isinstance(data.get('falling_knife'), dict) else {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_market_context
-                        (mode, symbol, symbol_regime, btc_regime, bear_mode,
-                         confidence_bonus, reversal_confirmed, falling_knife_active,
-                         context_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            data.get('symbol_regime'),
-                            data.get('btc_regime'),
-                            1 if data.get('bear_mode') else 0,
-                            self._clean(data.get('confidence_bonus')),
-                            1 if reversal.get('confirmed') else 0,
-                            1 if falling.get('is_falling') else 0,
-                            json.dumps(data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM ml_live_predictions WHERE mode = ?", (key,))
-                for symbol, data in ml_predictions.items():
-                    if not isinstance(data, dict):
-                        data = {}
-                    exit_forecast = data.get('exit_forecast') if isinstance(data.get('exit_forecast'), dict) else {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO ml_live_predictions
-                        (mode, symbol, p_win, p_continue, recommendation,
-                         min_probability, min_p_continue, exit_decision,
-                         exit_reason, entry_price, prediction_ts,
-                         prediction_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            data.get('p_win') if isinstance(data, dict) else None,
-                            data.get('p_continue') or exit_forecast.get('p_continue'),
-                            data.get('recommendation') if isinstance(data, dict) else None,
-                            data.get('min_probability') if isinstance(data, dict) else None,
-                            data.get('min_p_continue') or exit_forecast.get('min_p_continue'),
-                            data.get('exit_decision') or exit_forecast.get('decision'),
-                            data.get('exit_reason') or exit_forecast.get('reason'),
-                            self._clean(data.get('price') or data.get('entry_price') or exit_forecast.get('entry_price')),
-                            data.get('timestamp') if isinstance(data, dict) else None,
-                            json.dumps(data, ensure_ascii=False),
-                            now,
-                        )
-                    )
-                conn.execute("DELETE FROM bot_decision_journal WHERE mode = ?", (key,))
-                for idx, entry in enumerate(decision_journal):
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_decision_journal
-                        (mode, idx, timestamp, symbol, action, allowed, reason, entry_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            idx,
-                            entry.get('timestamp') if isinstance(entry, dict) else None,
-                            entry.get('symbol') if isinstance(entry, dict) else None,
-                            entry.get('action') if isinstance(entry, dict) else None,
-                            1 if isinstance(entry, dict) and entry.get('allowed') else 0 if isinstance(entry, dict) and 'allowed' in entry else None,
-                            entry.get('reason') if isinstance(entry, dict) else None,
-                            json.dumps(entry, ensure_ascii=False),
-                            now,
-                        )
-                    )
+                    price = float(row.price)
+                    amount = float(row.amount)
+                    symbol = row.symbol
+                    target_price = price * 1.012
+                    stop_price = price * 0.995
+                    restored_positions.append({
+                        'symbol': symbol,
+                        'side': 'buy',
+                        'amount': amount,
+                        'price': price,
+                        'status': 'executed',
+                        'order_id': row.order_id,
+                        'timestamp': row.opened_at,
+                        'fee_rate': 0.001,
+                        'position_size_usd': amount * price,
+                        'position_size_crypto': amount,
+                        'stop_loss_price': stop_price,
+                        'stop_loss_percent': 1.0,
+                        'risk_reward_ratio': 2.0,
+                        'target_price': target_price,
+                        'reason': 'restored_from_ml_open_entries',
+                    })
+                    restored_stops[symbol] = {
+                        'stop_price': stop_price,
+                        'highest_price': price,
+                        'buy_price': price,
+                        'trailing_percent': 0.5,
+                        'initial_trailing_percent': 0.5,
+                        'breakeven_active': False,
+                        'resistance_price': target_price,
+                    }
+                    order_id = f"restored_sell_{symbol.replace('/', '')}_{idx}"
+                    restored_orders[order_id] = {
+                        'order': {
+                            'id': order_id,
+                            'symbol': symbol,
+                            'side': 'sell',
+                            'type': 'limit',
+                            'amount': amount,
+                            'price': target_price,
+                            'status': 'opened',
+                        },
+                        'timestamp': None,
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'source': 'restored_from_ml_open_entries',
+                        'status': 'opened',
+                        'amount': amount,
+                        'price': target_price,
+                        'type': 'limit',
+                    }
+                if restored_positions:
+                    state['positions'] = restored_positions
+                    state['trailing_stops'] = restored_stops
+                    state['pending_orders'] = restored_orders
+                    if key == 'paper':
+                        initial_balance = state.get('initial_balance') or state.get('paper_balance') or 1000.0
+                        open_cost = sum(float(pos.get('amount') or 0.0) * float(pos.get('price') or 0.0) for pos in restored_positions)
+                        state['paper_balance'] = max(0.0, float(initial_balance) - open_cost)
+            if order_rows or 'pending_orders' not in state:
+                state['pending_orders'] = {
+                str(row.order_id): {
+                    'order': {
+                        'id': row.order_id,
+                        'symbol': row.symbol,
+                        'side': row.side,
+                        'type': row.order_type,
+                        'amount': row.amount,
+                        'price': row.price,
+                        'status': row.status,
+                    },
+                    'timestamp': row.order_ts,
+                    'symbol': row.symbol,
+                    'side': row.side,
+                    'source': row.source,
+                    'status': row.status,
+                    'amount': row.amount,
+                    'price': row.price,
+                    'type': row.order_type,
+                }
+                for row in order_rows
+                }
+            if stop_rows or 'trailing_stops' not in state:
+                state['trailing_stops'] = {
+                row.symbol: {
+                    'stop_price': row.stop_price,
+                    'highest_price': row.highest_price,
+                    'buy_price': row.buy_price,
+                    'trailing_percent': row.trailing_percent,
+                    'initial_trailing_percent': row.initial_trailing_percent,
+                    'breakeven_active': bool(row.breakeven_active),
+                    'resistance_price': row.resistance_price,
+                }
+                for row in stop_rows
+                }
+            state['symbol_cooldowns'] = {row.symbol: row.cooldown_until for row in cooldown_rows}
+            state['exit_recommendations'] = {
+                row.symbol: {
+                    'decision': row.decision,
+                    'continuation_score': row.continuation_score,
+                    'net_pnl_pct': row.net_pnl_pct,
+                    'reason': row.reason,
+                }
+                for row in exit_rows
+            }
+            journal = self.get_decision_journal(key, 5000)
+            if journal:
+                state['decision_journal'] = journal
+            return state
         except Exception:
-            pass
+            return None
 
-    def _insert_open_entry(self, conn, event):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO ml_open_entries
-            (symbol, entry_id, opened_at, order_id, price, amount)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.get('symbol'),
-                event.get('entry_id'),
-                event.get('timestamp'),
-                event.get('order_id'),
-                event.get('price'),
-                event.get('amount'),
-            )
-        )
+    def _save_bot_state_orm(self, state, key='paper'):
+        def text_value(value):
+            return str(value) if value is not None else None
 
-    def _insert_exit_decision(self, conn, event):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO ml_exit_decisions
-            (event_id, timestamp, mode, symbol, entry_id, decision, reason,
-             current_price, entry_p_win, continuation_score, p_continue,
-             net_pnl_pct, duration_minutes, features_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.get('event_id'),
-                event.get('timestamp'),
-                event.get('mode'),
-                event.get('symbol'),
-                event.get('entry_id'),
-                event.get('decision'),
-                event.get('reason'),
-                event.get('current_price'),
-                event.get('entry_p_win'),
-                event.get('continuation_score'),
-                event.get('p_continue'),
-                event.get('net_pnl_pct'),
-                event.get('duration_minutes'),
-                json.dumps(event.get('features') or {}, ensure_ascii=False),
-            )
-        )
-        self._insert_feature_values(conn, 'ml_exit_feature_values', event.get('event_id'), event.get('features') or {})
+        for attempt in range(4):
+            try:
+                return self._save_bot_state_orm_once(state, key, text_value)
+            except Exception as exc:
+                if 'database is locked' in str(exc).lower() and attempt < 3:
+                    time.sleep(0.25 * (attempt + 1))
+                    continue
+                print(f"⚠️ SQLite save_bot_state failed: {type(exc).__name__}: {exc}")
+                return False
+        return False
 
-    def _insert_trade_outcome(self, conn, event):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO ml_trade_outcomes
-            (event_id, timestamp, mode, symbol, entry_id, sell_price, buy_price,
-             amount, pnl, pnl_pct, hold_time, reason, order_id, label_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+    def _save_bot_state_orm_once(self, state, key, text_value):
+        try:
             (
-                event.get('event_id'),
-                event.get('timestamp'),
-                event.get('mode'),
-                event.get('symbol'),
-                event.get('entry_id'),
-                event.get('sell_price'),
-                event.get('buy_price'),
-                event.get('amount'),
-                event.get('pnl'),
-                event.get('pnl_pct'),
-                event.get('hold_time'),
-                event.get('reason'),
-                event.get('order_id'),
-                event.get('label_status'),
-            )
-        )
+                clean_state,
+                positions,
+                pending_orders,
+                trailing_stops,
+                symbol_cooldowns,
+                exit_recommendations,
+                market_context,
+                ml_predictions,
+                decision_journal
+            ) = self._split_bot_state(state or {})
+            now = now_iso()
+            with self._lock:
+                with self._orm_session() as session:
+                    session.execute(text('BEGIN IMMEDIATE'))
+                    with session.no_autoflush:
+                        row = session.get(BotState, key)
+                        if not row:
+                            row = BotState(mode=key, created_at=now, updated_at=now)
+                            session.add(row)
+                        row.paper_balance = self._clean(clean_state.get('paper_balance'))
+                        row.initial_balance = self._clean(clean_state.get('initial_balance'))
+                        row.updated_at = now
+
+                        for model in (
+                            BotTrailingStop,
+                            BotSymbolCooldown,
+                            BotExitRecommendation,
+                            BotMarketContext,
+                            MlLivePrediction,
+                        ):
+                            session.execute(delete(model).where(model.mode == key))
+
+                        if positions:
+                            # Upsert par idx (clé primaire avec mode)
+                            existing_rows = {
+                                row.idx: row
+                                for row in session.scalars(
+                                    select(BotPosition).where(BotPosition.mode == key)
+                                ).all()
+                            }
+                            incoming_indices = set()
+                            for idx, position in enumerate(positions):
+                                if not isinstance(position, dict):
+                                    continue
+                                incoming_indices.add(idx)
+                                oid = text_value(position.get('order_id')) or f'__no_oid_{idx}'
+                                if idx in existing_rows:
+                                    row = existing_rows[idx]
+                                    row.symbol = position.get('symbol')
+                                    row.side = position.get('side')
+                                    row.status = position.get('status')
+                                    row.price = self._clean(position.get('price'))
+                                    row.amount = self._clean(position.get('amount'))
+                                    row.order_id = oid
+                                    row.timestamp = text_value(position.get('timestamp'))
+                                    row.closed_at = text_value(position.get('closed_at'))
+                                    row.fee = self._clean(position.get('fee'))
+                                    row.fee_rate = self._clean(position.get('fee_rate'))
+                                    row.position_size_usd = self._clean(position.get('position_size_usd'))
+                                    row.position_size_crypto = self._clean(position.get('position_size_crypto'))
+                                    row.risk_reward_ratio = self._clean(position.get('risk_reward_ratio'))
+                                    row.target_price = self._clean(position.get('target_price'))
+                                    row.reason = text_value(position.get('reason'))
+                                    row.updated_at = now
+                                else:
+                                    session.add(BotPosition(
+                                        mode=key,
+                                        idx=idx,
+                                        symbol=position.get('symbol'),
+                                        side=position.get('side'),
+                                        amount=self._clean(position.get('amount')),
+                                        price=self._clean(position.get('price')),
+                                        status=position.get('status'),
+                                        order_id=oid,
+                                        timestamp=text_value(position.get('timestamp')),
+                                        closed_at=text_value(position.get('closed_at')),
+                                        fee=self._clean(position.get('fee')),
+                                        fee_rate=self._clean(position.get('fee_rate')),
+                                        position_size_usd=self._clean(position.get('position_size_usd')),
+                                        position_size_crypto=self._clean(position.get('position_size_crypto')),
+                                        risk_reward_ratio=self._clean(position.get('risk_reward_ratio')),
+                                        target_price=self._clean(position.get('target_price')),
+                                        reason=text_value(position.get('reason')),
+                                        created_at=now,
+                                        updated_at=now,
+                                    ))
+                            for idx_val, row in list(existing_rows.items()):
+                                if idx_val not in incoming_indices:
+                                    session.delete(row)
+
+                    # bot_pending_orders logic removed - pending orders are tracked inside bot_positions with status='opened'
+
+                    for symbol, stop_data in trailing_stops.items():
+                        if not isinstance(stop_data, dict):
+                            continue
+                        session.add(BotTrailingStop(
+                            mode=key,
+                            symbol=symbol,
+                            stop_price=self._clean(stop_data.get('stop_price')),
+                            highest_price=self._clean(stop_data.get('highest_price')),
+                            buy_price=self._clean(stop_data.get('buy_price')),
+                            trailing_percent=self._clean(stop_data.get('trailing_percent')),
+                            initial_trailing_percent=self._clean(stop_data.get('initial_trailing_percent')),
+                            breakeven_active=1 if stop_data.get('breakeven_active') else 0,
+                            resistance_price=self._clean(stop_data.get('resistance_price')),
+                            created_at=now,
+                            updated_at=now,
+                        ))
+
+                    for symbol, cooldown_until in symbol_cooldowns.items():
+                        session.add(BotSymbolCooldown(
+                            mode=key,
+                            symbol=symbol,
+                            cooldown_until=self._clean(cooldown_until),
+                            created_at=now,
+                            updated_at=now,
+                        ))
+
+                    for symbol, recommendation in exit_recommendations.items():
+                        if not isinstance(recommendation, dict):
+                            continue
+                        session.add(BotExitRecommendation(
+                            mode=key,
+                            symbol=symbol,
+                            decision=recommendation.get('decision'),
+                            continuation_score=self._clean(recommendation.get('continuation_score')),
+                            net_pnl_pct=self._clean(recommendation.get('net_pnl_pct')),
+                            reason=recommendation.get('reason'),
+                            created_at=now,
+                            updated_at=now,
+                        ))
+
+                    for symbol, data in market_context.items():
+                        if not isinstance(data, dict):
+                            data = {}
+                        reversal = data.get('reversal') if isinstance(data.get('reversal'), dict) else {}
+                        falling = data.get('falling_knife') if isinstance(data.get('falling_knife'), dict) else {}
+                        session.add(BotMarketContext(
+                            mode=key,
+                            symbol=symbol,
+                            context_mode=data.get('mode'),
+                            symbol_regime=data.get('symbol_regime'),
+                            btc_regime=data.get('btc_regime'),
+                            bear_mode=1 if data.get('bear_mode') else 0,
+                            symbol_bear=1 if data.get('symbol_bear') else 0,
+                            btc_bear=1 if data.get('btc_bear') else 0,
+                            trade_multiplier=self._clean(data.get('trade_multiplier')),
+                            btc_momentum_percent=self._clean(data.get('btc_momentum_percent')),
+                            symbol_momentum_percent=self._clean(data.get('symbol_momentum_percent')),
+                            confidence_bonus=self._clean(data.get('confidence_bonus')),
+                            reversal_confirmed=1 if reversal.get('confirmed') else 0,
+                            falling_knife_active=1 if falling.get('is_falling') else 0,
+                            created_at=now,
+                            updated_at=now,
+                        ))
+
+                    for symbol, data in ml_predictions.items():
+                        if not isinstance(data, dict):
+                            data = {}
+                        exit_forecast = data.get('exit_forecast') if isinstance(data.get('exit_forecast'), dict) else {}
+                        session.add(MlLivePrediction(
+                            mode=key,
+                            symbol=symbol,
+                            p_win=data.get('p_win'),
+                            p_continue=data.get('p_continue') or exit_forecast.get('p_continue'),
+                            recommendation=data.get('recommendation'),
+                            min_probability=data.get('min_probability'),
+                            min_p_continue=data.get('min_p_continue') or exit_forecast.get('min_p_continue'),
+                            exit_decision=data.get('exit_decision') or exit_forecast.get('decision'),
+                            exit_reason=data.get('exit_reason') or exit_forecast.get('reason'),
+                            entry_price=self._clean(data.get('price') or data.get('entry_price') or exit_forecast.get('entry_price')),
+                            prediction_ts=text_value(data.get('timestamp')),
+                            created_at=now,
+                            updated_at=now,
+                        ))
+
+                    session.commit()
+            return True
+        except Exception as exc:
+            raise
+
+    def _migrate_bot_state_tables(self, conn):
+        return
+
+    def _insert_open_entry(self, session, event):
+        session.merge(MlOpenEntry(
+            symbol=event.get('symbol'),
+            entry_id=event.get('entry_id'),
+            opened_at=event.get('timestamp'),
+            order_id=event.get('order_id'),
+            price=event.get('price'),
+            amount=event.get('amount'),
+        ))
+
+    def _insert_exit_decision(self, session, event):
+        session.merge(MlExitDecision(
+            event_id=event.get('event_id'),
+            timestamp=event.get('timestamp'),
+            mode=event.get('mode'),
+            symbol=event.get('symbol'),
+            entry_id=event.get('entry_id'),
+            decision=event.get('decision'),
+            reason=event.get('reason'),
+            current_price=event.get('current_price'),
+            entry_p_win=event.get('entry_p_win'),
+            continuation_score=event.get('continuation_score'),
+            p_continue=event.get('p_continue'),
+            net_pnl_pct=event.get('net_pnl_pct'),
+            duration_minutes=event.get('duration_minutes'),
+        ))
+        self._insert_feature_values(session, MlExitFeatureValue, event.get('event_id'), event.get('features') or {})
+
+    def _insert_trade_outcome(self, session, event):
+        session.merge(MlTradeOutcome(
+            event_id=event.get('event_id'),
+            timestamp=event.get('timestamp'),
+            mode=event.get('mode'),
+            symbol=event.get('symbol'),
+            entry_id=event.get('entry_id'),
+            sell_price=event.get('sell_price'),
+            buy_price=event.get('buy_price'),
+            amount=event.get('amount'),
+            pnl=event.get('pnl'),
+            pnl_pct=event.get('pnl_pct'),
+            hold_time=event.get('hold_time'),
+            reason=event.get('reason'),
+            order_id=event.get('order_id'),
+            label_status=event.get('label_status'),
+        ))
         if event.get('entry_id'):
-            conn.execute(
-                "DELETE FROM ml_open_entries WHERE symbol = ?",
-                (event.get('symbol'),)
-            )
+            session.execute(delete(MlOpenEntry).where(MlOpenEntry.symbol == event.get('symbol')))
 
     def record_telegram_message(self, message_id, text, timestamp=None, direction='outgoing'):
         event = {
@@ -2209,22 +1856,15 @@ class MLLiveLogger:
         self.append_event(event)
         return event['event_id']
 
-    def _insert_telegram_message(self, conn, event):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO telegram_messages
-            (event_id, timestamp, telegram_ts, message_id, direction, text)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.get('event_id'),
-                event.get('timestamp'),
-                event.get('telegram_ts'),
-                event.get('message_id'),
-                event.get('direction'),
-                event.get('text'),
-            )
-        )
+    def _insert_telegram_message(self, session, event):
+        session.merge(TelegramMessage(
+            event_id=event.get('event_id'),
+            timestamp=event.get('timestamp'),
+            telegram_ts=event.get('telegram_ts'),
+            message_id=event.get('message_id'),
+            direction=event.get('direction'),
+            text=event.get('text'),
+        ))
 
     def record_support_touch_backtest(self, summary):
         if not isinstance(summary, dict):
@@ -2237,63 +1877,43 @@ class MLLiveLogger:
         total_pnl = sum(float(item.get('total_pnl_percent') or 0.0) for item in results if isinstance(item, dict))
         win_rate = (total_wins / total_trades * 100.0) if total_trades else 0.0
         settings = summary.get('settings') if isinstance(summary.get('settings'), dict) else {}
-        compact_summary = self._compact_support_touch_summary(summary)
 
         try:
-            with self._lock:
-                conn = self._get_conn()
-                conn.execute("DELETE FROM support_touch_results WHERE run_id = ?", (run_id,))
-                stored_at = datetime.now().isoformat()
+            with self._orm_session() as session:
+                session.execute(delete(SupportTouchResult).where(SupportTouchResult.run_id == run_id))
+                stored_at = now_iso()
                 for item in results:
                     if not isinstance(item, dict):
                         continue
                     symbol = item.get('symbol')
                     if not symbol:
                         continue
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO support_touch_results
-                        (run_id, generated_at, exchange, run_timeframe, candle_limit,
-                         run_total_trades, run_total_wins, run_win_rate,
-                         run_total_pnl_percent, settings_data, symbol, timeframe,
-                         candles, trades, wins, losses, win_rate, total_pnl_percent,
-                         avg_pnl_percent, best_trade_percent, worst_trade_percent,
-                         result_data, stored_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            run_id,
-                            generated_at,
-                            summary.get('exchange'),
-                            settings.get('timeframe'),
-                            settings.get('limit'),
-                            total_trades,
-                            total_wins,
-                            win_rate,
-                            total_pnl,
-                            json.dumps(settings, ensure_ascii=False),
-                            symbol,
-                            item.get('timeframe'),
-                            item.get('candles'),
-                            item.get('trades'),
-                            item.get('wins'),
-                            item.get('losses'),
-                            item.get('win_rate'),
-                            item.get('total_pnl_percent'),
-                            item.get('avg_pnl_percent'),
-                            item.get('best_trade_percent'),
-                            item.get('worst_trade_percent'),
-                            json.dumps(self._clean(self._compact_support_touch_result(item)), ensure_ascii=False),
-                            stored_at,
-                        )
-                    )
-                conn.commit()
+                    session.add(SupportTouchResult(
+                        run_id=run_id,
+                        generated_at=generated_at,
+                        exchange=summary.get('exchange'),
+                        run_timeframe=settings.get('timeframe'),
+                        candle_limit=settings.get('limit'),
+                        run_total_trades=total_trades,
+                        run_total_wins=total_wins,
+                        run_win_rate=win_rate,
+                        run_total_pnl_percent=total_pnl,
+                        symbol=symbol,
+                        timeframe=item.get('timeframe'),
+                        candles=item.get('candles'),
+                        trades=item.get('trades'),
+                        wins=item.get('wins'),
+                        losses=item.get('losses'),
+                        win_rate=item.get('win_rate'),
+                        total_pnl_percent=item.get('total_pnl_percent'),
+                        avg_pnl_percent=item.get('avg_pnl_percent'),
+                        best_trade_percent=item.get('best_trade_percent'),
+                        worst_trade_percent=item.get('worst_trade_percent'),
+                        stored_at=stored_at,
+                    ))
+                session.commit()
             return run_id
         except Exception:
-            try:
-                self._get_conn().rollback()
-            except Exception:
-                pass
             return None
 
     def _compact_support_touch_result(self, item):
@@ -2318,71 +1938,65 @@ class MLLiveLogger:
         trained_at = metadata.get('trained_at') or datetime.now().isoformat()
         model_id = self._stable_id('ml_model', f"{trained_at}:{model_path or ''}")
         try:
-            with self._lock:
-                conn = self._get_conn()
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO ml_model_metadata
-                    (model_id, trained_at, model_path, n_features, exit_n_features,
-                     metadata_data, stored_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        model_id,
-                        trained_at,
-                        model_path,
-                        metadata.get('n_features'),
-                        metadata.get('exit_n_features'),
-                        json.dumps(self._clean(metadata), ensure_ascii=False),
-                        datetime.now().isoformat(),
-                    )
-                )
-                conn.execute("DELETE FROM ml_feature_importances WHERE model_id = ?", (model_id,))
-                self._insert_feature_importance_rows(conn, model_id, 'entry', metadata.get('feature_importance'))
-                self._insert_feature_importance_rows(conn, model_id, 'exit', metadata.get('exit_feature_importance'))
-                conn.commit()
+            with self._orm_session() as session:
+                row = session.get(MlModelMetadata, model_id)
+                if not row:
+                    row = MlModelMetadata(model_id=model_id, stored_at=now_iso())
+                    session.add(row)
+                row.trained_at = trained_at
+                row.model_path = model_path
+                row.n_features = metadata.get('n_features')
+                row.exit_n_features = metadata.get('exit_n_features')
+                row.stored_at = now_iso()
+                session.execute(delete(MlFeatureImportance).where(MlFeatureImportance.model_id == model_id))
+                self._add_feature_importance_orm(session, model_id, 'entry', metadata.get('feature_importance'))
+                self._add_feature_importance_orm(session, model_id, 'exit', metadata.get('exit_feature_importance'))
+                session.commit()
             return model_id
         except Exception:
-            try:
-                self._get_conn().rollback()
-            except Exception:
-                pass
             return None
 
     def get_latest_support_touch_backtest(self):
         try:
-            with self._lock:
-                run = self._get_conn().execute(
-                    """
-                    SELECT run_id, generated_at, exchange, run_timeframe, candle_limit,
-                           run_total_trades, run_total_wins, run_win_rate,
-                           run_total_pnl_percent, settings_data, stored_at
-                    FROM support_touch_results
-                    ORDER BY datetime(generated_at) DESC, datetime(stored_at) DESC
-                    LIMIT 1
-                    """
-                ).fetchone()
+            with self._orm_session() as session:
+                run = session.scalars(
+                    select(SupportTouchResult)
+                    .order_by(SupportTouchResult.generated_at.desc(), SupportTouchResult.stored_at.desc())
+                    .limit(1)
+                ).first()
                 if not run:
                     return {}
-                rows = self._get_conn().execute(
-                    """
-                    SELECT result_data FROM support_touch_results
-                    WHERE run_id = ?
-                    ORDER BY symbol
-                    """,
-                    (run[0],)
-                ).fetchall()
-            settings = json.loads(run[9]) if run[9] else {}
+                rows = session.scalars(
+                    select(SupportTouchResult)
+                    .where(SupportTouchResult.run_id == run.run_id)
+                    .order_by(SupportTouchResult.symbol.asc())
+                ).all()
+            settings = {'timeframe': run.run_timeframe, 'limit': run.candle_limit}
             return {
-                'generated_at': run[1],
-                'exchange': run[2],
+                'generated_at': run.generated_at,
+                'exchange': run.exchange,
                 'settings': settings,
-                'results': [json.loads(row[0]) for row in rows if row and row[0]],
+                'results': [
+                    {
+                        'symbol': row.symbol,
+                        'timeframe': row.timeframe,
+                        'candles': row.candles,
+                        'trades': row.trades,
+                        'wins': row.wins,
+                        'losses': row.losses,
+                        'win_rate': row.win_rate,
+                        'total_pnl_percent': row.total_pnl_percent,
+                        'avg_pnl_percent': row.avg_pnl_percent,
+                        'best_trade_percent': row.best_trade_percent,
+                        'worst_trade_percent': row.worst_trade_percent,
+                    }
+                    for row in rows
+                ],
                 'summary': {
-                    'total_trades': run[5],
-                    'total_wins': run[6],
-                    'win_rate': run[7],
-                    'total_pnl_percent': run[8],
+                    'total_trades': run.run_total_trades,
+                    'total_wins': run.run_total_wins,
+                    'win_rate': run.run_win_rate,
+                    'total_pnl_percent': run.run_total_pnl_percent,
                 }
             }
         except Exception:
@@ -2390,226 +2004,257 @@ class MLLiveLogger:
 
     def get_latest_ml_model_metadata(self):
         try:
-            with self._lock:
-                row = self._get_conn().execute(
-                    """
-                    SELECT metadata_data FROM ml_model_metadata
-                    ORDER BY datetime(trained_at) DESC, datetime(stored_at) DESC
-                    LIMIT 1
-                    """
-                ).fetchone()
-            return json.loads(row[0]) if row and row[0] else {}
+            with self._orm_session() as session:
+                row = session.scalars(
+                    select(MlModelMetadata)
+                    .order_by(MlModelMetadata.trained_at.desc(), MlModelMetadata.stored_at.desc())
+                    .limit(1)
+                ).first()
+                if not row:
+                    return {}
+                importances = session.scalars(
+                    select(MlFeatureImportance)
+                    .where(MlFeatureImportance.model_id == row.model_id)
+                    .order_by(MlFeatureImportance.scope.asc(), MlFeatureImportance.rank.asc())
+                ).all()
+            feature_importance = []
+            exit_feature_importance = []
+            for item in importances:
+                target = exit_feature_importance if item.scope == 'exit' else feature_importance
+                target.append((item.feature_name, item.importance))
+            return {
+                'model_id': row.model_id,
+                'trained_at': row.trained_at,
+                'model_path': row.model_path,
+                'n_features': row.n_features,
+                'exit_n_features': row.exit_n_features,
+                'stored_at': row.stored_at,
+                'feature_importance': feature_importance,
+                'exit_feature_importance': exit_feature_importance,
+            }
         except Exception:
             return {}
 
-    def _insert_feature_importance_rows(self, conn, model_id, scope, items):
+    def _add_feature_importance_orm(self, session, model_id, scope, items):
         if not isinstance(items, list):
             return
         for rank, item in enumerate(items, start=1):
             if not isinstance(item, (list, tuple)) or len(item) < 2:
                 continue
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO ml_feature_importances
-                (model_id, scope, rank, feature_name, importance)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (model_id, scope, rank, str(item[0]), float(item[1] or 0.0))
-            )
+            session.add(MlFeatureImportance(
+                model_id=model_id,
+                scope=scope,
+                rank=rank,
+                feature_name=str(item[0]),
+                importance=float(item[1] or 0.0),
+            ))
 
     def record_decision_journal(self, entry, mode='paper', max_entries=5000):
         if not isinstance(entry, dict):
             return False
         try:
-            now = datetime.now().isoformat()
+            now = now_iso()
             with self._lock:
-                conn = self._get_conn()
-                row = conn.execute(
-                    "SELECT COALESCE(MAX(idx), -1) + 1 FROM bot_decision_journal WHERE mode = ?",
-                    (mode,)
-                ).fetchone()
-                idx = int(row[0] if row else 0)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO bot_decision_journal
-                    (mode, idx, timestamp, symbol, action, allowed, reason,
-                     entry_data, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        mode,
-                        idx,
-                        entry.get('timestamp'),
-                        entry.get('symbol'),
-                        entry.get('action'),
-                        1 if entry.get('allowed') else 0 if 'allowed' in entry else None,
-                        entry.get('reason'),
-                        json.dumps(entry, ensure_ascii=False),
-                        now,
-                        now,
+                with self._orm_session() as session:
+                    max_idx = session.scalar(
+                        select(func.max(BotDecisionJournal.idx))
+                        .where(BotDecisionJournal.mode == mode)
                     )
-                )
-                overflow = conn.execute(
-                    "SELECT COUNT(*) FROM bot_decision_journal WHERE mode = ?",
-                    (mode,)
-                ).fetchone()[0] - int(max_entries)
-                if overflow > 0:
-                    conn.execute(
-                        """
-                        DELETE FROM bot_decision_journal
-                        WHERE mode = ? AND idx IN (
-                            SELECT idx FROM bot_decision_journal
-                            WHERE mode = ?
-                            ORDER BY idx ASC
-                            LIMIT ?
+                    idx = int(max_idx if max_idx is not None else -1) + 1
+                    session.add(BotDecisionJournal(
+                        mode=mode,
+                        idx=idx,
+                        timestamp=entry.get('timestamp'),
+                        symbol=entry.get('symbol'),
+                        action=entry.get('action'),
+                        allowed=1 if entry.get('allowed') else 0 if 'allowed' in entry else None,
+                        reason=entry.get('reason'),
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                    metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
+                    for metric_name, metric in metrics.items():
+                        numeric, text_value = self._encode_metric_value(metric)
+                        session.add(BotDecisionMetric(
+                            mode=mode,
+                            idx=idx,
+                            metric_name=str(metric_name),
+                            metric_value=numeric,
+                            metric_text=text_value,
+                            created_at=now,
+                            updated_at=now,
+                        ))
+                    count = session.scalar(
+                        select(func.count())
+                        .select_from(BotDecisionJournal)
+                        .where(BotDecisionJournal.mode == mode)
+                    ) or 0
+                    overflow = int(count) - int(max_entries)
+                    if overflow > 0:
+                        old_indices = session.scalars(
+                            select(BotDecisionJournal.idx)
+                            .where(BotDecisionJournal.mode == mode)
+                            .order_by(BotDecisionJournal.idx.asc())
+                            .limit(overflow)
+                        ).all()
+                        session.execute(
+                            delete(BotDecisionMetric)
+                            .where(
+                                BotDecisionMetric.mode == mode,
+                                BotDecisionMetric.idx.in_(old_indices),
+                            )
                         )
-                        """,
-                        (mode, mode, overflow)
-                    )
-                conn.commit()
+                        session.execute(
+                            delete(BotDecisionJournal)
+                            .where(
+                                BotDecisionJournal.mode == mode,
+                                BotDecisionJournal.idx.in_(old_indices),
+                            )
+                        )
+                    session.commit()
             return True
         except Exception:
-            try:
-                self._get_conn().rollback()
-            except Exception:
-                pass
             return False
 
     def get_decision_journal(self, mode='paper', limit=80):
         try:
-            with self._lock:
-                rows = self._get_conn().execute(
-                    """
-                    SELECT entry_data FROM bot_decision_journal
-                    WHERE mode = ?
-                    ORDER BY idx DESC
-                    LIMIT ?
-                    """,
-                    (mode, int(limit))
-                ).fetchall()
+            with self._orm_session() as session:
+                rows = session.scalars(
+                    select(BotDecisionJournal)
+                    .where(BotDecisionJournal.mode == mode)
+                    .order_by(BotDecisionJournal.idx.desc())
+                    .limit(int(limit))
+                ).all()
+                indices = [row.idx for row in rows]
+                metric_rows = session.scalars(
+                    select(BotDecisionMetric)
+                    .where(
+                        BotDecisionMetric.mode == mode,
+                        BotDecisionMetric.idx.in_(indices or [-1]),
+                    )
+                ).all()
+            metrics_by_idx = {}
+            for metric in metric_rows:
+                metrics_by_idx.setdefault(metric.idx, {})[metric.metric_name] = self._decode_metric_value(metric)
             items = []
             for row in reversed(rows):
-                try:
-                    items.append(json.loads(row[0]))
-                except Exception:
-                    continue
+                items.append({
+                    'timestamp': row.timestamp,
+                    'symbol': row.symbol,
+                    'action': row.action,
+                    'allowed': bool(row.allowed),
+                    'reason': row.reason,
+                    'mode': mode,
+                    'metrics': metrics_by_idx.get(row.idx, {}),
+                })
             return items
         except Exception:
             return []
 
     def count_decision_journal(self, mode='paper'):
         try:
-            with self._lock:
-                return int(self._get_conn().execute(
-                    "SELECT COUNT(*) FROM bot_decision_journal WHERE mode = ?",
-                    (mode,)
-                ).fetchone()[0])
+            with self._orm_session() as session:
+                return int(session.scalar(
+                    select(func.count())
+                    .select_from(BotDecisionJournal)
+                    .where(BotDecisionJournal.mode == mode)
+                ) or 0)
         except Exception:
             return 0
 
     def add_bot_command(self, action, symbol=None, seconds=None, payload=None):
         try:
             now_ts = time.time()
-            now = datetime.now().isoformat()
+            now = now_iso()
             command_id = self._new_id('cmd')
-            data = dict(payload or {})
-            data.update({
-                'command_id': command_id,
-                'action': action,
-                'symbol': symbol,
-                'seconds': seconds,
-                'timestamp': now_ts,
-            })
-            with self._lock:
-                self._get_conn().execute(
-                    """
-                    INSERT OR REPLACE INTO bot_commands
-                    (command_id, action, symbol, seconds, status, command_ts,
-                     command_data, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
-                    """,
-                    (command_id, action, symbol, self._clean(seconds), now_ts, json.dumps(data, ensure_ascii=False), now, now)
-                )
-                self._get_conn().commit()
+            with self._orm_session() as session:
+                session.add(BotCommand(
+                    command_id=command_id,
+                    action=action,
+                    symbol=symbol,
+                    seconds=self._clean(seconds),
+                    status='pending',
+                    command_ts=now_ts,
+                    created_at=now,
+                    updated_at=now,
+                ))
+                session.commit()
             return command_id
         except Exception:
             return None
 
     def claim_pending_bot_commands(self, limit=100):
+        session = None
         try:
             with self._lock:
-                conn = self._get_conn()
-                conn.execute('BEGIN IMMEDIATE')
-                rows = conn.execute(
-                    """
-                    SELECT command_id, command_data FROM bot_commands
-                    WHERE status = 'pending'
-                    ORDER BY command_ts ASC
-                    LIMIT ?
-                    """,
-                    (int(limit),)
-                ).fetchall()
-                ids = [row[0] for row in rows]
+                session = self._orm_session()
+                session.execute(text('BEGIN IMMEDIATE'))
+                rows = session.scalars(
+                    select(BotCommand)
+                    .where(BotCommand.status == 'pending')
+                    .order_by(BotCommand.command_ts.asc())
+                    .limit(int(limit))
+                ).all()
+                ids = [row.command_id for row in rows]
                 if ids:
-                    now = datetime.now().isoformat()
-                    conn.executemany(
-                        "UPDATE bot_commands SET status='claimed', updated_at=? WHERE command_id=?",
-                        [(now, command_id) for command_id in ids]
+                    now = now_iso()
+                    session.execute(
+                        update(BotCommand)
+                        .where(BotCommand.command_id.in_(ids))
+                        .values(status='claimed', updated_at=now)
                     )
-                conn.commit()
+                session.commit()
             commands = []
-            for _, data in rows:
-                try:
-                    commands.append(json.loads(data))
-                except Exception:
-                    continue
+            for row in rows:
+                commands.append({
+                    'command_id': row.command_id,
+                    'action': row.action,
+                    'symbol': row.symbol,
+                    'seconds': row.seconds,
+                    'timestamp': row.command_ts,
+                })
+            if session:
+                session.close()
             return commands
         except Exception:
             try:
-                self._get_conn().rollback()
+                if session:
+                    session.rollback()
+                    session.close()
             except Exception:
                 pass
             return []
 
     def record_crypto_score(self, symbol, score, price):
         try:
-            now = datetime.now().isoformat()
+            now = now_iso()
             score_id = self._new_id('score')
-            with self._lock:
-                self._get_conn().execute(
-                    """
-                    INSERT OR REPLACE INTO crypto_score_history
-                    (score_id, timestamp, symbol, score, price, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (score_id, now, symbol, int(score), self._clean(price), now, now)
-                )
-                self._get_conn().commit()
+            with self._orm_session() as session:
+                session.add(CryptoScoreHistory(
+                    score_id=score_id,
+                    timestamp=now,
+                    symbol=symbol,
+                    score=int(score),
+                    price=self._clean(price),
+                    created_at=now,
+                    updated_at=now,
+                ))
+                session.commit()
             return score_id
         except Exception:
             return None
 
     def get_crypto_scores(self, symbol, since_iso=None, limit=2000):
         try:
-            params = [symbol]
-            where = "symbol = ?"
-            if since_iso:
-                where += " AND datetime(timestamp) >= datetime(?)"
-                params.append(since_iso)
-            params.append(int(limit))
-            with self._lock:
-                rows = self._get_conn().execute(
-                    f"""
-                    SELECT timestamp, symbol, score, price
-                    FROM crypto_score_history
-                    WHERE {where}
-                    ORDER BY datetime(timestamp) ASC
-                    LIMIT ?
-                    """,
-                    params
-                ).fetchall()
+            with self._orm_session() as session:
+                query = select(CryptoScoreHistory).where(CryptoScoreHistory.symbol == symbol)
+                if since_iso:
+                    query = query.where(CryptoScoreHistory.timestamp >= since_iso)
+                rows = session.scalars(
+                    query.order_by(CryptoScoreHistory.timestamp.asc()).limit(int(limit))
+                ).all()
             return [
-                {'timestamp': r[0], 'symbol': r[1], 'score': r[2], 'price': r[3]}
+                {'timestamp': r.timestamp, 'symbol': r.symbol, 'score': r.score, 'price': r.price}
                 for r in rows
             ]
         except Exception:
@@ -2619,76 +2264,126 @@ class MLLiveLogger:
         if not isinstance(status, dict):
             return False
         try:
-            now = datetime.now().isoformat()
+            now = now_iso()
             key = 'latest'
             symbols = status.get('symbols') if isinstance(status.get('symbols'), dict) else {}
-            with self._lock:
-                conn = self._get_conn()
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO bot_live_status
-                    (key, timestamp, exchange, connected, running, mode_name,
-                     reconnect_attempts, queue_size, queue_maxsize, worker_alive,
-                     ws_thread_alive, status_data, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        key,
-                        status.get('timestamp'),
-                        status.get('exchange'),
-                        1 if status.get('connected') else 0,
-                        1 if status.get('running') else 0,
-                        status.get('mode'),
-                        status.get('reconnect_attempts'),
-                        status.get('queue_size'),
-                        status.get('queue_maxsize'),
-                        1 if status.get('worker_alive') else 0,
-                        1 if status.get('ws_thread_alive') else 0,
-                        json.dumps(status, ensure_ascii=False),
-                        now,
-                        now,
-                    )
-                )
-                conn.execute("DELETE FROM bot_live_status_symbols WHERE status_key = ?", (key,))
+            with self._orm_session() as session:
+                row = session.get(BotLiveStatus, key)
+                if not row:
+                    row = BotLiveStatus(key=key, created_at=now)
+                    session.add(row)
+                row.timestamp = status.get('timestamp')
+                row.exchange = status.get('exchange')
+                row.connected = 1 if status.get('connected') else 0
+                row.running = 1 if status.get('running') else 0
+                row.mode_name = status.get('mode')
+                row.reconnect_attempts = status.get('reconnect_attempts')
+                row.queue_size = status.get('queue_size')
+                row.queue_maxsize = status.get('queue_maxsize')
+                row.worker_alive = 1 if status.get('worker_alive') else 0
+                row.ws_thread_alive = 1 if status.get('ws_thread_alive') else 0
+                row.updated_at = now
+                session.execute(delete(BotLiveStatusSubscription).where(BotLiveStatusSubscription.status_key == key))
+                for symbol in status.get('subscribed_symbols') or []:
+                    session.add(BotLiveStatusSubscription(
+                        status_key=key,
+                        symbol=str(symbol),
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                session.execute(delete(BotLiveStatusSymbol).where(BotLiveStatusSymbol.status_key == key))
                 for symbol, data in symbols.items():
                     if not isinstance(data, dict):
                         data = {}
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO bot_live_status_symbols
-                        (status_key, symbol, price, tick_count, kline_count,
-                         last_tick, last_analysis, symbol_data, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            key,
-                            symbol,
-                            self._clean(data.get('price')),
-                            data.get('tick_count'),
-                            data.get('kline_count'),
-                            data.get('last_tick'),
-                            data.get('last_analysis'),
-                            json.dumps(data, ensure_ascii=False),
-                            now,
-                            now,
-                        )
-                    )
-                conn.commit()
+                    session.add(BotLiveStatusSymbol(
+                        status_key=key,
+                        symbol=symbol,
+                        price=self._clean(data.get('price')),
+                        tick_count=data.get('tick_count'),
+                        kline_count=data.get('kline_count'),
+                        analysis_trigger_countdown=data.get('analysis_trigger_countdown'),
+                        price_change_since_analysis_percent=self._clean(data.get('price_change_since_analysis_percent')),
+                        last_tick=data.get('last_tick'),
+                        last_tick_age_seconds=self._clean(data.get('last_tick_age_seconds')),
+                        last_analysis=data.get('last_analysis'),
+                        last_analysis_age_seconds=self._clean(data.get('last_analysis_age_seconds')),
+                        bid=self._clean(data.get('bid')),
+                        ask=self._clean(data.get('ask')),
+                        spread=self._clean(data.get('spread')),
+                        spread_percent=self._clean(data.get('spread_percent')),
+                        volume_24h=self._clean(data.get('volume_24h')),
+                        candle_timestamp=data.get('candle_timestamp'),
+                        candle_open=self._clean(data.get('candle_open')),
+                        candle_high=self._clean(data.get('candle_high')),
+                        candle_low=self._clean(data.get('candle_low')),
+                        candle_volume=self._clean(data.get('candle_volume')),
+                        source=data.get('source'),
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                session.commit()
             return True
         except Exception:
-            try:
-                self._get_conn().rollback()
-            except Exception:
-                pass
             return False
 
     def get_live_status(self):
         try:
-            with self._lock:
-                row = self._get_conn().execute(
-                    "SELECT status_data FROM bot_live_status WHERE key='latest'"
-                ).fetchone()
-            return json.loads(row[0]) if row and row[0] else {}
+            with self._orm_session() as session:
+                row = session.get(BotLiveStatus, 'latest')
+                if not row:
+                    return {}
+                subscription_rows = session.scalars(
+                    select(BotLiveStatusSubscription)
+                    .where(BotLiveStatusSubscription.status_key == row.key)
+                    .order_by(BotLiveStatusSubscription.symbol.asc())
+                ).all()
+                subscriptions = [item.symbol for item in subscription_rows]
+                symbol_rows = session.scalars(
+                    select(BotLiveStatusSymbol)
+                    .where(BotLiveStatusSymbol.status_key == row.key)
+                    .order_by(BotLiveStatusSymbol.symbol.asc())
+                ).all()
+                if not subscriptions:
+                    subscriptions = [item.symbol for item in symbol_rows]
+            symbols = {}
+            for item in symbol_rows:
+                data = {
+                    'price': item.price,
+                    'tick_count': item.tick_count,
+                    'kline_count': item.kline_count,
+                    'analysis_trigger_countdown': item.analysis_trigger_countdown,
+                    'price_change_since_analysis_percent': item.price_change_since_analysis_percent,
+                    'last_tick': item.last_tick,
+                    'last_tick_age_seconds': item.last_tick_age_seconds,
+                    'last_analysis': item.last_analysis,
+                    'last_analysis_age_seconds': item.last_analysis_age_seconds,
+                    'bid': item.bid,
+                    'ask': item.ask,
+                    'spread': item.spread,
+                    'spread_percent': item.spread_percent,
+                    'volume_24h': item.volume_24h,
+                    'candle_timestamp': item.candle_timestamp,
+                    'candle_open': item.candle_open,
+                    'candle_high': item.candle_high,
+                    'candle_low': item.candle_low,
+                    'candle_volume': item.candle_volume,
+                    'source': item.source,
+                }
+                symbols[item.symbol] = {key: value for key, value in data.items() if value is not None}
+            return {
+                'timestamp': row.timestamp,
+                'exchange': row.exchange,
+                'connected': bool(row.connected),
+                'running': bool(row.running),
+                'mode': row.mode_name,
+                'reconnect_attempts': row.reconnect_attempts,
+                'queue_size': row.queue_size,
+                'queue_maxsize': row.queue_maxsize,
+                'worker_alive': bool(row.worker_alive),
+                'ws_thread_alive': bool(row.ws_thread_alive),
+                'subscribed_symbols': subscriptions,
+                'symbols': symbols,
+            }
         except Exception:
             return {}
 
@@ -2696,28 +2391,19 @@ class MLLiveLogger:
         if not isinstance(stats, dict):
             return False
         try:
-            now = datetime.now().isoformat()
+            now = now_iso()
             stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
-            with self._lock:
-                self._get_conn().execute(
-                    """
-                    INSERT OR REPLACE INTO bot_daily_stats
-                    (stat_date, trades_count, total_loss, total_profit,
-                     emergency_stop, stats_data, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        stat_date,
-                        int(stats.get('trades_count') or 0),
-                        self._clean(stats.get('total_loss') or 0),
-                        self._clean(stats.get('total_profit') or 0),
-                        1 if stats.get('emergency_stop') else 0,
-                        json.dumps(stats, ensure_ascii=False),
-                        now,
-                        now,
-                    )
-                )
-                self._get_conn().commit()
+            with self._orm_session() as session:
+                row = session.get(BotDailyStat, stat_date)
+                if not row:
+                    row = BotDailyStat(stat_date=stat_date, created_at=now)
+                    session.add(row)
+                row.trades_count = int(stats.get('trades_count') or 0)
+                row.total_loss = self._clean(stats.get('total_loss') or 0)
+                row.total_profit = self._clean(stats.get('total_profit') or 0)
+                row.emergency_stop = 1 if stats.get('emergency_stop') else 0
+                row.updated_at = now
+                session.commit()
             return True
         except Exception:
             return False
@@ -2725,32 +2411,32 @@ class MLLiveLogger:
     def load_daily_stats(self, stat_date=None):
         try:
             stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
-            with self._lock:
-                row = self._get_conn().execute(
-                    "SELECT stats_data FROM bot_daily_stats WHERE stat_date = ?",
-                    (stat_date,)
-                ).fetchone()
-            return json.loads(row[0]) if row and row[0] else {}
+            with self._orm_session() as session:
+                row = session.get(BotDailyStat, stat_date)
+            if not row:
+                return {}
+            return {
+                'date': row.stat_date,
+                'trades_count': row.trades_count or 0,
+                'total_loss': row.total_loss or 0,
+                'total_profit': row.total_profit or 0,
+                'emergency_stop': bool(row.emergency_stop),
+            }
         except Exception:
             return {}
 
     def load_open_entries(self):
         try:
-            with self._lock:
-                rows = self._get_conn().execute(
-                    """
-                    SELECT symbol, entry_id, opened_at, order_id, price, amount
-                    FROM ml_open_entries
-                    """
-                ).fetchall()
+            with self._orm_session() as session:
+                rows = session.scalars(select(MlOpenEntry).order_by(MlOpenEntry.symbol.asc())).all()
             return {
-                row[0]: {
-                    'entry_id': row[1],
-                    'symbol': row[0],
-                    'opened_at': row[2],
-                    'order_id': row[3],
-                    'price': row[4],
-                    'amount': row[5],
+                row.symbol: {
+                    'entry_id': row.entry_id,
+                    'symbol': row.symbol,
+                    'opened_at': row.opened_at,
+                    'order_id': row.order_id,
+                    'price': row.price,
+                    'amount': row.amount,
                 }
                 for row in rows
             }
@@ -2796,3 +2482,36 @@ class MLLiveLogger:
                 return None
             return value
         return value
+
+    def _encode_metric_value(self, value):
+        clean_value = self._clean(value)
+        if isinstance(clean_value, (dict, list)):
+            return None, json.dumps(clean_value, ensure_ascii=False)
+        if isinstance(clean_value, (int, float)) and not isinstance(clean_value, bool):
+            return clean_value, None
+        if clean_value is None:
+            return None, None
+        return None, str(clean_value)
+
+    def _decode_metric_value(self, metric):
+        if metric.metric_value is not None:
+            return metric.metric_value
+        text_value = metric.metric_text
+        if not isinstance(text_value, str):
+            return text_value
+        stripped = text_value.strip()
+        if not stripped:
+            return text_value
+        if stripped[0] in '{[':
+            try:
+                return json.loads(stripped)
+            except Exception:
+                try:
+                    parsed = ast.literal_eval(stripped)
+                    if isinstance(parsed, (dict, list)):
+                        return parsed
+                except Exception:
+                    pass
+        if stripped in {'True', 'False'}:
+            return stripped == 'True'
+        return text_value

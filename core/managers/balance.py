@@ -149,7 +149,7 @@ class BalanceManager:
         try:
             balances = self.get_total_balance_usd()
             
-            print(f"\n💰 RÉSUMÉ BALANCES USD:")
+            print(f"💰 RÉSUMÉ BALANCES USD:")
             print(f"   Spot: {balances['spot']:.2f}")
             print(f"   ─────────────────")
             print(f"   Total: {balances['total']:.2f}")

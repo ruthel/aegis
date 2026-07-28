@@ -1,0 +1,151 @@
+import * as am5 from '@amcharts/amcharts5'
+import * as am5xy from '@amcharts/amcharts5/xy'
+import am5themes_Dark from '@amcharts/amcharts5/themes/Dark'
+import { memo, useEffect, useLayoutEffect, useRef } from 'react'
+
+type Point = {
+  label: string
+  value: number
+  event?: string
+  balance?: number
+  time?: string
+}
+
+interface LineChartProps {
+  data: Point[]
+  color?: string
+  yAxisTitle?: string
+  xAxisTitle?: string
+}
+
+function LineChartBase({
+  data,
+  color = '#34d399',
+  yAxisTitle = 'P&L Net Cumulé ($ USD)',
+  xAxisTitle = 'Événements & Trades (N° Événement)',
+}: LineChartProps) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const rootRef = useRef<am5.Root | null>(null)
+  const xAxisRef = useRef<am5xy.CategoryAxis<am5xy.AxisRenderer> | null>(null)
+  const seriesRef = useRef<am5xy.LineSeries | null>(null)
+
+  useLayoutEffect(() => {
+    if (!ref.current) return
+    const root = am5.Root.new(ref.current)
+    rootRef.current = root
+    root.setThemes([am5themes_Dark.new(root)])
+    root._logo?.dispose()
+
+    const chart = root.container.children.push(
+      am5xy.XYChart.new(root, {
+        panX: false,
+        panY: false,
+        wheelX: 'none',
+        wheelY: 'none',
+        paddingLeft: 10,
+        paddingRight: 15,
+        paddingBottom: 15,
+      }),
+    )
+
+    const xRenderer = am5xy.AxisRendererX.new(root, { minGridDistance: 35 })
+    xRenderer.labels.template.setAll({ fill: am5.color(0x94a3b8), fontSize: 11 })
+
+    const xAxis = chart.xAxes.push(
+      am5xy.CategoryAxis.new(root, {
+        categoryField: 'label',
+        renderer: xRenderer,
+      }),
+    )
+    xAxisRef.current = xAxis
+
+    // Titre axe X
+    xAxis.children.push(
+      am5.Label.new(root, {
+        text: xAxisTitle,
+        x: am5.p50,
+        centerX: am5.p50,
+        fill: am5.color(0x64748b),
+        fontSize: 11,
+        fontWeight: '700',
+        paddingTop: 10,
+      }),
+    )
+
+    const yRenderer = am5xy.AxisRendererY.new(root, {})
+    yRenderer.labels.template.setAll({ fill: am5.color(0x94a3b8), fontSize: 11 })
+
+    const yAxis = chart.yAxes.push(
+      am5xy.ValueAxis.new(root, {
+        renderer: yRenderer,
+        numberFormat: "+$#.00;-$#.00;$0.00 USD",
+      }),
+    )
+
+    // Titre axe Y
+    yAxis.children.unshift(
+      am5.Label.new(root, {
+        text: yAxisTitle,
+        rotation: -90,
+        y: am5.p50,
+        centerX: am5.p50,
+        fill: am5.color(0x64748b),
+        fontSize: 11,
+        fontWeight: '700',
+        paddingRight: 10,
+      }),
+    )
+
+    const tooltip = am5.Tooltip.new(root, {
+      getFillFromSprite: false,
+      labelText: "[bold]{event}[/]\nP&L Net: [bold]{valueY} USD[/]\nSolde: [bold]{balance} USD[/]",
+    })
+    tooltip.get("background")?.setAll({
+      fill: am5.color(0x0f172a),
+      fillOpacity: 0.95,
+      stroke: am5.color(color),
+      strokeWidth: 1.5,
+    })
+
+    const series = chart.series.push(
+      am5xy.LineSeries.new(root, {
+        xAxis,
+        yAxis,
+        valueYField: 'value',
+        categoryXField: 'label',
+        valueField: 'value',
+        stroke: am5.color(color),
+        tooltip,
+      }),
+    )
+    seriesRef.current = series
+    series.strokes.template.setAll({ strokeWidth: 2.5 })
+    series.fills.template.setAll({ fillOpacity: 0.12, visible: true, fill: am5.color(color) })
+
+    chart.set('cursor', am5xy.XYCursor.new(root, { behavior: 'none' }))
+
+    return () => {
+      root.dispose()
+      rootRef.current = null
+      xAxisRef.current = null
+      seriesRef.current = null
+    }
+  }, [yAxisTitle, xAxisTitle])
+
+  useEffect(() => {
+    const series = seriesRef.current
+    const xAxis = xAxisRef.current
+    if (!series || !xAxis) return
+    const stroke = am5.color(color)
+    series.set('stroke', stroke)
+    series.set('fill', stroke)
+    series.strokes.template.setAll({ stroke })
+    series.fills.template.setAll({ fill: stroke })
+    xAxis.data.setAll(data)
+    series.data.setAll(data)
+  }, [data, color])
+
+  return <div ref={ref} className="h-[280px] w-full" />
+}
+
+export const LineChart = memo(LineChartBase)

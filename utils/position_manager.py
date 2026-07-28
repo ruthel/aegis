@@ -132,7 +132,7 @@ class PositionManager:
         
         strategy = self.get_recovery_strategy(symbol, loss_percent, current_price, buy_price)
         
-        print(f"\n🔧 RÉCUPÉRATION: {symbol}")
+        print(f"🔧 RÉCUPÉRATION: {symbol}")
         print(f"📊 Stratégie: {strategy['strategy'].upper()}")
         print(f"💡 Raison: {strategy['reason']}")
         
@@ -212,7 +212,7 @@ class PositionManager:
         """Affiche les positions bloquées"""
         summary = self.get_stuck_summary()
         if summary:
-            print(f"\n⚠️ POSITIONS BLOQUÉES: {summary['count']}")
+            print(f"⚠️ POSITIONS BLOQUÉES: {summary['count']}")
             print(f"💸 Perte totale: {summary['total_loss_percent']:.2f}%")
             print(f"📊 Perte moyenne: {summary['avg_loss_percent']:.2f}%")
             
@@ -484,8 +484,6 @@ class PositionManager:
                     return self._get_zero_position_size()
                 
                 print(f"✅ Ajusté à {total_usd_adjusted:.2f} USD pour respecter le minimum exchange")
-            
-            print(f"💰 Trade: {total_usd_adjusted:.2f} USD → {size_crypto:.8f} crypto (frais: {fees_adjusted:.4f} USD)")
             
             return {
                 'size_usd': round(total_usd_adjusted, 2),

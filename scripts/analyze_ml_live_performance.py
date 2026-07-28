@@ -3,15 +3,24 @@
 import argparse
 import json
 import os
-import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+from sqlalchemy import select
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from core.db_orm import (
+    MlAnalysisRun,
+    MlDriftAlert,
+    MlEntryDecision,
+    MlTradeOutcome,
+    MlPredictionCalibration,
+    MlRejectedReplayResult,
+    create_session_factory,
+)
 from core.ml_live_logger import MLLiveLogger
 
 
@@ -23,12 +32,6 @@ BUCKETS = [
     (70.0, 80.0, '70_80'),
     (80.0, 100.0001, '80_100'),
 ]
-
-
-def connect(db_path):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def run_id():
@@ -43,21 +46,34 @@ def bucket_for(p_win):
     return 0.0, 100.0001, 'unknown'
 
 
-def load_entries(conn):
-    return conn.execute(
-        """
-        SELECT
-            e.event_id, e.timestamp, e.symbol, e.decision, e.reason,
-            e.price, e.p_win, e.p_continue, e.label_status,
-            o.pnl_pct, o.pnl, o.sell_price, o.buy_price, o.timestamp AS exit_timestamp
-        FROM ml_entry_decisions e
-        LEFT JOIN ml_trade_outcomes o ON o.entry_id = e.event_id
-        ORDER BY e.timestamp
-        """
-    ).fetchall()
+def load_entries(session):
+    rows = session.execute(
+        select(MlEntryDecision, MlTradeOutcome)
+        .outerjoin(MlTradeOutcome, MlTradeOutcome.entry_id == MlEntryDecision.event_id)
+        .order_by(MlEntryDecision.timestamp.asc())
+    ).all()
+    entries = []
+    for entry, outcome in rows:
+        entries.append({
+            'event_id': entry.event_id,
+            'timestamp': entry.timestamp,
+            'symbol': entry.symbol,
+            'decision': entry.decision,
+            'reason': entry.reason,
+            'price': entry.price,
+            'p_win': entry.p_win,
+            'p_continue': entry.p_continue,
+            'label_status': entry.label_status,
+            'pnl_pct': outcome.pnl_pct if outcome else None,
+            'pnl': outcome.pnl if outcome else None,
+            'sell_price': outcome.sell_price if outcome else None,
+            'buy_price': outcome.buy_price if outcome else None,
+            'exit_timestamp': outcome.timestamp if outcome else None,
+        })
+    return entries
 
 
-def compute_calibration(conn, analysis_id, entries):
+def compute_calibration(session, analysis_id, entries):
     accepted = [row for row in entries if row['decision'] == 'accepted']
     closed = [row for row in accepted if row['pnl_pct'] is not None]
     bucket_rows = []
@@ -98,17 +114,8 @@ def compute_calibration(conn, analysis_id, entries):
             'calibration_error': error,
         })
 
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO ml_prediction_calibration
-        (run_id, bucket_label, min_p_win, max_p_win, entries, closed_entries,
-         predicted_avg, realized_win_rate, avg_pnl_pct, calibration_error)
-        VALUES (:run_id, :bucket_label, :min_p_win, :max_p_win, :entries,
-                :closed_entries, :predicted_avg, :realized_win_rate,
-                :avg_pnl_pct, :calibration_error)
-        """,
-        bucket_rows
-    )
+    for row in bucket_rows:
+        session.merge(MlPredictionCalibration(**row))
 
     return {
         'accepted_entries': len(accepted),
@@ -140,7 +147,31 @@ def fetch_replay_ohlcv(exchange, symbol, timestamp_iso, timeframe, limit):
     return exchange.fetch_ohlcv(normalize_symbol(symbol), timeframe=timeframe, since=since, limit=limit)
 
 
-def replay_rejected(conn, analysis_id, entries, args):
+def is_rate_limit_error(exc):
+    text = str(exc).lower()
+    return (
+        'too many requests' in text
+        or 'rate limit' in text
+        or 'ratelimit' in text
+        or 'eapi:rate limit' in text
+        or 'egeneral:too many requests' in text
+    )
+
+
+def fetch_replay_ohlcv_with_retry(exchange, symbol, timestamp_iso, timeframe, limit, args):
+    last_exc = None
+    for attempt in range(max(1, args.request_retries + 1)):
+        try:
+            return fetch_replay_ohlcv(exchange, symbol, timestamp_iso, timeframe, limit)
+        except Exception as exc:
+            last_exc = exc
+            if not is_rate_limit_error(exc) or attempt >= args.request_retries:
+                raise
+            time.sleep(args.request_pause * (args.retry_backoff ** attempt))
+    raise last_exc
+
+
+def replay_rejected(session, analysis_id, entries, args):
     rejected = [row for row in entries if row['decision'] == 'rejected']
     if not args.replay_rejected:
         return 0
@@ -169,7 +200,7 @@ def replay_rejected(conn, analysis_id, entries, args):
             'reason': f'exchange_unavailable:{exc}',
             'updated_at': now,
         } for row in rejected]
-        store_replay_rows(conn, rows)
+        store_replay_rows(session, rows)
         return 0
 
     replayed = 0
@@ -196,7 +227,7 @@ def replay_rejected(conn, analysis_id, entries, args):
             'updated_at': now,
         }
         try:
-            candles = fetch_replay_ohlcv(exchange, row['symbol'], row['timestamp'], args.timeframe, limit)
+            candles = fetch_replay_ohlcv_with_retry(exchange, row['symbol'], row['timestamp'], args.timeframe, limit, args)
             if len(candles) <= args.max_hold_candles:
                 result['replay_status'] = 'pending_more_candles'
                 result['reason'] = f'candles_available:{len(candles)}'
@@ -216,29 +247,19 @@ def replay_rejected(conn, analysis_id, entries, args):
                 replayed += 1
             time.sleep(args.request_pause)
         except Exception as exc:
-            result['replay_status'] = 'unavailable'
+            result['replay_status'] = 'retry_later' if is_rate_limit_error(exc) else 'unavailable'
             result['reason'] = str(exc)[:240]
         rows.append(result)
 
-    store_replay_rows(conn, rows)
+    store_replay_rows(session, rows)
     return replayed
 
 
-def store_replay_rows(conn, rows):
+def store_replay_rows(session, rows):
     if not rows:
         return
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO ml_rejected_replay_results
-        (entry_id, run_id, symbol, timestamp, entry_price, p_win, p_continue,
-         replay_status, replay_method, exit_time, exit_price, pnl_pct, would_win,
-         reason, updated_at)
-        VALUES (:entry_id, :run_id, :symbol, :timestamp, :entry_price, :p_win,
-                :p_continue, :replay_status, :replay_method, :exit_time,
-                :exit_price, :pnl_pct, :would_win, :reason, :updated_at)
-        """,
-        rows
-    )
+    for row in rows:
+        session.merge(MlRejectedReplayResult(**row))
 
 
 def drift_status(metrics, rejected_count):
@@ -251,62 +272,40 @@ def drift_status(metrics, rejected_count):
     return 'ok', 'Performance live suffisante pour le seuil actuel.'
 
 
-def write_run_summary(conn, analysis_id, metrics, rejected_count, rejected_replayed):
+def write_run_summary(session, analysis_id, metrics, rejected_count, rejected_replayed):
     status, message = drift_status(metrics, rejected_count)
     now = datetime.now().isoformat()
-    notes = {
-        'message': message,
-        'rejected_entries': rejected_count,
-        'method': 'accepted calibration + rejected future_close replay',
-    }
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO ml_analysis_runs
-        (run_id, generated_at, accepted_entries, closed_entries, rejected_entries,
-         rejected_replayed, brier_score, calibration_mae, live_win_rate,
-         avg_pnl_pct, drift_status, notes_data, stored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            analysis_id,
-            now,
-            metrics['accepted_entries'],
-            metrics['closed_entries'],
-            rejected_count,
-            rejected_replayed,
-            metrics['brier_score'],
-            metrics['calibration_mae'],
-            metrics['live_win_rate'],
-            metrics['avg_pnl_pct'],
-            status,
-            json.dumps(notes, ensure_ascii=False),
-            now,
-        )
-    )
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO ml_drift_alerts
-        (alert_id, run_id, generated_at, status, message, metrics_data, stored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"drift_{analysis_id}",
-            analysis_id,
-            now,
-            status,
-            message,
-            json.dumps({
-                'accepted_entries': metrics['accepted_entries'],
-                'closed_entries': metrics['closed_entries'],
-                'rejected_entries': rejected_count,
-                'rejected_replayed': rejected_replayed,
-                'live_win_rate': metrics['live_win_rate'],
-                'calibration_mae': metrics['calibration_mae'],
-                'avg_pnl_pct': metrics['avg_pnl_pct'],
-            }, ensure_ascii=False),
-            now,
-        )
-    )
+    session.merge(MlAnalysisRun(
+        run_id=analysis_id,
+        generated_at=now,
+        accepted_entries=metrics['accepted_entries'],
+        closed_entries=metrics['closed_entries'],
+        rejected_entries=rejected_count,
+        rejected_replayed=rejected_replayed,
+        brier_score=metrics['brier_score'],
+        calibration_mae=metrics['calibration_mae'],
+        live_win_rate=metrics['live_win_rate'],
+        avg_pnl_pct=metrics['avg_pnl_pct'],
+        drift_status=status,
+        message=message,
+        method='accepted calibration + rejected future_close replay',
+        stored_at=now,
+    ))
+    session.merge(MlDriftAlert(
+        alert_id=f"drift_{analysis_id}",
+        run_id=analysis_id,
+        generated_at=now,
+        status=status,
+        message=message,
+        accepted_entries=metrics['accepted_entries'],
+        closed_entries=metrics['closed_entries'],
+        rejected_entries=rejected_count,
+        rejected_replayed=rejected_replayed,
+        live_win_rate=metrics['live_win_rate'],
+        calibration_mae=metrics['calibration_mae'],
+        avg_pnl_pct=metrics['avg_pnl_pct'],
+        stored_at=now,
+    ))
     return status, message
 
 
@@ -320,7 +319,9 @@ def main():
     parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96')))
     parser.add_argument('--fee-rate', type=float, default=float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0)
     parser.add_argument('--max-replay', type=int, default=250)
-    parser.add_argument('--request-pause', type=float, default=0.05)
+    parser.add_argument('--request-pause', type=float, default=float(os.getenv('ML_REPLAY_REQUEST_PAUSE_SECONDS', '1.2')))
+    parser.add_argument('--request-retries', type=int, default=int(os.getenv('ML_REPLAY_REQUEST_RETRIES', '3')))
+    parser.add_argument('--retry-backoff', type=float, default=float(os.getenv('ML_REPLAY_RETRY_BACKOFF', '2.0')))
     parser.add_argument('--no-replay-rejected', action='store_false', dest='replay_rejected')
     parser.set_defaults(replay_rejected=True)
     args = parser.parse_args()
@@ -329,14 +330,15 @@ def main():
     logger.close()
 
     analysis_id = run_id()
-    conn = connect(args.db)
-    entries = load_entries(conn)
-    metrics = compute_calibration(conn, analysis_id, entries)
+    Session = create_session_factory(args.db)
+    session = Session()
+    entries = load_entries(session)
+    metrics = compute_calibration(session, analysis_id, entries)
     rejected_count = len([row for row in entries if row['decision'] == 'rejected'])
-    rejected_replayed = replay_rejected(conn, analysis_id, entries, args)
-    status, message = write_run_summary(conn, analysis_id, metrics, rejected_count, rejected_replayed)
-    conn.commit()
-    conn.close()
+    rejected_replayed = replay_rejected(session, analysis_id, entries, args)
+    status, message = write_run_summary(session, analysis_id, metrics, rejected_count, rejected_replayed)
+    session.commit()
+    session.close()
 
     print(f"Analysis: {analysis_id}")
     print(f"Accepted: {metrics['accepted_entries']} | Closed: {metrics['closed_entries']}")
