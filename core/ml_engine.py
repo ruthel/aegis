@@ -674,7 +674,9 @@ class MLEngine:
             net_pnl_pct = ((current_price - breakeven_price) / max(buy_price, 1e-9)) * 100.0
 
             sell_threshold = float(os.getenv('ML_EXIT_SELL_THRESHOLD', '35.0'))
-            profit_protect_min_net = float(os.getenv('ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT', '0.05'))
+            avg_fee_pct = fee_rate * 100.0  # Moyenne des frais (frais_achat + frais_vente)/2
+            env_min_net = float(os.getenv('ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT', '0.10'))
+            profit_protect_min_net = max(avg_fee_pct, env_min_net)
             profit_protect_threshold = float(os.getenv('ML_EXIT_PROFIT_PROTECT_THRESHOLD', '70.0'))
             if net_pnl_pct >= profit_protect_min_net:
                 sell_threshold = max(sell_threshold, profit_protect_threshold)

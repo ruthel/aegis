@@ -108,6 +108,7 @@ click.secho = lambda *args, **kwargs: None
 
 
 CONFIG_FIELDS = {
+    'AUTO_START_BOT': {'type': 'bool', 'label': 'Auto-démarrage du moteur bot', 'section': 'Trading', 'restart': 'ui'},
     'PAPER_TRADING': {'type': 'bool', 'label': 'Paper trading', 'section': 'Trading', 'restart': 'bot'},
     'TRADE_AMOUNT': {'type': 'float', 'label': 'Montant trade USD', 'section': 'Trading', 'min': 0.5, 'max': 10000, 'restart': 'bot'},
     'MAX_DAILY_TRADES': {'type': 'int', 'label': 'Trades max / jour', 'section': 'Risque', 'min': 0, 'max': 200, 'restart': 'bot'},
@@ -686,7 +687,7 @@ def trade_stats(positions):
                     queue.pop(0)
 
     total = len(trades)
-    wins = sum(1 for t in trades if t >= -0.005)
+    wins = sum(1 for t in trades if t > 0)
     total_pnl_gross = sum(gross_trades)
     total_pnl = sum(trades)
     win_rate = (wins / total * 100) if total else 0
@@ -1053,6 +1054,64 @@ def compute_advanced_metrics(positions, paper_balance):
     }
 
 
+def _enrich_trades_with_ml_confidence(trades):
+    """Enrichit chaque trade avec les pourcentages de confiance ML d'achat (buy) et de vente (sell)."""
+    if not trades:
+        return trades
+
+    sqlite_file = os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
+    db_path = ROOT / sqlite_file if not os.path.isabs(sqlite_file) else Path(sqlite_file)
+
+    if not os.path.exists(db_path):
+        return trades
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        def get_ml_buy_prob(symbol, ts_str):
+            try:
+                if not ts_str:
+                    return None
+                row = cursor.execute(
+                    "SELECT confidence FROM ml_decisions WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
+                    (symbol, str(ts_str))
+                ).fetchone()
+                if not row:
+                    row = cursor.execute(
+                        "SELECT confidence FROM ml_decisions WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
+                        (symbol, str(ts_str))
+                    ).fetchone()
+                return round(float(row[0]), 1) if row and row[0] is not None else None
+            except Exception:
+                return None
+
+        def get_ml_sell_prob(symbol, ts_str):
+            try:
+                if not ts_str:
+                    return None
+                row = cursor.execute(
+                    "SELECT confidence FROM ml_decisions WHERE action_type='EXIT' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
+                    (symbol, str(ts_str))
+                ).fetchone()
+                return round(float(row[0]), 1) if row and row[0] is not None else None
+            except Exception:
+                return None
+
+        for t in trades:
+            if t.get('ml_buy_prob') is None:
+                t['ml_buy_prob'] = get_ml_buy_prob(t.get('symbol'), t.get('buy_time') or t.get('timestamp') or '')
+            if t.get('ml_sell_prob') is None and t.get('status') == 'closed':
+                t['ml_sell_prob'] = get_ml_sell_prob(t.get('symbol'), t.get('sell_time') or t.get('timestamp') or '')
+
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ Warning: impossible d'enrichir les trades avec la confiance ML: {e}")
+
+    return trades
+
+
 def compute_trade_history(positions):
     """
     Formule exacte :
@@ -1082,12 +1141,17 @@ def compute_trade_history(positions):
                     'amount': amount,
                     'price': px,
                     'timestamp': pos.get('timestamp'),
-                    'order_id': pos.get('order_id')
+                    'order_id': pos.get('order_id'),
+                    'ml_buy_prob': pos.get('ml_buy_prob') or pos.get('p_win') or pos.get('ml_prob'),
+                    'sizing_reason': pos.get('sizing_reason')
                 })
             elif side == 'sell':
                 tot_amount = sum(b['amount'] for b in buy_queue)
                 tot_cost = sum(b['amount'] * b['price'] for b in buy_queue)
                 avg_buy_price = tot_cost / tot_amount if tot_amount > 0 else px
+                buy_ml_prob = buy_queue[0].get('ml_buy_prob') if buy_queue else pos.get('ml_buy_prob')
+                sell_ml_prob = pos.get('ml_sell_prob') or pos.get('ml_exit_prob') or pos.get('continuation_score')
+                sizing_reason = buy_queue[0].get('sizing_reason') if buy_queue else pos.get('sizing_reason')
 
                 if status == 'opened':
                     trades.append({
@@ -1100,12 +1164,18 @@ def compute_trade_history(positions):
                         'target_price': round(px, 8),
                         'amount': round(amount, 8),
                         'entry_value': round(amount * avg_buy_price, 4),
+                        'usd_value': round(amount * avg_buy_price, 4),
                         'pnl': None,
                         'pnl_pct': None,
+                        'pnl_gross': None,
+                        'pnl_gross_pct': None,
                         'buy_time': buy_queue[0]['timestamp'] if buy_queue else pos.get('timestamp'),
                         'timestamp': pos.get('timestamp'),
                         'order_id': pos.get('order_id'),
                         'profitable': None,
+                        'ml_buy_prob': round(float(buy_ml_prob), 1) if buy_ml_prob is not None else None,
+                        'ml_sell_prob': None,
+                        'sizing_reason': sizing_reason,
                     })
                 elif status in ('executed', 'filled'):
                     entry_value = amount * avg_buy_price
@@ -1128,6 +1198,8 @@ def compute_trade_history(positions):
                         'buy_price': round(avg_buy_price, 8),
                         'sell_price': round(px, 8),
                         'amount': round(amount, 8),
+                        'entry_value': round(entry_value, 4),
+                        'usd_value': round(entry_value, 4),
                         'pnl_gross': round(pnl_gross, 4),
                         'fees': round(fees, 4),
                         'pnl_net': round(pnl_net, 4),
@@ -1138,7 +1210,10 @@ def compute_trade_history(positions):
                         'buy_time': buy_queue[0]['timestamp'] if buy_queue else pos.get('timestamp'),
                         'sell_time': pos.get('timestamp'),
                         'timestamp': pos.get('timestamp'),
-                        'profitable': pnl_net >= -0.005,
+                        'profitable': pnl_net > 0,
+                        'ml_buy_prob': round(float(buy_ml_prob), 1) if buy_ml_prob is not None else None,
+                        'ml_sell_prob': round(float(sell_ml_prob), 1) if sell_ml_prob is not None else None,
+                        'sizing_reason': sizing_reason,
                     })
 
                     rem = amount
@@ -1150,7 +1225,8 @@ def compute_trade_history(positions):
                         if item['amount'] <= 1e-12:
                             buy_queue.pop(0)
 
-    return sorted(trades, key=lambda t: t.get('timestamp') or t.get('buy_time') or '', reverse=True)
+    sorted_trades = sorted(trades, key=lambda t: t.get('timestamp') or t.get('buy_time') or '', reverse=True)
+    return _enrich_trades_with_ml_confidence(sorted_trades)
 
 
 def compute_heatmap(positions):
@@ -1378,12 +1454,19 @@ def index():
     return jsonify({'error': 'Frontend non compilé. Veuillez exécuter pnpm build dans ui/app.'}), 500
 
 
+@app.route('/public/<path:path>')
+def serve_public(path):
+    public_dir = ROOT / 'ui' / 'public'
+    return send_from_directory(public_dir, path)
+
+
 @app.route('/analytics')
 @app.route('/trades')
 @app.route('/console')
 @app.route('/config')
 def spa_route():
     return index()
+
 
 
 def compute_next_buy_forecast(state):

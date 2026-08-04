@@ -1,112 +1,27 @@
-2026-07-28 12:31:30 💰 Capital: 861 USD (LARGE) [PAPER] | Trade: 43 | Spot: 85% | Stop: 5.0% | Mode: CON
-2026-07-28 12:31:30 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:31:30 🔍 Vérification positions existantes...
-2026-07-28 12:31:30 ✅ Aucune position à optimiser
-2026-07-28 12:33:01 🚀 Démarrage du bot Aegis...
-2026-07-28 12:33:20 🧪 Support Touch metrics ML: ['ADA', 'BTC', 'ETH', 'SOL']
-2026-07-28 12:33:20 💰 Capital: 861 USD (LARGE) [PAPER] | Trade: 43 | Spot: 85% | Stop: 5.0% | Mode: CON
-2026-07-28 12:33:20 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:33:20 🔍 Vérification positions existantes...
-2026-07-28 12:33:20 ✅ Aucune position à optimiser
-2026-07-28 12:34:34 🎯 BTC 63💤 | ETH 61💤 | ADA 59💤 | SOL 54💤 → Seuil 18 (📉-10)
-2026-07-28 12:34:34 🤖 Aegis | PAPER ⚡ TEMPS RÉEL | 0 positions
-2026-07-28 12:34:34 📊 BTC, ETH, ADA, SOL | Min dynamique | Seuil adaptatif | Spot multi-exchange
-2026-07-28 12:34:34 🛑 Ctrl+C pour arrêter
-2026-07-28 12:34:34 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:34:34 🔴 SOL 0.593400 @ 76.77 → 74.11 (-3.47%) = 43.98 USD
-2026-07-28 12:34:34 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.33%) = 49.83 USD
-2026-07-28 12:34:34 🔴 BTC 0.000690 @ 65545.06 → 63788.10 (-2.68%) = 44.01 USD
-2026-07-28 12:35:48 🎯 ETH 62💤 | BTC 56💤 | ADA 56💤 | SOL 49💤 → Seuil 23 (📉-10)
-2026-07-28 12:35:48 💳 SPOT: USD 860.69
-2026-07-28 12:35:48 ⚡ 12:35:48 | ETH 1915.40 | BTC 63745.20 | ADA 0.16 | SOL 74.06
-2026-07-28 12:35:48 📊 Meilleurs niveaux: ETH 1914.81 (Support dynamique, 0.0%) | BTC 63751.50 (Support dynamique, 0.0%) | ADA 0.16 (Support dynamique, 0.1%) | SOL 74.04 (Support dynamique, 0.0%)
-2026-07-28 12:36:03 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:36:03 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:36:04 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:36:04 🔴 SOL 0.593400 @ 76.77 → 74.07 (-3.52%) = 43.95 USD
-2026-07-28 12:36:04 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.35%) = 49.81 USD
-2026-07-28 12:36:04 🔴 BTC 0.000690 @ 65545.06 → 63741.30 (-2.75%) = 43.98 USD
-2026-07-28 12:37:17 🎯 BTC 63💤 | ETH 63💤 | ADA 54💤 | SOL 53💤 → Seuil 23 (📉-10)
-2026-07-28 12:37:17 💳 SPOT: USD 860.69
-2026-07-28 12:37:17 ⚡ 12:37:17 | BTC 63753.90 [DOWN 70%] | ETH 1916.53 | ADA 0.16 [DOWN 80%] | SOL 74.07
-2026-07-28 12:37:17 📊 Meilleurs niveaux: BTC 63751.50 (Support dynamique, 0.0%) | ETH 1914.81 (Support dynamique, 0.1%) | ADA 0.16 (Support dynamique, 0.0%) | SOL 74.04 (Support dynamique, 0.0%)
-2026-07-28 12:37:32 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:37:32 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:37:32 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:37:32 🔴 SOL 0.593400 @ 76.77 → 74.08 (-3.50%) = 43.96 USD
-2026-07-28 12:37:32 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.34%) = 49.82 USD
-2026-07-28 12:37:32 🔴 BTC 0.000690 @ 65545.06 → 63740.00 (-2.75%) = 43.98 USD
-2026-07-28 12:38:46 🎯 BTC 63💤 | ETH 60💤 | SOL 56💤 | ADA 55💤 → Seuil 23 (📉-10)
-2026-07-28 12:38:46 💳 SPOT: USD 860.69
-2026-07-28 12:38:46 ⚡ 12:38:46 | BTC 63724.30 | ETH 1915.53 | SOL 74.09 [DOWN 80%] | ADA 0.16 [DOWN 80%]
-2026-07-28 12:38:46 📊 Meilleurs niveaux: BTC 63735.10 (Support dynamique, 0.0%) | ETH 1914.81 (Support dynamique, 0.0%) | SOL 74.04 (Support dynamique, 0.1%) | ADA 0.16 (Support dynamique, 0.1%)
-2026-07-28 12:39:01 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:39:01 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:39:01 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:39:01 🔴 SOL 0.593400 @ 76.77 → 74.09 (-3.49%) = 43.97 USD
-2026-07-28 12:39:01 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.24%) = 49.87 USD
-2026-07-28 12:39:01 🔴 BTC 0.000690 @ 65545.06 → 63747.90 (-2.74%) = 43.99 USD
-2026-07-28 12:40:15 🎯 BTC 61💤 | ETH 61💤 | ADA 56💤 | SOL 53💤 → Seuil 18 (📉-10)
-2026-07-28 12:40:15 💳 SPOT: USD 860.69
-2026-07-28 12:40:15 ⚡ 12:40:15 | BTC 63783.50 [DOWN 85%] | ETH 1917.59 | ADA 0.16 | SOL 74.19
-2026-07-28 12:40:15 📊 Meilleurs niveaux: BTC 63763.50 (Support dynamique, 0.0%) | ETH 1914.81 (Support dynamique, 0.1%) | ADA 0.16 (Support dynamique, 0.2%) | SOL 74.04 (Support dynamique, 0.2%)
-2026-07-28 12:40:30 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:40:30 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:40:30 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:40:30 🔴 SOL 0.593400 @ 76.77 → 74.19 (-3.36%) = 44.02 USD
-2026-07-28 12:40:30 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.24%) = 49.87 USD
-2026-07-28 12:40:30 🔴 BTC 0.000690 @ 65545.06 → 63800.00 (-2.66%) = 44.02 USD
-2026-07-28 12:41:10 📊 ADA/USD: Tendance cumulative détectée! 4x hausse = 0.33%
-2026-07-28 12:41:10 ⚡ Analyse forcée suite à tendance cumulative ADA/USD
-2026-07-28 12:41:44 🎯 ETH 63💤 | BTC 61💤 | ADA 55💤 | SOL 48💤 → Seuil 18 (📉-10)
-2026-07-28 12:41:44 💳 SPOT: USD 860.69
-2026-07-28 12:41:44 ⚡ 12:41:44 | ETH 1919.12 | BTC 63811.00 [UP 85%] | ADA 0.16 | SOL 74.21
-2026-07-28 12:41:44 📊 Meilleurs niveaux: ETH 1915.97 (Support dynamique, 0.2%) | BTC 63756.40 (Order Block, 0.1%) | ADA 0.16 (Order Block, 0.1%) | SOL 74.09 (Support dynamique, 0.2%)
-2026-07-28 12:41:58 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:41:58 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:41:59 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:41:59 🔴 SOL 0.593400 @ 76.77 → 74.21 (-3.33%) = 44.04 USD
-2026-07-28 12:41:59 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.08%) = 49.95 USD
-2026-07-28 12:41:59 🔴 BTC 0.000690 @ 65545.06 → 63825.00 (-2.62%) = 44.04 USD
-2026-07-28 12:42:01 📊 ETH/USD: Tendance cumulative détectée! 5x hausse = 0.32%
-2026-07-28 12:42:01 ⚡ Analyse forcée suite à tendance cumulative ETH/USD
-2026-07-28 12:43:13 🎯 ETH 59💤 | BTC 59💤 | ADA 55💤 | SOL 54💤 → Seuil 23 (📉-10)
-2026-07-28 12:43:13 💳 SPOT: USD 860.69
-2026-07-28 12:43:13 ⚡ 12:43:13 | ETH 1920.69 [DOWN 85%] | BTC 63863.30 | ADA 0.16 | SOL 74.25 [DOWN 80%]
-2026-07-28 12:43:13 📊 Meilleurs niveaux: ETH 1915.97 (Support dynamique, 0.2%) | BTC 63756.40 (Order Block, 0.2%) | ADA 0.16 (Order Block, 0.1%) | SOL 74.09 (Support dynamique, 0.2%)
-2026-07-28 12:43:27 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:43:27 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:43:28 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:43:28 🔴 SOL 0.593400 @ 76.77 → 74.27 (-3.26%) = 44.07 USD
-2026-07-28 12:43:28 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.08%) = 49.95 USD
-2026-07-28 12:43:28 🔴 BTC 0.000690 @ 65545.06 → 63859.20 (-2.57%) = 44.06 USD
-2026-07-28 12:44:41 🎯 BTC 61💤 | ETH 61💤 | ADA 56💤 | SOL 51💤 → Seuil 18 (📉-10)
-2026-07-28 12:44:41 💳 SPOT: USD 860.69
-2026-07-28 12:44:41 ⚡ 12:44:41 | BTC 63847.50 | ETH 1921.05 | ADA 0.16 | SOL 74.26 [DOWN 85%]
-2026-07-28 12:44:41 📊 Meilleurs niveaux: BTC 63756.40 (Order Block, 0.1%) | ETH 1915.97 (Support dynamique, 0.3%) | ADA 0.16 (Order Block, 0.1%) | SOL 74.09 (Support dynamique, 0.2%)
-2026-07-28 12:44:56 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:44:56 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:44:56 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:44:56 🔴 SOL 0.593400 @ 76.77 → 74.24 (-3.30%) = 44.05 USD
-2026-07-28 12:44:56 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.08%) = 49.95 USD
-2026-07-28 12:44:56 🔴 BTC 0.000690 @ 65545.06 → 63838.20 (-2.60%) = 44.05 USD
-2026-07-28 12:46:10 🎯 ETH 60💤 | BTC 55💤 | SOL 51💤 | ADA 49💤 → Seuil 23 (📉-10)
-2026-07-28 12:46:10 💳 SPOT: USD 860.69
-2026-07-28 12:46:10 ⚡ 12:46:10 | ETH 1920.40 | BTC 63854.00 | SOL 74.22 [DOWN 85%] | ADA 0.16
-2026-07-28 12:46:10 📊 Meilleurs niveaux: ETH 1915.97 (Support dynamique, 0.2%) | BTC 63756.40 (Order Block, 0.2%) | SOL 74.09 (Support dynamique, 0.2%) | ADA 0.16 (Order Block, 0.1%)
-2026-07-28 12:46:25 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:46:25 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:46:25 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:46:25 🔴 SOL 0.593400 @ 76.77 → 74.21 (-3.33%) = 44.04 USD
-2026-07-28 12:46:25 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.08%) = 49.95 USD
-2026-07-28 12:46:25 🔴 BTC 0.000690 @ 65545.06 → 63853.90 (-2.58%) = 44.06 USD
-2026-07-28 12:47:39 🎯 BTC 63💤 | ETH 62💤 | SOL 50💤 | ADA 48💤 → Seuil 23 (📉-10)
-2026-07-28 12:47:39 💳 SPOT: USD 860.69
-2026-07-28 12:47:39 ⚡ 12:47:39 | BTC 63844.80 | ETH 1920.24 | SOL 74.24 | ADA 0.16
-2026-07-28 12:47:39 📊 Meilleurs niveaux: BTC 63823.80 (Support dynamique, 0.0%) | ETH 1920.00 (Support dynamique, 0.0%) | SOL 74.21 (Order Block, 0.0%) | ADA 0.16 (Order Block, 0.1%)
-2026-07-28 12:47:54 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
-2026-07-28 12:47:54 🔮 PRÉVISIONS ACHATS:
-2026-07-28 12:47:54 📊 +0.00 | 0 trades (0% win)
-2026-07-28 12:47:54 🔴 SOL 0.593400 @ 76.77 → 74.25 (-3.28%) = 44.06 USD
-2026-07-28 12:47:54 🔴 ADA 314.397530 @ 0.16 → 0.16 (-1.12%) = 49.93 USD
-2026-07-28 12:47:54 🔴 BTC 0.000690 @ 65545.06 → 63837.30 (-2.61%) = 44.05 USD
+2026-08-03 22:21:54 🚀 Démarrage du bot Aegis...
+2026-08-03 22:22:24 🎯 Trailing stop activé pour ADA/USD: Stop initial à 0.19 (écart: 0.5%)
+2026-08-03 22:22:24 🎯 Trailing stop activé pour BTC/USD: Stop initial à 63470.06 (écart: 0.5%)
+2026-08-03 22:22:24 🎯 Trailing stop activé pour SOL/USD: Stop initial à 73.25 (écart: 0.5%)
+2026-08-03 22:22:39 🧪 Support Touch metrics ML: ['ADA', 'BTC', 'ETH', 'SOL']
+2026-08-03 22:22:39 💰 Capital: 771 USD (LARGE) [PAPER] | Trade: 39 | Spot: 85% | Stop: 5.0% | Mode: CON
+2026-08-03 22:22:39 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
+2026-08-03 22:22:39 🔍 Vérification positions existantes...
+2026-08-03 22:22:39 ✅ Aucune position à optimiser
+2026-08-03 22:23:53 🎯 BTC 58💤 | ETH 58💤 | SOL 56💤 | ADA 55💤 → Seuil 19 (📉-10)
+2026-08-03 22:23:53 🤖 Aegis | PAPER ⚡ TEMPS RÉEL | 3 positions
+2026-08-03 22:23:53 📊 BTC, ETH, SOL, ADA | Min dynamique | Seuil adaptatif | Spot multi-exchange
+2026-08-03 22:23:53 🛑 Ctrl+C pour arrêter
+2026-08-03 22:23:53 📊 +0.00 | 0 trades (0% win)
+2026-08-03 22:23:53 🔴 ADA 389.303640 @ 0.19 → 0.19 (-1.52%) = 74.50 USD
+2026-08-03 22:23:53 🔴 BTC 0.001200 @ 64426.89 → 63642.00 (-1.22%) = 76.37 USD
+2026-08-03 22:23:53 🔴 SOL 1.058770 @ 74.36 → 73.66 (-0.94%) = 77.99 USD
+2026-08-03 22:25:08 🎯 ETH 59💤 | BTC 59💤 | SOL 56💤 | ADA 55💤 → Seuil 24 (📉-10)
+2026-08-03 22:25:08 💳 SPOT: USD 770.85
+2026-08-03 22:25:08 ⚡ 22:25:08 | ETH 1861.94 | BTC 63646.90 | SOL 73.65 [DOWN 60%] | ADA 0.19
+2026-08-03 22:25:08 📊 Meilleurs niveaux: ETH 1861.78 (Support dynamique, 0.0%) | BTC 63646.70 (Support dynamique, 0.0%) | SOL 73.60 (Order Block, 0.1%) | ADA 0.19 (Order Block, 0.4%)
+2026-08-03 22:25:11 🔮 PRÉVISIONS ACHATS:
+2026-08-03 22:25:12 🔄 FRAIS SYNCHRONISÉS: Taker: 0.100% | Profit Min Optimal (frais couverts): 0.400% | Profit Target Effectif: 1.000%
+2026-08-03 22:25:13 📊 +0.00 | 0 trades (0% win)
+2026-08-03 22:25:13 🔴 ADA 389.303640 @ 0.19 → 0.19 (-1.54%) = 74.49 USD
+2026-08-03 22:25:13 🔴 BTC 0.001200 @ 64426.89 → 63639.70 (-1.22%) = 76.37 USD
+2026-08-03 22:25:13 🔴 SOL 1.058770 @ 74.36 → 73.65 (-0.95%) = 77.98 USD

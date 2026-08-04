@@ -23,15 +23,10 @@ class TradingMixin:
             'fee_currency': 'USD'
         }
     
-    def buy_market(self, symbol, amount, allow_averaging=False):
+    def buy_market(self, symbol, amount, allow_averaging=False, sizing_reason=None, ml_buy_prob=None):
+        # VÉRIFICATION 1: Limite quotidienne de trades gérée par risk_manager.can_trade()
         if hasattr(self, 'risk_manager') and not self.risk_manager.can_trade():
             return None
-        
-        # VÉRIFICATION 1: Limite quotidienne de trades
-        if hasattr(self, 'total_trades') and hasattr(self, 'max_daily_trades'):
-            if self.total_trades >= self.max_daily_trades:
-                print(f"❌ Limite quotidienne atteinte: {self.total_trades}/{self.max_daily_trades}")
-                return None
         
         # VÉRIFICATION 2: Position existante via can_open_position (VRAIE VÉRIFICATION)
         if not allow_averaging and not self.can_open_position(symbol):
@@ -57,7 +52,10 @@ class TradingMixin:
                     print(f"❌ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
                     return None
                     
-                self.paper_balance -= cost
+                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                if fee_rate <= 0:
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                self.paper_balance -= (cost * (1 + fee_rate))
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': cost}
                 action_text = "moyennage" if allow_averaging else "achat"
                 print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
@@ -78,7 +76,8 @@ class TradingMixin:
                     'price': exec_price, 'timestamp': datetime.now().isoformat(),
                     'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
                     'averaging': allow_averaging, 'status': 'executed',
-                    'fee_rate': fee_rate, 'fee': buy_fee, 'position_size_crypto': amount, 'position_size_usd': exec_price * amount
+                    'fee_rate': fee_rate, 'fee': buy_fee, 'position_size_crypto': amount, 'position_size_usd': exec_price * amount,
+                    'sizing_reason': sizing_reason, 'ml_buy_prob': ml_buy_prob
                 }
                 if 'positions' not in self.state:
                     self.state['positions'] = []
@@ -116,8 +115,11 @@ class TradingMixin:
         
         try:
             if self.paper_trading:
+                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                if fee_rate <= 0:
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
                 revenue = amount * price
-                self.paper_balance += revenue
+                self.paper_balance += (revenue * (1 - fee_rate))
                 order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': revenue}
                 print(f"🧪 PAPER - Vente simulée: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
             else:
@@ -445,9 +447,12 @@ class TradingMixin:
             if should_execute:
                 # Exécuter l'ordre
                 if side == 'sell':
+                    fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                    if fee_rate <= 0:
+                        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
                     buy_price = self.get_real_buy_price(symbol)
                     revenue = amount * current_price
-                    self.paper_balance += revenue
+                    self.paper_balance += (revenue * (1 - fee_rate))
                     print(f"✅ PAPER - Ordre limite VENTE exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
                     
                     # Calculer P&L
@@ -493,7 +498,10 @@ class TradingMixin:
                     
                 elif side == 'buy':
                     cost = amount * current_price
-                    self.paper_balance -= cost
+                    fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                    if fee_rate <= 0:
+                        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                    self.paper_balance -= (cost * (1 + fee_rate))
                     print(f"✅ PAPER - Ordre limite ACHAT exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
                     
                     # Enregistrer l'achat

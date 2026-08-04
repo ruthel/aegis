@@ -81,9 +81,13 @@ function ScoreHistoryChartBase({ data, intervalHours, periodHours }: { data: Sco
         valueXField: 'time',
         stroke: am5.color('#3b82f6'),
         fill: am5.color('#3b82f6'),
-        tooltip: am5.Tooltip.new(root, {
-          labelText: '{tooltipLabel}\nScore lissé: {score.formatNumber("#.0")}/100\nScore brut: {rawScore.formatNumber("#.0")}/100\nPrix: {price.formatNumber("#,###.00")} USD',
-        }),
+        tooltip: (() => {
+          const tt = am5.Tooltip.new(root, {
+            labelText: '[#ffffff]{tooltipLabel}\nScore lissé: {score.formatNumber("#.0")}/100\nScore brut: {rawScore.formatNumber("#.0")}/100\nPrix: {price.formatNumber("#,###.00")} USD[/]',
+          })
+          tt.label.setAll({ fill: am5.color(0xffffff), fontSize: 12 })
+          return tt
+        })(),
       }),
     )
 

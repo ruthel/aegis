@@ -13,13 +13,13 @@ class BalanceManager:
     def _get_allowed_assets(self):
         """Récupère la liste des cryptos autorisées depuis TRADING_PAIRS"""
         trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD').split(',')
-        allowed_assets = set(['USD', 'USD'])  # USD toujours autorisé
+        allowed_assets = set(['USD', 'USDT'])  # USD / USDT toujours autorisés
         
         for pair in trading_pairs:
             if '/' in pair:
                 base = pair.split('/')[0]
             else:
-                base = pair.replace('USD', '').replace('USD', '')
+                base = pair.replace('USDT', '').replace('USD', '')
             allowed_assets.add(base)
         
         return allowed_assets
@@ -46,13 +46,19 @@ class BalanceManager:
                 continue
 
             asset_balance = balance.setdefault(asset, {'free': 0, 'used': 0, 'total': 0})
-            if position.get('side') == 'buy':
+            side = position.get('side')
+            status = position.get('status')
+            if side == 'buy' and status != 'canceled':
                 asset_balance['free'] += amount
-            elif position.get('side') == 'sell':
-                asset_balance['free'] -= amount
+            elif side == 'sell':
+                if status == 'opened':
+                    asset_balance['used'] += amount
+                    asset_balance['free'] -= amount
+                elif status in ('executed', 'filled'):
+                    asset_balance['free'] -= amount
 
         for asset, data in balance.items():
-            if asset in ('USD', 'USD'):
+            if asset in ('USD', 'USDT'):
                 continue
             data['free'] = max(0, data['free'])
             data['total'] = data['free'] + data.get('used', 0)
@@ -117,7 +123,7 @@ class BalanceManager:
             
         try:
             balance = self.get_balance()
-            available = balance.get('USD', balance.get('USD', {})).get('free', 0)
+            available = (balance.get('USD') or balance.get('USDT') or {}).get('free', 0)
             needed_balance = trade_amount * 1.2
             
             if available < needed_balance:
@@ -133,7 +139,7 @@ class BalanceManager:
         """Calcule le solde spot total en USD."""
         try:
             spot_balance = self.get_balance()
-            spot_usd = spot_balance.get('USD', balance.get('USD', {})).get('free', 0)
+            spot_usd = (spot_balance.get('USD') or spot_balance.get('USDT') or {}).get('free', 0)
             
             return {
                 'total': spot_usd,
@@ -175,7 +181,7 @@ class BalanceManager:
             
             # Test Spot
             spot_balance = self.get_balance()
-            usd_spot = spot_balance.get('USD', balance.get('USD', {})).get('free', 0)
+            usd_spot = (spot_balance.get('USD') or spot_balance.get('USDT') or {}).get('free', 0)
             print(f"💰 Balance SPOT USD: {usd_spot:.2f}")
             
             # Résumé

@@ -88,3 +88,10 @@ export type AnalyticsPayload = {
     history?: JsonMap[]
   }
 }
+
+export type TradesPayload = {
+  trades?: JsonMap[]
+  buys?: JsonMap[]
+  sells?: JsonMap[]
+  total?: number
+}

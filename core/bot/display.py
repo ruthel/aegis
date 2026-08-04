@@ -55,8 +55,8 @@ class DisplayMixin:
         balance = self.balance_manager.get_balance()
         balances = []
         
-        usd_free = balance.get('USD', balance.get('USD', {})).get('free', 0)
-        usd_locked = balance.get('USD', balance.get('USD', {})).get('used', 0)
+        usd_free = (balance.get('USD') or balance.get('USDT') or {}).get('free', 0)
+        usd_locked = (balance.get('USD') or balance.get('USDT') or {}).get('used', 0)
         if usd_free > 0.01 or usd_locked > 0.01:
             if usd_locked > 0.01:
                 balances.append(f"USD {usd_free:.2f} ({usd_locked:.2f} locked)")

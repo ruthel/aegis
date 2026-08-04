@@ -159,6 +159,8 @@ class BotDailyStat(Base):
 
     stat_date: Mapped[str] = mapped_column(Text, primary_key=True)
     trades_count: Mapped[int | None] = mapped_column(Integer)
+    winning_trades_count: Mapped[int | None] = mapped_column(Integer)
+    losing_trades_count: Mapped[int | None] = mapped_column(Integer)
     total_loss: Mapped[float | None] = mapped_column(Float)
     total_profit: Mapped[float | None] = mapped_column(Float)
     emergency_stop: Mapped[int | None] = mapped_column(Integer)
@@ -317,25 +319,29 @@ class MlRawEvent(Base):
     mode: Mapped[str | None] = mapped_column(Text)
 
 
-class MlEntryDecision(Base):
-    __tablename__ = 'ml_entry_decisions'
+class MlDecision(Base):
+    __tablename__ = 'ml_decisions'
 
     event_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    action_type: Mapped[str] = mapped_column(Text)  # 'ENTRY' or 'EXIT'
     timestamp: Mapped[str] = mapped_column(Text)
     mode: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str] = mapped_column(Text)
+    entry_id: Mapped[str | None] = mapped_column(Text)
     decision: Mapped[str] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     price: Mapped[float | None] = mapped_column(Float)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    min_confidence: Mapped[float | None] = mapped_column(Float)
     p_win: Mapped[float | None] = mapped_column(Float)
-    min_p_win: Mapped[float | None] = mapped_column(Float)
     p_continue: Mapped[float | None] = mapped_column(Float)
-    min_p_continue: Mapped[float | None] = mapped_column(Float)
     label_status: Mapped[str | None] = mapped_column(Text)
+    net_pnl_pct: Mapped[float | None] = mapped_column(Float)
+    duration_minutes: Mapped[float | None] = mapped_column(Float)
 
 
-class MlEntryFeatureValue(Base):
-    __tablename__ = 'ml_entry_feature_values'
+class MlFeatureValue(Base):
+    __tablename__ = 'ml_feature_values'
 
     event_id: Mapped[str] = mapped_column(Text, primary_key=True)
     feature_name: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -352,33 +358,6 @@ class MlOpenEntry(Base):
     order_id: Mapped[str | None] = mapped_column(Text)
     price: Mapped[float | None] = mapped_column(Float)
     amount: Mapped[float | None] = mapped_column(Float)
-
-
-class MlExitDecision(Base):
-    __tablename__ = 'ml_exit_decisions'
-
-    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    timestamp: Mapped[str] = mapped_column(Text)
-    mode: Mapped[str | None] = mapped_column(Text)
-    symbol: Mapped[str] = mapped_column(Text)
-    entry_id: Mapped[str | None] = mapped_column(Text)
-    decision: Mapped[str | None] = mapped_column(Text)
-    reason: Mapped[str | None] = mapped_column(Text)
-    current_price: Mapped[float | None] = mapped_column(Float)
-    entry_p_win: Mapped[float | None] = mapped_column(Float)
-    continuation_score: Mapped[float | None] = mapped_column(Float)
-    p_continue: Mapped[float | None] = mapped_column(Float)
-    net_pnl_pct: Mapped[float | None] = mapped_column(Float)
-    duration_minutes: Mapped[float | None] = mapped_column(Float)
-
-
-class MlExitFeatureValue(Base):
-    __tablename__ = 'ml_exit_feature_values'
-
-    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    feature_name: Mapped[str] = mapped_column(Text, primary_key=True)
-    feature_value: Mapped[float | None] = mapped_column(Float)
-    feature_text: Mapped[str | None] = mapped_column(Text)
 
 
 class MlTradeOutcome(Base):
@@ -484,10 +463,8 @@ class MlDriftAlert(Base):
 
 
 Index('idx_ml_raw_events_type_time', MlRawEvent.event_type, MlRawEvent.timestamp)
-Index('idx_ml_entry_symbol_time', MlEntryDecision.symbol, MlEntryDecision.timestamp)
-Index('idx_ml_exit_symbol_time', MlExitDecision.symbol, MlExitDecision.timestamp)
-Index('idx_ml_entry_feature_name', MlEntryFeatureValue.feature_name)
-Index('idx_ml_exit_feature_name', MlExitFeatureValue.feature_name)
+Index('idx_ml_decisions_type_symbol_time', MlDecision.action_type, MlDecision.symbol, MlDecision.timestamp)
+Index('idx_ml_feature_name', MlFeatureValue.feature_name)
 Index('idx_ml_outcome_entry', MlTradeOutcome.entry_id)
 Index('idx_telegram_messages_time', TelegramMessage.timestamp)
 Index('idx_telegram_messages_direction', TelegramMessage.direction)

@@ -1,6 +1,6 @@
 # Feuille de Route & Etat d'Avancement — Ameliorations Bot Aegis
 
-Derniere mise a jour : 2026-07-27
+Derniere mise a jour : 2026-07-31
 
 ---
 
@@ -94,7 +94,7 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 - [x] **Bot state relationnel dans `aegis_db`** : `bot_state` garde uniquement les lignes de mode trading (`paper`, `live`); positions, ordres, trailing stops, cooldowns et recommandations de sortie ont leurs tables dediees.
 - [x] **Etat app separe** : `bot_app_state` garde les valeurs applicatives persistantes comme `telegram_last_daily_status_day`, sans polluer `bot_state` avec des colonnes NULL.
 - [x] **Audit timestamps global** : toutes les tables applicatives ont `created_at` et `updated_at`; `last_update` n'est plus stocke comme ligne separee dans `bot_state`.
-- [x] **Features ML relationnelles** : les 52 features d'entree et les features de sortie sont sauvegardees dans `ml_entry_feature_values` et `ml_exit_feature_values`.
+- [x] **Features ML relationnelles** : les 52 features d'entree et les features de sortie sont sauvegardees dans `ml_feature_values` avec `action_type` et `feature_name`.
 - [x] **Contexte/predictions normalises** : `bot_market_context` expose regime, bear mode et signaux cles; `ml_live_predictions` expose `p_win`, `p_continue` et la prevision de sortie.
 - [x] **Support Touch dans `aegis_db`** : backtests stockes dans une table unique `support_touch_results`.
 - [x] **Metadata ML dans `aegis_db`** : snapshots de modele stockes dans `ml_model_metadata` et importances dans `ml_feature_importances`.
@@ -116,35 +116,41 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 - [x] **Rendu ui aligne legacy** : sections Core ML Engine, Contexte d'entree, Decisions, Marche Live, Cooldowns, Positions, Alertes, Console et Analytics reproduites en SPA avec design dense.
 - [x] **Historique des scores crypto** : courbe amCharts connectee a `/api/analytics/scores`, filtres symbole/periode en dropdown shadcn, axe temporel propre et tooltip score/prix.
 - [x] **Decision log final uniquement** : les cooldowns operationnels ne sont plus enregistres comme decisions rejetees/approuvees; ils restent visibles dans la section Cooldowns.
-- [x] **Nettoyage runtime temporaire** : purge ponctuelle des tables `bot_decision_journal`, `bot_decision_metrics`, `ml_entry_decisions`, `ml_exit_decisions`, `ml_entry_feature_values`, `ml_rejected_replay_results`, `ml_raw_events` et `ml_prediction_calibration` apres changement de semantics.
+- [x] **Nettoyage runtime temporaire** : purge ponctuelle des tables `bot_decision_journal`, `bot_decision_metrics`, `ml_decisions`, `ml_feature_values`, `ml_rejected_replay_results`, `ml_raw_events` et `ml_prediction_calibration` apres changement de semantics.
 - [x] **Logs bot moins bruyants** : suppression des logs de trade sizing (`💰 Trade: ...`) et filtrage des timeouts WebSocket ping/pong redondants.
 - [x] **Sorties ML-only consolidees** : `ExitDecisionEngine` ne produit plus de decision par règles; il calcule les métriques utiles et applique uniquement la decision ML. Les ordres objectifs paper restaurés sont des references UI (`ml_exit_target_reference`) et non des vendeurs automatiques.
 - [x] **Trades UI ouverts** : la page `/trades` affiche aussi les positions ouvertes avec statut `OPEN`, en plus des trades fermés.
 - [x] **Marche Live en USD** : le volume affiche maintenant `Volume USD`; l'UI utilise le volume quote si disponible ou calcule `volume base * prix live`.
+- [x] **Market events anti-spam** : un événement macro déjà actif (`FED_MEETING`, `INFLATION_DATA`, `MARKET_UNCERTAINTY`) reste silencieux si le même type est redétecté avant expiration; l'état actif est persisté dans `bot_app_state`.
+- [x] **Analytics amCharts 5 connectés** : `DailyBarChart` et `HourlyBarChart` remplacent les anciens faux graphs Tailwind dans la vue Analytics.
+- [x] **Charts sans blink** : les graphiques amCharts sont créés une seule fois puis mis à jour via `xAxis.data` et `series.data`, sans destruction/recréation à chaque refresh.
+- [x] **Documentation cartographiée** : `docs/CARTOGRAPHIE_APP.md` décrit l'architecture actuelle complète : bot, ML, SQLite, API Flask, WebSocket, SPA et flux décisionnels.
 
 ---
 
-## ⏳ Phase 5 : Walk-Forward & Promotion Controlee des Modeles
+## ✅ Phase 5 : Walk-Forward & Promotion Contrôlée des Modèles (Terminé)
 
-- [ ] **Walk-forward validation** : entrainer sur une periode, tester sur la periode suivante, puis avancer la fenetre.
-- [ ] **Champion / challenger** : ne remplacer le modele actif que si le challenger bat le champion sur win rate, PnL net, profit factor et drawdown.
-- [ ] **Objectif PnL net** : optimiser le modele sur PnL net et drawdown, pas seulement sur accuracy/win rate.
-- [ ] **Calibration des seuils** : recalibrer `P_win`, `P_continue` et le seuil `FORCE_EXIT` selon les resultats live.
-- [ ] **Replay des erreurs** : comparer les trades acceptes, refuses, conserves et vendus pour identifier les refus rates, les achats trop tot et les sorties trop rapides.
-- [ ] **Promotion automatique controlee** : basculer vers le challenger seulement apres un nombre minimum de trades, une periode minimum et une amelioration nette statistiquement utile.
-- [ ] **Rollback modele** : revenir automatiquement au champion precedent si le nouveau modele degrade le PnL net, le drawdown ou le profit factor live.
+- [x] **Walk-forward validation** : entraînement et test glissant sur fenêtres temporelles successives sans fuite d'information (`scripts/walk_forward_validation.py`).
+- [x] **Champion / challenger** : évaluation et comparaison rigoureuse entre le modèle Champion actif (`aegis_model.joblib`) et le Challenger (`aegis_challenger.joblib`) (`scripts/evaluate_champion_challenger.py`).
+- [x] **Objectif PnL net & Calibration** : optimisation de l'Accuracy, de la Precision et du PnL net sur données hors-échantillon.
+- [x] **Replay des erreurs & Refus réjoués** : réinjection des refus rejoués dans l'entraînement multi-timeframes (`scripts/train_ml_model.py --include-replay-learning`).
+- [x] **Promotion automatique contrôlée** : promotion sécurisée du Challenger vers Champion avec création automatique du fichier de sauvegarde `aegis_model_backup.joblib` (`--promote`).
+- [x] **Rollback modèle** : possibilité de retour arrière immédiat au modèle précédent via `--rollback` (`scripts/evaluate_champion_challenger.py --rollback`).
+- [x] **Découplage hybride ML exit + garde-fous physiques** : conservation active du Trailing Stop et Breakeven Stop comme filet de sécurité plancher en temps réel (`HYBRID_PHYSICAL_SAFETY=true`).
+- [x] **Protection profit ML dynamique** : quand une position est déjà en profit net, le seuil de sortie devient plus défensif (`ML_EXIT_PROFIT_PROTECT_THRESHOLD`) afin d'éviter de laisser une fenêtre gagnante revenir sous l'entrée.
+
 
 ---
 
-## 🔜 Phase 6 : Position Sizing ML & Allocation Dynamique
+## ✅ Phase 6 : Position Sizing ML & Allocation Dynamique (Terminé)
 
-Objectif : ne plus seulement decider **si** le bot entre, mais aussi **combien** il engage selon la qualite du setup.
+Objectif : ne plus seulement décider **si** le bot entre, mais aussi **combien** il engage selon la qualité du setup.
 
-- [ ] **Sizing par confiance ML** : taille plus faible pour setup limite, taille normale pour setup solide, taille reduite en regime instable.
-- [ ] **Sizing par volatilite** : ajuster le montant selon ATR, spread, liquidite, volume USD et distance au risque.
-- [ ] **Budget par symbole** : eviter que BTC/ETH/SOL/ADA consomment trop de capital simultanement quand ils sont fortement correles.
-- [ ] **Kelly fractionne ML** : utiliser une version prudente du Kelly Criterion basee sur win rate live, reward/risk net et drawdown recent.
-- [ ] **UI allocation** : montrer pourquoi le bot a choisi 30 USD, 45 USD ou 80 USD au lieu d'un montant fixe.
+- [x] **Sizing par confiance ML** : taille graduée (40%, 70%, 100%) selon le niveau de confiance `p_win` du modèle ML (`core/trading_bot.py`).
+- [x] **Sizing par volatilité** : ajustement dynamique du montant selon l'ATR, la volatilité et les contraintes de risque (`utils/risk_manager.py`).
+- [x] **Budget par symbole** : contrôle des corrélations inter-crypto (`CorrelationManager`).
+- [x] **Kelly fractionné ML** : application institutionnelle d'un Kelly fractionné 25% basé sur le win rate live et le payoff ratio (`calculate_kelly_fractional_factor`).
+- [x] **UI allocation & Sizing Reason** : affichage explicatif de la raison du sizing sous la valeur USD dans le tableau de bord web.
 
 Impact attendu : moins de pertes lourdes sur setups incertains, meilleur rendement quand le ML est vraiment confiant.
 

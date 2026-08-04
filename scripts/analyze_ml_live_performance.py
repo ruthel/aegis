@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.db_orm import (
     MlAnalysisRun,
     MlDriftAlert,
-    MlEntryDecision,
+    MlDecision,
     MlTradeOutcome,
     MlPredictionCalibration,
     MlRejectedReplayResult,
@@ -48,9 +48,10 @@ def bucket_for(p_win):
 
 def load_entries(session):
     rows = session.execute(
-        select(MlEntryDecision, MlTradeOutcome)
-        .outerjoin(MlTradeOutcome, MlTradeOutcome.entry_id == MlEntryDecision.event_id)
-        .order_by(MlEntryDecision.timestamp.asc())
+        select(MlDecision, MlTradeOutcome)
+        .outerjoin(MlTradeOutcome, MlTradeOutcome.entry_id == MlDecision.event_id)
+        .where(MlDecision.action_type == 'ENTRY')
+        .order_by(MlDecision.timestamp.asc())
     ).all()
     entries = []
     for entry, outcome in rows:
@@ -61,7 +62,7 @@ def load_entries(session):
             'decision': entry.decision,
             'reason': entry.reason,
             'price': entry.price,
-            'p_win': entry.p_win,
+            'p_win': entry.confidence if entry.confidence is not None else entry.p_win,
             'p_continue': entry.p_continue,
             'label_status': entry.label_status,
             'pnl_pct': outcome.pnl_pct if outcome else None,
@@ -172,9 +173,24 @@ def fetch_replay_ohlcv_with_retry(exchange, symbol, timestamp_iso, timeframe, li
 
 
 def replay_rejected(session, analysis_id, entries, args):
-    rejected = [row for row in entries if row['decision'] == 'rejected']
     if not args.replay_rejected:
         return 0
+
+    already_replayed_ids = set()
+    try:
+        from core.ml_live_logger import MlRejectedReplayResult
+        from sqlalchemy import select
+        res = session.execute(
+            select(MlRejectedReplayResult.entry_id).where(MlRejectedReplayResult.replay_status == 'replayed')
+        ).scalars().all()
+        already_replayed_ids = set(res)
+    except Exception:
+        pass
+
+    all_rejected = [row for row in entries if row['decision'] == 'rejected']
+    unplayed_rejected = [r for r in reversed(all_rejected) if r['event_id'] not in already_replayed_ids]
+    played_rejected = [r for r in reversed(all_rejected) if r['event_id'] in already_replayed_ids]
+    rejected = unplayed_rejected + played_rejected
 
     try:
         import ccxt

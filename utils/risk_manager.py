@@ -7,13 +7,14 @@ import numpy as np
 from core.ml_live_logger import MLLiveLogger
 
 class RiskManager:
-    def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500):
+    def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500, max_daily_losing_trades=None):
         self.correlation_data = {}
         self.active_positions = {}
         # Safety Manager integration
         self.max_daily_trades = max_daily_trades
         self.max_daily_loss = max_daily_loss
         self.emergency_stop_loss = emergency_stop_loss
+        self.max_daily_losing_trades = max_daily_losing_trades or int(os.getenv('MAX_DAILY_LOSING_TRADES', '10'))
         self.db_logger = MLLiveLogger(
             data_dir='data',
             sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
@@ -43,45 +44,80 @@ class RiskManager:
             print(f"Erreur calcul volatilité {symbol}: {e}")
             return 0.02  # Volatilité par défaut (2%)
 
-    def calculate_position_size(self, bot, symbol, base_amount=10, max_risk_percent=2):
-        """Calcule la taille de position basée sur la volatilité et configuration"""
+    def calculate_kelly_fractional_factor(self, bot, symbol, ml_win_prob=None):
+        """
+        Calcule un facteur Kelly fractionné prudent (Phase 6) basé sur le Win Rate live
+        et le ratio Gain / Perte moyen.
+        Formule : Kelly f* = (p * b - (1 - p)) / b
+        Kelly Fractionné = 0.25 * f* (limité entre 0.5x et 1.5x)
+        """
+        try:
+            # Probabilité de gain p (ML ou Win Rate 30j live)
+            p = (float(ml_win_prob) / 100.0) if ml_win_prob is not None else 0.55
+            
+            # Payoff ratio b (gains moyens / pertes moyennes, par défaut 1.25)
+            b = 1.25
+            if hasattr(bot, 'winning_trades') and hasattr(bot, 'total_trades') and bot.total_trades > 5:
+                live_wr = bot.winning_trades / bot.total_trades
+                p = 0.6 * p + 0.4 * live_wr  # Fusion pondérée ML + live
+
+            # Critère de Kelly f*
+            kelly_full = (p * b - (1.0 - p)) / b if b > 0 else 0.0
+            
+            # Kelly Fractionné 25% (sécurité institutionnelle)
+            kelly_fraction = 0.25 * kelly_full
+            
+            # Facteur multiplicateur final clampé entre 0.5x et 1.5x
+            kelly_factor = max(0.5, min(1.5, 1.0 + kelly_fraction))
+            return round(kelly_factor, 2)
+        except Exception as e:
+            return 1.0
+
+    def calculate_position_size(self, bot, symbol, base_amount=10, max_risk_percent=2, ml_win_prob=None):
+        """Calcule la taille de position dynamique basée sur Volatilité, ML Confidence & Kelly Fractionné (Phase 6)"""
         from config import USE_FULL_BALANCE, MAX_BALANCE_PER_TRADE
         
+        volatility = self.calculate_volatility(bot, symbol)
+        kelly_factor = self.calculate_kelly_fractional_factor(bot, symbol, ml_win_prob=ml_win_prob)
+        
+        # Facteur ML confidence
+        ml_prob = float(ml_win_prob) if ml_win_prob is not None else 65.0
+        if ml_prob < 55.0:
+            ml_factor = 0.40
+            ml_label = "Neutre bas (40%)"
+        elif ml_prob < 65.0:
+            ml_factor = 0.70
+            ml_label = "Neutre haut (70%)"
+        else:
+            ml_factor = 1.00
+            ml_label = "Pleine confiance (100%)"
+
         if USE_FULL_BALANCE:
-            # Mode: Utiliser tout le solde disponible (comportement actuel)
             balance = bot.balance_manager.get_balance()
             usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
-            
-            # Limiter selon MAX_BALANCE_PER_TRADE (% du solde)
             max_allowed = usd_available * (MAX_BALANCE_PER_TRADE / 100)
-            position_size = min(usd_available, max_allowed)
-            
-            print(f"💰 {symbol}: Mode FULL_BALANCE → {position_size:.1f} USD ({MAX_BALANCE_PER_TRADE}% max)")
-            return max(base_amount, position_size)
+            raw_size = min(usd_available, max_allowed)
+            position_size = max(base_amount, raw_size * ml_factor * kelly_factor)
         else:
-            # Mode: Montant fixe basé sur volatilité (nouveau comportement)
-            volatility = self.calculate_volatility(bot, symbol)
-            
-            # Plus la volatilité est élevée, plus on réduit la position
-            risk_factor = max_risk_percent / (volatility * 100)
-            adjusted_amount = base_amount * min(risk_factor, 2.0)  # Max 2x le montant de base
-            
-            # Minimums spécifiques par paire
-            min_notionals = {
-                'BTC/USD': 5,
-                'ETH/USD': 10,
-                'SOL/USD': 8,
-                'ADA/USD': 12
-            }
-            min_required = min_notionals.get(symbol, 10)
-            
-            # Minimum selon la paire, maximum selon TRADE_AMOUNT
-            max_amount = getattr(bot, 'trade_amount', base_amount) * 2
-            position_size = max(min_required, min(max_amount, adjusted_amount))
-            
-            print(f"📊 {symbol}: Mode Fixed Amount → {position_size:.1f} USD (vol: {volatility:.1%})")
-            return position_size
-    
+            risk_factor = max_risk_percent / max(0.01, volatility * 100)
+            vol_adjusted = base_amount * min(risk_factor, 2.0)
+            position_size = vol_adjusted * ml_factor * kelly_factor
+
+        min_notionals = {'BTC/USD': 5, 'ETH/USD': 10, 'SOL/USD': 8, 'ADA/USD': 12}
+        min_required = min_notionals.get(symbol, 10)
+        max_amount = getattr(bot, 'trade_amount', base_amount) * 2.5
+        final_size = round(max(min_required, min(max_amount, position_size)), 2)
+
+        sizing_reason = f"{int(ml_factor*100)}% ({ml_label} • Kelly {kelly_factor}x)"
+        print(f"📊 {symbol}: Sizing Phase 6 → {final_size:.2f} USD [{sizing_reason}]")
+        return {
+            'position_size_usd': final_size,
+            'sizing_reason': sizing_reason,
+            'ml_factor': ml_factor,
+            'kelly_factor': kelly_factor,
+            'volatility': round(volatility * 100, 2)
+        }
+
     def load_daily_stats(self):
         """Charge les statistiques du jour"""
         today = datetime.now().strftime('%Y-%m-%d')
@@ -94,66 +130,102 @@ class RiskManager:
         stats = self.reset_daily_stats()
         self.db_logger.save_daily_stats(stats)
         return stats
-    
+
+    def _check_day_rollover(self):
+        """Vérifie si le jour a changé et réinitialise/recharge les stats du jour si nécessaire."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        if not hasattr(self, 'daily_stats') or not isinstance(self.daily_stats, dict) or self.daily_stats.get('date') != today:
+            self.daily_stats = self.load_daily_stats()
+
     def reset_daily_stats(self):
         """Remet à zéro les stats du jour"""
         return {
             'date': datetime.now().strftime('%Y-%m-%d'),
             'trades_count': 0,
+            'winning_trades_count': 0,
+            'losing_trades_count': 0,
             'total_loss': 0,
             'total_profit': 0,
             'emergency_stop': False
         }
-    
+
     def save_daily_stats(self):
         """Sauvegarde les stats"""
-        self.db_logger.save_daily_stats(self.daily_stats)
-    
+        if hasattr(self, 'daily_stats') and self.daily_stats:
+            self.db_logger.save_daily_stats(self.daily_stats)
+
     def can_trade(self):
         """Vérifie si le trading est autorisé"""
-        # Vérifier arrêt d'urgence
+        self._check_day_rollover()
+
+        # 1. Vérifier arrêt d'urgence
         if self.daily_stats.get('emergency_stop', False):
             print("🚨 ARRÊT D'URGENCE ACTIVÉ")
             return False
-        
-        # Vérifier limite de trades
-        if self.daily_stats['trades_count'] >= self.max_daily_trades:
-            print(f"⛔ Limite de trades atteinte: {self.daily_stats['trades_count']}")
+
+        # 2. Vérifier la limite de trades perdants (protection principale)
+        losing_trades = self.daily_stats.get('losing_trades_count', 0)
+        if losing_trades >= self.max_daily_losing_trades:
+            print(f"⛔ Limite de trades perdants atteinte: {losing_trades}/{self.max_daily_losing_trades} pertes aujourd'hui")
             return False
-        
-        # Vérifier perte journalière
-        if abs(self.daily_stats['total_loss']) >= self.max_daily_loss:
-            print(f"⛔ Limite de perte atteinte: ${abs(self.daily_stats['total_loss'])}")
+
+        # 3. Vérifier la perte maximale journalière en USD
+        total_loss = abs(self.daily_stats.get('total_loss', 0))
+        if total_loss >= self.max_daily_loss:
+            print(f"⛔ Limite de perte atteinte: ${total_loss:.2f}/${self.max_daily_loss:.2f}")
             return False
-        
+
+        # 4. Vérifier la limite globale de trades avec tolérance si PnL net positif
+        trades_count = self.daily_stats.get('trades_count', 0)
+        total_profit = self.daily_stats.get('total_profit', 0)
+        net_pnl = total_profit - total_loss
+
+        if net_pnl > 0:
+            # Si le bot génère du profit net, ne pas le bloquer sur la limite normale (tolérance étendue à 3x)
+            max_allowed = self.max_daily_trades * 3
+            if trades_count >= max_allowed:
+                print(f"⛔ Limite absolue de sécurité atteinte ({trades_count}/{max_allowed} trades)")
+                return False
+        else:
+            # Si le PnL est négatif ou neutre, respecter la limite standard
+            if trades_count >= self.max_daily_trades:
+                print(f"⛔ Limite de trades atteinte: {trades_count}/{self.max_daily_trades} (PnL net non positif: ${net_pnl:.2f})")
+                return False
+
         return True
-    
+
     def record_trade(self, profit_loss):
         """Enregistre un trade"""
-        self.daily_stats['trades_count'] += 1
-        
+        self._check_day_rollover()
+        self.daily_stats['trades_count'] = self.daily_stats.get('trades_count', 0) + 1
+
         if profit_loss > 0:
-            self.daily_stats['total_profit'] += profit_loss
+            self.daily_stats['total_profit'] = self.daily_stats.get('total_profit', 0) + profit_loss
+            self.daily_stats['winning_trades_count'] = self.daily_stats.get('winning_trades_count', 0) + 1
         else:
-            self.daily_stats['total_loss'] += profit_loss
-        
+            self.daily_stats['total_loss'] = self.daily_stats.get('total_loss', 0) + profit_loss
+            self.daily_stats['losing_trades_count'] = self.daily_stats.get('losing_trades_count', 0) + 1
+
         # Vérifier arrêt d'urgence
         if abs(self.daily_stats['total_loss']) >= self.emergency_stop_loss:
             self.daily_stats['emergency_stop'] = True
-            print(f"🚨 ARRÊT D'URGENCE: Perte de ${abs(self.daily_stats['total_loss'])}")
-        
+            print(f"🚨 ARRÊT D'URGENCE: Perte de ${abs(self.daily_stats['total_loss']):.2f}")
+
         self.save_daily_stats()
-        
+
         # Afficher stats
-        print(f"📊 Trades: {self.daily_stats['trades_count']}, P&L: ${self.daily_stats['total_profit'] + self.daily_stats['total_loss']:.2f}")
-    
+        net_pnl = self.daily_stats.get('total_profit', 0) + self.daily_stats.get('total_loss', 0)
+        wins = self.daily_stats.get('winning_trades_count', 0)
+        losses = self.daily_stats.get('losing_trades_count', 0)
+        print(f"📊 Trades: {self.daily_stats['trades_count']} (Wins: {wins}, Losses: {losses}), P&L: ${net_pnl:.2f}")
+
     def get_stats(self):
         """Retourne les statistiques actuelles"""
+        self._check_day_rollover()
         return self.daily_stats
-    
+
     def get_adaptive_confidence_threshold(self, symbol, volatility):
         """Seuil de confiance adaptatif - Méthode Quantitative"""
-        # 1. Seuil de base selon volatilité
         base_threshold = self._get_base_threshold(volatility, symbol)
         
         # 2. Ajustement selon performance récente
@@ -651,7 +723,6 @@ class TrailingStopManager:
             'fee_rate': float(fee_rate or 0),
             'created_at': datetime.now().isoformat()
         }
-        print(f"🎯 Trailing stop activé pour {symbol}: Stop initial à {stop_price:.2f} (écart: {percent:.1f}%)")
     
     def update_position(self, symbol, current_price):
         """Met à jour le trailing stop si le prix monte avec resserrement progressif selon le profit et Breakeven Stop"""

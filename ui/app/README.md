@@ -21,11 +21,16 @@ pnpm dev
 pnpm build
 ```
 
-Le build production est genere dans `ui/static/spa`. Flask sert cette SPA si `ui/static/spa/index.html` existe.
+Le build production est genere dans `ui/public/spa`. Flask sert cette SPA si `ui/public/spa/index.html` existe.
 
 ## Structure
 
 - `src/App.tsx` : routes et vues principales.
+- `src/views/LiveView.tsx` : dashboard live.
+- `src/views/AnalyticsView.tsx` : metriques, PnL, scores crypto, daily/hourly bar charts.
+- `src/views/TradesView.tsx` : trades fermes et positions ouvertes.
+- `src/views/ConsoleView.tsx` : logs.
+- `src/views/ConfigView.tsx` : configuration.
 - `src/store/dashboard-store.ts` : etat global dashboard et appels API principaux.
 - `src/lib/api.ts` : client axios.
 - `src/components/ui/` : composants UI style shadcn.
@@ -51,3 +56,4 @@ Le ui consomme principalement :
 - La vue `Trades` affiche les positions ouvertes avec badge `OPEN` et PnL `En cours`.
 - Le journal des decisions affiche les decisions finales utiles. Les cooldowns sont des etats operationnels et restent dans la section `Cooldowns`, pas dans les decisions rejetees/approuvees.
 - L'historique des scores crypto utilise un axe temporel amCharts afin d'eviter les labels X trop nombreux.
+- `DailyBarChart` et `HourlyBarChart` sont de vrais composants amCharts 5. Ils ne doivent pas recréer le chart a chaque refresh; seules les donnees de l'axe et de la serie sont mises a jour pour eviter le blink.

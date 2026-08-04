@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import logging
+from logging.handlers import RotatingFileHandler
 import subprocess
 import sys
 from queue import Queue
@@ -597,11 +598,62 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 print(f"⚠️ Erreur création position sell ML: {e}")
                 return False
 
-        return self.optimize_existing_position(symbol)
+    def _rehydrate_open_positions_for_exit_evaluation(self):
+        """Réhydrate toutes les positions ouvertes réelles dans trailing_stop_manager pour l'évaluation ML."""
+        if not hasattr(self, 'trailing_stop_manager'):
+            return
+
+        positions = self.state.get('positions', [])
+        by_symbol = {}
+        for p in sorted(positions, key=lambda x: str(x.get('timestamp') or '')):
+            sym = p.get('symbol')
+            if not sym:
+                continue
+            side = p.get('side')
+            amount = float(p.get('amount') or 0)
+            price = float(p.get('price') or 0)
+            status = p.get('status')
+            if amount <= 0 or price <= 0:
+                continue
+
+            entry = by_symbol.setdefault(sym, {'amount': 0.0, 'cost': 0.0, 'fee_rate': None, 'buy_price': price, 'created_at': p.get('timestamp')})
+            if side == 'buy' and not p.get('closed_at'):
+                entry['amount'] += amount
+                entry['cost'] += amount * price
+                entry['buy_price'] = price
+                if p.get('fee_rate') is not None:
+                    entry['fee_rate'] = float(p['fee_rate'])
+                if p.get('timestamp'):
+                    entry['created_at'] = p['timestamp']
+            elif side == 'sell' and status in ('executed', 'filled'):
+                sold = min(amount, entry['amount'])
+                if entry['amount'] > 0:
+                    avg_cost = entry['cost'] / entry['amount']
+                    entry['amount'] -= sold
+                    entry['cost'] -= sold * avg_cost
+
+        rehydrated_count = 0
+        for sym, data in by_symbol.items():
+            if data['amount'] > 0.000001:
+                avg_entry = data['cost'] / data['amount'] if data['amount'] > 0 else data['buy_price']
+                if sym not in self.trailing_stop_manager.positions:
+                    self.trailing_stop_manager.add_position(
+                        sym,
+                        avg_entry,
+                        fee_rate=data.get('fee_rate')
+                    )
+                    if data.get('created_at'):
+                        self.trailing_stop_manager.positions[sym]['created_at'] = data['created_at']
+                    rehydrated_count += 1
+
+        if rehydrated_count > 0:
+            print(f"🔄 {rehydrated_count} position(s) réhydratée(s) pour l'évaluation de sortie ML.")
+            self.save_state()
 
     def _optimize_all_positions_at_startup(self):
         """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
         try:
+            self._rehydrate_open_positions_for_exit_evaluation()
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             balance = self.balance_manager.get_balance(force_refresh=True)
             
@@ -675,7 +727,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.StreamHandler(),
-                logging.FileHandler('bot.log') if self.save_logs else logging.NullHandler()
+                RotatingFileHandler('bot.log', maxBytes=2*1024*1024, backupCount=2, encoding='utf-8') if self.save_logs else logging.NullHandler()
             ]
         )
         
@@ -808,8 +860,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.paper_balance = float(saved_balance) if saved_balance is not None else initial_balance
 
     def _restore_trailing_stops_from_state(self):
-        """Restaure les trailing stops en mémoire. Si ML gère les sorties, désactivé."""
-        if os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true':
+        """Restaure les trailing stops en mémoire. En mode hybride Phase 5, les garde-fous restent actifs."""
+        hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
+        if os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true' and not hybrid_safety:
             return
 
         saved_stops = self.state.get('trailing_stops', {})
@@ -1308,7 +1361,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.save_state()
 
             symbols = [symbol.split('/')[0] for symbol in pairs]
-            print(f"🧪 Support Touch metrics ML: {symbols or 'aucune'}")
             return True
         except Exception as e:
             filter_state['last_error'] = str(e)
@@ -1686,9 +1738,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             balance = self.balance_manager.get_balance(force_refresh=True)
             base_currency = symbol.split('/')[0]
             available = balance.get(base_currency, {}).get('free', 0)
-            if available <= 0.00001:
+            position_data = self.trailing_stop_manager.positions.get(symbol, {})
+            pos_amount = float(position_data.get('amount') or position_data.get('position_size_crypto') or 0.0)
+            sell_amount = max(available, pos_amount) if self.paper_trading else available
+            if sell_amount <= 0.00001:
                 return False
-            if self.sell_market(symbol, available, reason=f"ml_exit_{decision.lower()}"):
+            if self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}"):
                 self.trailing_stop_manager.remove_position(symbol)
                 self.record_decision(
                     symbol, 'sell', True, f"ml_exit_{decision.lower()}",
@@ -1711,7 +1766,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if not hasattr(self, 'trailing_stop_manager'):
             return
         if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
-            return
+            self._rehydrate_open_positions_for_exit_evaluation()
+            if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
+                return
 
         try:
             ml_owns_exits = os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true'
@@ -1746,8 +1803,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     continue
                 # VENTE EXÉCUTÉE
                 buy_price = self.get_real_buy_price(symbol)
+                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                if fee_rate <= 0:
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
                 revenue = amount * current_price
-                self.paper_balance += revenue
+                self.paper_balance += (revenue * (1 - fee_rate))
                 crypto = symbol.split('/')[0]
                 print(f"✅ PAPER VENTE EXÉCUTÉE: {amount:.6f} {crypto} @ {current_price:.2f} (cible: {limit_price:.2f})")
                 
@@ -1792,10 +1852,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
             elif side == 'buy' and current_price <= limit_price:
                 cost = amount * current_price
-                self.paper_balance -= cost
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                self.paper_balance -= (cost * (1 + fee_rate))
                 buy_fee = amount * current_price * fee_rate
 
                 position = {
@@ -2231,7 +2291,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 }
                 self.save_state()
 
-                if ml_win_prob < self.ml_min_probability:
+                # ── Option A : Sizing gradué selon confiance ML ──────────────────
+                # REJECT_RISK  < 50%   → Position 0%   (bloqué — ML a une conviction négative)
+                # NEUTRAL bas  50-55%  → Position 40%  (signal incertain — taille mini)
+                # NEUTRAL haut 55-65%  → Position 70%  (signal douteux — taille réduite)
+                # BUY_HIGH     ≥ 65%   → Position 100% (pleine confiance — taille normale)
+                if ml_win_prob < 50.0:
+                    # REJECT_RISK : ML dit NON — bloquer
                     reject_cooldown_seconds = self.get_ml_reject_cooldown_seconds(
                         ml_win_prob,
                         ml_exit_forecast,
@@ -2246,10 +2312,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         features=ml_entry_features,
                         bot_context=ml_bot_context,
                         trade_context=ml_trade_context,
-                        reason=f'ml_filter_rejected_{ml_win_prob:.1f}%'
+                        reason=f'ml_reject_risk_{ml_win_prob:.1f}%'
                     )
                     self.record_decision(
-                        symbol, 'buy', False, f'ml_filter_rejected_{ml_win_prob:.1f}%',
+                        symbol, 'buy', False, f'ml_reject_risk_{ml_win_prob:.1f}%',
                         self._build_ml_entry_decision_metrics(
                             current_price,
                             ml_win_prob,
@@ -2262,9 +2328,29 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     self.set_symbol_cooldown(
                         symbol,
                         reject_cooldown_seconds,
-                        reason=f'ml_reject_pwin_{ml_win_prob:.1f}%'
+                        reason=f'ml_reject_risk_{ml_win_prob:.1f}%'
                     )
                     return
+                # ── Option A : Sizing gradué selon confiance ML & Kelly (Phase 6) ──
+                sizing_info = self.risk_manager.calculate_position_size(
+                    self, symbol, base_amount=getattr(self, 'trade_amount', 10), ml_win_prob=ml_win_prob
+                )
+                position_data['sizing_reason'] = sizing_info['sizing_reason']
+                position_data['ml_buy_prob'] = ml_win_prob
+
+                if ml_win_prob < self.ml_min_probability:
+                    ml_position_factor = sizing_info['ml_factor']
+                    position_data['position_size_usd'] = sizing_info['position_size_usd']
+                    raw_crypto = (position_data['position_size_usd'] / current_price) if current_price > 0 else 0
+                    position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
+                    position_data['ml_position_factor'] = ml_position_factor
+                    position_data['ml_neutral_sizing'] = True
+                    print(f"🟡 {crypto}: ML NEUTRE {ml_win_prob:.1f}% → Sizing Phase 6: {position_data['position_size_usd']:.2f} USD [{position_data['sizing_reason']}]")
+                else:
+                    position_data['position_size_usd'] = sizing_info['position_size_usd']
+                    raw_crypto = (position_data['position_size_usd'] / current_price) if current_price > 0 else 0
+                    position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
+
                 if self._should_reject_entry_for_ml_exit(ml_exit_forecast):
                     reject_cooldown_seconds = self.get_ml_reject_cooldown_seconds(
                         ml_win_prob,
@@ -2444,6 +2530,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 stdin=subprocess.DEVNULL,
                 creationflags=creationflags
             )
+
+            # Évaluation automatique Champion vs Challenger Phase 5
+            if os.path.exists(os.path.join('data', 'aegis_challenger.joblib')):
+                eval_cmd = [sys.executable, 'scripts/evaluate_champion_challenger.py', '--promote']
+                subprocess.Popen(
+                    eval_cmd,
+                    cwd=os.getcwd(),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=creationflags
+                )
             return True
         except Exception as e:
             print(f"⚠️ Analyse ML live indisponible: {e}")
@@ -2603,25 +2701,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def _cancel_sell_orders_for_symbol(self, symbol):
         """Annule les ordres de vente actifs avant une sortie d'urgence."""
         if self.paper_trading:
+            target_sym = str(symbol).replace('/', '').upper()
             for order_id, order_data in list(self.pending_orders.items()):
-                if order_data.get('symbol') == symbol and order_data.get('side') == 'sell':
+                if str(order_data.get('symbol', '')).replace('/', '').upper() == target_sym and order_data.get('side') == 'sell':
                     del self.pending_orders[order_id]
-                    found = False
-                    for p in reversed(self.state.get('positions', [])):
-                        if p.get('order_id') == order_id and p.get('status') == 'opened':
-                            p['status'] = 'canceled'
-                            found = True
-                            break
-                    if not found:
-                        position = {
-                            'symbol': symbol, 'side': 'sell',
-                            'amount': order_data.get('order', {}).get('amount', 0),
-                            'price': order_data.get('order', {}).get('price', 0),
-                            'timestamp': __import__('datetime').datetime.now().isoformat(),
-                            'order_id': order_id, 'source': 'bot', 'paper': self.paper_trading,
-                            'status': 'canceled'
-                        }
-                        self.state.setdefault('positions', []).append(position)
+            for p in reversed(self.state.get('positions', [])):
+                p_sym = str(p.get('symbol', '')).replace('/', '').upper()
+                if p_sym == target_sym and p.get('side') == 'sell' and p.get('status') == 'opened':
+                    p['status'] = 'canceled'
             return True
 
         try:
@@ -2773,7 +2860,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return False
              
         # Exécuter
-        result = self.buy_market(symbol, position_data['position_size_crypto'])
+        result = self.buy_market(
+            symbol,
+            position_data['position_size_crypto'],
+            sizing_reason=position_data.get('sizing_reason'),
+            ml_buy_prob=position_data.get('ml_buy_prob')
+        )
         
         if result:
             if ml_entry_learning_id and getattr(self, 'ml_live_logger', None):
@@ -2808,8 +2900,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
    
             print(f"✅ Achat exécuté avec succès")
-            # Ajouter trailing stop (uniquement si le ML ne gère pas les sorties)
-            if hasattr(self, 'trailing_stop_manager') and not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true'):
+            # Ajouter trailing stop (mode hybride Phase 5: garde-fou physique actif)
+            hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
+            if hasattr(self, 'trailing_stop_manager') and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
                 self.trailing_stop_manager.add_position(
                     symbol, current_price, 
                     trailing_percent=position_data.get('trailing_stop_percent'),

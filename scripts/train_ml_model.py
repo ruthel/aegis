@@ -79,7 +79,7 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
         feature_rows = con.execute(
             """
             SELECT feature_name, feature_value
-            FROM ml_entry_feature_values
+            FROM ml_feature_values
             WHERE event_id = ?
             """,
             (row['entry_id'],)

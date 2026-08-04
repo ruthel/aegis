@@ -29,10 +29,8 @@ from core.db_orm import (
     BotTrailingStop,
     CryptoScoreHistory,
     MlFeatureImportance,
-    MlEntryDecision,
-    MlEntryFeatureValue,
-    MlExitDecision,
-    MlExitFeatureValue,
+    MlDecision,
+    MlFeatureValue,
     MlOpenEntry,
     MlLivePrediction,
     MlModelMetadata,
@@ -237,6 +235,8 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_live_predictions', 'exit_decision', 'TEXT')
                 self._ensure_column(conn, 'ml_live_predictions', 'exit_reason', 'TEXT')
                 self._ensure_column(conn, 'ml_live_predictions', 'entry_price', 'REAL')
+                self._ensure_column(conn, 'bot_daily_stats', 'winning_trades_count', 'INTEGER')
+                self._ensure_column(conn, 'bot_daily_stats', 'losing_trades_count', 'INTEGER')
                 conn.execute('DROP TABLE IF EXISTS support_touch_trade_results')
                 Base.metadata.create_all(self._Session.kw['bind'])
                 self._migrate_app_state_to_bot_state(conn)
@@ -254,9 +254,87 @@ class MLLiveLogger:
                 self._migrate_bot_state_tables(conn)
                 conn.execute('DROP TABLE IF EXISTS bot_state_sections')
                 self._ensure_audit_columns(conn)
+                self._migrate_ml_decisions_table(conn)
+                self._migrate_ml_feature_values_table(conn)
                 conn.commit()
         except Exception as exc:
             print(f"⚠️ SQLite init failed: {type(exc).__name__}: {exc}")
+
+    def _migrate_ml_decisions_table(self, conn):
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ml_decisions (
+                    event_id TEXT PRIMARY KEY,
+                    action_type TEXT NOT NULL,
+                    timestamp TEXT,
+                    mode TEXT,
+                    symbol TEXT,
+                    entry_id TEXT,
+                    decision TEXT,
+                    reason TEXT,
+                    price REAL,
+                    confidence REAL,
+                    min_confidence REAL,
+                    p_win REAL,
+                    p_continue REAL,
+                    label_status TEXT,
+                    net_pnl_pct REAL,
+                    duration_minutes REAL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_decisions_type_sym ON ml_decisions (action_type, symbol, timestamp)")
+            
+            has_entries = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_entry_decisions'").fetchone()
+            if has_entries:
+                conn.execute("""
+                    INSERT OR IGNORE INTO ml_decisions (
+                        event_id, action_type, timestamp, mode, symbol, decision, reason, price, confidence, p_win, min_confidence, label_status
+                    )
+                    SELECT event_id, 'ENTRY', timestamp, mode, symbol, decision, reason, price, p_win, p_win, min_p_win, label_status
+                    FROM ml_entry_decisions
+                """)
+
+            has_exits = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_exit_decisions'").fetchone()
+            if has_exits:
+                conn.execute("""
+                    INSERT OR IGNORE INTO ml_decisions (
+                        event_id, action_type, timestamp, mode, symbol, entry_id, decision, reason, price, confidence, p_continue, net_pnl_pct, duration_minutes
+                    )
+                    SELECT event_id, 'EXIT', timestamp, mode, symbol, entry_id, decision, reason, current_price, COALESCE(p_continue, continuation_score), p_continue, net_pnl_pct, duration_minutes
+                    FROM ml_exit_decisions
+                """)
+
+            # Supprimer physiquement les anciennes tables devenues obsolètes
+            conn.execute("DROP TABLE IF EXISTS ml_entry_decisions")
+            conn.execute("DROP TABLE IF EXISTS ml_exit_decisions")
+        except Exception:
+            pass
+
+    def _migrate_ml_feature_values_table(self, conn):
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ml_feature_values (
+                    event_id TEXT NOT NULL,
+                    feature_name TEXT NOT NULL,
+                    feature_value REAL,
+                    feature_text TEXT,
+                    PRIMARY KEY (event_id, feature_name)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_feature_name ON ml_feature_values (feature_name)")
+
+            has_entry_feats = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_entry_feature_values'").fetchone()
+            if has_entry_feats:
+                conn.execute("INSERT OR IGNORE INTO ml_feature_values SELECT * FROM ml_entry_feature_values")
+
+            has_exit_feats = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_exit_feature_values'").fetchone()
+            if has_exit_feats:
+                conn.execute("INSERT OR IGNORE INTO ml_feature_values SELECT * FROM ml_exit_feature_values")
+
+            conn.execute("DROP TABLE IF EXISTS ml_entry_feature_values")
+            conn.execute("DROP TABLE IF EXISTS ml_exit_feature_values")
+        except Exception:
+            pass
 
     def _orm_session(self):
         return self._Session()
@@ -1115,12 +1193,10 @@ class MLLiveLogger:
                     mode=event.get('mode'),
                 ))
 
-                if event_type == 'entry_decision':
-                    self._insert_entry_decision(session, event)
+                if event_type in ('entry_decision', 'exit_decision'):
+                    self._insert_decision(session, event)
                 elif event_type == 'entry_opened':
                     self._insert_open_entry(session, event)
-                elif event_type == 'exit_decision':
-                    self._insert_exit_decision(session, event)
                 elif event_type == 'exit_outcome':
                     self._insert_trade_outcome(session, event)
                 elif event_type == 'telegram_message':
@@ -1129,22 +1205,36 @@ class MLLiveLogger:
         except Exception:
             pass
 
-    def _insert_entry_decision(self, session, event):
-        session.merge(MlEntryDecision(
+    def _insert_decision(self, session, event):
+        event_type = event.get('event_type')
+        action_type = 'ENTRY' if event_type == 'entry_decision' else 'EXIT'
+        
+        if action_type == 'ENTRY':
+            p_val = event.get('p_win')
+            min_p = event.get('min_p_win')
+        else:
+            p_val = event.get('p_continue') if event.get('p_continue') is not None else event.get('continuation_score')
+            min_p = event.get('min_p_continue')
+
+        session.merge(MlDecision(
             event_id=event.get('event_id'),
+            action_type=action_type,
             timestamp=event.get('timestamp'),
             mode=event.get('mode'),
             symbol=event.get('symbol'),
+            entry_id=event.get('entry_id'),
             decision=event.get('decision'),
             reason=event.get('reason'),
-            price=event.get('price'),
+            price=event.get('price') or event.get('current_price'),
+            confidence=p_val,
+            min_confidence=min_p,
             p_win=event.get('p_win'),
-            min_p_win=event.get('min_p_win'),
             p_continue=event.get('p_continue'),
-            min_p_continue=event.get('min_p_continue'),
             label_status=event.get('label_status'),
+            net_pnl_pct=event.get('net_pnl_pct'),
+            duration_minutes=event.get('duration_minutes'),
         ))
-        self._insert_feature_values(session, MlEntryFeatureValue, event.get('event_id'), event.get('features') or {})
+        self._insert_feature_values(session, MlFeatureValue, event.get('event_id'), event.get('features') or {})
 
     def _insert_feature_values(self, session, model, event_id, features):
         if not event_id or not isinstance(features, dict):
@@ -1805,23 +1895,7 @@ class MLLiveLogger:
             amount=event.get('amount'),
         ))
 
-    def _insert_exit_decision(self, session, event):
-        session.merge(MlExitDecision(
-            event_id=event.get('event_id'),
-            timestamp=event.get('timestamp'),
-            mode=event.get('mode'),
-            symbol=event.get('symbol'),
-            entry_id=event.get('entry_id'),
-            decision=event.get('decision'),
-            reason=event.get('reason'),
-            current_price=event.get('current_price'),
-            entry_p_win=event.get('entry_p_win'),
-            continuation_score=event.get('continuation_score'),
-            p_continue=event.get('p_continue'),
-            net_pnl_pct=event.get('net_pnl_pct'),
-            duration_minutes=event.get('duration_minutes'),
-        ))
-        self._insert_feature_values(session, MlExitFeatureValue, event.get('event_id'), event.get('features') or {})
+
 
     def _insert_trade_outcome(self, session, event):
         session.merge(MlTradeOutcome(
@@ -2402,6 +2476,12 @@ class MLLiveLogger:
                 row.total_loss = self._clean(stats.get('total_loss') or 0)
                 row.total_profit = self._clean(stats.get('total_profit') or 0)
                 row.emergency_stop = 1 if stats.get('emergency_stop') else 0
+                # Persistance des compteurs gagnants/perdants (tolérance si colonne absente)
+                try:
+                    row.winning_trades_count = int(stats.get('winning_trades_count') or 0)
+                    row.losing_trades_count = int(stats.get('losing_trades_count') or 0)
+                except Exception:
+                    pass
                 row.updated_at = now
                 session.commit()
             return True
@@ -2415,13 +2495,20 @@ class MLLiveLogger:
                 row = session.get(BotDailyStat, stat_date)
             if not row:
                 return {}
-            return {
+            result = {
                 'date': row.stat_date,
                 'trades_count': row.trades_count or 0,
                 'total_loss': row.total_loss or 0,
                 'total_profit': row.total_profit or 0,
                 'emergency_stop': bool(row.emergency_stop),
             }
+            # Charger les compteurs persistés si la colonne existe
+            try:
+                result['winning_trades_count'] = row.winning_trades_count or 0
+                result['losing_trades_count'] = row.losing_trades_count or 0
+            except Exception:
+                pass
+            return result
         except Exception:
             return {}
 

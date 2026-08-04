@@ -100,12 +100,12 @@ python start.py
 
 - **Live** : Flux WebSocket temps réel, positions ouvertes, volumes affichés en USD, cooldowns opérationnels, contexte d'entrée, décisions finales et alertes.
 - **UI** : cartes métriques principales, **Core ML Engine**, contexte d'entrée, marché live, positions et console d'alertes.
-- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, historique des scores crypto par symbole/période, heatmaps par crypto/jour/heure.
+- **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, historique des scores crypto par symbole/période, daily/hourly bar charts amCharts 5 et heatmap crypto.
 - **🧠 Core ML Engine** : modèle d'entrée RandomForest 52 features, modèle de sortie 37 features, P_win temps réel, état réel du prochain achat et décisions finales ML (`HOLD`/`FORCE_EXIT`).
 - **Trades** : Historique des trades fermés + positions ouvertes affichées avec statut `OPEN`.
 - **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel.
 - **Console** : Logs bot en temps réel avec autoscroll, limite de lignes et filtrage visuel.
-- **Bot Control** : Démarrer/arrêter le bot sans console CMD visible (pythonw.exe sur Windows)
+- **Bot Control** : Démarrer/arrêter/redémarrer le bot avec verrou anti multi-subprocess.
 
 
 ## ⚙️ Configuration Avancée
@@ -185,19 +185,22 @@ aegis/
 │   ├── exit_engine.py          # ExitDecisionEngine (ContinuationScore 0-100)
 │   └── capital_manager.py      # Gestion capital + frais dynamiques
 ├── scripts/
-│   └── train_ml_model.py       # Entraînement récursif Grid Search MLEngine
+│   ├── train_ml_model.py       # Entraînement entrée + replay learning
+│   ├── train_ml_exit_model.py  # Entraînement modèle sortie
+│   ├── walk_forward_validation.py
+│   ├── evaluate_champion_challenger.py
+│   └── analyze_ml_live_performance.py
 ├── data/
-│   ├── aegis_model.joblib   # Modèle d'entrée ML entraîné (52 features)
-│   └── aegis_db.sqlite3        # DB SQLite: ML, Support Touch, Telegram, metadata
+│   ├── aegis_model.joblib      # Champion ML actif
+│   ├── aegis_challenger.joblib # Challenger potentiel
+│   └── aegis_db.sqlite3        # DB SQLite: état bot, ML, UI, Telegram, analytics
 ├── config.py                   # Configuration centralisée (.env)
 ├── run.py                      # Point d'entrée sécurisé
 ├── start.py                    # Lance ui + bot ensemble
-├── ui/                  # Interface web Flask + SPA React
-│   ├── app.py                  # Serveur Flask + routes API + WebSocket ui
-│   ├── frontend/               # React + Vite + TypeScript + shadcn/Radix + Zustand
-│   ├── static/spa/             # Build SPA servi en production par Flask
-│   ├── templates/index.html    # Ancien ui HTML conservé en fallback
-│   └── static/ui.*      # Assets legacy conservés en fallback
+├── ui/                         # Interface web Flask + SPA React
+│   ├── server.py               # Serveur Flask + routes API + WebSocket UI
+│   ├── app/                    # React + Vite + TypeScript + shadcn/Radix + Zustand
+│   └── public/spa/             # Build SPA servi par Flask
 ```
 
 ### Base SQLite Aegis
@@ -212,32 +215,33 @@ Fichiers attendus :
 
 Tables principales :
 - `bot_state` : une ligne par mode trading (`paper`, `live`) avec `paper_balance` et `initial_balance`.
-- `bot_app_state` : état applicatif persistant, par exemple `telegram_last_daily_status_day`.
+- `bot_app_state` : état applicatif persistant, par exemple `telegram_last_daily_status_day` et l'événement macro actif.
 - `bot_processes` : état des processus ui/bot (`pid`, `started_at`, `command`).
 - `bot_daily_stats` : statistiques journalières de risque (`trades_count`, `total_loss`, `total_profit`, `emergency_stop`).
 - `bot_positions`, `bot_pending_orders`, `bot_trailing_stops`, `bot_symbol_cooldowns`, `bot_exit_recommendations` : état trading relationnel avec colonnes métier.
 - `bot_market_context` : contexte marché live par symbole.
 - `ml_live_predictions` : dernières prédictions ML live par symbole avec `p_win`, `p_continue` et prévision de sortie.
 - `bot_decision_journal` : journal des décisions finales du bot. Les états opérationnels comme cooldown actif ne sont plus enregistrés comme décisions rejetées.
-- `ml_entry_decisions`, `ml_exit_decisions`, `ml_trade_outcomes` : mémoire ML entrée/sortie/résultat.
+- `ml_decisions`, `ml_trade_outcomes` : mémoire ML entrée/sortie/résultat.
 - `ml_open_entries` : lien entre une entrée acceptée encore ouverte et sa future sortie.
-- `ml_entry_feature_values`, `ml_exit_feature_values` : features ML normalisées en lignes `event_id/feature_name/feature_value`.
+- `ml_feature_values` : features ML normalisées en lignes `event_id/feature_name/feature_value`.
 - `bot_live_status`, `bot_live_status_subscriptions`, `bot_live_status_symbols` : statut live WebSocket normalisé consommé par le ui.
 - `bot_commands` : commandes envoyées par le ui au bot.
 - `crypto_score_history` : historique des scores crypto utilisés par l'analytics.
 - `support_touch_results`, `telegram_messages` : backtests et messages Telegram.
+- `ml_analysis_runs`, `ml_prediction_calibration`, `ml_rejected_replay_results`, `ml_drift_alerts` : analyse live, calibration, replay des refus et alertes de drift.
 
 Il ne faut pas supprimer `-wal` ou `-shm` pendant que le bot, le ui ou un script d'analyse tourne. SQLite lit automatiquement la base principale + le WAL. Le contenu du WAL est fusionné dans `aegis_db.sqlite3` lors d'un checkpoint automatique, à la fermeture propre des connexions, ou manuellement avec `PRAGMA wal_checkpoint(TRUNCATE);` quand tous les processus Aegis sont arrêtés.
 
 Chaque table applicative possède `created_at` et `updated_at`, remplis par le code applicatif au moment des écritures.
 
-Les tables runtime et ML ne stockent plus de colonnes payload `*_data` ou `payload_data`. Les champs variables sont normalisés en colonnes dédiées ou en tables clé/valeur comme `bot_decision_metrics`, `ml_entry_feature_values` et `ml_exit_feature_values`.
+Les tables runtime et ML ne stockent plus de colonnes payload `*_data` ou `payload_data`. Les champs variables sont normalisés en colonnes dédiées ou en tables clé/valeur comme `bot_decision_metrics` et `ml_feature_values`.
 
 Une couche ORM SQLAlchemy existe dans `core/db_orm.py`. Elle crée les tables au démarrage avec `Base.metadata.create_all(...)` et pilote `bot_state`, positions, ordres, trailing stops, cooldowns, recommandations de sortie, contexte marché, prédictions live, événements ML entrée/sortie, features ML, outcomes, Telegram, tables d'analyse Phase 4/5, `support_touch_results`, metadata ML, journal de décisions et tables `bot_live_status*`. Les migrations historiques gardent encore du SQL direct.
 
 ### UI SPA React
 
-Le ui moderne est dans `ui/frontend` :
+Le ui moderne est dans `ui/app` :
 - React + Vite + TypeScript.
 - `pnpm` comme gestionnaire de paquets.
 - `axios` pour les appels REST.
@@ -249,12 +253,12 @@ Le ui moderne est dans `ui/frontend` :
 
 Build :
 ```bash
-cd ui/frontend
+cd ui/app
 pnpm install
 pnpm build
 ```
 
-Le build est écrit dans `ui/static/spa`. Si ce dossier contient `index.html`, Flask sert la SPA React; sinon il retombe sur l'ancien template HTML.
+Le build est écrit dans `ui/public/spa`. Si ce dossier contient `index.html`, Flask sert la SPA React.
 
 Les endpoints `/api/status` et `/api/ml_status` sont aussi poussés via `/ws/live` pour éviter un polling HTTP trop agressif. Les vues console et analytics gardent des appels ciblés quand leurs données spécifiques sont demandées.
 
@@ -615,13 +619,12 @@ python -m cProfile -o profile.stats run.py
 ## 📚 Documentation Complète
 
 ### Guides Spécialisés
-- **[EMA Trading Guide](docs/EMA_TRADING_GUIDE.md)** - Configurations EMA + Scalping Pullback
-- **[Timeframes Adaptatifs](docs/ADAPTIVE_TIMEFRAMES.md)** - Stratégie professionnelle multi-timeframes
-- **[Détection Tendances Cumulatives](docs/CUMULATIVE_TREND_DETECTION.md)** - Capture variations progressives
-- **[Optimisations Latence](docs/QUICK_START_OPTIMIZATIONS.md)** - Guide 2min réduction 98%
-- **[Décisions Trading](docs/DECISIONS_GUIDE.md)** - Transparence signaux
-- **[Architecture](docs/CENTRALIZATION_SUMMARY.md)** - Structure modulaire
-- **[Roadmap](docs/TASKS.md)** - Évolutions niveau institutionnel
+- **[Cartographie App](docs/CARTOGRAPHIE_APP.md)** - architecture actuelle complète : backend, ML, SQLite, UI, API, flux trading.
+- **[Roadmap Améliorations](ROADMAP_AMELIORATIONS.md)** - phases ML, production, exécution et gouvernance.
+- **[Propositions d'améliorations](docs/propositions_ameliorations_bot.md)** - historique des pistes et décisions techniques.
+- **[Modifications Codex 2026-07-21](docs/modifications_codex_2026-07-21.md)** - journal initial de changements.
+- **[Modifications Codex 2026-07-22](docs/modifications_codex_2026-07-22.md)** - migration ML/SQLite.
+- **[Modifications Codex 2026-07-25](docs/modifications_codex_2026-07-25.md)** - migration UI et nettoyage runtime.
 
 ### Centralisation Code Niveau Pro
 - **Modules consolidés** : -500 lignes de code redondant éliminées
@@ -662,12 +665,12 @@ python -m cProfile -o profile.stats run.py
 
 ---
 
-**Version** : 2.3 Professional Aegis  
-**Architecture** : Modulaire consolidée (6 classes vs 12) + UI Web  
-**Code** : -500 lignes redondantes éliminées  
-**Performance** : Intervalle adaptatif + sessions optimisées  
+**Version** : 3.0 Aegis ML-First  
+**Architecture** : Bot ML entrée/sortie + SQLite WAL + Flask + React/Vite SPA  
+**Code** : runtime JSON remplacé par DB relationnelle  
+**Performance** : WebSocket live + analytics amCharts 5 + décisions finales compactées  
 **Déploiement** : AWS EU + Render + Local  
 **Latence** : 10-30ms (optimisé Europe)  
-**UI** : Flask + WebSocket + Chart.js — http://127.0.0.1:8080  
+**UI** : Flask + WebSocket + React/Vite + amCharts 5 — http://127.0.0.1:8080  
 **Revenus** : Trading spot  
 **Sécurité** : IP statique + CloudWatch  

@@ -48,7 +48,7 @@ function LineChartBase({
       }),
     )
 
-    const xRenderer = am5xy.AxisRendererX.new(root, { minGridDistance: 35 })
+    const xRenderer = am5xy.AxisRendererX.new(root, { minGridDistance: 65 })
     xRenderer.labels.template.setAll({ fill: am5.color(0x94a3b8), fontSize: 11 })
 
     const xAxis = chart.xAxes.push(
@@ -78,7 +78,7 @@ function LineChartBase({
     const yAxis = chart.yAxes.push(
       am5xy.ValueAxis.new(root, {
         renderer: yRenderer,
-        numberFormat: "+$#.00;-$#.00;$0.00 USD",
+        numberFormat: "$#,###.00 USD",
       }),
     )
 
@@ -98,8 +98,9 @@ function LineChartBase({
 
     const tooltip = am5.Tooltip.new(root, {
       getFillFromSprite: false,
-      labelText: "[bold]{event}[/]\nP&L Net: [bold]{valueY} USD[/]\nSolde: [bold]{balance} USD[/]",
+      labelText: "[#ffffff][bold]{event}[/]\nP&L Net: [bold]{valueY} USD[/]\nSolde: [bold]{balance} USD[/][/]",
     })
+    tooltip.label.setAll({ fill: am5.color(0xffffff), fontSize: 12 })
     tooltip.get("background")?.setAll({
       fill: am5.color(0x0f172a),
       fillOpacity: 0.95,

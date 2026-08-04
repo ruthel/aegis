@@ -176,11 +176,27 @@ class NotificationManager:
                     pass
             except Exception as e:
                 self.notify(f"⚠️ Échec du redémarrage : {e}", "")
+
+        elif command in ('/positions', '/open', '/attentes'):
+            try:
+                msg = self._build_positions_message()
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur lors de la récupération des positions : {e}", "")
+
+        elif command in ('/history', '/trades', '/ventes'):
+            try:
+                msg = self._build_history_message()
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur lors de la génération de l'historique : {e}", "")
                 
         elif command == '/help' or command == '/start':
             msg = "🤖 <b>COMMANDES DISPONIBLES</b>\n\n"
-            msg += "• /status - Voir le portefeuille et la performance\n"
-            msg += "• /events - Voir les 5 prochains événements macroéconomiques répertoriés\n"
+            msg += "• /positions - Positions ouvertes en attente de vente\n"
+            msg += "• /history (ou /trades) - Historique des derniers trades fermés\n"
+            msg += "• /status - Voir l'état du bot et du portefeuille\n"
+            msg += "• /events - Événements macroéconomiques répertoriés\n"
             msg += "• /restart - Redémarrer le bot à distance\n"
             msg += "• /help - Afficher ce message d'aide"
             self.notify(msg, "")
@@ -619,62 +635,24 @@ class NotificationManager:
             
     def _get_historical_performance(self):
         """Calcule les statistiques de performance réelles basées sur l'historique des positions du bot"""
-        if not self.bot_ref or not hasattr(self.bot_ref, 'state'):
+        try:
+            from ui.server import trade_stats, load_bot_state
+            if self.bot_ref and hasattr(self.bot_ref, 'state'):
+                positions = self.bot_ref.state.get('positions', [])
+            else:
+                state = load_bot_state({'positions': []})
+                positions = state.get('positions', [])
+            stats = trade_stats(positions)
+            if not stats or stats.get('total_trades', 0) == 0:
+                return None
+            return {
+                'total_pnl': stats.get('total_pnl_net', 0),
+                'total_trades': stats.get('total_trades', 0),
+                'winrate': stats.get('win_rate', 0),
+                'best_trade': stats.get('total_pnl_net', 0),
+            }
+        except Exception:
             return None
-            
-        positions = self.bot_ref.state.get('positions', [])
-        buys = {}
-        trades = []
-        
-        # Parcourir les positions triées chronologiquement
-        for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
-            symbol = pos.get('symbol')
-            side = pos.get('side')
-            amount = float(pos.get('amount') or 0)
-            px = float(pos.get('price') or 0)
-            if not symbol or amount <= 0 or px <= 0:
-                continue
-                
-            if side == 'buy':
-                buys.setdefault(symbol, []).append({
-                    'amount': amount, 'price': px
-                })
-            elif side == 'sell':
-                remaining = amount
-                queue = buys.get(symbol, [])
-                while remaining > 1e-12 and queue:
-                    entry = queue[0]
-                    filled = min(remaining, entry['amount'])
-                    
-                    # Estimer les frais (0.4% taker Kraken par défaut)
-                    fee_rate = getattr(self.bot_ref, 'trading_fee', 0.004)
-                    buy_cost = entry['price'] * filled * (1 + fee_rate)
-                    sell_revenue = px * filled * (1 - fee_rate)
-                    pnl = sell_revenue - buy_cost
-                    
-                    trades.append({
-                        'pnl': pnl,
-                        'profitable': pnl > 0
-                    })
-                    
-                    entry['amount'] -= filled
-                    remaining -= filled
-                    if entry['amount'] <= 1e-12:
-                        queue.pop(0)
-                        
-        if not trades:
-            return None
-            
-        wins = [t for t in trades if t['profitable']]
-        total_pnl = sum(t['pnl'] for t in trades)
-        best_trade = max(t['pnl'] for t in trades) if trades else 0
-        
-        return {
-            'total_pnl': total_pnl,
-            'total_trades': len(trades),
-            'winrate': (len(wins) / len(trades)) * 100 if trades else 0,
-            'best_trade': best_trade
-        }
 
     def _build_status_message(self):
         """Construit message status ultra-compact"""
@@ -869,3 +847,124 @@ class NotificationManager:
             pass
         
         return msg
+
+    def _build_positions_message(self):
+        """Construit le message d'affichage des positions ouvertes en attente de vente."""
+        try:
+            from ui.server import load_bot_state, live_status, weighted_positions
+            
+            if self.bot_ref and hasattr(self.bot_ref, 'state'):
+                state = self.bot_ref.state
+            else:
+                state = load_bot_state({'positions': []})
+
+            live = live_status()
+
+            open_positions = weighted_positions(
+                state.get('positions', []),
+                state.get('trailing_stops'),
+                state.get('pending_orders'),
+                state.get('exit_recommendations'),
+                live.get('symbols', {})
+            )
+
+            if not open_positions:
+                return "📦 <b>POSITIONS ACTIVES</b>\n\nAucune position ouverte pour le moment."
+
+            msg = "📦 <b>POSITIONS ACTIVES</b>\n\n"
+
+            total_val = 0.0
+            total_pnl_net = 0.0
+
+            for i, p in enumerate(open_positions, 1):
+                symbol = p.get('symbol', 'Inconnu')
+                crypto = symbol.split('/')[0]
+                avg_entry = float(p.get('avg_entry_price') or p.get('price') or 0.0)
+                amount = float(p.get('amount') or 0.0)
+                entry_val = float(p.get('entry_value') or (avg_entry * amount))
+                target_price = float(p.get('target_price') or 0.0)
+                stop_loss = float(p.get('stop_loss_price') or 0.0)
+                curr_price = float(p.get('current_price') or avg_entry)
+
+                pnl_gross = float(p.get('pnl_gross') if p.get('pnl_gross') is not None else 0.0)
+                pnl_gross_pct = float(p.get('pnl_gross_pct') if p.get('pnl_gross_pct') is not None else 0.0)
+                pnl_net = float(p.get('pnl_net') if p.get('pnl_net') is not None else 0.0)
+                pnl_net_pct = float(p.get('pnl_net_pct') if p.get('pnl_net_pct') is not None else 0.0)
+
+                pnl_emoji = "🟢" if pnl_net >= 0 else "🔴"
+                sign_gross = "+" if pnl_gross > 0 else ""
+                sign_net = "+" if pnl_net > 0 else ""
+
+                total_val += entry_val
+                total_pnl_net += pnl_net
+
+                msg += f"<b>{i}. {symbol}</b>\n"
+                msg += f"├─ Prix Achat: <code>{avg_entry:.4f} USD</code>\n"
+                msg += f"├─ Prix Actuel: <code>{curr_price:.4f} USD</code>\n"
+                msg += f"├─ Quantité: <code>{amount:.6f} {crypto}</code> ({entry_val:.2f} USD)\n"
+                if target_price > 0:
+                    msg += f"├─ Objectif Vente: <code>{target_price:.4f} USD</code>\n"
+                msg += f"├─ PnL Brut: {pnl_emoji} <b>{sign_gross}{pnl_gross_pct:.2f}%</b> ({sign_gross}{pnl_gross:.2f} USD)\n"
+                msg += f"└─ PnL Net: {pnl_emoji} <b>{sign_net}{pnl_net_pct:.2f}%</b> ({sign_net}{pnl_net:.2f} USD)\n\n"
+
+            total_sign = "+" if total_pnl_net > 0 else ""
+            total_emoji = "🟢" if total_pnl_net >= 0 else "🔴"
+
+            msg += f"📊 <b>Total: {len(open_positions)} position(s) ouverte(s)</b>\n"
+            msg += f"• Capital Engagé: <b>{total_val:.2f} USD</b>\n"
+            msg += f"• PnL Net Total en cours: {total_emoji} <b>{total_sign}{total_pnl_net:.2f} USD</b>"
+
+            return msg
+        except Exception as e:
+            return f"⚠️ Erreur lors de la récupération des positions : {e}"
+
+    def _build_history_message(self):
+        """Construit le message d'affichage de l'historique des trades fermés."""
+        try:
+            from ui.server import compute_trade_history, load_bot_state
+            state = load_bot_state({'positions': []})
+            positions = state.get('positions', [])
+            all_trades = compute_trade_history(positions)
+
+            closed_trades = [t for t in all_trades if t.get('status') == 'closed']
+
+            if not closed_trades:
+                return "📜 <b>HISTORIQUE DES TRADES</b>\n\nAucun trade fermé enregistré pour le moment."
+
+            recent_trades = closed_trades[:8]
+
+            msg = "📜 <b>HISTORIQUE DES TRADES</b>\n\n"
+
+            for i, t in enumerate(recent_trades, 1):
+                symbol = t.get('symbol', 'Inconnu')
+                crypto = symbol.split('/')[0]
+                buy_px = float(t.get('buy_price') or 0.0)
+                sell_px = float(t.get('sell_price') or 0.0)
+                amount = float(t.get('amount') or 0.0)
+                pnl_net = float(t.get('pnl') or t.get('pnl_net') or 0.0)
+                pnl_pct = float(t.get('pnl_net_pct') or t.get('pnl_pct') or 0.0)
+                usd_val = float(t.get('usd_value') or t.get('entry_value') or (buy_px * amount))
+                timestamp = str(t.get('timestamp') or t.get('sell_time') or '')[:16].replace('T', ' ')
+
+                pnl_emoji = "🟢" if pnl_net >= 0 else "🔴"
+                sign = "+" if pnl_net > 0 else ""
+
+                msg += f"<b>{i}. {pnl_emoji} {symbol}</b> ({timestamp})\n"
+                msg += f"├─ Achat: {buy_px:.2f} USD → Vente: {sell_px:.2f} USD\n"
+                msg += f"├─ Quantité: {amount:.6f} {crypto} ({usd_val:.2f} USD)\n"
+                msg += f"└─ PnL Net: {pnl_emoji} <b>{sign}{pnl_net:.2f} USD</b> ({sign}{pnl_pct:.2f}%)\n\n"
+
+            wins = len([t for t in closed_trades if float(t.get('pnl') or 0) > 0])
+            total = len(closed_trades)
+            win_rate = (wins / total * 100.0) if total > 0 else 0.0
+            total_pnl = sum(float(t.get('pnl') or 0.0) for t in closed_trades)
+            total_sign = "+" if total_pnl > 0 else ""
+
+            msg += f"📊 <b>Bilan Global:</b>\n"
+            msg += f"• Trades fermés: <b>{total}</b> ({wins} Gains / {total - wins} Pertes)\n"
+            msg += f"• Win Rate: <b>{win_rate:.1f}%</b>\n"
+            msg += f"• PnL Net Cumulé: <b>{total_sign}{total_pnl:.2f} USD</b>"
+
+            return msg
+        except Exception as e:
+            return f"⚠️ Erreur lors de la récupération de l'historique : {e}"
