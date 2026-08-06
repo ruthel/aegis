@@ -139,22 +139,21 @@ Tables principales :
 | Table | Role |
 |-------|------|
 | `bot_state` | etat compact par mode (`paper`, `live`) |
-| `bot_app_state` | cles applicatives persistantes : Telegram daily status, macro event actif |
+| `bot_app_state` | cles applicatives persistantes : Telegram daily status, macro event actif, `live_status` global |
 | `bot_processes` | processus dashboard/bot |
 | `bot_commands` | commandes envoyees depuis l'UI au bot |
-| `bot_positions` | positions ouvertes/fermees |
-| `bot_trailing_stops` | etat trailing/stop de suivi |
-| `bot_symbol_cooldowns` | cooldowns operationnels |
-| `bot_exit_recommendations` | dernier diagnostic de sortie par symbole |
-| `bot_market_context` | regime marche, momentum, falling knife, retour |
-| `bot_decision_journal` | decisions finales affichees dans le dashboard |
-| `bot_decision_metrics` | metriques rattachees aux decisions |
-| `bot_live_status*` | statut live WebSocket normalise |
-| `crypto_score_history` | historique des scores pour analytics |
+| `accounts` | comptes paper/live par exchange et devise de base |
+| `balances` | soldes par asset (`free`, `locked`, `total`) |
+| `orders` | ordres normalises, source persistée des positions ouvertes/fermees |
+| `fills` | executions/remplissages d'ordres |
+| `ledger_entries` | journal comptable : depot, retrait, trade, frais, ajustement |
+| `cryptos` | prix live, cooldowns, regime marche, momentum, predictions d'entree |
+| `ml_exit_recommendations` | dernier diagnostic ML de sortie par symbole actif |
+| `decision_logs` | decisions finales affichees dans le dashboard |
+| `crypto_scores` | historique des scores pour analytics |
 | `support_touch_results` | resultats de backtest Support Touch |
-| `telegram_messages` | messages Telegram entrants/sortants |
-| `ml_live_predictions` | dernier `P_win`, `P_continue`, decision/reason live |
-| `ml_decisions` | decisions ML entree/sortie normalisees |
+| `notifications` | messages Telegram entrants/sortants |
+| `sys_audit` | audit technique minimal des evenements |
 | `ml_feature_values` | features ML en lignes `event_id/feature_name/value` |
 | `ml_open_entries` | entrees ouvertes liees a leur future sortie |
 | `ml_trade_outcomes` | resultat final des trades |
@@ -162,6 +161,15 @@ Tables principales :
 | `ml_feature_importances` | importances de features |
 | `ml_analysis_runs` | runs d'analyse live |
 | `ml_prediction_calibration` | calibration prediction/resultat |
+
+La couche transactionnelle vit dans `core/ml_live_logger.py` :
+
+- dépôts/retraits : `record_account_deposit`, `record_account_withdrawal`;
+- ordres : `record_order_transaction`;
+- exécutions/fills : `record_fill_transaction`;
+- soldes : recalculés depuis `ledger_entries` et les ordres sell ouverts.
+
+Les achats et ventes paper appellent cette couche transactionnelle dans le chemin normal. Les `paper_balance +=/-=` restants sont des fallbacks si le logger DB n'est pas disponible.
 | `ml_rejected_replay_results` | replay des trades refuses |
 | `ml_drift_alerts` | alertes de drift |
 
@@ -269,7 +277,7 @@ Fichier principal : `core/managers/notification.py`
 Etat actuel :
 
 - commandes Telegram disponibles a la demande;
-- messages stockes dans `telegram_messages`;
+- notifications persistées dans `notifications`;
 - bilan automatique quotidien seulement a l'heure configuree;
 - plus de status automatique toutes les 2h.
 

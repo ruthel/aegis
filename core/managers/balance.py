@@ -25,6 +25,31 @@ class BalanceManager:
         return allowed_assets
 
     def _get_paper_balance(self):
+        """Lit la balance paper depuis la couche comptable, avec fallback runtime."""
+        try:
+            logger = getattr(self.bot, 'ml_live_logger', None)
+            if logger:
+                conn = logger._get_conn()
+                account_id = logger._account_id('paper')
+                rows = conn.execute(
+                    "SELECT asset, free, locked, total FROM balances WHERE account_id=?",
+                    (account_id,),
+                ).fetchall()
+                if rows:
+                    balance = {}
+                    for asset, free, locked, total in rows:
+                        balance[asset] = {
+                            'free': float(free or 0.0),
+                            'used': float(locked or 0.0),
+                            'total': float(total or 0.0),
+                        }
+                    usd = balance.get('USD') or balance.get('USDT')
+                    if usd:
+                        self.bot.paper_balance = round(float(usd.get('free') or 0.0), 2)
+                    return balance
+        except Exception:
+            pass
+
         """Reconstruit la balance paper depuis l'USD simulé et l'état des positions."""
         balance = {
             'USD': {

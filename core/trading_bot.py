@@ -27,6 +27,7 @@ from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
+from core.managers.execution_manager import ExecutionManager
 from core.ml_live_logger import MLLiveLogger
 
 # Mixins
@@ -141,6 +142,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             fragile_max_net_pct=fragile_pct,
             time_stop_minutes=time_stop_min
         ) if exit_enabled else None
+        self.execution_manager = ExecutionManager(self)
         
         # NOUVEAUX DÉTECTEURS CRITIQUES
 
@@ -576,7 +578,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 min_profit = float(os.getenv('MIN_PROFIT_THRESHOLD', '1.0')) / 100
                 target_price = avg_price * (1 + min_profit)
 
-                order_id = f'ml_sell_{symbol.replace("/", "")}_{int(_time.time())}'
+                order_id = f'ml_sell_{symbol.replace("/", "")}_{_time.time_ns()}'
                 position = {
                     'symbol': symbol,
                     'side': 'sell',
@@ -591,6 +593,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'position_size_usd': total_amount * target_price,
                 }
                 self.state.setdefault('positions', []).append(position)
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_order_transaction(
+                        symbol,
+                        'sell',
+                        total_amount,
+                        target_price,
+                        order_type='limit',
+                        status='open',
+                        order_id=order_id,
+                        mode='paper',
+                        source='paper_trade'
+                    )
                 self.save_state()
                 print(f"📋 ML EXIT - Position sell tracée: {total_amount:.6f} {symbol.split('/')[0]} @ {target_price:.6f} (ML décidera quand vendre)")
                 return True
@@ -1395,10 +1409,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     else:
                         raise Exception("Markets not loaded")
                 else:
-                    exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+                    exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
                     if exchange_name == 'kraken':
-                        min_costs = {'BTC/USD': 0.5, 'ETH/USD': 0.5, 'SOL/USD': 0.5, 'BTC/USD': 0.5, 'ETH/USD': 0.5}
-                        min_amounts = {'BTC/USD': 0.0001, 'ETH/USD': 0.001, 'SOL/USD': 0.01, 'BTC/USD': 0.0001, 'ETH/USD': 0.001}
+                        min_costs = {'BTC/USD': 0.5, 'ETH/USD': 0.5, 'SOL/USD': 0.5, 'ADA/USD': 0.5}
+                        min_amounts = {'BTC/USD': 0.0001, 'ETH/USD': 0.001, 'SOL/USD': 0.01, 'ADA/USD': 0.1}
                     else:
                         min_costs = {'BTC/USD': 15, 'ETH/USD': 10, 'SOL/USD': 8, 'ADA/USD': 12}
                         min_amounts = {'BTC/USD': 0.00015, 'ETH/USD': 0.003, 'SOL/USD': 0.04, 'ADA/USD': 0.01}
@@ -1408,7 +1422,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     }
             except Exception as e:
                 # Fallback avec minimums du marché (pas API)
-                exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+                exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
                 if exchange_name == 'kraken':
                     fallback_minimums = {
                         'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
@@ -1807,7 +1821,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
                 revenue = amount * current_price
-                self.paper_balance += (revenue * (1 - fee_rate))
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_fill_transaction(
+                        order_id,
+                        symbol,
+                        'sell',
+                        amount,
+                        current_price,
+                        fee_amount=revenue * fee_rate,
+                        fee_asset='USD',
+                        mode='paper',
+                        source='paper_trade'
+                    )
+                    self._refresh_paper_balance_from_accounting()
+                else:
+                    self.paper_balance += (revenue * (1 - fee_rate))
                 crypto = symbol.split('/')[0]
                 print(f"✅ PAPER VENTE EXÉCUTÉE: {amount:.6f} {crypto} @ {current_price:.2f} (cible: {limit_price:.2f})")
                 
@@ -1855,8 +1883,22 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                self.paper_balance -= (cost * (1 + fee_rate))
                 buy_fee = amount * current_price * fee_rate
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_fill_transaction(
+                        order_id,
+                        symbol,
+                        'buy',
+                        amount,
+                        current_price,
+                        fee_amount=buy_fee,
+                        fee_asset='USD',
+                        mode='paper',
+                        source='paper_trade'
+                    )
+                    self._refresh_paper_balance_from_accounting()
+                else:
+                    self.paper_balance -= (cost * (1 + fee_rate))
 
                 position = {
                     'symbol': symbol, 'side': 'buy', 'amount': amount,
@@ -2114,8 +2156,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         if not last_notification or (time.time() - last_notification) > 300:
                             self.notifier.notify_dynamic_level(symbol, best_entry['type'], best_entry['price'], best_entry['distance'])
                             self.last_dynamic_notifications[notification_key] = time.time()
-            if best_level_logs:
-                self.async_print(f"📊 Meilleurs niveaux: {' | '.join(best_level_logs)}")
         except Exception as e:
             print(f"⚠️ Erreur affichage niveaux dynamiques: {e}")
     
@@ -2709,6 +2749,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 p_sym = str(p.get('symbol', '')).replace('/', '').upper()
                 if p_sym == target_sym and p.get('side') == 'sell' and p.get('status') == 'opened':
                     p['status'] = 'canceled'
+            if getattr(self, 'ml_live_logger', None):
+                self.ml_live_logger.cancel_open_orders(symbol=symbol, side='sell', mode='paper')
+                if hasattr(self, '_refresh_paper_balance_from_accounting'):
+                    self._refresh_paper_balance_from_accounting()
             return True
 
         try:
@@ -2844,82 +2888,26 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return 100  # Fallback
     
     def execute_buy(self, symbol, position_data, current_price, reason, ml_entry_learning_id=None):
-        """Exécute l'achat avec données optimisées"""
+        """Exécute l'achat avec exécution intelligente et microstructure de marché (Phase 7)."""
+        if hasattr(self, 'execution_manager') and self.execution_manager:
+            return self.execution_manager.execute_smart_buy(
+                symbol, position_data, current_price, reason, ml_entry_learning_id
+            )
+        
         crypto = symbol.split('/')[0]
-        existing_positions = [p for p in self.state.get('positions', []) 
-                            if p['symbol'] == symbol and p['side'] == 'buy']
-        position_count = len(existing_positions)
-
-        # Dernière barrière anti-double-buy: l'état peut avoir changé entre
-        # l'analyse du signal et l'exécution effective.
         cooldown_remaining = self.get_symbol_cooldown_remaining(symbol)
-        if cooldown_remaining > 0:
+        if cooldown_remaining > 0 or not self.can_open_position(symbol):
             return False
 
-        if not self.can_open_position(symbol):
-            return False
-             
-        # Exécuter
         result = self.buy_market(
             symbol,
             position_data['position_size_crypto'],
             sizing_reason=position_data.get('sizing_reason'),
             ml_buy_prob=position_data.get('ml_buy_prob')
         )
-        
         if result:
-            if ml_entry_learning_id and getattr(self, 'ml_live_logger', None):
-                try:
-                    self.ml_live_logger.mark_entry_opened(
-                        symbol,
-                        ml_entry_learning_id,
-                        order=result,
-                        price=current_price,
-                        amount=position_data.get('position_size_crypto')
-                    )
-                except Exception:
-                    pass
             self.set_symbol_cooldown(symbol, reason='buy_executed')
-            avg_entry_price = self.get_real_buy_price(symbol)
-            self.record_decision(
-                symbol, 'buy_executed', True, reason,
-                {
-                    'price': current_price,
-                    'avg_entry_price': avg_entry_price,
-                    'position_size_usd': position_data.get('position_size_usd'),
-                    'position_size_crypto': position_data.get('position_size_crypto'),
-                    'stop_loss_price': position_data.get('stop_loss_price'),
-                    'risk_reward_ratio': position_data.get('risk_reward_ratio')
-                },
-                throttle_seconds=0
-            )
-            # Affichage amélioré
-            print(f"✅ ACHAT {crypto}: {position_data['position_size_usd']:.1f} USD (Position #{position_count + 1})")
-            print(f"   💡 Raison: {reason}")
-            print(f"   💰 Prix: {current_price:.2f} | Stop: {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%)")
-            print(f"   📈 R/R: 1:{position_data['risk_reward_ratio']:.1f} | Quantité: {position_data['position_size_crypto']:.6f} {crypto}")
-   
-            print(f"✅ Achat exécuté avec succès")
-            # Ajouter trailing stop (mode hybride Phase 5: garde-fou physique actif)
-            hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
-            if hasattr(self, 'trailing_stop_manager') and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
-                self.trailing_stop_manager.add_position(
-                    symbol, current_price, 
-                    trailing_percent=position_data.get('trailing_stop_percent'),
-                    support_price=position_data.get('support_price'),
-                    resistance_price=position_data.get('resistance_price')
-                )
-            
-            # Placer ordre de vente (paper ET réel)
-            if self.paper_trading:
-                self._place_paper_sell_order(symbol)
-            else:
-                import time
-                time.sleep(1)
-                if self.optimize_existing_position(symbol):
-                    print(f"✅ Ordre de vente placé avec succès")
-                else:
-                    print(f"⚠️ Ordre de vente sera placé au prochain cycle")
+            return True
         else:
             self.set_symbol_cooldown(symbol, self.symbol_failure_cooldown_seconds, reason='buy_failed')
             self.record_decision(
@@ -2933,6 +2921,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 throttle_seconds=0
             )
             print(f"❌ Échec de l'achat")
+            return False
             
     def _poll_dashboard_commands(self):
         """Lit et exécute les commandes envoyées depuis le ui."""

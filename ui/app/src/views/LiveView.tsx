@@ -139,7 +139,7 @@ function LivePrices({ live }: { live?: StatusPayload['live'] }) {
             const rawChange = Number(item.price_change_since_analysis_percent ?? item.change_24h ?? item.change ?? 0)
             const change = Math.abs(rawChange) < 0.005 ? 0 : rawChange
             const priceValue = Number(item.price)
-            const high = item.candle_high ?? item.high_24h ?? item.high
+            const high = item.candle_high ?? item.high_24h ?? item.high ?? item.ask ?? item.price
             const bid = item.bid
             const ask = item.ask
             const volume = item.volume_usd ?? item.quote_volume ?? item.volume_24h_usd ?? item.candle_volume_usd

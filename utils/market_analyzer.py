@@ -1804,22 +1804,11 @@ class MarketAnalyzer:
                     top_display.append(f"{crypto} {score}{vol_icon}")
             
             if top_display:
-                # Raisons ajustement (concis)
-                reasons = []
-                if usd_available < 20:
-                    reasons.append("💰-15")
-                if market_conditions['avg_volatility'] < 1.5:
-                    reasons.append("📉-10")
-                if len(scores) < 2:
-                    reasons.append("🎯-15")
-                
-                reason_text = f" ({' '.join(reasons)})" if reasons else ""
-                print(f"🎯 {' | '.join(top_display)} → Seuil {dynamic_min_score}{reason_text}")
+                pass
             else:
-                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usd_available:.2f} USD")
+                pass
         else:
-            if usd_available > 0:
-                print(f"⚠️ Aucune crypto ≥{dynamic_min_score} - Balance {usd_available:.2f} USD")
+            pass
         
         return tradeable
     

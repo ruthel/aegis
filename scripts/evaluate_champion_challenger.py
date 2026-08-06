@@ -62,7 +62,7 @@ def evaluate_models(model_dir='data'):
 
     rows = cursor.execute("""
         SELECT e.symbol, e.price, COALESCE(e.confidence, e.p_win), t.pnl_pct, t.pnl
-        FROM ml_decisions e
+        FROM decision_logs e
         JOIN ml_trade_outcomes t ON e.event_id = t.entry_id
         WHERE e.action_type = 'ENTRY' AND t.pnl_pct IS NOT NULL
     """).fetchall()

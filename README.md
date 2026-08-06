@@ -218,26 +218,32 @@ Tables principales :
 - `bot_app_state` : état applicatif persistant, par exemple `telegram_last_daily_status_day` et l'événement macro actif.
 - `bot_processes` : état des processus ui/bot (`pid`, `started_at`, `command`).
 - `bot_daily_stats` : statistiques journalières de risque (`trades_count`, `total_loss`, `total_profit`, `emergency_stop`).
-- `bot_positions`, `bot_pending_orders`, `bot_trailing_stops`, `bot_symbol_cooldowns`, `bot_exit_recommendations` : état trading relationnel avec colonnes métier.
-- `bot_market_context` : contexte marché live par symbole.
-- `ml_live_predictions` : dernières prédictions ML live par symbole avec `p_win`, `p_continue` et prévision de sortie.
-- `bot_decision_journal` : journal des décisions finales du bot. Les états opérationnels comme cooldown actif ne sont plus enregistrés comme décisions rejetées.
-- `ml_decisions`, `ml_trade_outcomes` : mémoire ML entrée/sortie/résultat.
+- `accounts`, `balances`, `orders`, `fills`, `ledger_entries` : couche comptable proche d'un exchange réel. C'est maintenant la source persistée des positions, ordres, exécutions, soldes et frais.
+- `cryptos` : contexte marché live par symbole, cooldowns, régime, momentum et dernières prédictions d'entrée.
+- `bot_app_state.live_status` : dernier état global WebSocket/ui (`connected`, `running`, queue, worker), stocké comme valeur applicative et non comme table dédiée.
+- `ml_exit_recommendations` : dernière recommandation ML de sortie par symbole actif (`p_continue`, décision, prix d'entrée, durée).
+- `decision_logs`, `ml_trade_outcomes` : décisions finales du bot et résultats des trades.
 - `ml_open_entries` : lien entre une entrée acceptée encore ouverte et sa future sortie.
 - `ml_feature_values` : features ML normalisées en lignes `event_id/feature_name/feature_value`.
-- `bot_live_status`, `bot_live_status_subscriptions`, `bot_live_status_symbols` : statut live WebSocket normalisé consommé par le ui.
 - `bot_commands` : commandes envoyées par le ui au bot.
-- `crypto_score_history` : historique des scores crypto utilisés par l'analytics.
-- `support_touch_results`, `telegram_messages` : backtests et messages Telegram.
+- `crypto_scores` : historique des scores crypto utilisés par l'analytics.
+- `support_touch_results`, `notifications` : résultats Support Touch et notifications persistées.
 - `ml_analysis_runs`, `ml_prediction_calibration`, `ml_rejected_replay_results`, `ml_drift_alerts` : analyse live, calibration, replay des refus et alertes de drift.
 
 Il ne faut pas supprimer `-wal` ou `-shm` pendant que le bot, le ui ou un script d'analyse tourne. SQLite lit automatiquement la base principale + le WAL. Le contenu du WAL est fusionné dans `aegis_db.sqlite3` lors d'un checkpoint automatique, à la fermeture propre des connexions, ou manuellement avec `PRAGMA wal_checkpoint(TRUNCATE);` quand tous les processus Aegis sont arrêtés.
 
 Chaque table applicative possède `created_at` et `updated_at`, remplis par le code applicatif au moment des écritures.
 
-Les tables runtime et ML ne stockent plus de colonnes payload `*_data` ou `payload_data`. Les champs variables sont normalisés en colonnes dédiées ou en tables clé/valeur comme `bot_decision_metrics` et `ml_feature_values`.
+Les tables runtime et ML ne stockent plus de colonnes payload `*_data` ou `payload_data`. Les champs variables sont normalisés en colonnes dédiées ou en tables clé/valeur comme `ml_feature_values`.
 
-Une couche ORM SQLAlchemy existe dans `core/db_orm.py`. Elle crée les tables au démarrage avec `Base.metadata.create_all(...)` et pilote `bot_state`, positions, ordres, trailing stops, cooldowns, recommandations de sortie, contexte marché, prédictions live, événements ML entrée/sortie, features ML, outcomes, Telegram, tables d'analyse Phase 4/5, `support_touch_results`, metadata ML, journal de décisions et tables `bot_live_status*`. Les migrations historiques gardent encore du SQL direct.
+Une couche ORM SQLAlchemy existe dans `core/db_orm.py`. Elle crée les tables au démarrage avec `Base.metadata.create_all(...)` et pilote `bot_state`, état applicatif, comptabilité `accounts/balances/orders/fills/ledger_entries`, recommandations de sortie, contexte/prédictions live via `cryptos`, événements ML entrée/sortie, features ML, outcomes, notifications, tables d'analyse Phase 4/5, `support_touch_results`, metadata ML et journal de décisions. Les migrations historiques gardent encore du SQL direct.
+
+La façade transactionnelle est dans `core/ml_live_logger.py` :
+- `record_account_deposit(...)` et `record_account_withdrawal(...)` écrivent dans `ledger_entries`, mettent à jour `bot_state.paper_balance` pour l'USD, puis recalculent `balances`.
+- `record_order_transaction(...)` crée ou met à jour un ordre normalisé dans `orders`.
+- `record_fill_transaction(...)` crée un fill, écrit les mouvements trade/frais dans `ledger_entries`, clôture l'ordre rempli et recalcule `balances`.
+- Les achats/ventes paper du bot passent par ces méthodes : le solde n'est plus calculé par simples `paper_balance +=/-=` dans le chemin normal.
+- Les retraits sont bloqués si le solde libre serait négatif.
 
 ### UI SPA React
 

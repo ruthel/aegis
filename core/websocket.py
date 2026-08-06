@@ -98,12 +98,12 @@ class WebSocketManager:
     def connect(self):
         """Établit la connexion WebSocket selon l'exchange configuré"""
         try:
-            exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+            exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
 
-            if exchange_name == 'kraken':
-                self._connect_kraken()
-            else:
+            if exchange_name == 'binance':
                 self._connect_binance()
+            else:
+                self._connect_kraken()
 
         except Exception as e:
             print(f"Erreur connexion WebSocket: {e}")
@@ -209,6 +209,8 @@ class WebSocketManager:
                 bid = float(ticker_data['b'][0]) if ticker_data.get('b') else None
                 ask = float(ticker_data['a'][0]) if ticker_data.get('a') else None
                 volume_24h = float(ticker_data['v'][1]) if ticker_data.get('v') and len(ticker_data['v']) > 1 else None
+                high_24h = float(ticker_data['h'][1]) if ticker_data.get('h') and len(ticker_data['h']) > 1 else None
+                low_24h = float(ticker_data['l'][1]) if ticker_data.get('l') and len(ticker_data['l']) > 1 else None
                 self.market_meta[symbol] = {
                     **self.market_meta.get(symbol, {}),
                     'bid': bid,
@@ -216,6 +218,8 @@ class WebSocketManager:
                     'spread': (ask - bid) if bid and ask else None,
                     'spread_percent': ((ask - bid) / self.prices.get(symbol, 1) * 100) if bid and ask else None,
                     'volume_24h': volume_24h,
+                    'high_24h': high_24h,
+                    'low_24h': low_24h,
                 }
                 # ticker met a jour le prix seulement si pas de trade recus
                 if self.market_meta.get(symbol, {}).get('source') != 'trade':
@@ -460,7 +464,7 @@ class WebSocketManager:
     def preload_klines(self, exchange, timeframe='1m', count=100):
         """Charge l'historique REST au demarrage pour eviter d'attendre le WS"""
         import os as _os
-        exchange_name = _os.getenv('EXCHANGE', 'binance').lower()
+        exchange_name = _os.getenv('EXCHANGE', 'kraken').lower()
         for symbol in self.symbols:
             try:
                 # Convertir format interne (BTCUSD) vers format CCXT (BTC/USD)

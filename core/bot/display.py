@@ -105,6 +105,8 @@ class DisplayMixin:
                 self.async_print(f"⏳ Aucune position")
                 return
             
+            parts = []
+            total_val = 0.0
             for symbol, data in open_pos.items():
                 crypto = symbol.split('/')[0]
                 amount = data['amount']
@@ -112,8 +114,11 @@ class DisplayMixin:
                 current_price = self.get_price(symbol)
                 pnl_pct = ((current_price - buy_price) / buy_price) * 100
                 position_value = amount * current_price
+                total_val += position_value
                 emoji = "🟢" if pnl_pct >= 0 else "🔴"
-                self.async_print(f"{emoji} {crypto} {amount:.6f} @ {buy_price:.2f} → {current_price:.2f} ({pnl_pct:+.2f}%) = {position_value:.2f} USD")
+                parts.append(f"{emoji} {crypto} {pnl_pct:+.2f}% (${position_value:.2f})")
+            
+            self.async_print(f"📦 POSITIONS ({len(parts)}): " + " | ".join(parts) + f" [Total: {total_val:.2f} USD]")
             return
         
         # MODE RÉEL - Utiliser balance_manager
@@ -230,19 +235,7 @@ class DisplayMixin:
     
     def show_header(self, trading_pairs, strategy_type, trade_amount, active_positions):
         """Affiche l'en-tête du bot"""
-        mode = "PAPER" if self.paper_trading else "LIVE"
-        realtime = "⚡ TEMPS RÉEL" if self.realtime_trading else "🔄 CYCLIQUE"
-        cryptos = ', '.join([p.split('/')[0] if '/' in p else p.replace('USD', '').replace('USD', '') for p in trading_pairs])
-        
-        # Afficher win rate global si disponible
-        winrate_info = ""
-        if hasattr(self, 'global_stats_30d') and self.global_stats_30d and not self.paper_trading:
-            winrate_info = f" | WR: {self.global_stats_30d['winrate']:.0f}% (30j)"
-        
-        from config import BOT_NAME
-        print(f"🤖 {BOT_NAME} | {mode} {realtime} | {active_positions} positions{winrate_info}")
-        print(f"📊 {cryptos} | Min dynamique | Seuil adaptatif | Spot multi-exchange")
-        print("🛑 Ctrl+C pour arrêter")
+        pass
     
 
     def show_top_cryptos(self, best_cryptos):
@@ -263,31 +256,7 @@ class DisplayMixin:
     
     def show_buy_predictions(self, buy_predictions):
         """Affiche les prévisions d'achat avec Support/Résistance"""
-        if buy_predictions:
-            self.async_print("\n🔮 PRÉVISIONS ACHATS:")
-            for crypto, prediction in buy_predictions:
-                symbol = f"{crypto}/USD"
-                
-                # Ajouter info Support/Résistance
-                sr_info = ""
-                try:
-                    klines = self.get_klines(symbol, 100, os.getenv('MAIN_TIMEFRAME', '15m'))
-                    if len(klines) >= 50:
-                        current_price = self.get_price(symbol)
-                        sr_levels = self.pattern_analyzer.find_support_resistance_levels(klines)
-                        reversal_pred = self.pattern_analyzer.predict_reversal_probability(current_price, sr_levels)
-                        
-                        if reversal_pred['nearest_support']:
-                            support_price = reversal_pred['nearest_support']['price']
-                            sr_info = f" | Support: {support_price:.2f}"
-                except:
-                    pass
-                
-                if prediction['status'] == 'READY':
-                    min_conf = prediction.get('min_confidence', 60)
-                    self.async_print(f"✅ {crypto}: {prediction['time_estimate']} (conf {prediction['confidence']:.0f}%≥{min_conf}%) - {prediction['reason']}{sr_info}")
-                elif prediction['status'] == 'WAITING':
-                    pass
+        pass
     
     def show_strategy_execution(self, symbol, price, change_24h, vol_display):
         """Affiche l'exécution d'une stratégie"""

@@ -13,9 +13,9 @@ from sqlalchemy import select
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.db_orm import (
+    DecisionLog,
     MlAnalysisRun,
     MlDriftAlert,
-    MlDecision,
     MlTradeOutcome,
     MlPredictionCalibration,
     MlRejectedReplayResult,
@@ -48,10 +48,10 @@ def bucket_for(p_win):
 
 def load_entries(session):
     rows = session.execute(
-        select(MlDecision, MlTradeOutcome)
-        .outerjoin(MlTradeOutcome, MlTradeOutcome.entry_id == MlDecision.event_id)
-        .where(MlDecision.action_type == 'ENTRY')
-        .order_by(MlDecision.timestamp.asc())
+        select(DecisionLog, MlTradeOutcome)
+        .outerjoin(MlTradeOutcome, MlTradeOutcome.entry_id == DecisionLog.event_id)
+        .where(DecisionLog.action_type == 'ENTRY')
+        .order_by(DecisionLog.timestamp.asc())
     ).all()
     entries = []
     for entry, outcome in rows:

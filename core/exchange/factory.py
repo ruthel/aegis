@@ -9,15 +9,15 @@ if sys.platform == 'win32':
 
 def create_exchange_client(api_key, api_secret, testnet=False, verbose=True):
     """Crée le client exchange selon la config EXCHANGE dans .env"""
-    exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+    exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
 
-    if exchange_name == 'kraken':
-        from core.exchange.kraken import KrakenClient
-        if verbose and os.getenv('EXCHANGE_CONNECTION_DEBUG', 'false').lower() == 'true':
-            print("Exchange: Kraken (Canada compatible)")
-        return KrakenClient(api_key, api_secret, testnet)
-    else:
+    if exchange_name == 'binance':
         from core.exchange.binance import BinanceClient
         if verbose and os.getenv('EXCHANGE_CONNECTION_DEBUG', 'false').lower() == 'true':
             print("Exchange: Binance")
         return BinanceClient(api_key, api_secret, testnet)
+    else:
+        from core.exchange.kraken import KrakenClient
+        if verbose and os.getenv('EXCHANGE_CONNECTION_DEBUG', 'false').lower() == 'true':
+            print("Exchange: Kraken (Canada compatible)")
+        return KrakenClient(api_key, api_secret, testnet)

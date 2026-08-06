@@ -19,6 +19,7 @@ export type StatusPayload = {
     symbols?: Record<string, JsonMap>
   }
   positions?: JsonMap[]
+  sell_orders?: JsonMap[]
   decisions?: JsonMap[]
   cooldowns?: JsonMap[]
   logs?: string[]
@@ -61,6 +62,15 @@ export type ConfigPayload = {
   fields?: ConfigField[]
   values?: Record<string, string | number | boolean | null>
   secrets?: Array<{ name: string; configured: boolean }>
+  trading_mode?: {
+    mode?: 'paper' | 'live' | string
+    paper_trading?: boolean
+    live_ready?: boolean
+    requires_restart?: boolean
+  }
+  ok?: boolean
+  errors?: Record<string, string>
+  message?: string
 }
 
 export type ConfigField = {

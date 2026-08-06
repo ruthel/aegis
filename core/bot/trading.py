@@ -6,6 +6,23 @@ import os
 class TradingMixin:
     """Mixin pour les opérations de trading"""
 
+    def _refresh_paper_balance_from_accounting(self):
+        try:
+            if not getattr(self, 'ml_live_logger', None):
+                return
+            conn = self.ml_live_logger._get_conn()
+            account_id = self.ml_live_logger._account_id('paper')
+            row = conn.execute(
+                "SELECT free FROM balances WHERE account_id=? AND asset='USD'",
+                (account_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                self.paper_balance = round(float(row[0]), 2)
+                if hasattr(self, 'state'):
+                    self.state['paper_balance'] = self.paper_balance
+        except Exception:
+            pass
+
     def _calculate_fee_details(self, amount, sell_price, buy_price=None):
         """Retourne les frais paper en USD pour audit des positions sell."""
         fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
@@ -55,8 +72,23 @@ class TradingMixin:
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                self.paper_balance -= (cost * (1 + fee_rate))
-                order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': cost}
+                buy_fee = cost * fee_rate
+                order_id = f'paper_{time.time_ns()}'
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_order_transaction(
+                        symbol, 'buy', amount, price, order_type='market',
+                        status='open', order_id=order_id, mode='paper',
+                        source='paper_trade'
+                    )
+                    self.ml_live_logger.record_fill_transaction(
+                        order_id, symbol, 'buy', amount, price,
+                        fee_amount=buy_fee, fee_asset='USD',
+                        mode='paper', source='paper_trade'
+                    )
+                    self._refresh_paper_balance_from_accounting()
+                else:
+                    self.paper_balance -= (cost * (1 + fee_rate))
+                order = {'id': order_id, 'price': price, 'amount': amount, 'cost': cost}
                 action_text = "moyennage" if allow_averaging else "achat"
                 print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
             else:
@@ -119,8 +151,23 @@ class TradingMixin:
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
                 revenue = amount * price
-                self.paper_balance += (revenue * (1 - fee_rate))
-                order = {'id': f'paper_{int(time.time())}', 'price': price, 'amount': amount, 'cost': revenue}
+                sell_fee = revenue * fee_rate
+                order_id = f'paper_{time.time_ns()}'
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_order_transaction(
+                        symbol, 'sell', amount, price, order_type='market',
+                        status='open', order_id=order_id, mode='paper',
+                        source='paper_trade'
+                    )
+                    self.ml_live_logger.record_fill_transaction(
+                        order_id, symbol, 'sell', amount, price,
+                        fee_amount=sell_fee, fee_asset='USD',
+                        mode='paper', source='paper_trade'
+                    )
+                    self._refresh_paper_balance_from_accounting()
+                else:
+                    self.paper_balance += (revenue * (1 - fee_rate))
+                order = {'id': order_id, 'price': price, 'amount': amount, 'cost': revenue}
                 print(f"🧪 PAPER - Vente simulée: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
             else:
                 balance = self.balance_manager.get_balance()
@@ -257,10 +304,22 @@ class TradingMixin:
                 return None
             
             if self.paper_trading:
-                order = {'id': f'limit_sell_{int(time.time())}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}
+                order = {'id': f'limit_sell_{time.time_ns()}', 'price': price, 'amount': amount, 'type': 'limit', 'side': 'sell'}
                 self.pending_orders[order['id']] = {
                     'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell', 'status': 'opened'
                 }
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_order_transaction(
+                        symbol,
+                        'sell',
+                        amount,
+                        price,
+                        order_type='limit',
+                        status='open',
+                        order_id=order['id'],
+                        mode='paper',
+                        source='paper_trade'
+                    )
                 position = {
                     'symbol': symbol, 'side': 'sell', 'amount': amount,
                     'price': price, 'timestamp': __import__('datetime').datetime.now().isoformat(),
@@ -452,7 +511,21 @@ class TradingMixin:
                         fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
                     buy_price = self.get_real_buy_price(symbol)
                     revenue = amount * current_price
-                    self.paper_balance += (revenue * (1 - fee_rate))
+                    if getattr(self, 'ml_live_logger', None):
+                        self.ml_live_logger.record_fill_transaction(
+                            order_id,
+                            symbol,
+                            'sell',
+                            amount,
+                            current_price,
+                            fee_amount=revenue * fee_rate,
+                            fee_asset='USD',
+                            mode='paper',
+                            source='paper_trade'
+                        )
+                        self._refresh_paper_balance_from_accounting()
+                    else:
+                        self.paper_balance += (revenue * (1 - fee_rate))
                     print(f"✅ PAPER - Ordre limite VENTE exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
                     
                     # Calculer P&L
@@ -501,7 +574,22 @@ class TradingMixin:
                     fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                     if fee_rate <= 0:
                         fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                    self.paper_balance -= (cost * (1 + fee_rate))
+                    buy_fee = cost * fee_rate
+                    if getattr(self, 'ml_live_logger', None):
+                        self.ml_live_logger.record_fill_transaction(
+                            order_id,
+                            symbol,
+                            'buy',
+                            amount,
+                            current_price,
+                            fee_amount=buy_fee,
+                            fee_asset='USD',
+                            mode='paper',
+                            source='paper_trade'
+                        )
+                        self._refresh_paper_balance_from_accounting()
+                    else:
+                        self.paper_balance -= (cost * (1 + fee_rate))
                     print(f"✅ PAPER - Ordre limite ACHAT exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
                     
                     # Enregistrer l'achat

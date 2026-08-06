@@ -460,7 +460,7 @@ class PositionManager:
             fees_adjusted = total_usd_adjusted - net_usd_adjusted
             
             # Vérifier minimum notional APRÈS arrondi
-            exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+            exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
             MIN_NOTIONAL = 0.5 if exchange_name == 'kraken' else 5.0
             if total_usd_adjusted < MIN_NOTIONAL:
                 print(f"⚠️ Montant {total_usd_adjusted:.2f} USD < minimum {MIN_NOTIONAL} USD après arrondi")

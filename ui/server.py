@@ -163,6 +163,20 @@ def is_secret_key(name):
     return any(marker in upper for marker in SECRET_KEYS)
 
 
+def exchange_keys_configured():
+    api_key = (
+        os.getenv('API_KEY')
+        or os.getenv('KRAKEN_API_KEY')
+        or os.getenv('EXCHANGE_API_KEY')
+    )
+    api_secret = (
+        os.getenv('API_SECRET')
+        or os.getenv('KRAKEN_API_SECRET')
+        or os.getenv('EXCHANGE_API_SECRET')
+    )
+    return bool(api_key and api_secret)
+
+
 def parse_bool(value):
     if isinstance(value, bool):
         return value
@@ -240,6 +254,8 @@ def write_dashboard_env(updates):
 
 def config_payload():
     dashboard_values = read_env_file(ENV_DASHBOARD)
+    paper_enabled = parse_bool(dashboard_values.get('PAPER_TRADING', os.getenv('PAPER_TRADING', 'True')))
+    live_ready = exchange_keys_configured()
     fields = []
     for name, meta in CONFIG_FIELDS.items():
         value = dashboard_values.get(name, os.getenv(name, ''))
@@ -264,6 +280,12 @@ def config_payload():
         'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         'fields': fields,
         'secrets': secrets,
+        'trading_mode': {
+            'mode': 'paper' if paper_enabled else 'live',
+            'paper_trading': paper_enabled,
+            'live_ready': live_ready,
+            'requires_restart': True,
+        },
         'message': 'Les changements sont ecrits dans .env.ui. Redemarrage requis selon le champ.',
     }
 
@@ -567,14 +589,17 @@ def is_dashboard_decision(entry):
     action = entry.get('action')
     reason = str(entry.get('reason') or '')
     metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
+    reason_l = reason.lower()
 
     if action in LEGACY_DECISION_ACTIONS:
         return False
     if action in OPERATIONAL_DECISION_ACTIONS or reason in OPERATIONAL_DECISION_REASONS:
         return False
-    if action == 'exit_decision':
+    if reason_l.startswith('ml_continue') or 'ml continue' in reason_l:
+        return False
+    if str(action).lower() in {'exit_decision', 'exit'}:
         decision = str(metrics.get('decision') or '').upper()
-        return decision == 'FORCE_EXIT'
+        return decision in {'FORCE_EXIT', 'SELL', 'EXIT'}
     if reason.startswith(LEGACY_DECISION_PREFIXES):
         return False
     if action == 'buy' and not entry.get('allowed') and not metrics.get('ml_decision'):
@@ -631,6 +656,37 @@ def load_bot_state(fallback=None):
     except Exception:
         pass
     return fallback
+
+
+def load_accounting_state(fallback=None):
+    """Charge l'état UI directement depuis orders/fills/balances."""
+    fallback = fallback or {'positions': []}
+    mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+    try:
+        with db_logger() as logger:
+            state = logger.load_bot_state(mode_key) or {}
+            conn = logger._get_conn()
+            account_id = logger._account_id(mode_key)
+            state['positions'] = logger._positions_from_accounting(conn, mode_key)
+            state['pending_orders'] = logger._pending_orders_from_accounting(conn, mode_key)
+            balances = {}
+            for asset, free, locked, total in conn.execute(
+                "SELECT asset, free, locked, total FROM balances WHERE account_id=?",
+                (account_id,),
+            ).fetchall():
+                balances[asset] = {
+                    'free': float(free or 0.0),
+                    'used': float(locked or 0.0),
+                    'locked': float(locked or 0.0),
+                    'total': float(total or 0.0),
+                }
+            state['balances'] = balances
+            usd_balance = balances.get('USD') or balances.get('USDT') or {}
+            if usd_balance:
+                state['paper_balance'] = round(float(usd_balance.get('free') or 0.0), 2)
+            return state
+    except Exception:
+        return load_bot_state(fallback)
 
 
 def trade_stats(positions):
@@ -715,7 +771,7 @@ def trade_stats(positions):
     }
 
 
-def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit_recommendations=None, live_symbols=None):
+def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit_recommendations=None, cryptos=None):
     open_sell_symbols = set(
         p.get('symbol') for p in positions
         if p.get('side') == 'sell' and p.get('status') == 'opened'
@@ -792,8 +848,8 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
         fee_pct = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) * 2
         entry_val = data['amount'] * avg_entry
         current_price = None
-        if live_symbols and isinstance(live_symbols, dict):
-            live_item = live_symbols.get(data['symbol']) or live_symbols.get(data['symbol'].replace('/', ''))
+        if cryptos and isinstance(cryptos, dict):
+            live_item = cryptos.get(data['symbol']) or cryptos.get(data['symbol'].replace('/', ''))
             if isinstance(live_item, dict):
                 try:
                     current_price = float(live_item.get('price') or 0) or None
@@ -841,6 +897,51 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
             'exit_recommendation': exit_rec
         })
     return sorted(result, key=lambda item: item['symbol'])
+
+
+def open_sell_orders(pending_orders=None, cryptos=None):
+    items = []
+    if isinstance(pending_orders, dict):
+        orders_iterable = pending_orders.values()
+    elif isinstance(pending_orders, list):
+        orders_iterable = pending_orders
+    else:
+        orders_iterable = []
+
+    for item in orders_iterable:
+        if not isinstance(item, dict):
+            continue
+        order = item.get('order') if isinstance(item.get('order'), dict) else item
+        symbol = item.get('symbol') or order.get('symbol')
+        side = str(item.get('side') or order.get('side') or '').lower()
+        status = str(item.get('status') or order.get('status') or '').lower()
+        amount = float(item.get('amount') or order.get('amount') or 0)
+        price = float(item.get('price') or order.get('price') or 0)
+        if side != 'sell' or status not in {'open', 'opened'} or not symbol or amount <= 0 or price <= 0:
+            continue
+        live_price = None
+        if cryptos and isinstance(cryptos, dict):
+            live_item = cryptos.get(symbol) or cryptos.get(str(symbol).replace('/', ''))
+            if isinstance(live_item, dict):
+                try:
+                    live_price = float(live_item.get('price') or 0) or None
+                except Exception:
+                    live_price = None
+        items.append({
+            'symbol': symbol,
+            'side': 'sell',
+            'status': 'opened',
+            'order_type': order.get('type') or item.get('type') or 'limit',
+            'order_id': order.get('id') or item.get('order_id'),
+            'amount': amount,
+            'price': price,
+            'target_price': price,
+            'timestamp': item.get('timestamp') or order.get('opened_at'),
+            'current_price': live_price,
+            'current_value': amount * live_price if live_price else None,
+            'target_value': amount * price,
+        })
+    return sorted(items, key=lambda row: (row.get('symbol') or '', row.get('timestamp') or ''))
 
 
 def cooldowns(state):
@@ -1075,12 +1176,12 @@ def _enrich_trades_with_ml_confidence(trades):
                 if not ts_str:
                     return None
                 row = cursor.execute(
-                    "SELECT confidence FROM ml_decisions WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
+                    "SELECT confidence FROM decision_logs WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
                     (symbol, str(ts_str))
                 ).fetchone()
                 if not row:
                     row = cursor.execute(
-                        "SELECT confidence FROM ml_decisions WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
+                        "SELECT confidence FROM decision_logs WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
                         (symbol, str(ts_str))
                     ).fetchone()
                 return round(float(row[0]), 1) if row and row[0] is not None else None
@@ -1092,7 +1193,7 @@ def _enrich_trades_with_ml_confidence(trades):
                 if not ts_str:
                     return None
                 row = cursor.execute(
-                    "SELECT confidence FROM ml_decisions WHERE action_type='EXIT' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
+                    "SELECT confidence FROM decision_logs WHERE action_type='EXIT' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
                     (symbol, str(ts_str))
                 ).fetchone()
                 return round(float(row[0]), 1) if row and row[0] is not None else None
@@ -1545,7 +1646,7 @@ def compute_next_buy_forecast(state):
 
 
 def dashboard_status_payload():
-    state = load_bot_state({'positions': []})
+    state = load_accounting_state({'positions': []})
     mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
     live = live_status()
     with db_logger() as logger:
@@ -1559,6 +1660,7 @@ def dashboard_status_payload():
         state.get('exit_recommendations'),
         live.get('symbols', {})
     )
+    sell_orders = open_sell_orders(state.get('pending_orders'), live.get('symbols', {}))
 
     stats = trade_stats(state.get('positions', []))
 
@@ -1576,6 +1678,7 @@ def dashboard_status_payload():
         },
         'stats': stats,
         'positions': positions,
+        'sell_orders': sell_orders,
         'cooldowns': cooldowns(state),
         'market_context': state.get('market_context', {}),
         'live': live,
@@ -1639,6 +1742,7 @@ def api_config_update():
     values = payload.get('values') or {}
     updates = {}
     errors = {}
+    current_values = read_env_file(ENV_DASHBOARD)
 
     for name, value in values.items():
         if name not in CONFIG_FIELDS:
@@ -1651,6 +1755,19 @@ def api_config_update():
             updates[name] = normalize_config_value(name, value)
         except Exception as exc:
             errors[name] = str(exc)
+
+    if 'PAPER_TRADING' in updates:
+        current_paper = normalize_config_value(
+            'PAPER_TRADING',
+            current_values.get('PAPER_TRADING', os.getenv('PAPER_TRADING', 'True')),
+        )
+        next_paper = updates['PAPER_TRADING']
+        if current_paper != next_paper:
+            status = bot_status_payload(force=True)
+            if status.get('running'):
+                errors['PAPER_TRADING'] = 'arretez le bot avant de changer le mode trading'
+            elif next_paper == 'False' and not exchange_keys_configured():
+                errors['PAPER_TRADING'] = 'cles API exchange manquantes pour activer le live'
 
     if errors:
         return jsonify({'ok': False, 'errors': errors, **config_payload()}), 400
@@ -1737,7 +1854,7 @@ def api_live():
 @app.route('/api/analytics')
 def api_analytics():
     """Endpoint pour les metriques avancees, heatmap, capital breakdown, PnL history"""
-    state = load_bot_state({'positions': []})
+    state = load_accounting_state({'positions': []})
     positions = state.get('positions', [])
     paper_balance = state.get('paper_balance', float(os.getenv('PAPER_BALANCE', '1000')))
 
@@ -1864,7 +1981,7 @@ def api_analytics_scores():
 @app.route('/api/trades')
 def api_trades():
     """Endpoint pour l'historique complet des trades"""
-    state = load_bot_state({'positions': []})
+    state = load_accounting_state({'positions': []})
     positions = state.get('positions', [])
     trades = compute_trade_history(positions)
 

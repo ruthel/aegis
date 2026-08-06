@@ -156,16 +156,16 @@ Impact attendu : moins de pertes lourdes sur setups incertains, meilleur rendeme
 
 ---
 
-## 🔜 Phase 7 : Execution Intelligente & Microstructure Marche
+## ✅ Phase 7 : Execution Intelligente & Microstructure Marche (COMPLÉTÉE)
 
 Objectif : ameliorer le prix reel d'achat/vente sans ajouter de verrous durs.
 
-- [ ] **Slippage tracking** : mesurer ecart entre prix prevu, prix demande et prix execute.
-- [ ] **Spread-aware execution** : eviter les executions quand le spread est temporairement trop large.
-- [ ] **Volume USD minimum dynamique** : adapter les executions a la liquidite live.
-- [ ] **Ordres adaptatifs** : choisir entre market, limit agressif ou attente courte selon urgence ML et carnet.
-- [ ] **Retry propre** : si l'ordre rate, ne pas dupliquer l'achat; enregistrer l'echec comme sample d'execution.
-- [ ] **Prix d'entree attendu vs obtenu** : alimenter le dataset ML avec la qualite d'execution.
+- [x] **Slippage tracking** : mesurer ecart entre prix prevu, prix demande et prix execute (`ExecutionManager`).
+- [x] **Spread-aware execution** : eviter les executions quand le spread est temporairement trop large (`wait_for_tight_spread`).
+- [x] **Volume USD minimum dynamique** : adapter les executions a la liquidite live (`adjust_size_for_depth`).
+- [x] **Ordres adaptatifs** : choisir entre market, limit agressif ou attente courte selon urgence ML et carnet (`execute_smart_buy`).
+- [x] **Retry propre** : si l'ordre rate, ne pas dupliquer l'achat; enregistrer l'echec comme sample d'execution.
+- [x] **Prix d'entree attendu vs obtenu** : alimenter le dataset ML avec la qualite d'execution (`log_execution_metric`).
 
 Impact attendu : moins de frais implicites, moins d'achats au mauvais tick, meilleur PnL net sans changer la logique ML.
 

@@ -52,75 +52,135 @@ class BotState(Base):
     created_at: Mapped[str | None] = mapped_column(Text)
 
 
-class BotPosition(Base):
-    __tablename__ = 'bot_positions'
+class Account(Base):
+    __tablename__ = 'accounts'
 
-    mode: Mapped[str] = mapped_column(Text, primary_key=True)
-    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    mode: Mapped[str] = mapped_column(Text)
+    exchange: Mapped[str | None] = mapped_column(Text)
+    base_currency: Mapped[str | None] = mapped_column(Text)
+    name: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str | None] = mapped_column(Text)
+    initial_balance: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
+class Balance(Base):
+    __tablename__ = 'balances'
+
+    account_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    asset: Mapped[str] = mapped_column(Text, primary_key=True)
+    free: Mapped[float | None] = mapped_column(Float)
+    locked: Mapped[float | None] = mapped_column(Float)
+    total: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str | None] = mapped_column(Text)
+
+
+class Order(Base):
+    __tablename__ = 'orders'
+
+    account_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    order_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    order_type: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str | None] = mapped_column(Text)
+    amount: Mapped[float | None] = mapped_column(Float)
+    price: Mapped[float | None] = mapped_column(Float)
+    filled_amount: Mapped[float | None] = mapped_column(Float)
+    avg_fill_price: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str | None] = mapped_column(Text)
+    source_position_idx: Mapped[int | None] = mapped_column(Integer)
+    opened_at: Mapped[str | None] = mapped_column(Text)
+    closed_at: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
+class Fill(Base):
+    __tablename__ = 'fills'
+
+    fill_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    account_id: Mapped[str] = mapped_column(Text)
+    order_id: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str | None] = mapped_column(Text)
     side: Mapped[str | None] = mapped_column(Text)
     amount: Mapped[float | None] = mapped_column(Float)
     price: Mapped[float | None] = mapped_column(Float)
-    status: Mapped[str | None] = mapped_column(Text)
+    fee_amount: Mapped[float | None] = mapped_column(Float)
+    fee_asset: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(Text)
+    source_position_idx: Mapped[int | None] = mapped_column(Integer)
+    fill_ts: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
+class LedgerEntry(Base):
+    __tablename__ = 'ledger_entries'
+
+    ledger_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    account_id: Mapped[str] = mapped_column(Text)
+    entry_ts: Mapped[str | None] = mapped_column(Text)
+    entry_type: Mapped[str] = mapped_column(Text)
+    asset: Mapped[str] = mapped_column(Text)
+    amount: Mapped[float] = mapped_column(Float)
+    balance_after: Mapped[float | None] = mapped_column(Float)
     order_id: Mapped[str | None] = mapped_column(Text)
-    timestamp: Mapped[str | None] = mapped_column(Text)
-    closed_at: Mapped[str | None] = mapped_column(Text)
-    fee: Mapped[float | None] = mapped_column(Float)
-    fee_rate: Mapped[float | None] = mapped_column(Float)
-    position_size_usd: Mapped[float | None] = mapped_column(Float)
-    position_size_crypto: Mapped[float | None] = mapped_column(Float)
-    risk_reward_ratio: Mapped[float | None] = mapped_column(Float)
-    target_price: Mapped[float | None] = mapped_column(Float)
-    reason: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str] = mapped_column(Text)
+    fill_id: Mapped[str | None] = mapped_column(Text)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(Text)
+    source_position_idx: Mapped[int | None] = mapped_column(Integer)
+    description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
 
 
-class BotTrailingStop(Base):
-    __tablename__ = 'bot_trailing_stops'
+class MlExitRecommendation(Base):
+    __tablename__ = 'ml_exit_recommendations'
 
     mode: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, primary_key=True)
-    stop_price: Mapped[float | None] = mapped_column(Float)
-    highest_price: Mapped[float | None] = mapped_column(Float)
-    buy_price: Mapped[float | None] = mapped_column(Float)
-    trailing_percent: Mapped[float | None] = mapped_column(Float)
-    initial_trailing_percent: Mapped[float | None] = mapped_column(Float)
-    breakeven_active: Mapped[int | None] = mapped_column(Integer)
-    resistance_price: Mapped[float | None] = mapped_column(Float)
-    updated_at: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
-
-
-class BotSymbolCooldown(Base):
-    __tablename__ = 'bot_symbol_cooldowns'
-
-    mode: Mapped[str] = mapped_column(Text, primary_key=True)
-    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
-    cooldown_until: Mapped[float | None] = mapped_column(Float)
-    updated_at: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
-
-
-class BotExitRecommendation(Base):
-    __tablename__ = 'bot_exit_recommendations'
-
-    mode: Mapped[str] = mapped_column(Text, primary_key=True)
-    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
-    decision: Mapped[str | None] = mapped_column(Text)
-    continuation_score: Mapped[float | None] = mapped_column(Float)
+    entry_price: Mapped[float | None] = mapped_column(Float)
+    p_continue: Mapped[float | None] = mapped_column(Float)
+    min_p_continue: Mapped[float | None] = mapped_column(Float)
+    exit_decision: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
     net_pnl_pct: Mapped[float | None] = mapped_column(Float)
-    reason: Mapped[str | None] = mapped_column(Text)
+    duration_minutes: Mapped[float | None] = mapped_column(Float)
     updated_at: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str | None] = mapped_column(Text)
 
 
-class BotMarketContext(Base):
-    __tablename__ = 'bot_market_context'
+class Crypto(Base):
+    __tablename__ = 'cryptos'
 
     mode: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, primary_key=True)
-    context_mode: Mapped[str | None] = mapped_column(Text)
+
+    # Status & Price
+    price: Mapped[float | None] = mapped_column(Float)
+    bid: Mapped[float | None] = mapped_column(Float)
+    ask: Mapped[float | None] = mapped_column(Float)
+    spread_percent: Mapped[float | None] = mapped_column(Float)
+    high: Mapped[float | None] = mapped_column(Float)
+    low: Mapped[float | None] = mapped_column(Float)
+    high_24h: Mapped[float | None] = mapped_column(Float)
+    low_24h: Mapped[float | None] = mapped_column(Float)
+    volume_24h: Mapped[float | None] = mapped_column(Float)
+    volume_usd: Mapped[float | None] = mapped_column(Float)
+    quote_volume: Mapped[float | None] = mapped_column(Float)
+    candle_high: Mapped[float | None] = mapped_column(Float)
+    candle_low: Mapped[float | None] = mapped_column(Float)
+    candle_volume: Mapped[float | None] = mapped_column(Float)
+    candle_volume_usd: Mapped[float | None] = mapped_column(Float)
+    trend_score: Mapped[int | None] = mapped_column(Integer)
+    ws_connected: Mapped[int | None] = mapped_column(Integer)
+
+    # Cooldown & Market Context
+    cooldown_until: Mapped[float | None] = mapped_column(Float)
     symbol_regime: Mapped[str | None] = mapped_column(Text)
     btc_regime: Mapped[str | None] = mapped_column(Text)
     bear_mode: Mapped[int | None] = mapped_column(Integer)
@@ -132,24 +192,13 @@ class BotMarketContext(Base):
     confidence_bonus: Mapped[float | None] = mapped_column(Float)
     reversal_confirmed: Mapped[int | None] = mapped_column(Integer)
     falling_knife_active: Mapped[int | None] = mapped_column(Integer)
-    updated_at: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
 
-
-class MlLivePrediction(Base):
-    __tablename__ = 'ml_live_predictions'
-
-    mode: Mapped[str] = mapped_column(Text, primary_key=True)
-    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    # ML Predictions Live
     p_win: Mapped[float | None] = mapped_column(Float)
-    p_continue: Mapped[float | None] = mapped_column(Float)
     recommendation: Mapped[str | None] = mapped_column(Text)
     min_probability: Mapped[float | None] = mapped_column(Float)
-    min_p_continue: Mapped[float | None] = mapped_column(Float)
-    exit_decision: Mapped[str | None] = mapped_column(Text)
-    exit_reason: Mapped[str | None] = mapped_column(Text)
-    entry_price: Mapped[float | None] = mapped_column(Float)
     prediction_ts: Mapped[str | None] = mapped_column(Text)
+
     updated_at: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str | None] = mapped_column(Text)
 
@@ -168,8 +217,8 @@ class BotDailyStat(Base):
     updated_at: Mapped[str | None] = mapped_column(Text)
 
 
-class CryptoScoreHistory(Base):
-    __tablename__ = 'crypto_score_history'
+class CryptoScore(Base):
+    __tablename__ = 'crypto_scores'
 
     score_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
@@ -227,90 +276,8 @@ class SupportTouchResult(Base):
     stored_at: Mapped[str] = mapped_column(Text)
 
 
-class BotDecisionJournal(Base):
-    __tablename__ = 'bot_decision_journal'
-
-    mode: Mapped[str] = mapped_column(Text, primary_key=True)
-    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
-    timestamp: Mapped[str | None] = mapped_column(Text)
-    symbol: Mapped[str | None] = mapped_column(Text)
-    action: Mapped[str | None] = mapped_column(Text)
-    allowed: Mapped[int | None] = mapped_column(Integer)
-    reason: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str] = mapped_column(Text)
-
-
-class BotDecisionMetric(Base):
-    __tablename__ = 'bot_decision_metrics'
-
-    mode: Mapped[str] = mapped_column(Text, primary_key=True)
-    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
-    metric_name: Mapped[str] = mapped_column(Text, primary_key=True)
-    metric_value: Mapped[float | None] = mapped_column(Float)
-    metric_text: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str | None] = mapped_column(Text)
-
-
-class BotLiveStatus(Base):
-    __tablename__ = 'bot_live_status'
-
-    key: Mapped[str] = mapped_column(Text, primary_key=True)
-    timestamp: Mapped[str | None] = mapped_column(Text)
-    exchange: Mapped[str | None] = mapped_column(Text)
-    connected: Mapped[int | None] = mapped_column(Integer)
-    running: Mapped[int | None] = mapped_column(Integer)
-    mode_name: Mapped[str | None] = mapped_column(Text)
-    reconnect_attempts: Mapped[int | None] = mapped_column(Integer)
-    queue_size: Mapped[int | None] = mapped_column(Integer)
-    queue_maxsize: Mapped[int | None] = mapped_column(Integer)
-    worker_alive: Mapped[int | None] = mapped_column(Integer)
-    ws_thread_alive: Mapped[int | None] = mapped_column(Integer)
-    updated_at: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
-
-
-class BotLiveStatusSubscription(Base):
-    __tablename__ = 'bot_live_status_subscriptions'
-
-    status_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
-    created_at: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str | None] = mapped_column(Text)
-
-
-class BotLiveStatusSymbol(Base):
-    __tablename__ = 'bot_live_status_symbols'
-
-    status_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
-    price: Mapped[float | None] = mapped_column(Float)
-    tick_count: Mapped[int | None] = mapped_column(Integer)
-    kline_count: Mapped[int | None] = mapped_column(Integer)
-    analysis_trigger_countdown: Mapped[int | None] = mapped_column(Integer)
-    price_change_since_analysis_percent: Mapped[float | None] = mapped_column(Float)
-    last_tick: Mapped[str | None] = mapped_column(Text)
-    last_tick_age_seconds: Mapped[float | None] = mapped_column(Float)
-    last_analysis: Mapped[str | None] = mapped_column(Text)
-    last_analysis_age_seconds: Mapped[float | None] = mapped_column(Float)
-    bid: Mapped[float | None] = mapped_column(Float)
-    ask: Mapped[float | None] = mapped_column(Float)
-    spread: Mapped[float | None] = mapped_column(Float)
-    spread_percent: Mapped[float | None] = mapped_column(Float)
-    volume_24h: Mapped[float | None] = mapped_column(Float)
-    candle_timestamp: Mapped[str | None] = mapped_column(Text)
-    candle_open: Mapped[float | None] = mapped_column(Float)
-    candle_high: Mapped[float | None] = mapped_column(Float)
-    candle_low: Mapped[float | None] = mapped_column(Float)
-    candle_volume: Mapped[float | None] = mapped_column(Float)
-    source: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[str | None] = mapped_column(Text)
-
-
-class MlRawEvent(Base):
-    __tablename__ = 'ml_raw_events'
+class SysAudit(Base):
+    __tablename__ = 'sys_audit'
 
     event_id: Mapped[str] = mapped_column(Text, primary_key=True)
     event_type: Mapped[str] = mapped_column(Text)
@@ -319,8 +286,8 @@ class MlRawEvent(Base):
     mode: Mapped[str | None] = mapped_column(Text)
 
 
-class MlDecision(Base):
-    __tablename__ = 'ml_decisions'
+class DecisionLog(Base):
+    __tablename__ = 'decision_logs'
 
     event_id: Mapped[str] = mapped_column(Text, primary_key=True)
     action_type: Mapped[str] = mapped_column(Text)  # 'ENTRY' or 'EXIT'
@@ -338,6 +305,10 @@ class MlDecision(Base):
     label_status: Mapped[str | None] = mapped_column(Text)
     net_pnl_pct: Mapped[float | None] = mapped_column(Float)
     duration_minutes: Mapped[float | None] = mapped_column(Float)
+    slippage_pct: Mapped[float | None] = mapped_column(Float)
+    spread_pct: Mapped[float | None] = mapped_column(Float)
+    order_type: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[float | None] = mapped_column(Float)
 
 
 class MlFeatureValue(Base):
@@ -358,6 +329,12 @@ class MlOpenEntry(Base):
     order_id: Mapped[str | None] = mapped_column(Text)
     price: Mapped[float | None] = mapped_column(Float)
     amount: Mapped[float | None] = mapped_column(Float)
+    expected_price: Mapped[float | None] = mapped_column(Float)
+    requested_price: Mapped[float | None] = mapped_column(Float)
+    slippage_pct: Mapped[float | None] = mapped_column(Float)
+    spread_pct: Mapped[float | None] = mapped_column(Float)
+    order_type: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[float | None] = mapped_column(Float)
 
 
 class MlTradeOutcome(Base):
@@ -377,10 +354,12 @@ class MlTradeOutcome(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     order_id: Mapped[str | None] = mapped_column(Text)
     label_status: Mapped[str | None] = mapped_column(Text)
+    slippage_pct: Mapped[float | None] = mapped_column(Float)
+    spread_pct: Mapped[float | None] = mapped_column(Float)
 
 
-class TelegramMessage(Base):
-    __tablename__ = 'telegram_messages'
+class Notification(Base):
+    __tablename__ = 'notifications'
 
     event_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
@@ -462,27 +441,20 @@ class MlDriftAlert(Base):
     stored_at: Mapped[str] = mapped_column(Text)
 
 
-Index('idx_ml_raw_events_type_time', MlRawEvent.event_type, MlRawEvent.timestamp)
-Index('idx_ml_decisions_type_symbol_time', MlDecision.action_type, MlDecision.symbol, MlDecision.timestamp)
+Index('idx_sys_audit_type_time', SysAudit.event_type, SysAudit.timestamp)
+Index('idx_decision_logs_type_symbol_time', DecisionLog.action_type, DecisionLog.symbol, DecisionLog.timestamp)
 Index('idx_ml_feature_name', MlFeatureValue.feature_name)
 Index('idx_ml_outcome_entry', MlTradeOutcome.entry_id)
-Index('idx_telegram_messages_time', TelegramMessage.timestamp)
-Index('idx_telegram_messages_direction', TelegramMessage.direction)
-Index('idx_crypto_score_symbol_time', CryptoScoreHistory.symbol, CryptoScoreHistory.timestamp)
-Index('idx_bot_commands_status', BotCommand.status, BotCommand.command_ts)
-Index('idx_bot_live_status_symbols_symbol', BotLiveStatusSymbol.symbol)
-Index('idx_support_touch_results_symbol', SupportTouchResult.symbol)
-Index('idx_support_touch_results_time', SupportTouchResult.generated_at)
-Index('idx_ml_model_metadata_trained', MlModelMetadata.trained_at)
-Index('idx_ml_rejected_replay_status', MlRejectedReplayResult.replay_status)
-Index('idx_ml_analysis_runs_time', MlAnalysisRun.generated_at)
-Index('idx_bot_state_mode', BotState.mode)
-Index('idx_bot_processes_pid', BotProcess.pid)
-Index('idx_bot_positions_symbol', BotPosition.mode, BotPosition.symbol)
-Index('idx_bot_positions_order', BotPosition.mode, BotPosition.order_id)
-Index('idx_bot_decision_journal_time', BotDecisionJournal.mode, BotDecisionJournal.timestamp)
-Index('idx_bot_market_context_symbol', BotMarketContext.mode, BotMarketContext.symbol)
-Index('idx_ml_live_predictions_symbol', MlLivePrediction.mode, MlLivePrediction.symbol)
+Index('idx_notifications_time', Notification.timestamp)
+Index('idx_notifications_direction', Notification.direction)
+Index('idx_crypto_scores_symbol_time', CryptoScore.symbol, CryptoScore.timestamp)
+Index('idx_accounts_mode', Account.mode)
+Index('idx_balances_asset', Balance.asset)
+Index('idx_orders_symbol_status', Order.symbol, Order.status)
+Index('idx_fills_order', Fill.account_id, Fill.order_id)
+Index('idx_ledger_account_asset_time', LedgerEntry.account_id, LedgerEntry.asset, LedgerEntry.entry_ts)
+Index('idx_ml_exit_recommendations_symbol', MlExitRecommendation.mode, MlExitRecommendation.symbol)
+Index('idx_cryptos_symbol', Crypto.mode, Crypto.symbol)
 
 
 def sqlite_url(sqlite_file):
