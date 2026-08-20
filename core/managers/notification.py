@@ -220,25 +220,27 @@ class NotificationManager:
             print(f"📢 {full_text}")
             return False
             
-        try:
-            url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
-            data = {
-                'chat_id': self.chat_id,
-                'text': full_text,
-                'parse_mode': 'HTML'
-            }
-            response = requests.post(url, data=data, timeout=10)
-            if response.status_code == 200:
-                res_json = response.json()
-                if res_json.get('ok') and 'result' in res_json:
-                    msg_id = res_json['result'].get('message_id')
-                    ts = res_json['result'].get('date')
-                    self.save_telegram_message_history(msg_id, full_text, ts)
-                return True
-            return False
-        except Exception as e:
-            print(f"📢 {full_text}")
-            return False
+        def _send():
+            try:
+                url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+                data = {
+                    'chat_id': self.chat_id,
+                    'text': full_text,
+                    'parse_mode': 'HTML'
+                }
+                response = requests.post(url, data=data, timeout=5)
+                if response.status_code == 200:
+                    res_json = response.json()
+                    if res_json.get('ok') and 'result' in res_json:
+                        msg_id = res_json['result'].get('message_id')
+                        ts = res_json['result'].get('date')
+                        self.save_telegram_message_history(msg_id, full_text, ts)
+            except Exception as e:
+                print(f"📢 {full_text}")
+
+        import threading
+        threading.Thread(target=_send, daemon=True).start()
+        return True
     
     def notify_trade_buy(self, symbol, amount, price, total, signal_data):
         """Notification achat avec contexte"""
@@ -350,29 +352,28 @@ class NotificationManager:
         msg += f"🎯 Action: {action}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
         self.notify(msg, "")
+
+    def notify_ml_drift(self, drift_data):
+        """Notification pour alerte de drift ML."""
+        if not isinstance(drift_data, dict):
+            return
+        status = drift_data.get('status', 'WARN')
+        msg = f"📉 ALERTE DRIFT ML [{status}]\n\n"
+        msg += f"📊 Message: {drift_data.get('message', 'Non spécifié')}\n"
+        if drift_data.get('live_win_rate') is not None:
+            msg += f"🎯 Win Rate Live: {drift_data.get('live_win_rate'):.1f}%\n"
+        if drift_data.get('avg_pnl_pct') is not None:
+            msg += f"💰 PnL Moyen: {drift_data.get('avg_pnl_pct'):+.2f}%\n"
+        msg += f"\n⏱️ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        self.notify(msg, "")
+
+    def notify_health_status(self, summary_text):
+        """Notification bilan de santé."""
+        self.notify(summary_text, "")
     
     def notify_cumulative_trend(self, symbol, direction, count, total_change_pct, current_price, start_price=None):
         """Notification tendance cumulative détectée - Désactivé (spam)"""
         return
-        
-        # Calcul valeur absolue si prix de départ disponible
-        if start_price:
-            price_change_abs = current_price - start_price
-            change_display = f"{total_change_pct:.2f}% ({price_change_abs:+.2f} USD)"
-            price_detail = f"├─ Prix départ: {start_price:.2f} USD\n"
-        else:
-            change_display = f"{total_change_pct:.2f}%"
-            price_detail = ""
-        
-        msg = f"{direction_emoji} {direction_text.upper()}\n\n"
-        msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"💰 Prix actuel: {current_price:.2f} USD\n"
-        msg += price_detail
-        msg += f"🎯 Élan: {count} impulsions\n"
-        msg += f"📈 Cumul: {change_display}\n\n"
-        msg += f"⚡ Analyse en cours...\n\n"
-        msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
-        self.notify(msg, "")
     
     def notify_volume_prediction(self, symbol, prediction):
         """Notification prédiction récupération volume avec valeurs absolues"""

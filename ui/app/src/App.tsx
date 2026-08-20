@@ -139,7 +139,7 @@ function App() {
           <img src="/public/brand/aegis-mark-transparent-512.png" alt="" className="h-9 w-9" />
           <div>
             <div className="font-['Outfit'] text-lg font-black">Aegis</div>
-            <div className="text-xs uppercase text-muted-foreground">Trading Bot</div>
+            <div className="text-[13px] uppercase text-muted-foreground">Trading Bot</div>
           </div>
         </div>
         <nav className="space-y-1">
@@ -151,7 +151,7 @@ function App() {
                 to={item.path}
                 className={({ isActive }) =>
                   cn(
-                    'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+                    'flex w-full items-center gap-2 rounded-md px-3 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
                     isActive && 'bg-accent text-foreground',
                   )
                 }
@@ -184,7 +184,7 @@ function App() {
         </div>
 
         <section className="mx-auto max-w-[1440px] p-4 lg:px-7 lg:pb-10 lg:pt-2">
-          {loading && <div className="text-sm text-muted-foreground">Chargement...</div>}
+          {loading && <div className="text-[13px] text-muted-foreground">Chargement...</div>}
           <Routes>
             <Route path="/" element={<LiveView status={status} ml={ml} />} />
             <Route path="/analytics" element={<AnalyticsView ml={ml} analytics={analytics} />} />

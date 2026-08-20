@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -38,23 +38,24 @@ def run_id():
     return f"ml_analysis_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
 
-def bucket_for(p_win):
-    value = float(p_win or 0.0)
-    for low, high, label in BUCKETS:
-        if low <= value < high:
-            return low, high, label
-    return 0.0, 100.0001, 'unknown'
-
-
 def load_entries(session):
     rows = session.execute(
         select(DecisionLog, MlTradeOutcome)
-        .outerjoin(MlTradeOutcome, MlTradeOutcome.entry_id == DecisionLog.event_id)
+        .outerjoin(
+            MlTradeOutcome,
+            or_(
+                MlTradeOutcome.entry_id == DecisionLog.event_id,
+                MlTradeOutcome.entry_id == DecisionLog.entry_id,
+            ),
+        )
         .where(DecisionLog.action_type == 'ENTRY')
         .order_by(DecisionLog.timestamp.asc())
     ).all()
     entries = []
+    linked_outcomes = set()
     for entry, outcome in rows:
+        if outcome:
+            linked_outcomes.add(outcome.event_id)
         entries.append({
             'event_id': entry.event_id,
             'timestamp': entry.timestamp,
@@ -71,6 +72,30 @@ def load_entries(session):
             'buy_price': outcome.buy_price if outcome else None,
             'exit_timestamp': outcome.timestamp if outcome else None,
         })
+    orphan_outcomes = session.execute(
+        select(MlTradeOutcome)
+        .where(MlTradeOutcome.pnl_pct.is_not(None))
+        .order_by(MlTradeOutcome.timestamp.asc())
+    ).scalars().all()
+    for outcome in orphan_outcomes:
+        if outcome.event_id in linked_outcomes:
+            continue
+        entries.append({
+            'event_id': outcome.entry_id or outcome.event_id,
+            'timestamp': outcome.timestamp,
+            'symbol': outcome.symbol,
+            'decision': 'accepted',
+            'reason': 'closed_outcome_without_entry_decision',
+            'price': outcome.buy_price,
+            'p_win': None,
+            'p_continue': None,
+            'label_status': 'closed_orphan',
+            'pnl_pct': outcome.pnl_pct,
+            'pnl': outcome.pnl,
+            'sell_price': outcome.sell_price,
+            'buy_price': outcome.buy_price,
+            'exit_timestamp': outcome.timestamp,
+        })
     return entries
 
 
@@ -82,7 +107,10 @@ def compute_calibration(session, analysis_id, entries):
     calibration_errors = []
 
     for low, high, label in BUCKETS:
-        bucket_entries = [row for row in accepted if low <= float(row['p_win'] or 0.0) < high]
+        bucket_entries = [
+            row for row in accepted
+            if row['p_win'] is not None and low <= float(row['p_win'] or 0.0) < high
+        ]
         bucket_closed = [row for row in bucket_entries if row['pnl_pct'] is not None]
         predicted_avg = (
             sum(float(row['p_win'] or 0.0) for row in bucket_entries) / len(bucket_entries)
@@ -326,8 +354,8 @@ def write_run_summary(session, analysis_id, metrics, rejected_count, rejected_re
 
 
 def main():
-    load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
+    load_dotenv('.env.ui', override=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken'))
@@ -360,6 +388,19 @@ def main():
     print(f"Accepted: {metrics['accepted_entries']} | Closed: {metrics['closed_entries']}")
     print(f"Rejected: {rejected_count} | Replayed: {rejected_replayed}")
     print(f"Drift: {status} - {message}")
+
+    if status in ('WARN', 'CRITICAL'):
+        try:
+            from core.managers.notification import NotificationManager
+            notifier = NotificationManager()
+            notifier.notify_ml_drift({
+                'status': status,
+                'message': message,
+                'live_win_rate': metrics.get('live_win_rate'),
+                'avg_pnl_pct': metrics.get('avg_pnl_pct')
+            })
+        except Exception as e:
+            print(f"⚠️ Notification drift omise: {e}")
 
 
 if __name__ == '__main__':

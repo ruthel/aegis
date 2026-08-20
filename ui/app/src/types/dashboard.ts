@@ -62,6 +62,18 @@ export type ConfigPayload = {
   fields?: ConfigField[]
   values?: Record<string, string | number | boolean | null>
   secrets?: Array<{ name: string; configured: boolean }>
+  ml_retraining?: {
+    pid?: number | string | null
+    started_at?: string | null
+    command?: string | null
+    status?: string
+    trigger?: string | null
+    check_only?: boolean | null
+    fast?: boolean | null
+    running?: boolean
+    exit_code?: number | null
+  }
+  ml_model_evaluations?: ModelEvaluation[]
   trading_mode?: {
     mode?: 'paper' | 'live' | string
     paper_trading?: boolean
@@ -71,6 +83,16 @@ export type ConfigPayload = {
   ok?: boolean
   errors?: Record<string, string>
   message?: string
+}
+
+export type ModelEvaluation = {
+  timestamp?: string | null
+  event_type?: string | null
+  source_model?: string | null
+  target_model?: string | null
+  trigger_type?: string | null
+  reason?: string | null
+  metrics?: JsonMap
 }
 
 export type ConfigField = {

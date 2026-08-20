@@ -418,9 +418,6 @@ class MlRejectedReplayResult(Base):
     exit_time: Mapped[str | None] = mapped_column(Text)
     exit_price: Mapped[float | None] = mapped_column(Float)
     pnl_pct: Mapped[float | None] = mapped_column(Float)
-    would_win: Mapped[int | None] = mapped_column(Integer)
-    reason: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str] = mapped_column(Text)
 
 
 class MlDriftAlert(Base):
@@ -441,6 +438,21 @@ class MlDriftAlert(Base):
     stored_at: Mapped[str] = mapped_column(Text)
 
 
+class GovernanceLog(Base):
+    __tablename__ = 'governance_logs'
+
+    gov_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    event_type: Mapped[str] = mapped_column(Text)
+    source_model: Mapped[str | None] = mapped_column(Text)
+    target_model: Mapped[str | None] = mapped_column(Text)
+    metrics_json: Mapped[str | None] = mapped_column(Text)
+    trigger_type: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
 Index('idx_sys_audit_type_time', SysAudit.event_type, SysAudit.timestamp)
 Index('idx_decision_logs_type_symbol_time', DecisionLog.action_type, DecisionLog.symbol, DecisionLog.timestamp)
 Index('idx_ml_feature_name', MlFeatureValue.feature_name)
@@ -453,6 +465,7 @@ Index('idx_balances_asset', Balance.asset)
 Index('idx_orders_symbol_status', Order.symbol, Order.status)
 Index('idx_fills_order', Fill.account_id, Fill.order_id)
 Index('idx_ledger_account_asset_time', LedgerEntry.account_id, LedgerEntry.asset, LedgerEntry.entry_ts)
+Index('idx_governance_type_time', GovernanceLog.event_type, GovernanceLog.timestamp)
 Index('idx_ml_exit_recommendations_symbol', MlExitRecommendation.mode, MlExitRecommendation.symbol)
 Index('idx_cryptos_symbol', Crypto.mode, Crypto.symbol)
 

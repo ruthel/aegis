@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import json
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,26 +17,9 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 
-try:
-    import orjson
-
-    def json_loads(data):
-        return orjson.loads(data)
-
-    def json_dumps(data):
-        return orjson.dumps(data, option=orjson.OPT_INDENT_2).decode('utf-8')
-
-except ImportError:
-    import json
-
-    def json_loads(data):
-        return json.loads(data)
-
-    def json_dumps(data):
-        return json.dumps(data, indent=2)
-
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / 'data'
 ENV_DASHBOARD = ROOT / '.env.ui'
 BOT_LOG_FILE = ROOT / 'bot.log'
@@ -43,6 +27,17 @@ BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
 BOT_START_LOCK = threading.Lock()
 BOT_START_LOCK_FILE = DATA_DIR / 'bot_start.lock'
+ML_RETRAIN_LOCK = threading.Lock()
+ML_RETRAIN_STATE = {
+    'pid': None,
+    'started_at': None,
+    'command': None,
+    'status': 'idle',
+    'trigger': None,
+    'check_only': None,
+    'fast': None,
+    'exit_code': None,
+}
 
 
 def aegis_db_path() -> Path:
@@ -70,6 +65,47 @@ def db_logger():
     from core.ml_live_logger import MLLiveLogger
     return MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path()))
 
+
+def latest_model_evaluations(limit=5):
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT timestamp, event_type, source_model, target_model, metrics_json, trigger_type, reason
+            FROM governance_logs
+            WHERE event_type IN (
+                'promotion_guardrails_evaluated',
+                'promotion_rejected',
+                'promotion_checked',
+                'promotion'
+            )
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (int(limit),)).fetchall()
+        conn.close()
+        evaluations = []
+        for row in rows:
+            metrics = {}
+            raw_metrics = row['metrics_json']
+            if raw_metrics:
+                try:
+                    metrics = json.loads(raw_metrics)
+                except Exception:
+                    metrics = {'raw': raw_metrics}
+            evaluations.append({
+                'timestamp': row['timestamp'],
+                'event_type': row['event_type'],
+                'source_model': row['source_model'],
+                'target_model': row['target_model'],
+                'trigger_type': row['trigger_type'],
+                'reason': row['reason'],
+                'metrics': metrics,
+            })
+        return evaluations
+    except Exception:
+        return []
+
 # ML Engine chargé une seule fois au démarrage du UI (en dehors du bot)
 _ws_ml_engine = None
 _ws_ml_engine_loaded = False
@@ -90,7 +126,6 @@ def _get_ws_ml_engine():
         pass
     return _ws_ml_engine
 
-load_dotenv(ROOT / '.env', override=True)
 load_dotenv(ROOT / '.env.local', override=True)
 load_dotenv(ROOT / '.env.ui', override=True)
 
@@ -124,11 +159,14 @@ CONFIG_FIELDS = {
     'BREAKEVEN_MIN_STOP_GAP_PCT': {'type': 'float', 'label': 'Écart min stop/prix %', 'section': 'Risque', 'min': 0.0, 'max': 2, 'restart': 'bot'},
     'SYMBOL_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown symbole sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
     'SYMBOL_FAILURE_COOLDOWN_SECONDS': {'type': 'int', 'label': 'Cooldown echec sec.', 'section': 'Risque', 'min': 0, 'max': 86400, 'restart': 'bot'},
-    'SUPPORT_TOUCH_BACKTEST_INTERVAL_HOURS': {'type': 'float', 'label': 'Intervalle backtest h', 'section': 'Support Touch', 'min': 0.25, 'max': 168, 'restart': 'bot'},
     'MARKET_REGIME_FILTER': {'type': 'bool', 'label': 'Filtre regime marche', 'section': 'Bear Mode', 'restart': 'bot'},
     'BEAR_MODE_TRADE_MULTIPLIER': {'type': 'float', 'label': 'Multiplicateur bear', 'section': 'Bear Mode', 'min': 0.05, 'max': 1, 'restart': 'bot'},
     'BEAR_MODE_MIN_CONFIDENCE_BONUS': {'type': 'float', 'label': 'Bonus confiance bear', 'section': 'Bear Mode', 'min': 0, 'max': 80, 'restart': 'bot'},
     'MIN_CRYPTO_SCORE': {'type': 'int', 'label': 'Score crypto min.', 'section': 'Scoring', 'min': 0, 'max': 100, 'restart': 'bot'},
+    'ML_AUTO_RETRAIN_ENABLED': {'type': 'bool', 'label': 'Auto-retraining ML', 'section': 'ML Retraining', 'restart': 'bot'},
+    'ML_AUTO_RETRAIN_INTERVAL_SECONDS': {'type': 'int', 'label': 'Intervalle auto-retraining sec.', 'section': 'ML Retraining', 'min': 3600, 'max': 2592000, 'restart': 'bot'},
+    'ML_AUTO_RETRAIN_CHECK_ONLY': {'type': 'bool', 'label': 'Auto-retraining en check-only', 'section': 'ML Retraining', 'restart': 'bot'},
+    'ML_AUTO_RETRAIN_FAST': {'type': 'bool', 'label': 'Auto-retraining rapide', 'section': 'ML Retraining', 'restart': 'bot'},
     'DASHBOARD_PORT': {'type': 'int', 'label': 'Port ui', 'section': 'UI', 'min': 1024, 'max': 65535, 'restart': 'ui'},
     'LIVE_STATUS_INTERVAL_SECONDS': {'type': 'float', 'label': 'Refresh live status sec.', 'section': 'UI', 'min': 0.25, 'max': 60, 'restart': 'bot'},
 }
@@ -286,8 +324,133 @@ def config_payload():
             'live_ready': live_ready,
             'requires_restart': True,
         },
+        'ml_retraining': ml_retrain_status(),
+        'ml_model_evaluations': latest_model_evaluations(),
         'message': 'Les changements sont ecrits dans .env.ui. Redemarrage requis selon le champ.',
     }
+
+
+def _poll_process_status(pid):
+    if not pid:
+        return False
+    return process_exists(pid)
+
+
+def find_ml_retraining_processes():
+    try:
+        script_text = str(ROOT / 'scripts' / 'train_and_evaluate_ml_model.py').replace('\\', '\\\\')
+        if os.name == 'nt':
+            command = (
+                "Get-CimInstance Win32_Process | "
+                f"Where-Object {{ ($_.Name -match 'python') -and ($_.CommandLine -match 'train_and_evaluate_ml_model\\.py' -or $_.CommandLine -match '{script_text}') }} | "
+                "Select-Object -ExpandProperty ProcessId"
+            )
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', command],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return [
+                int(line.strip()) for line in result.stdout.splitlines()
+                if line.strip().isdigit() and int(line.strip()) != os.getpid()
+            ]
+        result = subprocess.run(
+            ['pgrep', '-f', 'train_and_evaluate_ml_model.py'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return [
+            int(line.strip()) for line in result.stdout.splitlines()
+            if line.strip().isdigit() and int(line.strip()) != os.getpid()
+        ]
+    except Exception:
+        return []
+
+
+def ml_retrain_status():
+    pid = ML_RETRAIN_STATE.get('pid')
+    if pid and ML_RETRAIN_STATE.get('status') == 'running':
+        if _poll_process_status(pid):
+            return {**ML_RETRAIN_STATE, 'running': True}
+        ML_RETRAIN_STATE['status'] = 'finished'
+        ML_RETRAIN_STATE['running'] = False
+    if ML_RETRAIN_STATE.get('status') != 'running':
+        external = find_ml_retraining_processes()
+        if external:
+            ML_RETRAIN_STATE.update({
+                'pid': external[0],
+                'started_at': ML_RETRAIN_STATE.get('started_at') or datetime.now().isoformat(),
+                'command': 'detected train_and_evaluate_ml_model.py process',
+                'status': 'running',
+                'trigger': 'auto_or_external',
+                'check_only': None,
+                'fast': None,
+                'exit_code': None,
+                'running': True,
+            })
+            return {**ML_RETRAIN_STATE}
+    return {**ML_RETRAIN_STATE, 'running': ML_RETRAIN_STATE.get('status') == 'running'}
+
+
+def start_ml_retraining(trigger='manual', check_only=False, fast=False):
+    if not ML_RETRAIN_LOCK.acquire(blocking=False):
+        return {'ok': False, 'running': True, 'reason': 'retraining_start_already_in_progress', 'status': ml_retrain_status()}
+
+    try:
+        current = ml_retrain_status()
+        if current.get('running'):
+            return {'ok': True, 'running': True, 'already_running': True, 'status': current}
+
+        script_path = ROOT / 'scripts' / 'train_and_evaluate_ml_model.py'
+        if not script_path.exists():
+            return {'ok': False, 'running': False, 'reason': 'script_missing', 'status': current}
+
+        command = [
+            sys.executable,
+            str(script_path),
+            '--dir',
+            'data',
+            '--db',
+            os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'),
+            '--trigger',
+            trigger,
+        ]
+        if check_only:
+            command.append('--check-only')
+        if fast:
+            command.append('--fast')
+
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUNBUFFERED'] = '1'
+        BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+            log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ML retraining {trigger} started: {' '.join(command)}\n")
+            process = subprocess.Popen(
+                command,
+                cwd=str(ROOT),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=env,
+            )
+
+        ML_RETRAIN_STATE.update({
+            'pid': process.pid,
+            'started_at': datetime.now().isoformat(),
+            'command': ' '.join(command),
+            'status': 'running',
+            'trigger': trigger,
+            'check_only': bool(check_only),
+            'fast': bool(fast),
+            'exit_code': None,
+            'running': True,
+        })
+        return {'ok': True, 'started': True, 'running': True, 'status': ml_retrain_status()}
+    finally:
+        ML_RETRAIN_LOCK.release()
 
 
 def read_bot_control_file():
@@ -334,6 +497,17 @@ def invalidate_bot_status_cache():
 
 
 def process_exists(pid):
+    if os.name == 'nt':
+        try:
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', f"Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            return str(pid) in result.stdout.split()
+        except Exception:
+            return False
     try:
         os.kill(int(pid), 0)
         return True
@@ -586,19 +760,25 @@ OPERATIONAL_DECISION_ACTIONS = {'cooldown'}
 
 
 def is_dashboard_decision(entry):
-    action = entry.get('action')
+    action = str(entry.get('action') or '').lower()
     reason = str(entry.get('reason') or '')
     metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
     reason_l = reason.lower()
+    allowed = entry.get('allowed')
+    decision = str(metrics.get('decision') or '').upper()
 
     if action in LEGACY_DECISION_ACTIONS:
         return False
     if action in OPERATIONAL_DECISION_ACTIONS or reason in OPERATIONAL_DECISION_REASONS:
         return False
+
+    # Toujours inclure les ventes exécutées, autorisées ou FORCE_EXIT
+    if allowed or decision in {'FORCE_EXIT', 'SELL', 'EXIT'} or action in {'sell', 'sell_executed'}:
+        return True
+
     if reason_l.startswith('ml_continue') or 'ml continue' in reason_l:
         return False
-    if str(action).lower() in {'exit_decision', 'exit'}:
-        decision = str(metrics.get('decision') or '').upper()
+    if action in {'exit_decision', 'exit'}:
         return decision in {'FORCE_EXIT', 'SELL', 'EXIT'}
     if reason.startswith(LEGACY_DECISION_PREFIXES):
         return False
@@ -635,10 +815,6 @@ def env_bool(name, default='False'):
     return os.getenv(name, default).lower() == 'true'
 
 
-def active_state_file():
-    return DATA_DIR / 'aegis_db.sqlite3'
-
-
 def active_state_source():
     mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
     return f'data/aegis_db.sqlite3:bot_state[{mode_key}]'
@@ -663,8 +839,8 @@ def load_accounting_state(fallback=None):
     fallback = fallback or {'positions': []}
     mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
     try:
+        state = load_bot_state(fallback) or {}
         with db_logger() as logger:
-            state = logger.load_bot_state(mode_key) or {}
             conn = logger._get_conn()
             account_id = logger._account_id(mode_key)
             state['positions'] = logger._positions_from_accounting(conn, mode_key)
@@ -869,9 +1045,14 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
                 "symbol": data['symbol'],
                 "decision": "HOLD",
                 "continuation_score": 50,
-                "net_pnl_pct": 0.0,
+                "net_pnl_pct": pnl_net_pct if pnl_net_pct is not None else 0.0,
                 "reason": "initial_evaluating",
             }
+        else:
+            exit_rec = dict(exit_rec)
+        
+        if pnl_net_pct is not None:
+            exit_rec['net_pnl_pct'] = round(pnl_net_pct, 4)
 
         result.append({
             'symbol': data['symbol'],
@@ -1192,11 +1373,39 @@ def _enrich_trades_with_ml_confidence(trades):
             try:
                 if not ts_str:
                     return None
+                sym_usd = symbol
+                sym_usdt = symbol.replace('/USD', '/USDT') if symbol.endswith('/USD') else symbol
                 row = cursor.execute(
-                    "SELECT confidence FROM decision_logs WHERE action_type='EXIT' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
-                    (symbol, str(ts_str))
+                    """
+                    SELECT p_continue, confidence, reason FROM decision_logs
+                    WHERE UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
+                      AND symbol IN (?, ?)
+                      AND (created_at <= ? OR timestamp <= ?)
+                    ORDER BY created_at DESC, timestamp DESC LIMIT 1
+                    """,
+                    (sym_usd, sym_usdt, str(ts_str), str(ts_str))
                 ).fetchone()
-                return round(float(row[0]), 1) if row and row[0] is not None else None
+                if not row:
+                    row = cursor.execute(
+                        """
+                        SELECT p_continue, confidence, reason FROM decision_logs
+                        WHERE UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
+                          AND symbol IN (?, ?)
+                        ORDER BY created_at DESC, timestamp DESC LIMIT 1
+                        """,
+                        (sym_usd, sym_usdt)
+                    ).fetchone()
+                if row:
+                    p_cont, conf, reason = row
+                    reason_str = str(reason or '')
+                    match = re.search(r'ml_continue_([\d.]+)%', reason_str)
+                    if match:
+                        return round(float(match.group(1)), 1)
+                    if p_cont is not None:
+                        return round(float(p_cont), 1)
+                    if conf is not None:
+                        return round(float(conf), 1)
+                return None
             except Exception:
                 return None
 
@@ -1775,6 +1984,28 @@ def api_config_update():
     write_dashboard_env(updates)
     load_dotenv(ENV_DASHBOARD, override=True)
     return jsonify({'ok': True, 'updated': sorted(updates), **config_payload()})
+
+
+@app.route('/api/ml/retrain/status')
+def api_ml_retrain_status():
+    return jsonify({'ok': True, 'status': ml_retrain_status()})
+
+
+@app.route('/api/ml/retrain/start', methods=['POST'])
+def api_ml_retrain_start():
+    payload = request.get_json(silent=True) or {}
+    check_only = parse_bool(payload.get('check_only', False))
+    fast = parse_bool(payload.get('fast', False))
+    result = start_ml_retraining(trigger='manual', check_only=check_only, fast=fast)
+    return jsonify(result), 200 if result.get('ok') else 400
+
+
+@app.route('/api/ml/promote/start', methods=['POST'])
+def api_ml_promote_start():
+    payload = request.get_json(silent=True) or {}
+    fast = parse_bool(payload.get('fast', False))
+    result = start_ml_retraining(trigger='manual_promotion', check_only=False, fast=fast)
+    return jsonify(result), 200 if result.get('ok') else 400
 
 
 @app.route('/api/bot/status')

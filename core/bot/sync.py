@@ -6,6 +6,35 @@ import time
 class SyncMixin:
     """Mixin pour la synchronisation avec l'exchange spot."""
 
+    def load_state(self):
+        """Charge l'état runtime depuis SQLite."""
+        if not hasattr(self, 'state') or self.state is None:
+            self.state = {'positions': [], 'paper_balance': getattr(self, 'paper_balance', 1000.0)}
+        try:
+            logger = getattr(self, 'ml_live_logger', None)
+            if logger:
+                mode = 'paper' if getattr(self, 'paper_trading', True) else 'live'
+                data = logger.load_bot_state(mode)
+                if isinstance(data, dict):
+                    self.state.update(data)
+                    if getattr(self, 'paper_trading', True) and data.get('paper_balance') is not None:
+                        self.paper_balance = float(data.get('paper_balance') or self.paper_balance)
+        except Exception as e:
+            print(f"⚠️ Erreur chargement état SQLite: {e}")
+
+    def save_state(self):
+        """Sauvegarde l'état runtime dans SQLite."""
+        if not hasattr(self, 'state') or self.state is None:
+            self.state = {'positions': [], 'paper_balance': getattr(self, 'paper_balance', 1000.0)}
+        try:
+            logger = getattr(self, 'ml_live_logger', None)
+            if logger:
+                mode = 'paper' if getattr(self, 'paper_trading', True) else 'live'
+                self.state['paper_balance'] = getattr(self, 'paper_balance', self.state.get('paper_balance'))
+                logger.save_bot_state(self.state, mode)
+        except Exception as e:
+            print(f"⚠️ Erreur sauvegarde état SQLite: {e}")
+
     def sync_positions_from_exchange(self):
         if self.paper_trading:
             return

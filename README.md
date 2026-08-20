@@ -15,8 +15,9 @@ pip install -r requirements.txt
 ```bash
 # Copier le template local non versionné
 copy .env.example .env.local
+copy .env.ui.example .env.ui
 
-# Modifier UNIQUEMENT les clés API dans .env.local
+# Modifier les clés API uniquement dans .env.local
 BINANCE_API_KEY=votre_cle_api_ici
 BINANCE_API_SECRET=votre_cle_secrete_ici
 ```
@@ -110,7 +111,12 @@ python start.py
 
 ## ⚙️ Configuration Avancée
 
-### Gestion des Risques (.env)
+### Gestion des Risques (`.env.local` / `.env.ui`)
+
+Le runtime charge uniquement deux fichiers locaux :
+- `.env.local` : secrets, exchange, Telegram, paramètres techniques avancés.
+- `.env.ui` : réglages modifiables depuis le dashboard Config.
+
 ```env
 # Trading Professionnel
 TRADE_AMOUNT=5                    # Montant par trade
@@ -185,16 +191,14 @@ aegis/
 │   ├── exit_engine.py          # ExitDecisionEngine (ContinuationScore 0-100)
 │   └── capital_manager.py      # Gestion capital + frais dynamiques
 ├── scripts/
-│   ├── train_ml_model.py       # Entraînement entrée + replay learning
-│   ├── train_ml_exit_model.py  # Entraînement modèle sortie
-│   ├── walk_forward_validation.py
-│   ├── evaluate_champion_challenger.py
-│   └── analyze_ml_live_performance.py
+│   ├── train_and_evaluate_ml_model.py # Pipeline unifiée ML (entraînement Entrée + Sortie, évaluation, promotion)
+│   ├── walk_forward_validation.py     # Validation temporelle sans fuite
+│   └── analyze_ml_live_performance.py # Analyse live, calibration et drift
 ├── data/
 │   ├── aegis_model.joblib      # Champion ML actif
 │   ├── aegis_challenger.joblib # Challenger potentiel
 │   └── aegis_db.sqlite3        # DB SQLite: état bot, ML, UI, Telegram, analytics
-├── config.py                   # Configuration centralisée (.env)
+├── config.py                   # Configuration centralisée (.env.local + .env.ui)
 ├── run.py                      # Point d'entrée sécurisé
 ├── start.py                    # Lance ui + bot ensemble
 ├── ui/                         # Interface web Flask + SPA React
@@ -389,6 +393,7 @@ git clone https://github.com/votre-repo/aegis.git
 cd aegis
 pip3 install -r requirements.txt
 cp .env.example .env.local
+cp .env.ui.example .env.ui
 
 # Configuration clés API
 nano .env.local  # Ajouter vos clés API

@@ -23,7 +23,7 @@ def install_timestamped_print():
         sep = kwargs.pop('sep', ' ')
         end = kwargs.pop('end', '\n')
         file = kwargs.pop('file', sys.stdout)
-        flush = kwargs.pop('flush', False)
+        kwargs.pop('flush', None)
         message = sep.join(str(arg) for arg in args)
         if not message:
             return
@@ -33,17 +33,37 @@ def install_timestamped_print():
         if not lines:
             return
         stamped = '\n'.join(f"{timestamp} {line}" if line else line for line in lines)
-        _ORIGINAL_PRINT(stamped, end=end, file=file, flush=flush, **kwargs)
+        _ORIGINAL_PRINT(stamped, end=end, file=file, flush=True, **kwargs)
 
     timestamped_print._aegis_timestamped = True
     builtins.print = timestamped_print
 
 from dotenv import load_dotenv
 
-def clean_bot_states():
-    """Historique: les états runtime sont maintenant dans SQLite."""
-    return
-    
+
+def pid_exists(pid):
+    """Vérifie l'existence réelle d'un PID, avec un chemin fiable sous Windows."""
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if os.name == 'nt':
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            return str(pid) in result.stdout.split()
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
 
 # Vider le terminal au démarrage (seulement si terminal disponible)
 if sys.stdout and sys.stdout.isatty():
@@ -70,16 +90,13 @@ def main():
     old_pid = tracked.get('pid')
     if old_pid:
         try:
-            if old_pid != _os.getpid():
-                try:
-                    # check si le processus est actif
-                    _os.kill(old_pid, 0)
+            if int(old_pid) != _os.getpid():
+                if pid_exists(old_pid):
                     print(f"❌ ERREUR: Une autre instance du bot Aegis est déjà en cours d'exécution (PID {old_pid}).")
                     print("   Veuillez arrêter l'autre instance depuis le ui avant de démarrer.")
                     process_logger.close()
                     sys.exit(1)
-                except (ProcessLookupError, OSError):
-                    process_logger.clear_bot_process_state()
+                process_logger.clear_bot_process_state()
         except Exception:
             pass
 
@@ -91,7 +108,6 @@ def main():
     })
     
     # Charger la configuration locale en dernier pour les secrets non versionnés.
-    load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
     load_dotenv('.env.ui', override=True)
     

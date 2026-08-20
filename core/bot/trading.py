@@ -39,12 +39,93 @@ class TradingMixin:
             'fee': buy_fee + sell_fee,
             'fee_currency': 'USD'
         }
-    
+
+    def get_open_positions(self):
+        """Retourne un dictionnaire {symbol: {'amount': qty, 'cost': entry_cost, 'entry_price': price}} des positions ouvertes."""
+        open_pos = {}
+        # 1. Source unifiée de vérité : Table SQLite ml_open_entries
+        try:
+            if hasattr(self, 'ml_live_logger') and self.ml_live_logger:
+                conn = self.ml_live_logger._get_conn()
+                rows = conn.execute("SELECT symbol, price, amount FROM ml_open_entries").fetchall()
+                for r in rows:
+                    sym = str(r[0])
+                    qty = float(r[2] or 0.0)
+                    price = float(r[1] or 0.0)
+                    if qty > 0:
+                        open_pos[sym] = {
+                            'amount': qty,
+                            'cost': qty * price,
+                            'entry_price': price
+                        }
+        except Exception:
+            pass
+
+        # 2. Source complémentaire : state['positions']
+        try:
+            positions = getattr(self, 'state', {}).get('positions', []) if hasattr(self, 'state') and self.state else []
+            for p in positions:
+                if not isinstance(p, dict):
+                    continue
+                symbol = p.get('symbol')
+                if not symbol:
+                    continue
+                
+                side = str(p.get('side', '')).lower()
+                status = str(p.get('status', '')).lower()
+                closed_at = p.get('closed_at')
+                exit_price = p.get('exit_price')
+                
+                is_open = (side == 'buy' and not exit_price and not closed_at and status != 'closed') or (status == 'opened' and not closed_at)
+                
+                if is_open:
+                    qty = float(p.get('amount', 0.0) or p.get('position_size_crypto', 0.0) or 0.0)
+                    price = float(p.get('price', 0.0) or p.get('avg_entry_price', 0.0) or 0.0)
+                    cost = float(p.get('cost', qty * price) or (qty * price))
+                    if qty > 0 and symbol not in open_pos:
+                        open_pos[symbol] = {'amount': qty, 'cost': cost, 'entry_price': price}
+
+            # 3. Source complémentaire : trailing_stop_manager
+            if hasattr(self, 'trailing_stop_manager') and hasattr(self.trailing_stop_manager, 'positions'):
+                for sym, pdata in self.trailing_stop_manager.positions.items():
+                    if sym not in open_pos:
+                        qty = float(pdata.get('amount', 0.0) or pdata.get('position_size_crypto', 0.0) or 0.0)
+                        price = float(pdata.get('entry_price', 0.0) or pdata.get('buy_price', 0.0) or pdata.get('price', 0.0) or 0.0)
+                        if qty > 0:
+                            open_pos[sym] = {'amount': qty, 'cost': qty * price, 'entry_price': price}
+
+        except Exception as e:
+            print(f"⚠️ Erreur get_open_positions: {e}")
+        return open_pos
+
+    def _close_buy_positions(self, symbol, amount, exit_price):
+        """Marque les positions d'achat ouvertes correspondantes comme fermées."""
+        try:
+            target_sym = str(symbol).replace('/', '').upper()
+            now_iso = datetime.now().isoformat()
+            remaining = float(amount or 0.0)
+            for p in reversed(self.state.get('positions', [])):
+                if not isinstance(p, dict):
+                    continue
+                p_sym = str(p.get('symbol', '')).replace('/', '').upper()
+                if p_sym == target_sym and p.get('side') == 'buy' and not p.get('closed_at') and not p.get('exit_price'):
+                    pos_amount = float(p.get('amount', 0.0) or p.get('position_size_crypto', 0.0) or 0.0)
+                    p['exit_price'] = float(exit_price)
+                    p['closed_at'] = now_iso
+                    p['status'] = 'closed'
+                    remaining -= pos_amount
+                    if remaining <= 0:
+                        break
+            self.save_state()
+        except Exception as e:
+            print(f"⚠️ Erreur _close_buy_positions: {e}")
+
+
     def buy_market(self, symbol, amount, allow_averaging=False, sizing_reason=None, ml_buy_prob=None):
         # VÉRIFICATION 1: Limite quotidienne de trades gérée par risk_manager.can_trade()
         if hasattr(self, 'risk_manager') and not self.risk_manager.can_trade():
             return None
-        
+
         # VÉRIFICATION 2: Position existante via can_open_position (VRAIE VÉRIFICATION)
         if not allow_averaging and not self.can_open_position(symbol):
             print(f"❌ Position déjà ouverte sur {symbol} - Limite atteinte")
@@ -117,13 +198,12 @@ class TradingMixin:
                 position['avg_entry_price'] = self.get_real_buy_price(symbol)
                 self.save_state()
                 
-                # Incrémenter compteur trades
+                # Incrémenter le compteur runtime local. Le résultat risque/PnL est
+                # enregistré à la vente, quand le trade est réellement clôturé.
                 if hasattr(self, 'total_trades'):
                     self.total_trades += 1
                 else:
                     self.total_trades = 1
-                if hasattr(self, 'risk_manager'):
-                    self.risk_manager.record_trade(0)
                 
                 if hasattr(self, 'notifier'):
                     analysis = self.get_cached_analysis(symbol, price)
@@ -230,6 +310,22 @@ class TradingMixin:
                 
                 if hasattr(self, 'notifier'):
                     self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+
+                if hasattr(self, 'record_decision'):
+                    self.record_decision(
+                        symbol=symbol,
+                        action="sell",
+                        allowed=True,
+                        reason=reason or "market_sell",
+                        metrics={
+                            'price': price,
+                            'amount': amount,
+                            'buy_price': buy_price,
+                            'pnl': pnl,
+                            'decision': 'FORCE_EXIT' if 'exit' in str(reason).lower() else 'SELL'
+                        },
+                        throttle_seconds=0
+                    )
 
                 if hasattr(self, 'record_ml_exit_learning_sample'):
                     self.record_ml_exit_learning_sample(
@@ -430,7 +526,40 @@ class TradingMixin:
         return self._calculate_weighted_average_from_events(events)
 
     def get_real_buy_price(self, symbol):
-        # En paper trading, utiliser le prix moyen pondéré du state.
+        # 1. Vérifier si la position ouverte est dans get_open_positions() (Source SQLite ml_open_entries)
+        try:
+            open_pos = self.get_open_positions()
+            if symbol in open_pos:
+                price = float(open_pos[symbol].get('entry_price', 0.0) or 0.0)
+                if price > 0:
+                    return price
+            std_sym = symbol.replace('/USD', '/USDT') if symbol.endswith('/USD') else symbol
+            if std_sym in open_pos:
+                price = float(open_pos[std_sym].get('entry_price', 0.0) or 0.0)
+                if price > 0:
+                    return price
+        except Exception:
+            pass
+
+        # 2. Source SQLite ml_trade_outcomes (position venant d'être fermée)
+        try:
+            if hasattr(self, 'ml_live_logger') and self.ml_live_logger:
+                conn = self.ml_live_logger._get_conn()
+                row = conn.execute(
+                    "SELECT entry_price FROM ml_trade_outcomes WHERE symbol=? ORDER BY exit_time DESC LIMIT 1",
+                    (symbol,)
+                ).fetchone()
+                if not row and symbol.endswith('/USD'):
+                    row = conn.execute(
+                        "SELECT entry_price FROM ml_trade_outcomes WHERE symbol=? ORDER BY exit_time DESC LIMIT 1",
+                        (symbol.replace('/USD', '/USDT'),)
+                    ).fetchone()
+                if row and row[0]:
+                    return float(row[0])
+        except Exception:
+            pass
+
+        # En paper trading, utiliser le prix moyen pondéré du state
         if self.paper_trading:
             return self._get_state_weighted_average_buy_price(symbol)
 

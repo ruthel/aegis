@@ -53,7 +53,7 @@ export function TradesView() {
   const sells = tradesPayload.sells || []
 
   const [currentPage, setCurrentPage] = useState<number>(1)
-  const [pageSize, setPageSize] = useState<number>(10)
+  const [pageSize, setPageSize] = useState<number>(15)
   const [sortField, setSortField] = useState<string>('date')
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({
@@ -237,28 +237,28 @@ export function TradesView() {
 
   const filterDefinitions: FilterDefinition[] = activeTab === 'trades'
     ? [
-        { field: 'date', label: 'Date', placeholder: 'Filtrer date...' },
-        { field: 'symbol', label: 'Symbole', select: [{ value: 'BTC', label: 'BTC/USD' }, { value: 'ETH', label: 'ETH/USD' }, { value: 'SOL', label: 'SOL/USD' }, { value: 'ADA', label: 'ADA/USD' }] },
-        { field: 'status', label: 'Statut', select: [{ value: 'open', label: 'OPEN' }, { value: 'closed', label: 'CLOSED' }] },
-        { field: 'buy_price', label: 'Prix entrée', placeholder: 'Filtrer prix...' },
-        { field: 'sell_price', label: 'Prix vente', placeholder: 'Filtrer prix...' },
-        { field: 'amount', label: 'Montant', placeholder: 'Filtrer montant...' },
-        { field: 'usd_value', label: 'Valeur USD', placeholder: 'Filtrer USD...' },
-        { field: 'ml_buy_prob', label: 'ML % achat', placeholder: 'ML % Achat...' },
-        { field: 'ml_sell_prob', label: 'ML % vente', placeholder: 'ML % Vente...' },
-        { field: 'pnl_gross', label: 'PnL brut', placeholder: 'Filtrer PnL...' },
-        { field: 'pnl', label: 'PnL net', placeholder: 'Filtrer PnL...' },
-      ]
+      { field: 'date', label: 'Date', placeholder: 'Filtrer date...' },
+      { field: 'symbol', label: 'Symbole', select: [{ value: 'BTC', label: 'BTC/USD' }, { value: 'ETH', label: 'ETH/USD' }, { value: 'SOL', label: 'SOL/USD' }, { value: 'ADA', label: 'ADA/USD' }] },
+      { field: 'status', label: 'Statut', select: [{ value: 'open', label: 'OPEN' }, { value: 'closed', label: 'CLOSED' }] },
+      { field: 'buy_price', label: 'Prix entrée', placeholder: 'Filtrer prix...' },
+      { field: 'sell_price', label: 'Prix vente', placeholder: 'Filtrer prix...' },
+      { field: 'amount', label: 'Montant', placeholder: 'Filtrer montant...' },
+      { field: 'usd_value', label: 'Valeur USD', placeholder: 'Filtrer USD...' },
+      { field: 'ml_buy_prob', label: 'ML % achat', placeholder: 'ML % Achat...' },
+      { field: 'ml_sell_prob', label: 'ML % vente', placeholder: 'ML % Vente...' },
+      { field: 'pnl_gross', label: 'PnL brut', placeholder: 'Filtrer PnL...' },
+      { field: 'pnl', label: 'PnL net', placeholder: 'Filtrer PnL...' },
+    ]
     : [
-        { field: 'date', label: 'Date', placeholder: 'Filtrer date...' },
-        { field: 'symbol', label: 'Symbole', select: [{ value: 'BTC', label: 'BTC/USD' }, { value: 'ETH', label: 'ETH/USD' }, { value: 'SOL', label: 'SOL/USD' }, { value: 'ADA', label: 'ADA/USD' }] },
-        { field: 'price', label: activeTab === 'buys' ? 'Prix achat' : 'Prix vente', placeholder: 'Filtrer prix...' },
-        { field: 'amount', label: 'Montant', placeholder: 'Filtrer montant...' },
-        { field: 'usd_value', label: 'Valeur USD', placeholder: 'Filtrer USD...' },
-        activeTab === 'sells'
-          ? { field: 'status', label: 'Statut', select: [{ value: 'opened', label: 'OPEN' }, { value: 'executed', label: 'EXECUTED' }] }
-          : { field: 'status', label: 'Statut', placeholder: 'Filtrer statut...' },
-      ]
+      { field: 'date', label: 'Date', placeholder: 'Filtrer date...' },
+      { field: 'symbol', label: 'Symbole', select: [{ value: 'BTC', label: 'BTC/USD' }, { value: 'ETH', label: 'ETH/USD' }, { value: 'SOL', label: 'SOL/USD' }, { value: 'ADA', label: 'ADA/USD' }] },
+      { field: 'price', label: activeTab === 'buys' ? 'Prix achat' : 'Prix vente', placeholder: 'Filtrer prix...' },
+      { field: 'amount', label: 'Montant', placeholder: 'Filtrer montant...' },
+      { field: 'usd_value', label: 'Valeur USD', placeholder: 'Filtrer USD...' },
+      activeTab === 'sells'
+        ? { field: 'status', label: 'Statut', select: [{ value: 'opened', label: 'OPEN' }, { value: 'executed', label: 'EXECUTED' }] }
+        : { field: 'status', label: 'Statut', placeholder: 'Filtrer statut...' },
+    ]
 
   const renderColumnFilterButton = (field: string) => {
     const item = filterDefinitions.find((filter) => filter.field === field)
@@ -503,7 +503,7 @@ export function TradesView() {
             <div className="flex items-center gap-1.5 border-l border-border/60 pl-3">
               <span className="text-muted-foreground">Par page :</span>
               <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1) }} className="h-7 rounded border border-border/80 bg-background/90 px-2 text-xs text-foreground font-bold transition-colors focus:border-primary outline-none">
-                <option value={5}>5</option><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option>
+                <option value={5}>5</option><option value={10}>10</option><option value={15}>15</option><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option>
               </select>
             </div>
           </div>

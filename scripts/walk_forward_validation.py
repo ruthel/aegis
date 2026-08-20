@@ -10,6 +10,7 @@ Effectue une validation temporelle glissante (Walk-Forward) sur l'historique :
 import os
 import sys
 import argparse
+import time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import numpy as np
@@ -20,12 +21,12 @@ if hasattr(sys.stdout, 'reconfigure'):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.ml_engine import MLEngine
-from scripts.train_ml_model import fetch_symbol_history_2026, generate_samples_from_klines
+from scripts.train_and_evaluate_ml_model import fetch_symbol_history_2026, generate_samples_from_klines
 import ccxt
 
 def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30):
-    load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
+    load_dotenv('.env.ui', override=True)
 
     print("=" * 70)
     print("🚀 DÉMARRAGE DE LA VALIDATION WALK-FORWARD (PHASE 5)")

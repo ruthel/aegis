@@ -209,8 +209,26 @@ class DisplayMixin:
         if not has_positions:
             self.async_print(f"⏳ Aucune position")
         
-        self.stuck_manager.show_stuck_positions()
-    
+        if hasattr(self, 'stuck_manager') and self.stuck_manager:
+            try:
+                self.stuck_manager.show_stuck_positions()
+            except Exception:
+                pass
+
+    def show_professional_metrics(self):
+        """Affiche les métriques professionnelles de gouvernance et de gestion du risque."""
+        try:
+            exp_ratio = 0.0
+            if hasattr(self, 'capital_manager') and hasattr(self.capital_manager, 'get_total_exposure_ratio'):
+                exp_ratio = float(self.capital_manager.get_total_exposure_ratio() or 0.0)
+            safe_str = " 🛡️ SAFE MODE" if getattr(self, 'safe_fallback_mode', False) else ""
+            weekly_loss = 0.0
+            if hasattr(self, 'risk_manager') and hasattr(self.risk_manager, 'get_weekly_loss'):
+                weekly_loss = float(self.risk_manager.get_weekly_loss() or 0.0)
+            self.async_print(f"📈 EXPOSITION GLOBALE: {exp_ratio * 100.0:.1f}% / 60.0% | PERTE HEBDO: {weekly_loss:.2f} USD{safe_str}")
+        except Exception:
+            pass
+
     def start_async_display(self):
         """Démarre l'affichage asynchrone"""
         def display_worker():

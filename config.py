@@ -2,7 +2,6 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
 load_dotenv('.env.local', override=True)
 load_dotenv('.env.ui', override=True)
 

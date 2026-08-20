@@ -297,8 +297,8 @@ def backtest_symbol(exchange, symbol, args):
 
 
 def parse_args():
-    load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
+    load_dotenv('.env.ui', override=True)
 
     parser = argparse.ArgumentParser(description='Backtest Support Touch Pro.')
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken').lower())

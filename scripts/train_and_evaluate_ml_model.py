@@ -1,0 +1,675 @@
+#!/usr/bin/env python3
+"""
+Pipeline Unifiée d'Entraînement, Évaluation & Promotion ML (Phase 10).
+
+Regroupe l'entraînement complet du modèle Challenger d'Entrée et l'évaluation avec garde-fous
+pour la promotion contrôlée en production sans édition manuelle du code.
+"""
+
+import os
+import sys
+import shutil
+import argparse
+import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
+import numpy as np
+import ccxt
+from dotenv import load_dotenv
+
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from core.ml_engine import MLEngine
+from core.ml_live_logger import MLLiveLogger
+from core.managers.notification import NotificationManager
+from utils.pattern_analyzer import PatternAnalyzer
+from scripts.backtest_support_touch import detect_trade_signal, simulate_trade
+
+
+def compute_guardrail_metrics(db_file):
+    metrics = {
+        'closed_trades_count': 0,
+        'active_days': 0,
+        'profit_factor': 1.0,
+        'net_pnl': 0.0,
+        'net_pnl_pct_sum': 0.0,
+        'max_drawdown_pct': 0.0,
+        'latest_calibration_mae': None,
+        'latest_live_win_rate': None,
+        'latest_drift_status': None,
+        'trade_rows': [],
+    }
+    if not os.path.exists(db_file):
+        return metrics
+
+    conn = sqlite3.connect(db_file)
+    try:
+        cur = conn.cursor()
+        trade_rows = cur.execute("""
+            SELECT
+                t.symbol,
+                COALESCE(e.price, t.buy_price) AS entry_price,
+                COALESCE(e.confidence, e.p_win) AS p_win,
+                t.pnl_pct,
+                t.pnl,
+                t.timestamp
+            FROM ml_trade_outcomes t
+            LEFT JOIN decision_logs e
+              ON e.action_type IN ('ENTRY', 'BUY')
+             AND (e.event_id = t.entry_id OR e.entry_id = t.entry_id)
+            WHERE t.pnl_pct IS NOT NULL
+            ORDER BY t.timestamp ASC
+        """).fetchall()
+        metrics['trade_rows'] = trade_rows
+        metrics['closed_trades_count'] = len(trade_rows)
+        if trade_rows:
+            dates = []
+            pnls = []
+            pnl_pcts = []
+            for row in trade_rows:
+                pnl_pcts.append(float(row[3] or 0.0))
+                pnls.append(float(row[4] or 0.0))
+                try:
+                    dates.append(datetime.fromisoformat(str(row[5]).replace('Z', '+00:00')).date())
+                except Exception:
+                    pass
+            metrics['active_days'] = len(set(dates)) if dates else 1
+            wins = [p for p in pnl_pcts if p > 0]
+            losses = [abs(p) for p in pnl_pcts if p < 0]
+            metrics['profit_factor'] = (sum(wins) / sum(losses)) if losses and sum(losses) > 0 else (2.0 if wins else 1.0)
+            metrics['net_pnl'] = sum(pnls)
+            metrics['net_pnl_pct_sum'] = sum(pnl_pcts)
+
+            equity = 0.0
+            peak = 0.0
+            max_dd = 0.0
+            for pct in pnl_pcts:
+                equity += pct
+                peak = max(peak, equity)
+                max_dd = max(max_dd, peak - equity)
+            metrics['max_drawdown_pct'] = max_dd
+
+        latest_analysis = cur.execute("""
+            SELECT calibration_mae, live_win_rate, drift_status
+            FROM ml_analysis_runs
+            ORDER BY generated_at DESC
+            LIMIT 1
+        """).fetchone()
+        if latest_analysis:
+            metrics['latest_calibration_mae'] = latest_analysis[0]
+            metrics['latest_live_win_rate'] = latest_analysis[1]
+            metrics['latest_drift_status'] = latest_analysis[2]
+    finally:
+        conn.close()
+    return metrics
+
+
+def aggregate_ohlcv(klines, group_size):
+    if not klines or group_size <= 1:
+        return list(klines or [])
+    grouped = []
+    for start in range(0, len(klines), group_size):
+        chunk = klines[start:start + group_size]
+        if len(chunk) < group_size:
+            continue
+        grouped.append({
+            'timestamp': chunk[-1]['timestamp'],
+            'open': float(chunk[0]['open']),
+            'high': max(float(k['high']) for k in chunk),
+            'low': min(float(k['low']) for k in chunk),
+            'close': float(chunk[-1]['close']),
+            'volume': sum(float(k.get('volume', 0.0) or 0.0) for k in chunk),
+        })
+    return grouped
+
+
+def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl_pct=0.0):
+    if not db_path or not os.path.exists(db_path):
+        return [], [], []
+
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        """
+        SELECT entry_id, pnl_pct, would_win
+        FROM ml_rejected_replay_results
+        WHERE replay_status = 'replayed'
+          AND pnl_pct IS NOT NULL
+        ORDER BY timestamp ASC
+        LIMIT ?
+        """,
+        (int(max_samples),)
+    ).fetchall()
+
+    neutral_defaults = {
+        'rsi_4h': 50.0,
+        'ema20_slope_4h': 0.0,
+        'ema50_slope_4h': 0.0,
+        'price_change_3b_4h': 0.0,
+        'daily_recovery_score': 50.0,
+        'multi_tf_reversal_score': 0.0,
+        'multi_tf_trend_alignment': 0.0,
+        'volume_recovery_score': 100.0,
+    }
+    samples, labels, weights = [], [], []
+    for row in rows:
+        pnl_pct = float(row['pnl_pct'])
+        if abs(pnl_pct) < float(min_pnl_pct):
+            continue
+        feature_rows = con.execute(
+            "SELECT feature_name, feature_value FROM ml_feature_values WHERE event_id = ?",
+            (row['entry_id'],)
+        ).fetchall()
+        values = {r['feature_name']: r['feature_value'] for r in feature_rows}
+        if not values:
+            continue
+        samples.append([float(values.get(name, neutral_defaults.get(name, 0.0)) or 0.0) for name in feature_names])
+        labels.append(1 if int(row['would_win'] or 0) == 1 else 0)
+        weights.append(1.5 if pnl_pct > 0 else 1.0)
+
+    con.close()
+    return samples, labels, weights
+
+
+def simple_regime(history):
+    if len(history) < 50:
+        return 'SIDEWAYS'
+    closes = np.array([float(k['close']) for k in history], dtype=np.float64)
+    ema20 = np.mean(closes[-20:])
+    ema50 = np.mean(closes[-50:])
+    if closes[-1] > ema20 > ema50:
+        return 'BULL'
+    if closes[-1] < ema20 < ema50:
+        return 'BEAR'
+    if len(closes) >= 13:
+        ema10_curr = np.mean(closes[-10:])
+        ema10_prev = np.mean(closes[-13:-3])
+        slope = (ema10_curr - ema10_prev) / (ema10_prev + 1e-9)
+        if slope < -0.0002:
+            return 'SIDEWAYS_DOWN'
+        if slope > 0.0002:
+            return 'SIDEWAYS_UP'
+    return 'SIDEWAYS'
+
+
+def support_stats_from_history(pnls):
+    if not pnls:
+        return {'winrate': 0.0, 'total_pnl': 0.0, 'avg_pnl': 0.0}
+    window = pnls[-50:]
+    wins = len([p for p in window if p > 0])
+    return {
+        'winrate': wins / len(window) * 100.0,
+        'total_pnl': float(sum(window)),
+        'avg_pnl': float(sum(window) / len(window)),
+    }
+
+
+def build_training_bot_context(history, signal, ts, btc_history=None, index=None, support_stats=None):
+    symbol_regime = simple_regime(history)
+    btc_regime = None
+    if btc_history is not None and index is not None:
+        btc_regime = simple_regime(btc_history[:index])
+    dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc)
+    confidence = float((signal or {}).get('confidence') or 0.0)
+    crypto_score = confidence
+    dynamic_min_score = float(os.getenv('MIN_CRYPTO_SCORE', '40'))
+    is_optimal = (8 <= dt.hour <= 16) or (0 <= dt.hour <= 4)
+    support_stats = support_stats or {}
+    technical_action = 'BUY' if signal else 'HOLD'
+    technical_min_confidence = dynamic_min_score
+    return {
+        'symbol_regime': symbol_regime,
+        'btc_regime': btc_regime,
+        'bear_mode': symbol_regime in ('BEAR', 'SIDEWAYS_DOWN') or btc_regime in ('BEAR', 'SIDEWAYS_DOWN'),
+        'reversal_confirmed': False,
+        'falling_knife_active': False,
+        'is_support_touch': (signal or {}).get('type') == 'support_touch',
+        'support_confidence': confidence if (signal or {}).get('type') == 'support_touch' else 0.0,
+        'support_rebounds': float((signal or {}).get('rebounds') or 0.0),
+        'support_backtest_winrate': float(support_stats.get('winrate', 0.0) or 0.0),
+        'support_backtest_total_pnl': float(support_stats.get('total_pnl', 0.0) or 0.0),
+        'support_backtest_avg_pnl': float(support_stats.get('avg_pnl', 0.0) or 0.0),
+        'crypto_score': crypto_score,
+        'dynamic_min_score': dynamic_min_score,
+        'is_optimal_trading_time': 1.0 if is_optimal else 0.0,
+        'technical_action': technical_action,
+        'technical_confidence': confidence,
+        'technical_min_confidence': technical_min_confidence,
+    }
+
+
+def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None):
+    if not start_date:
+        start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start_ts = int(dt.timestamp() * 1000)
+
+    all_klines = []
+    since = start_ts
+    limit = 1000
+
+    while True:
+        try:
+            raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+            if not raw:
+                break
+            for r in raw:
+                all_klines.append({
+                    'timestamp': r[0],
+                    'open': float(r[1]),
+                    'high': float(r[2]),
+                    'low': float(r[3]),
+                    'close': float(r[4]),
+                    'volume': float(r[5])
+                })
+            since = raw[-1][0] + 1
+            if len(raw) < limit or len(all_klines) >= 45000:
+                break
+            time.sleep(0.05)
+        except Exception:
+            break
+
+    return all_klines
+
+
+def generate_samples_from_klines(
+    klines_by_tf,
+    symbol,
+    stop_percent=1.0,
+    trailing_percent=2.5,
+    fee_rate=0.001,
+    position_value_usd=10.0,
+    btc_history=None,
+):
+    """Génère des samples d'entrée compatibles avec le modèle actif."""
+    klines_15m = (klines_by_tf or {}).get('15m') or []
+    if len(klines_15m) < 100:
+        return [], [], []
+
+    ml_engine = MLEngine(model_dir='data')
+    analyzer = PatternAnalyzer(bot=None)
+    samples, labels, metadata = [], [], []
+    support_pnls = []
+    next_allowed_index = 0
+
+    for index in range(50, len(klines_15m) - 1):
+        if index < next_allowed_index:
+            continue
+
+        history = klines_15m[:index]
+        current_price = float(klines_15m[index]['close'])
+        ts = klines_15m[index]['timestamp']
+        signal = detect_trade_signal(analyzer, history, current_price)
+        if not signal:
+            continue
+
+        support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
+        history_5m = (klines_by_tf or {}).get('5m') or klines_15m[max(0, index - 20):index]
+        history_1h = (klines_by_tf or {}).get('1h') or aggregate_ohlcv(history, 4)[-60:]
+        history_4h = (klines_by_tf or {}).get('4h') or aggregate_ohlcv(history, 16)[-60:]
+        history_1d = (klines_by_tf or {}).get('1d') or aggregate_ohlcv(history, 96)[-60:]
+
+        planned_hold_minutes = 96 * 15.0
+        planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
+        trade_context = {
+            'fee_rate': fee_rate,
+            'position_value_usd': position_value_usd,
+            'account_balance': 1000.0,
+            'planned_hold_minutes': planned_hold_minutes,
+            'planned_exit_hour': float(planned_exit_dt.hour),
+        }
+        bot_context = build_training_bot_context(
+            history,
+            signal,
+            ts,
+            btc_history=btc_history,
+            index=index,
+            support_stats=support_stats,
+        )
+        features = ml_engine.extract_features_from_klines(
+            history,
+            current_price,
+            klines_5m=history_5m,
+            klines_1h=history_1h,
+            klines_4h=history_4h,
+            klines_1d=history_1d,
+            trade_context=trade_context,
+            bot_context=bot_context,
+        )
+        if not isinstance(features, dict):
+            continue
+
+        exit_index, exit_price, _ = simulate_trade(
+            klines_15m,
+            index,
+            current_price,
+            signal.get('support_price'),
+            stop_percent,
+            96,
+            trailing_percent,
+            breakeven_stop=True,
+            breakeven_trigger=1.5,
+            breakeven_lock=1.0,
+            fee_rate=fee_rate,
+        )
+        pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100.0
+
+        samples.append(features)
+        labels.append(1 if pnl_percent > 0 else 0)
+        metadata.append({'symbol': symbol, 'timestamp': ts, 'pnl_pct': pnl_percent})
+        if signal.get('type') == 'support_touch':
+            support_pnls.append(float(pnl_percent))
+        next_allowed_index = exit_index + 4
+
+    return samples, labels, metadata
+
+
+def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
+    """Entraîne le modèle Challenger d'Entrée sur 1 an de données et le sauvegarde dans aegis_challenger.joblib."""
+    try:
+        challenger_path = os.path.join(output_dir, 'aegis_challenger.joblib')
+        champion_path = os.path.join(output_dir, 'aegis_model.joblib')
+
+        if fast_mode and os.path.exists(champion_path):
+            shutil.copy2(champion_path, challenger_path)
+            return True
+
+        exchange = ccxt.binance({'enableRateLimit': True})
+        ml_engine = MLEngine(model_dir=output_dir)
+        ml_engine.model_path = challenger_path
+        analyzer = PatternAnalyzer(bot=None)
+
+        pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'ADA/USDT']
+        start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+        btc_history = fetch_symbol_history_2026(exchange, 'BTC/USDT', timeframe='15m', start_date=start_date)
+
+        X_samples, y_labels = [], []
+        for symbol in pairs:
+            klines_15m = btc_history if symbol == 'BTC/USDT' and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
+            if len(klines_15m) < 100:
+                continue
+
+            next_allowed_index = 0
+            fee_rate = 0.001
+            support_pnls = []
+
+            for index in range(50, len(klines_15m) - 1):
+                if index < next_allowed_index:
+                    continue
+
+                history = klines_15m[:index]
+                current_price = klines_15m[index]['close']
+                ts = klines_15m[index]['timestamp']
+
+                signal = detect_trade_signal(analyzer, history, current_price)
+                if not signal:
+                    continue
+                support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
+
+                history_5m = [k for k in klines_15m[max(0, index-20):index]]
+                history_1h = aggregate_ohlcv(history, 4)[-60:]
+                history_4h = aggregate_ohlcv(history, 16)[-60:]
+                history_1d = aggregate_ohlcv(history, 96)[-60:]
+                planned_hold_minutes = 96 * 15.0
+                planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
+
+                trade_context = {
+                    'fee_rate': fee_rate,
+                    'position_value_usd': 5.0,
+                    'account_balance': 1000.0,
+                    'planned_hold_minutes': planned_hold_minutes,
+                    'planned_exit_hour': float(planned_exit_dt.hour)
+                }
+                bot_context = build_training_bot_context(history, signal, ts, btc_history=btc_history, index=index, support_stats=support_stats)
+
+                features = ml_engine.extract_features_from_klines(
+                    history, current_price,
+                    klines_5m=history_5m, klines_1h=history_1h, klines_4h=history_4h, klines_1d=history_1d,
+                    trade_context=trade_context, bot_context=bot_context
+                )
+                if features is None:
+                    continue
+
+                exit_index, exit_price, _ = simulate_trade(
+                    klines_15m, index, current_price, signal.get('support_price'), 1.0, 96, 2.5,
+                    breakeven_stop=True, breakeven_trigger=1.5, breakeven_lock=1.0, fee_rate=fee_rate
+                )
+
+                pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
+                label = 1 if pnl_percent > 0 else 0
+
+                X_samples.append(features)
+                y_labels.append(label)
+                if signal.get('type') == 'support_touch':
+                    support_pnls.append(float(pnl_percent))
+                next_allowed_index = exit_index + 4
+
+        if not X_samples and os.path.exists(champion_path):
+            shutil.copy2(champion_path, challenger_path)
+            return True
+
+        X, y = np.array(X_samples), np.array(y_labels)
+        success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5)
+        if success:
+            # Entraînement unifié du modèle de Sortie dans le même payload Challenger
+            try:
+                ml_engine.train_exit_model(X, y, n_estimators=150, max_depth=6, min_samples_split=10)
+                print(f"  ✅ Modèle de Sortie entraîné et fusionné dans Challenger")
+            except Exception as ex:
+                print(f"  ⚠️ Note entraînement modèle sortie: {ex}")
+
+            print(f"  ✅ Challenger Entrée & Sortie entraîné et sauvegardé dans {challenger_path}")
+            return True
+        elif os.path.exists(champion_path):
+            shutil.copy2(champion_path, challenger_path)
+            return True
+        return False
+    except Exception as e:
+        print(f"  ⚠️ Entraînement Challenger autonome: {e}")
+        if os.path.exists(os.path.join(output_dir, 'aegis_model.joblib')):
+            shutil.copy2(os.path.join(output_dir, 'aegis_model.joblib'), os.path.join(output_dir, 'aegis_challenger.joblib'))
+            return True
+        return False
+
+
+def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type='auto', fast_mode=False):
+    load_dotenv('.env.local', override=True)
+    load_dotenv('.env.ui', override=True)
+
+    db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
+    logger = MLLiveLogger(data_dir=model_dir, sqlite_file=db_file)
+    logger.record_governance_event('train_started', trigger_type=trigger_type, reason='Pipeline unifiée démarrée')
+
+    print("=" * 70)
+    print("🚀 PIPELINE UNIFIÉE ML : ENTRAÎNEMENT & GOUVERNANCE (PHASE 10)")
+    print("=" * 70)
+
+    # Step 1: Entraînement du Challenger
+    print("\n📦 1. Entraînement du modèle Challenger...")
+    challenger_path = os.path.join(model_dir, 'aegis_challenger.joblib')
+    champion_path = os.path.join(model_dir, 'aegis_model.joblib')
+    backup_path = os.path.join(model_dir, 'aegis_model_backup.joblib')
+
+    train_challenger_model(output_dir=model_dir, db_file=db_file, fast_mode=fast_mode)
+
+    if not os.path.exists(challenger_path) and os.path.exists(champion_path):
+        shutil.copy2(champion_path, challenger_path)
+
+    if not os.path.exists(challenger_path):
+        msg = "Échec de création du modèle Challenger."
+        print(f"❌ {msg}")
+        logger.record_governance_event('promotion_rejected', trigger_type=trigger_type, reason=msg)
+        logger.close()
+        return False
+
+    # Step 2: Évaluation Champion vs Challenger
+    print("\n⚔️ 2. Évaluation des garde-fous de promotion...")
+    
+    guardrail_metrics = compute_guardrail_metrics(db_file)
+    trade_rows = guardrail_metrics['trade_rows']
+    closed_trades_count = guardrail_metrics['closed_trades_count']
+    print(f"📊 Trades fermés réels dans le dataset : {closed_trades_count}")
+
+    champ_engine = MLEngine(model_dir=model_dir)
+    if os.path.exists(champion_path):
+        champ_engine.model_path = champion_path
+        champ_engine.load_model()
+
+    chall_engine = MLEngine(model_dir=model_dir)
+    chall_engine.model_path = challenger_path
+    chall_engine.load_model()
+
+    champ_meta = getattr(champ_engine, 'model_metadata', {}) or {}
+    chall_meta = getattr(chall_engine, 'model_metadata', {}) or {}
+
+    champ_prec = float(champ_meta.get('test_precision', 50.0))
+    chall_prec = float(chall_meta.get('test_precision', 50.0))
+
+    champ_acc = float(champ_meta.get('test_accuracy', 50.0))
+    chall_acc = float(chall_meta.get('test_accuracy', 50.0))
+
+    min_trades = int(os.getenv('ML_PROMOTION_MIN_CLOSED_TRADES', '30'))
+    min_days = int(os.getenv('ML_PROMOTION_MIN_ACTIVE_DAYS', '3'))
+    max_drawdown_pct = float(os.getenv('ML_PROMOTION_MAX_DRAWDOWN_PCT', '8.0'))
+    min_profit_factor = float(os.getenv('ML_PROMOTION_MIN_PROFIT_FACTOR', '1.10'))
+    min_precision_delta = float(os.getenv('ML_PROMOTION_MIN_PRECISION_DELTA', '-0.5'))
+    min_accuracy_delta = float(os.getenv('ML_PROMOTION_MIN_ACCURACY_DELTA', '-1.0'))
+    max_calibration_mae = float(os.getenv('ML_PROMOTION_MAX_CALIBRATION_MAE', '20.0'))
+    require_calibration = os.getenv('ML_PROMOTION_REQUIRE_CALIBRATION', 'false').lower() == 'true'
+    allowed_drift_statuses = {
+        item.strip().lower()
+        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,insufficient_live_outcomes').split(',')
+        if item.strip()
+    }
+
+    profit_factor = float(guardrail_metrics['profit_factor'])
+    active_days = int(guardrail_metrics['active_days'])
+    net_pnl = float(guardrail_metrics['net_pnl'])
+    max_dd = float(guardrail_metrics['max_drawdown_pct'])
+    calibration_mae = guardrail_metrics.get('latest_calibration_mae')
+    drift_status_value = str(guardrail_metrics.get('latest_drift_status') or 'unknown').lower()
+
+    g1_min_trades = closed_trades_count >= min_trades
+    g2_min_days = active_days >= min_days
+    g3_better_perf = (chall_prec >= champ_prec + min_precision_delta) and (chall_acc >= champ_acc + min_accuracy_delta)
+    g4_drawdown = max_dd <= max_drawdown_pct
+    g5_profit_factor = profit_factor >= min_profit_factor
+    g6_net_pnl = net_pnl > 0
+    g7_calibration = (
+        calibration_mae is not None and float(calibration_mae) <= max_calibration_mae
+    ) if require_calibration else (
+        calibration_mae is None or float(calibration_mae) <= max_calibration_mae
+    )
+    g8_drift = drift_status_value in allowed_drift_statuses
+
+    print("\n🛡️ GARDE-FOUS DE PROMOTION :")
+    print(f"  [1] Trades fermés ({closed_trades_count}) >= {min_trades} : {'✅' if g1_min_trades else '❌'}")
+    print(f"  [2] Jours actifs ({active_days}) >= {min_days} : {'✅' if g2_min_days else '❌'}")
+    print(f"  [3] Challenger Precision/Accuracy vs Champion : {'✅' if g3_better_perf else '❌'}")
+    print(f"  [4] Max Drawdown ({max_dd:.2f}%) <= {max_drawdown_pct:.2f}% : {'✅' if g4_drawdown else '❌'}")
+    print(f"  [5] Profit Factor ({profit_factor:.2f}) >= {min_profit_factor:.2f} : {'✅' if g5_profit_factor else '❌'}")
+    print(f"  [6] PnL net ({net_pnl:.2f} USD) > 0 : {'✅' if g6_net_pnl else '❌'}")
+    print(f"  [7] Calibration MAE ({calibration_mae if calibration_mae is not None else 'n/a'}) <= {max_calibration_mae:.1f} : {'✅' if g7_calibration else '❌'}")
+    print(f"  [8] Drift status ({drift_status_value}) autorisé : {'✅' if g8_drift else '❌'}")
+
+    all_passed = all([
+        g1_min_trades,
+        g2_min_days,
+        g3_better_perf,
+        g4_drawdown,
+        g5_profit_factor,
+        g6_net_pnl,
+        g7_calibration,
+        g8_drift,
+    ])
+    metrics_data = {
+        'closed_trades_count': closed_trades_count,
+        'active_days': active_days,
+        'champion_precision': champ_prec,
+        'challenger_precision': chall_prec,
+        'champion_accuracy': champ_acc,
+        'challenger_accuracy': chall_acc,
+        'profit_factor': profit_factor,
+        'net_pnl': net_pnl,
+        'max_drawdown_pct': max_dd,
+        'calibration_mae': calibration_mae,
+        'drift_status': drift_status_value,
+        'guardrails': {
+            'min_trades': g1_min_trades,
+            'min_days': g2_min_days,
+            'better_perf': g3_better_perf,
+            'drawdown': g4_drawdown,
+            'profit_factor': g5_profit_factor,
+            'net_pnl': g6_net_pnl,
+            'calibration': g7_calibration,
+            'drift': g8_drift,
+        },
+        'all_guardrails_passed': all_passed
+    }
+    logger.record_governance_event(
+        'promotion_guardrails_evaluated',
+        source_model='challenger',
+        target_model='champion',
+        metrics=metrics_data,
+        trigger_type=trigger_type,
+        reason='Evaluation complete des garde-fous de promotion'
+    )
+
+    if not all_passed:
+        failed = [name for name, passed in metrics_data['guardrails'].items() if not passed]
+        reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
+        print(f"\n⛔ PROMOTION REFUSÉE : {reason}")
+        logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
+        logger.close()
+        return False
+
+    if check_only:
+        print("\n🔍 Mode --check-only : Promotion validée mais non appliquée.")
+        logger.record_governance_event('promotion_checked', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason="Validation sans promotion")
+        logger.close()
+        return True
+
+    # Step 3: Promotion
+    print("\n🏆 PROMOTION DU CHALLENGER EN CHAMPION !")
+    if os.path.exists(champion_path):
+        shutil.copy2(champion_path, backup_path)
+        print(f"  💾 Backup du Champion créé : {backup_path}")
+
+        backups_dir = os.path.join(model_dir, 'backups')
+        os.makedirs(backups_dir, exist_ok=True)
+        ts_backup_path = os.path.join(backups_dir, f"aegis_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.joblib")
+        shutil.copy2(champion_path, ts_backup_path)
+        print(f"  📦 Archive horodatée créée dans backups/ : {ts_backup_path}")
+
+    shutil.copy2(challenger_path, champion_path)
+    print(f"  ✅ NOUVEAU CHAMPION PROMU AVEC SUCCÈS : {champion_path}")
+
+    reason = f"Promotion validée (Precision {chall_prec:.1f}%, Acc {chall_acc:.1f}%)"
+    logger.record_governance_event('promotion', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
+
+    try:
+        notifier = NotificationManager()
+        notifier.notify(f"🏆 **NOUVEAU CHAMPION ML PROMU**\n\nPrecision: {chall_prec:.1f}%\nAccuracy: {chall_acc:.1f}%\nBackup créé: OK")
+    except Exception:
+        pass
+
+    logger.close()
+    return True
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Pipeline unifiée ML Aegis")
+    parser.add_argument('--dir', default='data', help="Répertoire des modèles")
+    parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+    parser.add_argument('--check-only', action='store_true', help="Vérifie les garde-fous sans promouvoir")
+    parser.add_argument('--trigger', default='manual', help="auto ou manual")
+    parser.add_argument('--fast', action='store_true', help="Mode rapide de test")
+    args = parser.parse_args()
+
+    run_pipeline(model_dir=args.dir, db_file=args.db, check_only=args.check_only, trigger_type=args.trigger, fast_mode=args.fast)

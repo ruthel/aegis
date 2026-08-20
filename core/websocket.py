@@ -463,6 +463,8 @@ class WebSocketManager:
     
     def preload_klines(self, exchange, timeframe='1m', count=100):
         """Charge l'historique REST au demarrage pour eviter d'attendre le WS"""
+        if not exchange:
+            return
         import os as _os
         exchange_name = _os.getenv('EXCHANGE', 'kraken').lower()
         for symbol in self.symbols:

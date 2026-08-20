@@ -13,6 +13,7 @@ class RiskManager:
         # Safety Manager integration
         self.max_daily_trades = max_daily_trades
         self.max_daily_loss = max_daily_loss
+        self.max_weekly_loss = float(os.getenv('MAX_WEEKLY_LOSS', '300.0'))
         self.emergency_stop_loss = emergency_stop_loss
         self.max_daily_losing_trades = max_daily_losing_trades or int(os.getenv('MAX_DAILY_LOSING_TRADES', '10'))
         self.db_logger = MLLiveLogger(
@@ -27,6 +28,25 @@ class RiskManager:
         self.adaptive_thresholds = {}
         self.last_optimization = 0
         self.base_multiplier = 1800  # 30min si check_interval=1s
+
+    def get_weekly_loss(self) -> float:
+        """Calcule la perte cumulée sur les 7 derniers jours (Phase 10)."""
+        try:
+            import sqlite3
+            conn = sqlite3.connect(os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+            row = conn.execute("""
+                SELECT COALESCE(SUM(total_loss), 0)
+                FROM bot_daily_stats
+                WHERE stat_date >= date('now', '-7 days')
+            """).fetchone()
+            conn.close()
+            return float(row[0] or 0.0) if row else 0.0
+        except Exception:
+            return 0.0
+
+    def is_weekly_loss_exceeded(self) -> bool:
+        """Retourne True si la perte hebdomadaire dépasse la limite autorisée."""
+        return self.get_weekly_loss() >= self.max_weekly_loss
 
     def close(self):
         try:

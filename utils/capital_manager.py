@@ -43,6 +43,20 @@ class CapitalManager:
             'LTC/USD': {'min_amount': 0.001, 'min_cost': 1.0},
             'BCH/USD': {'min_amount': 0.001, 'min_cost': 1.0}
         }
+
+    def get_trade_amount(self, symbol=None):
+        """Retourne le montant d'un trade en USD adapté au capital et au mode safe."""
+        try:
+            total_balance = float(getattr(self.bot, 'paper_balance', 1000.0))
+            if hasattr(self.bot, 'balance_manager'):
+                total_balance = self.bot.balance_manager.get_total_balance_usd() or total_balance
+            config = self.get_adaptive_config(total_balance)
+            trade_amount = float(config.get('trade_amount', 50.0))
+            if getattr(self.bot, 'safe_fallback_mode', False):
+                trade_amount *= getattr(self.bot, 'bear_mode_trade_multiplier', 0.35)
+            return round(trade_amount, 2)
+        except Exception:
+            return 50.0
         
     def get_adaptive_config(self, total_balance_usd):
         """Configuration automatique selon le capital avec limites de positions"""
@@ -113,6 +127,62 @@ class CapitalManager:
                 'stop_loss_percent': 5.0,
                 'preferred_cryptos': ['BTC', 'ETH', 'SOL', 'ADA', 'ADA']
             }
+
+    def can_open_new_position(self, symbol, new_position_usd) -> bool:
+        """
+        Gouvernance Risque Phase 10 :
+        Vérifie que l'exposition globale ne dépasse pas 60% du capital total
+        et que le nombre de positions sur le même symbole ne dépasse pas max_positions_per_crypto.
+        """
+        try:
+            max_exposure_pct = float(os.getenv('MAX_TOTAL_CAPITAL_EXPOSURE_PCT', '60.0'))
+            max_pos_per_crypto = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '2'))
+
+            total_balance = float(self.bot.get_account_balance() or 100.0)
+            open_positions = [
+                p for p in self.bot.state.get('positions', [])
+                if isinstance(p, dict) and p.get('side') == 'buy' and not p.get('closed_at')
+            ]
+
+            # 1. Limite par crypto (max 2)
+            symbol_positions = [p for p in open_positions if p.get('symbol') == symbol]
+            if len(symbol_positions) >= max_pos_per_crypto:
+                print(f"🛑 CapitalManager: Limite atteinte de {max_pos_per_crypto} positions max sur {symbol}")
+                return False
+
+            # 2. Plafond d'exposition globale (max 60%)
+            current_exposure_usd = sum(
+                float(p.get('amount', 0) or 0) * float(p.get('price', 0) or 0)
+                for p in open_positions
+            )
+            total_after_trade = current_exposure_usd + float(new_position_usd or 0)
+            max_allowed_usd = total_balance * (max_exposure_pct / 100.0)
+
+            if total_after_trade > max_allowed_usd:
+                print(f"🛑 CapitalManager: Plafond d'exposition globale atteint ({current_exposure_usd:.1f} + {new_position_usd:.1f} = {total_after_trade:.1f} USD > max {max_allowed_usd:.1f} USD [{max_exposure_pct}%])")
+                return False
+
+            return True
+        except Exception as e:
+            print(f"⚠️ Erreur can_open_new_position: {e}")
+            return True
+
+    def get_total_exposure_ratio(self) -> float:
+        """Retourne le ratio d'exposition globale du capital (ex: 0.15 pour 15%)."""
+        try:
+            total_balance = float(self.bot.paper_balance if getattr(self.bot, 'paper_trading', False) else (self.bot.get_account_balance() if hasattr(self.bot, 'get_account_balance') else 1000.0)) or 1000.0
+            if total_balance <= 0:
+                return 0.0
+            open_pos = self.bot.get_open_positions() if hasattr(self.bot, 'get_open_positions') else {}
+            total_exposure_usd = 0.0
+            for symbol, data in open_pos.items():
+                price = self.bot.get_price(symbol) if hasattr(self.bot, 'get_price') else data.get('entry_price', 0.0)
+                amount = float(data.get('amount', 0.0))
+                total_exposure_usd += amount * (price or data.get('entry_price', 0.0))
+            return round(total_exposure_usd / total_balance, 4)
+        except Exception as e:
+            print(f"⚠️ Erreur get_total_exposure_ratio: {e}")
+            return 0.0
     
     def _get_exchange_min_amounts(self):
         """Récupère les montants minimums de l'exchange via CCXT."""

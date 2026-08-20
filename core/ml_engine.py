@@ -535,7 +535,7 @@ class MLEngine:
             if market_features is None:
                 return None
 
-            buy_price = float(position_data.get('buy_price') or position_data.get('avg_entry_price') or current_price)
+            buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
             fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0))
             breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
             gross_pnl_pct = ((current_price - buy_price) / max(buy_price, 1e-9)) * 100.0
@@ -668,7 +668,7 @@ class MLEngine:
             probs = self.exit_model.predict_proba(X)[0]
             p_continue = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
 
-            buy_price = float(position_data.get('buy_price') or position_data.get('avg_entry_price') or current_price)
+            buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
             fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0))
             breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
             net_pnl_pct = ((current_price - breakeven_price) / max(buy_price, 1e-9)) * 100.0

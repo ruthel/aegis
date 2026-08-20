@@ -404,7 +404,7 @@ function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] })
                       ? `Décision sortie: ${exitDecision}`
                       : `Seuil Requis: ${num(item.min_probability ?? ml.min_probability, 0)}%`}
                   </span>
-                  {inSellMode && <span>PnL net {formatSignedPct(exitRec.net_pnl_pct, 2)}</span>}
+                  {inSellMode && <span>PnL net {formatSignedPct(openPosition?.pnl_net_pct ?? exitRec.net_pnl_pct, 2)}</span>}
                 </div>
               </div>
             )

@@ -162,7 +162,7 @@ class ExitDecisionEngine:
         The former rule engine is no longer authoritative. It only computes
         position metrics and forwards the ML exit decision.
         """
-        buy_price = float(position_data.get('buy_price', current_price))
+        buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
         fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100))
         
         # Calculate net PnL percentage

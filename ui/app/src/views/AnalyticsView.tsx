@@ -18,6 +18,7 @@ import {
   SplitMetricCard,
   Metric,
   EmptyAnalytics,
+  InfoTooltip,
 } from '@/components/ui/shared'
 import type { AnalyticsPayload, JsonMap, MlStatus } from '@/types/dashboard'
 
@@ -79,23 +80,55 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard icon={BarChart3} label="Sharpe Ratio" value={num(advanced.sharpe_ratio, 2)} />
-        <MetricCard icon={CircleDollarSign} label="Profit Factor" value={num(advanced.profit_factor ?? mlAnalytics.profit_factor, 2)} />
-        <MetricCard icon={Activity} label="Max Drawdown" value={pct(advanced.max_drawdown, 2)} />
-        <MetricCard icon={Zap} label="Kelly %" value={pct(advanced.kelly_percent, 2)} />
-        <MetricCard icon={Power} label="Expectancy" value={num(advanced.expectancy ?? mlAnalytics.expectancy, 2)} />
+        <MetricCard
+          icon={BarChart3}
+          label="Sharpe Ratio"
+          value={num(advanced.sharpe_ratio, 2)}
+          description="Mesure le rendement obtenu par rapport au risque pris. Plus il est élevé, plus le bot gagne de façon régulière pour la volatilité subie."
+        />
+        <MetricCard
+          icon={CircleDollarSign}
+          label="Profit Factor"
+          value={num(advanced.profit_factor ?? mlAnalytics.profit_factor, 2)}
+          description="Compare les gains bruts aux pertes brutes. Au-dessus de 1, le système gagne plus qu’il ne perd; au-dessus de 2, c’est généralement solide."
+        />
+        <MetricCard
+          icon={Activity}
+          label="Max Drawdown"
+          value={pct(advanced.max_drawdown, 2)}
+          description="Plus forte baisse observée depuis un sommet du capital. Plus ce chiffre est faible, mieux le bot protège le capital."
+        />
+        <MetricCard
+          icon={Zap}
+          label="Kelly %"
+          value={pct(advanced.kelly_percent, 2)}
+          description="Estimation théorique de la fraction de capital à risquer selon l’avantage statistique. À utiliser comme repère, pas comme ordre direct."
+        />
+        <MetricCard
+          icon={Power}
+          label="Expectancy"
+          value={num(advanced.expectancy ?? mlAnalytics.expectancy, 2)}
+          description="Gain moyen attendu par trade après prise en compte des trades gagnants et perdants. Positif veut dire que l’avantage statistique existe."
+        />
         <SplitMetricCard
           label="Avg Win / Avg Loss"
           leftLabel="Avg Win"
           leftValue={pct(advanced.avg_win ?? mlAnalytics.avg_win, 2)}
           rightLabel="Avg Loss"
           rightValue={pct(advanced.avg_loss ?? mlAnalytics.avg_loss, 2)}
+          description="Compare la taille moyenne des trades gagnants et perdants. Un bon système garde idéalement les gains moyens supérieurs aux pertes moyennes."
         />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Capital Breakdown</CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle>Capital Breakdown</CardTitle>
+            <InfoTooltip
+              label="Capital Breakdown"
+              description="Répartition du capital entre solde disponible, valeur immobilisée dans les positions ouvertes et ordres limit en attente."
+            />
+          </div>
         </CardHeader>
         <CardContent>
           <CapitalBreakdown capital={capital} />

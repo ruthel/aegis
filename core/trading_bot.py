@@ -9,8 +9,25 @@ import sys
 from queue import Queue
 from datetime import datetime
 
-# Exchange
-from core.exchange.factory import create_exchange_client
+# Managers
+from core.managers.notification import NotificationManager
+from core.managers.balance import BalanceManager
+
+# WebSocket
+from core.websocket import WebSocketManager
+
+# Utils
+from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
+import time
+import json
+import os
+import threading
+import logging
+from logging.handlers import RotatingFileHandler
+import subprocess
+import sys
+from queue import Queue
+from datetime import datetime
 
 # Managers
 from core.managers.notification import NotificationManager
@@ -28,6 +45,7 @@ from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
 from core.managers.execution_manager import ExecutionManager
+from core.managers.health_manager import HealthManager
 from core.ml_live_logger import MLLiveLogger
 
 # Mixins
@@ -43,8 +61,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
-        
-        # Affichage simplifié
+        self.exchange = None
         self.max_retries = 3
         self.retry_delay = 5
         self.min_amounts = {}
@@ -58,54 +75,32 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.stop_loss_percent = float(os.getenv('STOP_LOSS_PERCENT', '5'))
         self.save_logs = os.getenv('SAVE_LOGS', 'True') == 'True'
         
-        # Frais dynamiques (remplace frais statiques)
-        self.trading_fee = 0.001  # Fallback seulement
+        # Frais dynamiques
+        self.trading_fee = 0.001
         self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
         
         # Stats
         self.daily_pnl = 0
         self.total_trades = 0
         self.winning_trades = 0
-        self.global_stats_30d = None  # Win rate global 30 jours
-        self.last_winrate_calculation = 0  # Timestamp dernier calcul
+        self.global_stats_30d = None
+        self.last_winrate_calculation = 0
         
-        self.setup_logging()
-        
-        # Notifications TOUJOURS activées
-        self.notifier = NotificationManager()
-        self.notifier.set_bot(self)
-        
-        # WebSocket (démarré après connect() et load_state())
-        self.websocket = WebSocketManager()
-        self.websocket.set_bot_callback(self.on_realtime_signal)
-        self.websocket.set_balance_callback(self.on_balance_update)
-        
-        # Trading temps réel (TOUJOURS activé par défaut)
-        self.realtime_trading = False  # Activé après init complète
+        self.realtime_trading = False
         self.last_analysis = {}
-        
-        # Détection tendance cumulative
-        self.cumulative_tracker = {}  # {symbol: {'direction': 1/-1, 'count': 0, 'start_price': 0}}
-        self.last_dynamic_notifications = {}  # Éviter notifications consécutives identiques
-        
-        # NOUVEAU: Cache centralisé support touch (approche institutionnelle)
-        self.support_touch_cache = {}  # {symbol: {'result': {...}, 'timestamp': float}}
-        
-        self._last_decision = {}  # Anti-spam logs
+        self.cumulative_tracker = {}
+        self.last_dynamic_notifications = {}
+        self.support_touch_cache = {}
+        self._last_decision = {}
         self._decision_log_throttle = {}
         self.decision_journal_max = int(os.getenv('DECISION_JOURNAL_MAX', '5000'))
-        self.ml_live_logger = MLLiveLogger(
-            data_dir='data',
-            sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
-        )
         self._ml_exit_learning_last = {}
         self._last_score_append = {}
         self.symbol_cooldown_seconds = int(os.getenv('SYMBOL_COOLDOWN_SECONDS', '300'))
         self.symbol_failure_cooldown_seconds = int(os.getenv('SYMBOL_FAILURE_COOLDOWN_SECONDS', '120'))
         self.ml_reject_cooldown_min_seconds = int(os.getenv('ML_REJECT_COOLDOWN_MIN_SECONDS', '60'))
         self.ml_reject_cooldown_max_seconds = int(os.getenv('ML_REJECT_COOLDOWN_MAX_SECONDS', '300'))
-        # Verrous par symbole : empêche deux threads d'acheter simultanément le même actif
-        self._buy_locks: dict = {}
+        self._buy_locks = {}
         self._last_trailing_stop_save = 0
         self.market_regime_filter = os.getenv('MARKET_REGIME_FILTER', 'True').lower() == 'true'
         self.bear_mode_trade_multiplier = float(os.getenv('BEAR_MODE_TRADE_MULTIPLIER', '0.35'))
@@ -119,22 +114,54 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.ml_live_analysis_interval = int(os.getenv('ML_LIVE_ANALYSIS_INTERVAL_SECONDS', '21600'))
         self._last_ml_live_analysis = 0
         self._ml_live_analysis_process = None
-        
-        # Ordres
+        self.health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL_SECONDS', '300'))
+        self.health_notify_interval = int(os.getenv('HEALTH_NOTIFY_INTERVAL_SECONDS', '1800'))
+        self.health_safe_fallback_enabled = os.getenv('HEALTH_SAFE_FALLBACK_ENABLED', 'false').lower() == 'true'
+        self.health_critical_fallback_after = int(os.getenv('HEALTH_CRITICAL_FALLBACK_AFTER', '3'))
+        self._last_health_check = 0
+        self._last_health_notify = 0
+        self._last_health_status = None
+        self._health_critical_count = 0
+        self.ml_auto_retrain_enabled = os.getenv('ML_AUTO_RETRAIN_ENABLED', 'false').lower() == 'true'
+        self.ml_auto_retrain_interval = int(os.getenv('ML_AUTO_RETRAIN_INTERVAL_SECONDS', '604800'))
+        self.ml_auto_retrain_check_only = os.getenv('ML_AUTO_RETRAIN_CHECK_ONLY', 'true').lower() == 'true'
+        self.ml_auto_retrain_fast = os.getenv('ML_AUTO_RETRAIN_FAST', 'false').lower() == 'true'
+        self._last_ml_auto_retrain = 0
+        self._ml_auto_retrain_process = None
+        self.safe_fallback_enabled = os.getenv('SAFE_FALLBACK_ENABLED', 'true').lower() == 'true'
+        self.safe_fallback_check_interval = int(os.getenv('SAFE_FALLBACK_CHECK_INTERVAL_SECONDS', '300'))
+        self.safe_fallback_consecutive_losses = int(os.getenv('SAFE_FALLBACK_CONSECUTIVE_LOSSES', '3'))
+        self.safe_fallback_daily_loss_usd = float(os.getenv('SAFE_FALLBACK_DAILY_LOSS_USD', str(max(20.0, self.max_daily_loss))))
+        self.safe_fallback_weekly_loss_usd = float(os.getenv('SAFE_FALLBACK_WEEKLY_LOSS_USD', os.getenv('MAX_WEEKLY_LOSS', '300')))
+        self.safe_fallback_drift_statuses = {
+            item.strip().lower()
+            for item in os.getenv('SAFE_FALLBACK_DRIFT_STATUSES', 'warning,critical').split(',')
+            if item.strip()
+        }
+        self._last_safe_fallback_check = 0
+        self.safe_fallback_mode = False
+        self.consecutive_losses = 0
         self.pending_orders = {}
         self.order_timeout = 86400
-        
-        # Gestionnaires (nommage cohérent)
+
+        # Logger ML
+        self.ml_live_logger = MLLiveLogger(
+            data_dir='data',
+            sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
+        )
+
+        # TOUS LES GESTIONNAIRES (Instanciés dans l'ordre de dépendance)
+        self.balance_manager = BalanceManager(self)
+        self.capital_manager = CapitalManager(self)
         self.risk_manager = RiskManager(
             max_daily_trades=self.max_daily_trades,
             max_daily_loss=self.max_daily_loss,
             emergency_stop_loss=float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
         )
-        self.risk_manager.bot = self  # Référence pour les méthodes adaptatives
+        self.risk_manager.bot = self
         self.trailing_stop_manager = TrailingStopManager(float(os.getenv('TRAILING_STOP_PERCENT', '3')))
         self.correlation_manager = CorrelationManager()
         
-        # Exit Decision Engine fusionne au ML pour la gestion active des sorties
         exit_enabled = os.getenv('EXIT_ENGINE_ENABLED', 'True').lower() == 'true'
         fragile_pct = float(os.getenv('PROFIT_FRAGILE_MAX_NET_PCT', '0.40'))
         time_stop_min = int(os.getenv('TIME_STOP_MINUTES', '12'))
@@ -142,12 +169,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             fragile_max_net_pct=fragile_pct,
             time_stop_minutes=time_stop_min
         ) if exit_enabled else None
+
         self.execution_manager = ExecutionManager(self)
-        
-        # NOUVEAUX DÉTECTEURS CRITIQUES
-
+        self.health_manager = HealthManager(self)
         self.multi_tf_analyzer = TimeframeAnalyzer()
-
         self.stuck_manager = PositionManager(
             self,
             max_loss_percent=float(os.getenv('MAX_STUCK_LOSS', '15')),
@@ -156,46 +181,32 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.market_analyzer = MarketAnalyzer(
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40'))
         )
-
-
         self.pattern_analyzer = PatternAnalyzer(self)
-        self.price_change_threshold = 0.002  # 0.2% au lieu de 0.1%
-        
-        # Core Machine Learning Engine
+
         from core.ml_engine import MLEngine
         self.ml_engine = MLEngine()
         self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
         self.ml_exit_entry_min_continue_prob = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
-        
-        # Gestionnaire de balance centralisé
-        self.balance_manager = BalanceManager(self)
-        
-        # Gestionnaire de capital automatique
-        self.capital_manager = CapitalManager(self)
-        
 
-        
-        # Gestionnaire de dust (valeurs très petites)
+        # Notifications
+        self.notifier = NotificationManager()
+        self.notifier.set_bot(self)
 
-        
-        # GESTIONNAIRES PROFESSIONNELS NIVEAU INSTITUTIONNEL
-
-
+        # WebSocket & Display
+        self.websocket = WebSocketManager()
+        self.websocket.set_bot_callback(self.on_realtime_signal)
+        self.websocket.set_balance_callback(self.on_balance_update)
         
         os.makedirs('data', exist_ok=True)
-        
-        # Affichage async
         self.display_queue = Queue(maxsize=100)
-        
-        # Toujours connecter pour éviter les erreurs, même en paper trading
+
+        # Connexion & état
         self.connect()
         self.load_state()
         self.websocket.set_exchange_client(self.exchange)
         self.websocket.preload_klines(self.exchange)
         self.websocket.start()
         self.refresh_support_touch_filter()
-        
-        # Initialiser l'affichage async
         self.start_async_display()
         
         # Sync initiale
@@ -216,10 +227,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # NOUVEAU: Placer automatiquement les cryptos disponibles en mode vente au démarrage
         print("🔍 Vérification positions existantes...")
-        self._optimize_all_positions_at_startup()
+        if hasattr(self, '_optimize_all_positions_at_startup'):
+            self._optimize_all_positions_at_startup()
 
-        # Mettre à jour prédictions ML au démarrage
-        self.update_ml_predictions_for_all_pairs()
+        # Mettre à jour prédictions ML au démarrage de façon asynchrone (non-bloquante)
+        threading.Thread(target=self.update_ml_predictions_for_all_pairs, daemon=True).start()
         
         # Notification de démarrage
         mode = "PAPER" if self.paper_trading else "LIVE"
@@ -228,7 +240,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
     def update_ml_predictions_for_all_pairs(self):
         """Met à jour les prédictions ML pour toutes les paires actives en direct"""
-        if not hasattr(self, 'ml_engine') or self.ml_engine is None or not self.ml_engine.is_trained:
+        if not hasattr(self, 'ml_engine') or self.ml_engine is None or not getattr(self.ml_engine, 'is_trained', False):
             return
 
         try:
@@ -236,49 +248,45 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             ml_preds = self.state.setdefault('ml_predictions', {})
 
             for pair in trading_pairs:
-                pair_clean = pair.strip()
-                if '/' in pair_clean:
-                    symbol = pair_clean
-                elif pair_clean.endswith('USD'):
-                    symbol = f"{pair_clean[:-3]}/USD"
-                elif pair_clean.endswith('USDT'):
-                    symbol = f"{pair_clean[:-4]}/USDT"
-                else:
-                    symbol = f"{pair_clean[:3]}/{pair_clean[3:]}"
+                try:
+                    pair_clean = pair.strip()
+                    if '/' in pair_clean:
+                        symbol = pair_clean
+                    elif pair_clean.endswith('USD'):
+                        symbol = f"{pair_clean[:-3]}/USD"
+                    elif pair_clean.endswith('USDT'):
+                        symbol = f"{pair_clean[:-4]}/USDT"
+                    else:
+                        symbol = f"{pair_clean[:3]}/{pair_clean[3:]}"
 
-                klines_15m = self.get_klines(symbol, 50, '15m')
-                if not klines_15m or len(klines_15m) < 20:
-                    continue
-                
-                klines_5m = self.get_klines(symbol, 30, '5m')
-                klines_1h = self.get_klines(symbol, 30, '1h')
-                klines_4h = self.get_klines(symbol, 30, '4h')
-                klines_1d = self.get_klines(symbol, 30, '1d')
-                curr_price = klines_15m[-1]['close']
+                    klines_15m = self.get_klines(symbol, 50, '15m')
+                    if not klines_15m or len(klines_15m) < 20:
+                        continue
+                    
+                    curr_price = float(klines_15m[-1]['close'])
+                    trade_context = self._build_ml_trade_context() if hasattr(self, '_build_ml_trade_context') else {}
+                    prob = self.ml_engine.predict_win_probability(
+                        klines_15m,
+                        curr_price,
+                        trade_context=trade_context
+                    )
+                    rec = 'BUY_HIGH_CONFIDENCE' if prob >= getattr(self, 'ml_min_probability', 65.0) else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
 
-                trade_context = self._build_ml_trade_context()
-                prob = self.ml_engine.predict_win_probability(
-                    klines_15m,
-                    curr_price,
-                    klines_5m=klines_5m,
-                    klines_1h=klines_1h,
-                    klines_4h=klines_4h,
-                    klines_1d=klines_1d,
-                    trade_context=trade_context
-                )
-                rec = 'BUY_HIGH_CONFIDENCE' if prob >= self.ml_min_probability else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
-
-                ml_preds[symbol] = {
-                    'symbol': symbol,
-                    'p_win': prob,
-                    'recommendation': rec,
-                    'min_probability': self.ml_min_probability,
-                    'timestamp': datetime.now().isoformat()
-                }
-
+                    ml_preds[symbol] = {
+                        'symbol': symbol,
+                        'prob': round(float(prob), 2),
+                        'p_win': prob,
+                        'rec': rec,
+                        'recommendation': rec,
+                        'min_probability': getattr(self, 'ml_min_probability', 65.0),
+                        'updated_at': datetime.now().isoformat(),
+                        'timestamp': datetime.now().isoformat()
+                    }
+                except Exception as ex_pair:
+                    pass
             self.save_state()
         except Exception as e:
-            print(f"⚠️ Erreur mise à jour ML predictions: {e}")
+            pass
 
     def _build_ml_trade_context(self, position_data=None, account_balance=None):
         """Construit les paramètres de trade utilisables par le ML sans fuite d'information future."""
@@ -609,379 +617,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 print(f"📋 ML EXIT - Position sell tracée: {total_amount:.6f} {symbol.split('/')[0]} @ {target_price:.6f} (ML décidera quand vendre)")
                 return True
             except Exception as e:
-                print(f"⚠️ Erreur création position sell ML: {e}")
+                print(f"⚠️ Erreur _place_paper_sell_order: {e}")
                 return False
-
-    def _rehydrate_open_positions_for_exit_evaluation(self):
-        """Réhydrate toutes les positions ouvertes réelles dans trailing_stop_manager pour l'évaluation ML."""
-        if not hasattr(self, 'trailing_stop_manager'):
-            return
-
-        positions = self.state.get('positions', [])
-        by_symbol = {}
-        for p in sorted(positions, key=lambda x: str(x.get('timestamp') or '')):
-            sym = p.get('symbol')
-            if not sym:
-                continue
-            side = p.get('side')
-            amount = float(p.get('amount') or 0)
-            price = float(p.get('price') or 0)
-            status = p.get('status')
-            if amount <= 0 or price <= 0:
-                continue
-
-            entry = by_symbol.setdefault(sym, {'amount': 0.0, 'cost': 0.0, 'fee_rate': None, 'buy_price': price, 'created_at': p.get('timestamp')})
-            if side == 'buy' and not p.get('closed_at'):
-                entry['amount'] += amount
-                entry['cost'] += amount * price
-                entry['buy_price'] = price
-                if p.get('fee_rate') is not None:
-                    entry['fee_rate'] = float(p['fee_rate'])
-                if p.get('timestamp'):
-                    entry['created_at'] = p['timestamp']
-            elif side == 'sell' and status in ('executed', 'filled'):
-                sold = min(amount, entry['amount'])
-                if entry['amount'] > 0:
-                    avg_cost = entry['cost'] / entry['amount']
-                    entry['amount'] -= sold
-                    entry['cost'] -= sold * avg_cost
-
-        rehydrated_count = 0
-        for sym, data in by_symbol.items():
-            if data['amount'] > 0.000001:
-                avg_entry = data['cost'] / data['amount'] if data['amount'] > 0 else data['buy_price']
-                if sym not in self.trailing_stop_manager.positions:
-                    self.trailing_stop_manager.add_position(
-                        sym,
-                        avg_entry,
-                        fee_rate=data.get('fee_rate')
-                    )
-                    if data.get('created_at'):
-                        self.trailing_stop_manager.positions[sym]['created_at'] = data['created_at']
-                    rehydrated_count += 1
-
-        if rehydrated_count > 0:
-            print(f"🔄 {rehydrated_count} position(s) réhydratée(s) pour l'évaluation de sortie ML.")
-            self.save_state()
-
-    def _optimize_all_positions_at_startup(self):
-        """Optimise TOUTES les positions existantes au démarrage - SANS annuler ordres existants"""
-        try:
-            self._rehydrate_open_positions_for_exit_evaluation()
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
-            balance = self.balance_manager.get_balance(force_refresh=True)
-            
-            optimized_count = 0
-            skipped_count = 0
-            
-            for pair in trading_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
-                base_currency = symbol.split('/')[0]
-                
-                if self.paper_trading:
-                    # En paper: vérifier si un achat est 'opened' SANS ordre de vente 'opened'
-                    open_buys = [p for p in self.state.get('positions', []) if p.get('symbol') == symbol and p.get('side') == 'buy' and p.get('status') == 'opened']
-                    open_sells = [p for p in self.state.get('positions', []) if p.get('symbol') == symbol and p.get('side') == 'sell' and p.get('status') == 'opened']
-                    if open_buys and not open_sells:
-                        total_amt = sum(float(p.get('amount') or 0) for p in open_buys)
-                        if total_amt > 0.00001:
-                            print(f"   📊 {base_currency}: {total_amt:.6f} ouvert détecté sans ordre de vente (paper)")
-                            self._place_paper_sell_order(symbol)
-                            optimized_count += 1
-                else:
-                    # Mode réel: vérifier balance exchange
-                    free_holding = balance.get(base_currency, {}).get('free', 0)
-                    locked_holding = balance.get(base_currency, {}).get('used', 0)
-                    total_holding = free_holding + locked_holding
-                    
-                    if total_holding > 0.00001:
-                        position_value = total_holding * self.get_price(symbol)
-                        min_cost = self.get_min_amount(symbol)['min_cost']
-                        
-                        if position_value >= min_cost:
-                            print(f"   📊 {base_currency}: {total_holding:.6f} détecté (Libre: {free_holding:.6f}, Verrouillé: {locked_holding:.6f})")
-                            
-                            if locked_holding > 0.00001:
-                                print(f"   ✅ {base_currency}: Ordre déjà actif - Conservé")
-                                skipped_count += 1
-                                continue
-                            
-                            if self.optimize_existing_position(symbol):
-                                optimized_count += 1
-            
-            if optimized_count > 0:
-                print(f"✅ {optimized_count} position(s) optimisée(s) au démarrage")
-            if skipped_count > 0:
-                print(f"⏭️ {skipped_count} position(s) déjà optimisée(s) - Conservées")
-            if optimized_count == 0 and skipped_count == 0:
-                print("✅ Aucune position à optimiser")
-            print()  # Ligne vide finale
-                
-        except Exception as e:
-            print(f"⚠️ Erreur optimisation démarrage: {e}")
-    
-    def setup_logging(self):
-        import logging
-        
-        class ConnectionErrorFilter(logging.Filter):
-            def filter(self, record):
-                msg = str(record.getMessage())
-                # Filtrer tous les messages de connexion WebSocket
-                if any(keyword in msg.lower() for keyword in [
-                    "winerror 10054", "connexion existante", "websocket", 
-                    "user data stream", "reconnexion", "connection reset",
-                    "ping/pong timed out", "goodbye"
-                ]):
-                    return False  # Supprimer complètement ces messages
-                return True
-        
-        log_level = os.getenv('LOG_LEVEL', 'INFO')
-        logging.basicConfig(
-            level=getattr(logging, log_level),
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                RotatingFileHandler('bot.log', maxBytes=2*1024*1024, backupCount=2, encoding='utf-8') if self.save_logs else logging.NullHandler()
-            ]
-        )
-        
-        # Ajouter le filtre personnalisé
-        connection_filter = ConnectionErrorFilter()
-        for handler in logging.getLogger().handlers:
-            handler.addFilter(connection_filter)
-        for noisy_logger in ('websocket', 'websocket._app', 'websocket._core'):
-            logging.getLogger(noisy_logger).addFilter(connection_filter)
-            logging.getLogger(noisy_logger).setLevel(logging.CRITICAL)
-            
-        self.logger = logging.getLogger(__name__)
-    
-    def connect(self, verbose=True):
-        self.exchange = create_exchange_client(self.api_key, self.api_secret, self.testnet, verbose=verbose)
-    
-    def reconnect(self):
-        for attempt in range(self.max_retries):
-            try:
-                self.connect(verbose=False)
-                self.exchange.fetch_balance()
-                return True
-            except Exception as e:
-                if self._is_non_retryable_api_error(e):
-                    print(f"❌ Reconnexion impossible: {self._api_error_hint(e)}")
-                    return False
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-                else:
-                    print(f"❌ Reconnexion échouée après {self.max_retries} tentatives")
-        return False
-    
-    def safe_request(self, func, *args, **kwargs):
-        for attempt in range(self.max_retries):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                if self._is_non_retryable_api_error(e):
-                    print(f"❌ Erreur API non récupérable: {self._api_error_hint(e)}")
-                    raise e
-                if attempt < self.max_retries - 1:
-                    if self.reconnect():
-                        continue
-                    time.sleep(self.retry_delay)
-                else:
-                    print(f"❌ Erreur API: {e}")
-                    raise e
-
-    def _is_non_retryable_api_error(self, error):
-        """Détecte les erreurs qui ne seront pas corrigées par une reconnexion."""
-        try:
-            import ccxt
-            return isinstance(error, (ccxt.AuthenticationError, ccxt.PermissionDenied))
-        except Exception:
-            message = str(error).lower()
-            return 'permission denied' in message or 'authentication' in message
-
-    def _api_error_hint(self, error):
-        message = str(error)
-        if 'permission denied' in message.lower():
-            return "clé API refusée par l'exchange; vérifier permissions, restrictions IP et clé secrète"
-        return message
-    
-    def load_state(self):
-        loaded = False
-        state_key = 'paper' if self.paper_trading else 'live'
-        db_state = self.ml_live_logger.load_bot_state(state_key)
-        if isinstance(db_state, dict) and db_state:
-            self.state = db_state
-            loaded = True
-
-        if not loaded:
-            self.state = {'positions': [], 'last_update': None}
-        self._ensure_state_defaults()
-        if self.paper_trading:
-            self._restore_paper_balance()
-        self._restore_trailing_stops_from_state()
-        self.pending_orders = self.state.get('pending_orders', {})
-
-    def _ensure_state_defaults(self):
-        self.state.setdefault('positions', [])
-        self.state.setdefault('decision_journal', [])
-        self.state.setdefault('symbol_cooldowns', {})
-        self.state.setdefault('support_touch_filter', {'last_run_ts': 0, 'pairs': {}})
-        self.state.setdefault('market_context', {})
-        if len(self.state['decision_journal']) > self.decision_journal_max:
-            self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
-
-    def get_open_positions(self):
-        """Retourne les positions/ordres de vente actuellement ouverts (side == 'sell' et statut == 'opened')."""
-        by_symbol = {}
-        for p in self.state.get('positions', []):
-            if p.get('side') == 'sell' and p.get('status') == 'opened':
-                sym = p.get('symbol')
-                amt = float(p.get('amount') or 0)
-                price = float(p.get('price') or 0)
-                if sym and amt > 0 and price > 0:
-                    data = by_symbol.setdefault(sym, {'amount': 0.0, 'cost': 0.0})
-                    data['amount'] = amt
-                    data['cost'] = amt * price
-        return {sym: d for sym, d in by_symbol.items() if d['amount'] > 1e-8}
-
-    def _close_buy_positions(self, symbol, sell_amount, sell_price=None):
-        """Marque les positions buy comme fermées avec closed_at quand vendues."""
-        remaining = sell_amount
-        for p in self.state.get('positions', []):
-            if remaining <= 0:
-                break
-            if p.get('symbol') == symbol and p.get('side') == 'buy' and (p.get('status') == 'opened' or not p.get('closed_at')):
-                p['status'] = 'executed'
-                p['closed_at'] = datetime.now().isoformat()
-                remaining -= float(p.get('amount') or 0)
-
-    def _restore_paper_balance(self):
-        """Restaure l'USD paper depuis le state de manière exacte (capital initial - coût ouvert + PnL fermés)."""
-        initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
-        try:
-            positions = self.state.get('positions', [])
-            open_cost = sum(
-                float(p.get('amount') or 0) * float(p.get('price') or 0)
-                for p in positions
-                if p.get('side') == 'buy' and not p.get('closed_at')
-            )
-            from ui.server import trade_stats
-            stats = trade_stats(positions)
-            net_pnl = stats.get('total_pnl_net', 0)
-            self.paper_balance = max(0.0, round(initial_balance + net_pnl - open_cost, 2))
-        except Exception:
-            saved_balance = self.state.get('paper_balance')
-            self.paper_balance = float(saved_balance) if saved_balance is not None else initial_balance
-
-    def _restore_trailing_stops_from_state(self):
-        """Restaure les trailing stops en mémoire. En mode hybride Phase 5, les garde-fous restent actifs."""
-        hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
-        if os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true' and not hybrid_safety:
-            return
-
-        saved_stops = self.state.get('trailing_stops', {})
-        for position in self.state.get('positions', []):
-            if position.get('side') == 'sell' and position.get('status') == 'opened':
-                symbol = position.get('symbol')
-                buy_price = self.get_real_buy_price(symbol) or float(position.get('price', 0) or 0)
-                if not symbol or buy_price <= 0:
-                    continue
-
-                saved_data = saved_stops.get(symbol, {})
-                saved_percent = saved_data.get('trailing_percent')
-                
-                self.trailing_stop_manager.add_position(
-                    symbol, buy_price, 
-                    trailing_percent=saved_percent
-                )
-                
-                if symbol in self.trailing_stop_manager.positions and saved_data:
-                    pos = self.trailing_stop_manager.positions[symbol]
-                    if 'highest_price' in saved_data:
-                        pos['highest_price'] = float(saved_data['highest_price'])
-                    if 'stop_price' in saved_data:
-                        pos['stop_price'] = float(saved_data['stop_price'])
-                    if 'initial_trailing_percent' in saved_data:
-                        pos['initial_trailing_percent'] = float(saved_data['initial_trailing_percent'])
-                    elif saved_percent is not None:
-                        pos['initial_trailing_percent'] = float(saved_percent)
-                    if 'breakeven_active' in saved_data:
-                        pos['breakeven_active'] = bool(saved_data['breakeven_active'])
-                    # Restaurer resistance_price pour que le breakeven mode soit identique après redémarrage
-                    if 'resistance_price' in saved_data and saved_data['resistance_price'] is not None:
-                        pos['resistance_price'] = float(saved_data['resistance_price'])
-    
-    def save_state(self):
-        try:
-            if 'positions' in self.state:
-                seen_orders = set()
-                unique_positions = []
-                for pos in self.state['positions']:
-                    order_id = pos.get('order_id')
-                    if order_id and order_id in seen_orders:
-                        continue
-                    if order_id:
-                        seen_orders.add(order_id)
-                    unique_positions.append(pos)
-                unique_positions.sort(key=lambda x: x.get('timestamp', ''))
-                self.state['positions'] = unique_positions
-            if self.paper_trading:
-                self.state['paper_balance'] = self.paper_balance
-            self.state['pending_orders'] = self.pending_orders
-            if 'decision_journal' in self.state and len(self.state['decision_journal']) > self.decision_journal_max:
-                self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
-            if hasattr(self, 'trailing_stop_manager'):
-                self.state['trailing_stops'] = {
-                    symbol: {
-                        'stop_price': float(data['stop_price']),
-                        'highest_price': float(data['highest_price']),
-                        'buy_price': float(data['buy_price']),
-                        'trailing_percent': float(data.get('trailing_percent', self.trailing_stop_manager.trailing_percent)),
-                        'initial_trailing_percent': float(data.get('initial_trailing_percent', data.get('trailing_percent', self.trailing_stop_manager.trailing_percent))),
-                        'breakeven_active': bool(data.get('breakeven_active', False)),
-                        'resistance_price': float(data['resistance_price']) if data.get('resistance_price') else None
-                    }
-                    for symbol, data in self.trailing_stop_manager.positions.items()
-                }
-            self.state['last_update'] = datetime.now().isoformat()
-            with self._state_save_lock:
-                state_key = 'paper' if self.paper_trading else 'live'
-                if self.ml_live_logger.save_bot_state(self.state, state_key):
-                    return
-                raise RuntimeError("SQLite bot_state save failed")
-        except Exception as e:
-            print(f"⚠️ Erreur sauvegarde état: {e}")
-
-    def record_decision(self, symbol, action, allowed, reason, metrics=None, throttle_seconds=60):
-        """Journalise les décisions importantes sans spammer les skips identiques."""
-        try:
-            now = time.time()
-            throttle_key = f"{symbol}:{action}:{allowed}:{reason}"
-            if throttle_seconds and now - self._decision_log_throttle.get(throttle_key, 0) < throttle_seconds:
-                return
-            self._decision_log_throttle[throttle_key] = now
-
-            entry = {
-                'timestamp': datetime.now().isoformat(),
-                'symbol': symbol,
-                'action': action,
-                'allowed': bool(allowed),
-                'reason': reason,
-                'mode': 'paper' if self.paper_trading else 'live',
-                'metrics': metrics or {}
-            }
-
-            self.state.setdefault('decision_journal', []).append(entry)
-            self.state['decision_journal'] = self.state['decision_journal'][-self.decision_journal_max:]
-
-            if getattr(self, 'ml_live_logger', None):
-                self.ml_live_logger.record_decision_journal(
-                    entry,
-                    mode='paper' if self.paper_trading else 'live',
-                    max_entries=self.decision_journal_max
-                )
-        except Exception:
-            pass
 
     def get_symbol_cooldown_remaining(self, symbol):
         cooldown_until = float(self.state.get('symbol_cooldowns', {}).get(symbol, 0) or 0)
@@ -1236,6 +873,23 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         metrics['market_context_mode'] = context.get('mode')
         adjusted['risk_metrics'] = metrics
         return adjusted
+
+    def _confidence_sizing_factor(self, signal_strength):
+        """Ajuste prudemment la taille avant le ML selon la force du signal technique."""
+        try:
+            strength = float(signal_strength or 0.0)
+        except Exception:
+            strength = 50.0
+
+        if strength >= 80.0:
+            return 1.0
+        if strength >= 65.0:
+            return 0.85
+        if strength >= 50.0:
+            return 0.70
+        if strength >= 35.0:
+            return 0.50
+        return 0.35
 
     def _get_backtest_interval(self):
         # Dynamique : plus volatile = recalcul plus fréquent
@@ -1759,6 +1413,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 return False
             if self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}"):
                 self.trailing_stop_manager.remove_position(symbol)
+                if hasattr(self, 'set_symbol_cooldown'):
+                    self.set_symbol_cooldown(symbol, reason=f"ml_exit_{decision.lower()}")
                 self.record_decision(
                     symbol, 'sell', True, f"ml_exit_{decision.lower()}",
                     {
@@ -1774,6 +1430,28 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return False
 
         return False
+
+    def _rehydrate_open_positions_for_exit_evaluation(self):
+        """Re-hydrate les positions ouvertes dans trailing_stop_manager pour l'évaluation de sortie ML."""
+        if not hasattr(self, 'trailing_stop_manager') or not self.trailing_stop_manager:
+            return
+        open_pos = self.get_open_positions()
+        for symbol, data in open_pos.items():
+            if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
+                entry_price = float(data.get('entry_price', 0.0) or 0.0)
+                amount = float(data.get('amount', 0.0) or 0.0)
+                if entry_price > 0 and amount > 0:
+                    self.trailing_stop_manager.positions[symbol] = {
+                        'entry_price': entry_price,
+                        'buy_price': entry_price,
+                        'avg_entry_price': entry_price,
+                        'price': entry_price,
+                        'highest_price': entry_price,
+                        'stop_price': entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0),
+                        'trailing_active': False,
+                        'amount': amount,
+                        'buy_time': time.time()
+                    }
 
     def _update_trailing_stop_from_tick(self, symbol, current_price):
         """Évalue la sortie ML dès le tick WebSocket, sans attendre la boucle principale."""
@@ -2091,6 +1769,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # NOUVEAU: Optimisations quotidiennes automatiques
                 self.run_daily_optimizations()
                 self.run_ml_live_analysis_if_due()
+                self.run_health_checks_if_due()
+                self.run_ml_auto_retraining_if_due()
+                self.evaluate_safe_fallback_if_due()
                 
                 time.sleep(0.5)
                 
@@ -2464,128 +2145,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 **self._build_ml_entry_decision_metrics(current_price, ml_win_prob, ml_exit_forecast, ml_bot_context),
                 'market_context': market_context
             },
-            throttle_seconds=0
+            throttle_seconds=0,
+            entry_id=ml_entry_learning_id
         )
         self.execute_buy(symbol, position_data, current_price, reason, ml_entry_learning_id=ml_entry_learning_id)
-    
-    def _confidence_sizing_factor(self, confidence):
-        """Calcule un multiplicateur de position selon la confiance du signal"""
-        try:
-            conf = float(confidence)
-        except:
-            return 1.0
-        
-        if conf < 55:
-            return 0.5
-        elif conf < 65:
-            return 0.6
-        elif conf < 75:
-            return 0.8
-        elif conf < 85:
-            return 1.0
-        elif conf < 95:
-            return 1.2
-        else:
-            return 1.4
-            
-    def get_real_trading_fee(self, symbol, order_type='market'):
-        """Récupère frais réels au lieu des frais statiques"""
-        try:
-            return self.capital_manager.get_fee_for_trade(symbol, order_type)
-        except:
-            return self.trading_fee  # Fallback
-    
-    def calculate_real_trade_cost(self, symbol, amount_usd, order_type='market'):
-        """Calcule coût réel avec frais dynamiques"""
-        try:
-            return self.capital_manager.calculate_trade_cost(symbol, amount_usd, order_type)
-        except:
-            # Fallback avec frais statiques
-            fee_cost = amount_usd * self.trading_fee
-            return {
-                'amount': amount_usd,
-                'fee_rate': self.trading_fee,
-                'fee_cost': fee_cost,
-                'total_cost': amount_usd + fee_cost,
-                'vip_level': 'Unknown',
-                'exchange': os.getenv('EXCHANGE', 'binance').lower()
-            }
-    
-    def show_professional_metrics(self):
-        """Affiche métriques professionnelles"""
-        try:
-            # Frais dynamiques
-            fees_summary = self.capital_manager.get_fees_summary()
-            self.async_print(f"💰 FRAIS: {fees_summary['vip_level']} | Optimal: {fees_summary['optimal_fee']}")
-            
-            # Seuils adaptatifs pour cryptos tradables
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
-            for pair in trading_pairs[:2]:  # Top 2
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
-                crypto = symbol.split('/')[0]
-                
-                if symbol in self.risk_manager.adaptive_thresholds:
-                    threshold_summary = self.risk_manager.get_threshold_summary(symbol)
-                    self.async_print(f"🎯 {crypto}: Seuil {threshold_summary['threshold_final']} (Perf: {threshold_summary['performance_adj']}, Market: {threshold_summary['market_adj']})")
-        
-        except Exception as e:
-            pass  # Silencieux si erreur
-    
-    def run_daily_optimizations(self):
-        """Lance optimisations quotidiennes comme les pros"""
-        try:
-            # Optimiser seuils adaptatifs
-            self.risk_manager.optimize_thresholds_daily()
-            self.capital_manager.sync_fees_to_bot()  # Force refresh and sync fees
-            
-        except Exception as e:
-            print(f"⚠️ Erreur optimisations quotidiennes: {e}")
-
-    def run_ml_live_analysis_if_due(self):
-        """Lance l'analyse Phase 4B en arrière-plan sans bloquer le trading."""
-        try:
-            if self.ml_live_analysis_interval <= 0:
-                return False
-            now = time.time()
-            if self._ml_live_analysis_process and self._ml_live_analysis_process.poll() is None:
-                return False
-            if now - self._last_ml_live_analysis < self.ml_live_analysis_interval:
-                return False
-
-            self._last_ml_live_analysis = now
-            command = [
-                sys.executable,
-                'scripts/analyze_ml_live_performance.py',
-                '--max-replay',
-                os.getenv('ML_LIVE_ANALYSIS_MAX_REPLAY', '250')
-            ]
-            creationflags = 0
-            if os.name == 'nt':
-                creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-            self._ml_live_analysis_process = subprocess.Popen(
-                command,
-                cwd=os.getcwd(),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                creationflags=creationflags
-            )
-
-            # Évaluation automatique Champion vs Challenger Phase 5
-            if os.path.exists(os.path.join('data', 'aegis_challenger.joblib')):
-                eval_cmd = [sys.executable, 'scripts/evaluate_champion_challenger.py', '--promote']
-                subprocess.Popen(
-                    eval_cmd,
-                    cwd=os.getcwd(),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                    creationflags=creationflags
-                )
-            return True
-        except Exception as e:
-            print(f"⚠️ Analyse ML live indisponible: {e}")
-            return False
     
     def get_optimal_check_interval(self, all_pairs):
         """Calcule intervalle optimal selon volatilité multi-pairs - TOUTES les cryptos"""
@@ -2661,29 +2224,423 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 value = total * self.get_price(symbol)
                 min_cost = self.get_min_amount(symbol)['min_cost']
                 return value >= min_cost
-            
             return False
-        except:
+        except Exception:
             return False
-    
-    def get_volume_ratio(self, symbol):
-        """Calcule ratio volume actuel vs moyenne"""
+
+    def trigger_safe_fallback_mode(self, reason="Perte de performance ou drift critique"):
+        """
+        Déclenche le Mode Safe Fallback & Auto-Rollback (Phase 10) :
+        - Active le mode Safe (réduction sizing à 35%)
+        - Restaure le modèle Champion de sauvegarde `aegis_model_backup.joblib` s'il existe
+        - Journalise dans governance_logs et alerte sur Telegram.
+        """
         try:
-            klines = self.get_klines(symbol, 10, '15m')
-            if len(klines) < 5:
-                return 1.0
+            if getattr(self, 'safe_fallback_mode', False):
+                return False
+
+            self.safe_fallback_mode = True
+            print(f"🚨 DÉCLENCHEMENT MODE SAFE FALLBACK & AUTO-ROLLBACK ({reason})")
+
+            backup_path = os.path.join('data', 'aegis_model_backup.joblib')
+            champion_path = os.path.join('data', 'aegis_model.joblib')
+            restored = False
+
+            if os.path.exists(backup_path):
+                import shutil
+                shutil.copy2(backup_path, champion_path)
+                if hasattr(self, 'ml_engine') and self.ml_engine:
+                    self.ml_engine.model_path = champion_path
+                    self.ml_engine.load_model()
+                restored = True
+                print("  ✅ Modèle Champion de sauvegarde restauré avec succès.")
+
+                # Sauvegarde d'archive du rollback dans data/backups/
+                try:
+                    backups_dir = os.path.join('data', 'backups')
+                    os.makedirs(backups_dir, exist_ok=True)
+                    from datetime import datetime as _dt
+                    ts_rb_path = os.path.join(backups_dir, f"aegis_model_{_dt.now().strftime('%Y%m%d_%H%M%S')}.joblib")
+                    shutil.copy2(backup_path, ts_rb_path)
+                    print(f"  📦 Archive du rollback conservée dans backups/ : {ts_rb_path}")
+                except Exception:
+                    pass
+
+            if getattr(self, 'ml_live_logger', None):
+                self.ml_live_logger.record_governance_event(
+                    event_type='auto_rollback' if restored else 'safe_mode_enabled',
+                    source_model='champion_live',
+                    target_model='champion_backup' if restored else 'none',
+                    metrics={'safe_fallback_mode': True, 'restored_backup': restored},
+                    trigger_type='auto',
+                    reason=reason
+                )
+
+            if hasattr(self, 'notifier') and self.notifier:
+                msg = f"🚨 **AUTO-ROLLBACK & SAFE MODE ACTIVÉ**\n\nMotif: {reason}\nRestauré backup: {'Oui' if restored else 'Non'}\nAction: Position Sizing réduit à 35%"
+                self.notifier.notify(msg)
+
+            return True
+        except Exception as e:
+            print(f"⚠️ Erreur trigger_safe_fallback_mode: {e}")
+            return False
+
+    def run_health_checks_if_due(self, force=False):
+        """Execute les health checks Phase 8 avec throttling et journal de gouvernance."""
+        try:
+            if not getattr(self, 'health_manager', None):
+                return None
+
+            now = time.time()
+            if not force and now - self._last_health_check < max(30, self.health_check_interval):
+                return None
+            self._last_health_check = now
+
+            result = self.health_manager.run_checks()
+            status = str(result.get('global_status') or 'UNKNOWN').upper()
+            previous = self._last_health_status
+            status_changed = previous != status
+            self._last_health_status = status
+
+            should_notify = (
+                status in ('WARN', 'CRITICAL')
+                and (
+                    status_changed
+                    or now - self._last_health_notify >= max(300, self.health_notify_interval)
+                )
+            )
+
+            if getattr(self, 'ml_live_logger', None) and (status_changed or status in ('WARN', 'CRITICAL')):
+                metrics = {
+                    'global_status': status,
+                    'database': result.get('database', {}),
+                    'websocket': result.get('websocket', {}),
+                    'exchange': result.get('exchange', {}),
+                    'ml_engine': result.get('ml_engine', {}),
+                    'bot_loop': result.get('bot_loop', {}),
+                }
+                self.ml_live_logger.record_governance_event(
+                    event_type='health_status',
+                    source_model='runtime',
+                    target_model=None,
+                    metrics=metrics,
+                    trigger_type='auto',
+                    reason=f"Health status {previous or 'UNKNOWN'} -> {status}" if status_changed else f"Health status {status}"
+                )
+
+            if should_notify and getattr(self, 'notifier', None):
+                self._last_health_notify = now
+                self.notifier.notify_health_status(self.health_manager.get_summary_text(result))
+
+            if status == 'CRITICAL':
+                self._health_critical_count += 1
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_governance_event(
+                        event_type='health_action_required',
+                        source_model='runtime',
+                        target_model='operator',
+                        metrics={'critical_count': self._health_critical_count, 'safe_fallback_enabled': self.health_safe_fallback_enabled},
+                        trigger_type='auto',
+                        reason='Health check critique detecte'
+                    )
+                if (
+                    self.health_safe_fallback_enabled
+                    and self._health_critical_count >= max(1, self.health_critical_fallback_after)
+                ):
+                    self.trigger_safe_fallback_mode(reason='Health check critique persistant')
+            else:
+                self._health_critical_count = 0
+
+            return result
+        except Exception as e:
+            print(f"⚠️ Erreur run_health_checks_if_due: {e}")
+            return None
+
+    def connect(self):
+        """Initialise la connexion avec l'exchange configuré (Binance/Kraken)."""
+        try:
+            exchange_name = os.getenv('EXCHANGE', 'binance').lower()
+            if exchange_name == 'kraken':
+                try:
+                    from core.exchange.kraken import KrakenClient
+                    self.exchange = KrakenClient(self.api_key, self.api_secret, self.testnet)
+                except Exception:
+                    from core.exchange.binance import BinanceClient
+                    self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
+            else:
+                from core.exchange.binance import BinanceClient
+                self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
+
+            if hasattr(self.exchange, 'connect'):
+                self.exchange.connect()
+            print(f"✅ Exchange {exchange_name.upper()} connecté avec succès.")
+            return True
+        except Exception as e:
+            print(f"⚠️ Avertissement connexion exchange: {e}")
+            if not hasattr(self, 'exchange') or self.exchange is None:
+                from core.exchange.binance import BinanceClient
+                self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
+            return False
+
+    def record_decision(self, symbol, action_type=None, confidence=None, p_win=None, reason="", features=None, mode='paper', throttle_seconds=0, **kwargs):
+        """Journalise une décision (Achat, Vente, Refus ML, Trailing Stop) dans SQLite et governance_logs avec throttling."""
+        try:
+            action = kwargs.get('action', action_type)
+            allowed = kwargs.get('allowed', confidence if isinstance(confidence, bool) else None)
+            metrics = kwargs.get('metrics', features)
             
-            current_volume = klines[-1]['volume']
-            avg_volume = sum(k['volume'] for k in klines[:-1]) / (len(klines) - 1)
+            # Si le 4ème argument positionnel est une chaîne de caractères, c'est 'reason' et non 'p_win'
+            if isinstance(p_win, str) and not reason:
+                reason = p_win
+                p_win = None
+
+            final_features = metrics if isinstance(metrics, dict) else (features if isinstance(features, dict) else {})
             
-            return current_volume / avg_volume if avg_volume > 0 else 1.0
-        except:
-            return 1.0
-    
+            # Gestion du throttling (pour éviter de spammer le même log pour un même symbole / raison)
+            if throttle_seconds > 0:
+                if not hasattr(self, '_decision_log_throttle'):
+                    self._decision_log_throttle = {}
+                throttle_key = (symbol, str(action), str(reason))
+                now = time.time()
+                last_time = self._decision_log_throttle.get(throttle_key, 0)
+                if now - last_time < throttle_seconds:
+                    return
+                self._decision_log_throttle[throttle_key] = now
+
+            conf_val = confidence if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) else None
+            p_win_val = p_win if isinstance(p_win, (int, float)) and not isinstance(p_win, bool) else None
+
+            entry = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': symbol,
+                'action_type': action,
+                'action': action,
+                'confidence': conf_val,
+                'allowed': allowed,
+                'p_win': p_win_val,
+                'reason': reason,
+                'features': final_features,
+                'metrics': final_features
+            }
+            if hasattr(self, 'ml_live_logger') and self.ml_live_logger:
+                self.ml_live_logger.record_decision_journal(entry, mode=mode)
+        except Exception as e:
+            print(f"⚠️ Erreur record_decision: {e}")
+
+    def run_daily_optimizations(self):
+        """Exécute les optimisations et nettoyages quotidiens du bot."""
+        try:
+            now = time.time()
+            last_opt = getattr(self, '_last_daily_optimizations', 0)
+            if now - last_opt > 86400:  # Une fois par jour
+                self._last_daily_optimizations = now
+                if hasattr(self, 'risk_manager') and hasattr(self.risk_manager, 'update_daily_stats'):
+                    self.risk_manager.update_daily_stats()
+                if hasattr(self, '_decision_log_throttle'):
+                    self._decision_log_throttle = {k: v for k, v in self._decision_log_throttle.items() if now - v < 3600}
+        except Exception as e:
+            print(f"⚠️ Erreur run_daily_optimizations: {e}")
+
+    def run_ml_live_analysis_if_due(self):
+        """Lance l'analyse de performance ML en arrière-plan si l'intervalle est écoulé."""
+        try:
+            now = time.time()
+            last_analysis = getattr(self, '_last_ml_live_analysis', 0)
+            interval = getattr(self, 'ml_live_analysis_interval', 21600)
+            if now - last_analysis > interval:
+                self._last_ml_live_analysis = now
+                script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scripts', 'analyze_ml_live_performance.py')
+                if os.path.exists(script_path):
+                    proc = getattr(self, '_ml_live_analysis_process', None)
+                    if proc is None or proc.poll() is not None:
+                        self._ml_live_analysis_process = subprocess.Popen([sys.executable, script_path])
+        except Exception as e:
+            print(f"⚠️ Erreur run_ml_live_analysis_if_due: {e}")
+
+    def run_ml_auto_retraining_if_due(self, force=False):
+        """Planifie le retraining ML sans bloquer la boucle de trading."""
+        try:
+            if not force and not getattr(self, 'ml_auto_retrain_enabled', False):
+                return False
+
+            proc = getattr(self, '_ml_auto_retrain_process', None)
+            if proc is not None and proc.poll() is None:
+                return False
+
+            now = time.time()
+            interval = max(3600, int(getattr(self, 'ml_auto_retrain_interval', 604800)))
+            last_run = getattr(self, '_last_ml_auto_retrain', 0)
+            if not force and now - last_run < interval:
+                return False
+
+            script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scripts', 'train_and_evaluate_ml_model.py')
+            if not os.path.exists(script_path):
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_governance_event(
+                        event_type='auto_retraining_skipped',
+                        source_model='runtime',
+                        target_model='challenger',
+                        trigger_type='auto',
+                        reason='Script train_and_evaluate_ml_model.py introuvable'
+                    )
+                return False
+
+            command = [
+                sys.executable,
+                script_path,
+                '--dir',
+                'data',
+                '--db',
+                os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'),
+                '--trigger',
+                'auto',
+            ]
+            if getattr(self, 'ml_auto_retrain_check_only', True):
+                command.append('--check-only')
+            if getattr(self, 'ml_auto_retrain_fast', False):
+                command.append('--fast')
+
+            self._last_ml_auto_retrain = now
+            self._ml_auto_retrain_process = subprocess.Popen(command)
+            if getattr(self, 'ml_live_logger', None):
+                self.ml_live_logger.record_governance_event(
+                    event_type='auto_retraining_started',
+                    source_model='champion',
+                    target_model='challenger',
+                    metrics={
+                        'check_only': bool(getattr(self, 'ml_auto_retrain_check_only', True)),
+                        'fast': bool(getattr(self, 'ml_auto_retrain_fast', False)),
+                        'interval_seconds': interval,
+                        'pid': self._ml_auto_retrain_process.pid,
+                    },
+                    trigger_type='auto',
+                    reason='Retraining planifie lance en arriere-plan'
+                )
+            return True
+        except Exception as e:
+            print(f"⚠️ Erreur run_ml_auto_retraining_if_due: {e}")
+            return False
+
+    def evaluate_safe_fallback_if_due(self, force=False):
+        """Active le safe fallback si les signaux de risque Phase 10 deviennent critiques."""
+        try:
+            if not force and not getattr(self, 'safe_fallback_enabled', True):
+                return False
+            if getattr(self, 'safe_fallback_mode', False):
+                return False
+
+            now = time.time()
+            if not force and now - self._last_safe_fallback_check < max(60, self.safe_fallback_check_interval):
+                return False
+            self._last_safe_fallback_check = now
+
+            signals = self._collect_safe_fallback_signals()
+            reasons = []
+            if signals.get('consecutive_losses', 0) >= self.safe_fallback_consecutive_losses:
+                reasons.append(f"{signals['consecutive_losses']} pertes consecutives")
+            if abs(signals.get('daily_loss_usd', 0.0)) >= self.safe_fallback_daily_loss_usd:
+                reasons.append(f"perte journaliere {signals['daily_loss_usd']:.2f} USD")
+            if abs(signals.get('weekly_loss_usd', 0.0)) >= self.safe_fallback_weekly_loss_usd:
+                reasons.append(f"perte hebdo {signals['weekly_loss_usd']:.2f} USD")
+            if str(signals.get('drift_status') or '').lower() in self.safe_fallback_drift_statuses:
+                reasons.append(f"drift ML {signals.get('drift_status')}")
+
+            if not reasons:
+                return False
+
+            reason = '; '.join(reasons)
+            if getattr(self, 'ml_live_logger', None):
+                self.ml_live_logger.record_governance_event(
+                    event_type='safe_fallback_triggered',
+                    source_model='runtime',
+                    target_model='safe_fallback',
+                    metrics=signals,
+                    trigger_type='auto',
+                    reason=reason
+                )
+            return self.trigger_safe_fallback_mode(reason=reason)
+        except Exception as e:
+            print(f"⚠️ Erreur evaluate_safe_fallback_if_due: {e}")
+            return False
+
+    def _collect_safe_fallback_signals(self):
+        signals = {
+            'consecutive_losses': 0,
+            'daily_loss_usd': 0.0,
+            'weekly_loss_usd': 0.0,
+            'drift_status': None,
+        }
+        try:
+            if getattr(self, 'risk_manager', None):
+                stats = self.risk_manager.get_stats() if hasattr(self.risk_manager, 'get_stats') else getattr(self.risk_manager, 'daily_stats', {})
+                signals['daily_loss_usd'] = abs(float((stats or {}).get('total_loss') or 0.0))
+                if hasattr(self.risk_manager, 'get_weekly_loss'):
+                    signals['weekly_loss_usd'] = abs(float(self.risk_manager.get_weekly_loss() or 0.0))
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, 'ml_live_logger', None):
+                import sqlite3 as _sqlite3
+                conn = _sqlite3.connect(self.ml_live_logger.sqlite_file)
+                cur = conn.cursor()
+                rows = cur.execute("""
+                    SELECT pnl
+                    FROM ml_trade_outcomes
+                    WHERE pnl IS NOT NULL
+                    ORDER BY timestamp DESC
+                    LIMIT 10
+                """).fetchall()
+                losses = 0
+                for (pnl,) in rows:
+                    if float(pnl or 0.0) < 0:
+                        losses += 1
+                    else:
+                        break
+                signals['consecutive_losses'] = losses
+
+                drift = cur.execute("""
+                    SELECT status
+                    FROM ml_drift_alerts
+                    ORDER BY generated_at DESC
+                    LIMIT 1
+                """).fetchone()
+                if drift:
+                    signals['drift_status'] = drift[0]
+                conn.close()
+        except Exception:
+            pass
+        return signals
+
+    def safe_request(self, func, *args, **kwargs):
+        """Exécute une requête exchange de manière sécurisée avec retries et gestion des erreurs."""
+        if not func:
+            return None
+        max_retries = getattr(self, 'max_retries', 3)
+        retry_delay = getattr(self, 'retry_delay', 1)
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(retry_delay)
+        return None
+
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE + vérifie capital et positions ouvertes"""
         from utils.market_analyzer import MarketAnalyzer
         
+        # Gouvernance Risque Phase 10 : Perte hebdo & exposition globale
+        if hasattr(self, 'risk_manager') and self.risk_manager.is_weekly_loss_exceeded():
+            print(f"🛑 GOUVERNANCE RISQUE: Perte hebdomadaire max atteinte ({self.risk_manager.get_weekly_loss():.2f} USD). Achats bloqués.")
+            return False
+
+        if hasattr(self, 'capital_manager'):
+            trade_size_usd = self.capital_manager.get_trade_amount(symbol)
+            if not self.capital_manager.can_open_new_position(symbol, trade_size_usd):
+                return False
+
         # 1. Vérification en Paper Trading
         if self.paper_trading:
             open_paper_positions = [

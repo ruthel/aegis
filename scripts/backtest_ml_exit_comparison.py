@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from core.ml_engine import MLEngine
 from scripts.backtest_support_touch import detect_trade_signal, simulate_trade
-from scripts.train_ml_model import build_training_bot_context, support_stats_from_history
+from scripts.train_and_evaluate_ml_model import build_training_bot_context, support_stats_from_history
 from utils.exit_engine import ExitDecisionEngine
 from utils.pattern_analyzer import PatternAnalyzer
 
@@ -157,8 +157,8 @@ def simulate_ml_exit(symbol, klines, entry_index, signal, args, ml_engine, exit_
 
 
 def main():
-    load_dotenv(override=True)
     load_dotenv('.env.local', override=True)
+    load_dotenv('.env.ui', override=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--pairs', default='BTC/USDT,ETH/USDT,SOL/USDT,ADA/USDT')
     parser.add_argument('--start-date', default='2026-01-01')

@@ -27,7 +27,7 @@ python start.py
 
 Effet :
 
-1. charge `.env`, `.env.local`, puis `.env.ui`;
+1. charge `.env.local`, puis `.env.ui`;
 2. demarre le serveur Flask sur `http://127.0.0.1:8080` ou `DASHBOARD_PORT`;
 3. si `AUTO_START_BOT=True`, lance le moteur bot en arriere-plan via `ui/server.py`;
 4. sert la SPA compilee depuis `ui/public/spa`.
@@ -266,7 +266,6 @@ Charts :
 | `ScoreHistoryChart.tsx` | historique des scores crypto |
 | `DailyBarChart.tsx` | PnL par jour avec amCharts 5 |
 | `HourlyBarChart.tsx` | PnL par heure avec amCharts 5 |
-| `ColumnChart.tsx` | ancien composant generique, a conserver seulement si encore reutilise |
 
 Les graphiques amCharts recents ne doivent pas blink : ils creent le chart une seule fois et mettent seulement a jour `xAxis.data` et `series.data`.
 
@@ -311,11 +310,9 @@ Comportement actuel :
 
 | Script | Role |
 |--------|------|
-| `scripts/train_ml_model.py` | entrainement entree avec replay learning |
-| `scripts/train_ml_exit_model.py` | entrainement modele sortie |
-| `scripts/walk_forward_validation.py` | validation temporelle sans fuite |
-| `scripts/evaluate_champion_challenger.py` | comparaison/promotion/rollback champion-challenger |
+| `scripts/train_and_evaluate_ml_model.py` | pipeline unifiée d'entraînement Entrée + Sortie, comparaison/promotion/rollback champion-challenger (Phase 10) |
 | `scripts/analyze_ml_live_performance.py` | analyse live, calibration, drift, replay refuses |
+| `scripts/walk_forward_validation.py` | validation temporelle sans fuite |
 | `scripts/backtest_support_touch.py` | backtest Support Touch vers SQLite |
 | `scripts/backtest_ml_exit_comparison.py` | comparaison sorties ML |
 
@@ -342,7 +339,7 @@ Comportement actuel :
 
 ## Points de Vigilance
 
-- Redemarrer le bot apres changement `.env.local` ou logique ML.
+- Redemarrer le bot apres changement `.env.local`, `.env.ui` ou logique ML.
 - Ne pas supprimer les fichiers SQLite WAL/SHM pendant execution.
 - Les stores Zustand ne sont pas persistants : c'est volontaire, SQLite et le backend sont la source de verite.
 - `/api/status` et `/api/ml_status` existent encore pour bootstrap/debug, mais le live normal passe par `/ws/live`.

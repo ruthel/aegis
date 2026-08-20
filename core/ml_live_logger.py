@@ -34,6 +34,7 @@ from core.db_orm import (
     MlTradeOutcome,
     SupportTouchResult,
     Notification,
+    GovernanceLog,
     create_session_factory,
     now_iso,
 )
@@ -1590,6 +1591,16 @@ class MLLiveLogger:
             pass
         return threshold
 
+    def _continue_probability_from_reason(self, reason):
+        try:
+            reason_text = str(reason or '')
+            marker = 'ml_continue_'
+            if marker in reason_text:
+                return float(reason_text.split(marker, 1)[1].split('%', 1)[0])
+        except Exception:
+            pass
+        return None
+
     def _position_duration_minutes(self, timestamp):
         if not timestamp:
             return None
@@ -2646,6 +2657,34 @@ class MLLiveLogger:
             """,
             (account_id,),
         ).fetchall()
+        buy_remaining = {}
+        buy_closed_at = {}
+        buy_queues = {}
+        for row in rows:
+            order_id, symbol, side, status, amount, price, opened_at, closed_at = row[:8]
+            created_at = row[8]
+            side_text = str(side or '').lower()
+            status_text = str(status or '').lower()
+            normalized_symbol = self._normalize_live_symbol(symbol)
+            qty = float(amount or 0.0)
+            if qty <= 0:
+                continue
+            if side_text == 'buy' and status_text in {'filled', 'closed', 'executed'}:
+                buy_remaining[order_id] = qty
+                buy_queues.setdefault(normalized_symbol, []).append([order_id, qty])
+            elif side_text == 'sell' and status_text in {'filled', 'closed', 'executed'}:
+                remaining_sell = qty
+                queue = buy_queues.get(normalized_symbol, [])
+                while remaining_sell > 1e-12 and queue:
+                    buy_item = queue[0]
+                    consumed = min(remaining_sell, buy_item[1])
+                    buy_item[1] -= consumed
+                    buy_remaining[buy_item[0]] = max(0.0, buy_remaining.get(buy_item[0], 0.0) - consumed)
+                    remaining_sell -= consumed
+                    if buy_item[1] <= 1e-12:
+                        buy_closed_at[buy_item[0]] = closed_at or opened_at or created_at
+                        queue.pop(0)
+
         for row in rows:
             (
                 order_id, symbol, side, status, amount, price, opened_at, closed_at,
@@ -2654,9 +2693,7 @@ class MLLiveLogger:
             side_text = str(side or '').lower()
             status_text = str(status or '').lower()
             bot_status = 'opened' if status_text == 'open' else 'executed' if status_text == 'filled' else status
-            position_closed_at = closed_at
-            if side_text == 'buy' and source != 'state_accounting':
-                position_closed_at = None
+            position_closed_at = buy_closed_at.get(order_id) if side_text == 'buy' else closed_at
             positions.append({
                 'symbol': self._normalize_live_symbol(symbol),
                 'side': side_text,
@@ -3011,11 +3048,18 @@ class MLLiveLogger:
                             if recommendation.get('min_p_continue') is not None
                             else self._exit_threshold_from_reason(reason, default_exit_threshold)
                         )
+                        p_continue = (
+                            recommendation.get('p_continue')
+                            if recommendation.get('p_continue') is not None
+                            else recommendation.get('continuation_probability')
+                        )
+                        if p_continue is None:
+                            p_continue = self._continue_probability_from_reason(reason)
                         session.merge(MlExitRecommendation(
                             mode=key,
                             symbol=normalized_symbol,
                             entry_price=self._clean(recommendation.get('entry_price') or context.get('entry_price')),
-                            p_continue=self._clean(recommendation.get('continuation_score') or recommendation.get('p_continue')),
+                            p_continue=self._clean(p_continue),
                             min_p_continue=self._clean(min_p_continue),
                             exit_decision=text_value(recommendation.get('decision')),
                             exit_reason=reason,
@@ -3058,11 +3102,18 @@ class MLLiveLogger:
                             )
                             if min_p_continue is None:
                                 min_p_continue = self._exit_threshold_from_reason(reason, default_exit_threshold)
+                            p_continue = (
+                                pred.get('p_continue')
+                                if pred.get('p_continue') is not None
+                                else exit_forecast.get('p_continue')
+                            )
+                            if p_continue is None:
+                                p_continue = self._continue_probability_from_reason(reason)
                             session.merge(MlExitRecommendation(
                                 mode=key,
                                 symbol=symbol,
                                 entry_price=self._clean(pred.get('price') or pred.get('entry_price') or exit_forecast.get('entry_price') or context.get('entry_price')),
-                                p_continue=self._clean(pred.get('p_continue') or exit_forecast.get('p_continue')),
+                                p_continue=self._clean(p_continue),
                                 min_p_continue=self._clean(min_p_continue),
                                 exit_decision=text_value(pred.get('exit_decision') or exit_forecast.get('decision')),
                                 exit_reason=reason,
@@ -3110,10 +3161,15 @@ class MLLiveLogger:
             price=event.get('price'),
             amount=event.get('amount'),
         ))
+        if event.get('entry_id'):
+            entry_row = session.get(DecisionLog, event.get('entry_id'))
+            if entry_row:
+                entry_row.label_status = 'opened'
 
 
 
     def _insert_trade_outcome(self, session, event):
+        self._resolve_outcome_entry_link(session, event)
         session.merge(MlTradeOutcome(
             event_id=event.get('event_id'),
             timestamp=event.get('timestamp'),
@@ -3131,7 +3187,38 @@ class MLLiveLogger:
             label_status=event.get('label_status'),
         ))
         if event.get('entry_id'):
+            entry_row = session.get(DecisionLog, event.get('entry_id'))
+            if entry_row:
+                entry_row.label_status = 'closed'
             session.execute(delete(MlOpenEntry).where(MlOpenEntry.symbol == event.get('symbol')))
+
+    def _resolve_outcome_entry_link(self, session, event):
+        """Relie une sortie a la meilleure entree ML ouverte quand le lien direct manque."""
+        if not isinstance(event, dict) or event.get('entry_id'):
+            return
+        symbol = event.get('symbol')
+        if not symbol:
+            return
+
+        open_entry = session.get(MlOpenEntry, symbol)
+        if open_entry and open_entry.entry_id:
+            event['entry_id'] = open_entry.entry_id
+            event['label_status'] = 'closed'
+            return
+
+        linked_outcomes = select(MlTradeOutcome.entry_id).where(MlTradeOutcome.entry_id.is_not(None))
+        candidates = session.scalars(
+            select(DecisionLog)
+            .where(DecisionLog.action_type == 'ENTRY')
+            .where(DecisionLog.symbol == symbol)
+            .where(DecisionLog.decision == 'accepted')
+            .where(~DecisionLog.event_id.in_(linked_outcomes))
+            .order_by(DecisionLog.timestamp.desc())
+            .limit(1)
+        ).all()
+        if candidates:
+            event['entry_id'] = candidates[0].event_id
+            event['label_status'] = 'closed_relinked'
 
     def record_telegram_message(self, message_id, text, timestamp=None, direction='outgoing'):
         event = {
@@ -3376,6 +3463,13 @@ class MLLiveLogger:
 
             with self._lock:
                 with self._orm_session() as session:
+                    session.merge(SysAudit(
+                        event_id=str(event_id),
+                        event_type=f"decision_{action.lower()}",
+                        timestamp=timestamp,
+                        symbol=entry.get('symbol') or '',
+                        mode=entry.get('mode') or mode,
+                    ))
                     session.merge(DecisionLog(
                         event_id=str(event_id),
                         action_type=action,
@@ -3785,6 +3879,90 @@ class MLLiveLogger:
             return True
         except Exception:
             return False
+
+    def save_daily_stats(self, stats):
+        if not isinstance(stats, dict):
+            return False
+        try:
+            now = now_iso()
+            stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
+            with self._orm_session() as session:
+                row = session.get(BotDailyStat, stat_date)
+                if not row:
+                    row = BotDailyStat(stat_date=stat_date, created_at=now)
+                    session.add(row)
+                row.trades_count = int(stats.get('trades_count') or 0)
+                row.total_loss = self._clean(stats.get('total_loss') or 0)
+                row.total_profit = self._clean(stats.get('total_profit') or 0)
+                row.emergency_stop = 1 if stats.get('emergency_stop') else 0
+                # Persistance des compteurs gagnants/perdants (tolérance si colonne absente)
+                try:
+                    row.winning_trades_count = int(stats.get('winning_trades_count') or 0)
+                    row.losing_trades_count = int(stats.get('losing_trades_count') or 0)
+                except Exception:
+                    pass
+                row.updated_at = now
+                session.commit()
+            return True
+        except Exception:
+            return False
+
+    def load_daily_stats(self, stat_date=None):
+        try:
+            stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
+            with self._orm_session() as session:
+                row = session.get(BotDailyStat, stat_date)
+            if not row:
+                return {}
+            result = {
+                'date': row.stat_date,
+                'trades_count': row.trades_count or 0,
+                'total_loss': row.total_loss or 0,
+                'total_profit': row.total_profit or 0,
+                'emergency_stop': bool(row.emergency_stop),
+            }
+            # Charger les compteurs persistés si la colonne existe
+            try:
+                result['winning_trades_count'] = row.winning_trades_count or 0
+                result['losing_trades_count'] = row.losing_trades_count or 0
+            except Exception:
+                pass
+            return result
+        except Exception:
+            return {}
+
+    def load_open_entries(self):
+        try:
+            with self._orm_session() as session:
+                rows = session.scalars(select(MlOpenEntry).order_by(MlOpenEntry.symbol.asc())).all()
+            return {
+                row.symbol: {
+                    'entry_id': row.entry_id,
+                    'symbol': row.symbol,
+                    'opened_at': row.opened_at,
+                    'order_id': row.order_id,
+                    'price': row.price,
+                    'amount': row.amount,
+                }
+                for row in rows
+            }
+        except Exception:
+            return {}
+
+    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason):
+        """Enregistre les métriques de microstructure et d'exécution dans MlOpenEntry (Phase 7)."""
+        try:
+            with self._orm_session() as session:
+                row = session.get(MlOpenEntry, str(symbol))
+                if row:
+                    row.expected_price = self._clean(expected_price)
+                    row.requested_price = self._clean(requested_price)
+                    row.slippage_pct = self._clean(slippage_pct)
+                    row.spread_pct = self._clean(spread_pct)
+                    row.order_type = str(order_type)
+                    row.duration_ms = self._clean(duration_ms)
+                    session.commit()
+            return True
         except Exception:
             return False
 
@@ -3796,14 +3974,17 @@ class MLLiveLogger:
                 str(name): self._clean(value)
                 for name, value in features.items()
             }
-        values = list(features.tolist() if hasattr(features, 'tolist') else features)
-        names = list(feature_names or [])
-        if not names:
-            names = [f'feature_{idx}' for idx in range(len(values))]
-        return {
-            str(name): self._clean(values[idx])
-            for idx, name in enumerate(names[:len(values)])
-        }
+        try:
+            values = list(features.tolist() if hasattr(features, 'tolist') else features)
+            names = list(feature_names or [])
+            if not names:
+                names = [f'feature_{idx}' for idx in range(len(values))]
+            return {
+                str(name): self._clean(values[idx])
+                for idx, name in enumerate(names[:len(values)])
+            }
+        except Exception:
+            return {}
 
     def _new_id(self, prefix):
         return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:10]}"
@@ -3812,11 +3993,70 @@ class MLLiveLogger:
         safe = ''.join(ch if ch.isalnum() else '_' for ch in str(value))[:80].strip('_')
         return f"{prefix}_{safe or uuid.uuid4().hex[:10]}"
 
+    def backup_db(self, dest_dir='data/backups', keep_max=7):
+        """Exécute un checkpoint WAL complet et crée un snapshot daté de aegis_db.sqlite3."""
+        try:
+            if not os.path.exists(self.sqlite_file):
+                return None
+            os.makedirs(dest_dir, exist_ok=True)
+
+            with self._lock:
+                conn = self._get_conn()
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(FULL);")
+                except Exception:
+                    pass
+
+            now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            dest_file = os.path.join(dest_dir, f"aegis_db_{now_str}.sqlite3")
+
+            import shutil
+            shutil.copy2(self.sqlite_file, dest_file)
+
+            backups = sorted([
+                os.path.join(dest_dir, f) for f in os.listdir(dest_dir)
+                if f.startswith('aegis_db_') and f.endswith('.sqlite3')
+            ])
+            if len(backups) > keep_max:
+                for old in backups[:-keep_max]:
+                    try:
+                        os.remove(old)
+                    except Exception:
+                        pass
+
+            return dest_file
+        except Exception as e:
+            print(f"⚠️ Erreur backup_db: {e}")
+            return None
+
+    def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None):
+        """Enregistre un événement de gouvernance dans la table unifiée governance_logs."""
+        try:
+            now = now_iso()
+            gov_id = self._new_id('gov')
+            metrics_json = json.dumps(metrics, ensure_ascii=False) if isinstance(metrics, dict) else (str(metrics) if metrics else None)
+            with self._orm_session() as session:
+                session.add(GovernanceLog(
+                    gov_id=gov_id,
+                    timestamp=now,
+                    event_type=str(event_type),
+                    source_model=str(source_model) if source_model else None,
+                    target_model=str(target_model) if target_model else None,
+                    metrics_json=metrics_json,
+                    trigger_type=str(trigger_type),
+                    reason=str(reason) if reason else None,
+                    created_at=now,
+                    updated_at=now,
+                ))
+                session.commit()
+            return gov_id
+        except Exception as e:
+            print(f"⚠️ Erreur record_governance_event: {e}")
+            return None
+
     def _clean(self, value):
         if isinstance(value, dict):
             return {str(k): self._clean(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [self._clean(v) for v in value]
         if hasattr(value, 'item'):
             try:
                 value = value.item()
