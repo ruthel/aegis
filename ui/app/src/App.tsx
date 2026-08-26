@@ -4,6 +4,7 @@ import {
   Cog,
   CircleDollarSign,
   LayoutDashboard,
+  ReceiptText,
   Play,
   RotateCcw,
   Server,
@@ -15,15 +16,17 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { asString } from '@/lib/formatters'
 import { useDashboardStore } from '@/store/dashboard-store'
-import type { StatusPayload, MlStatus, View } from '@/types/dashboard'
+import type { DataViewMode, StatusPayload, MlStatus, View } from '@/types/dashboard'
 
 // ─── Vues (refactorisées dans leur propre fichier) ────────────────────────
 import { LiveView } from '@/views/LiveView'
 import { AnalyticsView } from '@/views/AnalyticsView'
 import { TradesView } from '@/views/TradesView'
+import { LedgerView } from '@/views/LedgerView'
 import { ConsoleView } from '@/views/ConsoleView'
 import { ConfigView } from '@/views/ConfigView'
 
@@ -33,6 +36,7 @@ const views: Array<{ id: View; path: string; label: string; icon: typeof LayoutD
   { id: 'live', path: '/', label: 'Live', icon: LayoutDashboard },
   { id: 'analytics', path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'trades', path: '/trades', label: 'Trades', icon: CircleDollarSign },
+  { id: 'ledger', path: '/ledger', label: 'Ledger', icon: ReceiptText },
   { id: 'console', path: '/console', label: 'Console', icon: Terminal },
   { id: 'config', path: '/config', label: 'Config', icon: Cog },
 ]
@@ -57,6 +61,7 @@ function dataRevision(status: StatusPayload): string {
     asString(stats.losses),
     asString(stats.total_pnl_net ?? stats.total_pnl),
     asString(status.balance?.paper_balance),
+    asString(status.bot?.view_mode),
     String(positions.length),
     positionRevision,
   ].join('~')
@@ -68,6 +73,8 @@ function App() {
   const {
     setView,
     status,
+    viewMode,
+    setViewMode,
     ml,
     consoleData,
     config,
@@ -79,6 +86,11 @@ function App() {
     bootstrap,
     refreshConsole,
     refreshConfig,
+    refreshStatus,
+    refreshMl,
+    refreshAnalytics,
+    refreshTrades,
+    refreshLedger,
     refreshLoadedData,
   } = useDashboardStore()
   const location = useLocation()
@@ -98,8 +110,16 @@ function App() {
   }, [activeView, refreshConfig, refreshConsole, setView])
 
   useEffect(() => {
+    void refreshStatus()
+    void refreshMl()
+    if (activeView === 'analytics') void refreshAnalytics({ force: true })
+    if (activeView === 'trades') void refreshTrades({ force: true })
+    if (activeView === 'ledger') void refreshLedger({ force: true })
+  }, [activeView, refreshAnalytics, refreshLedger, refreshMl, refreshStatus, refreshTrades, viewMode])
+
+  useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/live`)
+    const ws = new WebSocket(`${proto}://${window.location.host}/ws/live?view_mode=${encodeURIComponent(viewMode)}`)
     ws.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as { __type?: string; payload?: unknown; live?: unknown }
@@ -120,7 +140,7 @@ function App() {
       }
     }
     return () => ws.close()
-  }, [refreshLoadedData, setMl, setStatus])
+  }, [refreshLoadedData, setMl, setStatus, viewMode])
 
   useEffect(() => {
     const consoleTimer = window.setInterval(() => {
@@ -165,11 +185,11 @@ function App() {
       </aside>
 
       <main className="lg:pl-60">
-        <TopToolbar status={status} running={running} />
+        <TopToolbar status={status} running={running} viewMode={viewMode} onViewModeChange={setViewMode} />
 
         {/* Navigation mobile */}
         <div className="border-b border-border p-2 lg:hidden">
-          <div className="grid grid-cols-5 gap-1">
+          <div className="grid grid-cols-6 gap-1">
             {views.map((item) => {
               const Icon = item.icon
               return (
@@ -189,6 +209,7 @@ function App() {
             <Route path="/" element={<LiveView status={status} ml={ml} />} />
             <Route path="/analytics" element={<AnalyticsView ml={ml} analytics={analytics} />} />
             <Route path="/trades" element={<TradesView />} />
+            <Route path="/ledger" element={<LedgerView />} />
             <Route path="/console" element={<ConsoleView data={consoleData} onRefresh={refreshConsole} />} />
             <Route path="/config" element={<ConfigView config={config} setConfig={setConfig} refresh={refreshConfig} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -201,7 +222,17 @@ function App() {
 
 // ─── TopToolbar ───────────────────────────────────────────────────────────
 
-function TopToolbar({ status, running }: { status: StatusPayload; running: boolean }) {
+function TopToolbar({
+  status,
+  running,
+  viewMode,
+  onViewModeChange,
+}: {
+  status: StatusPayload
+  running: boolean
+  viewMode: DataViewMode
+  onViewModeChange: (mode: DataViewMode) => void
+}) {
   const bot = status.bot
   const liveSymbols = Object.keys(status.live?.symbols || {}).length
   const wsLabel = liveSymbols > 0 ? `WS ${liveSymbols}` : 'WS --'
@@ -231,7 +262,7 @@ function TopToolbar({ status, running }: { status: StatusPayload; running: boole
           <div className="inline-flex min-h-[30px] items-center overflow-hidden rounded-full border border-border bg-secondary text-[11px] font-bold text-muted-foreground">
             <span className="inline-flex items-center gap-1 px-3">
               <Zap className="h-3.5 w-3.5" />
-              {asString(bot?.mode, 'mode')}
+              bot {asString(bot?.mode, 'mode')}
             </span>
             <span className="h-4 w-px bg-border" />
             <span className="inline-flex items-center gap-1 px-3">
@@ -239,6 +270,16 @@ function TopToolbar({ status, running }: { status: StatusPayload; running: boole
               {asString(bot?.exchange, 'exchange')}
             </span>
           </div>
+          <Select value={viewMode} onValueChange={(value) => onViewModeChange(value as DataViewMode)}>
+            <SelectTrigger className="h-[30px] w-[118px] rounded-full border-border bg-secondary px-3 text-[11px] font-bold">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="paper">Vue paper</SelectItem>
+              <SelectItem value="live">Vue live</SelectItem>
+              <SelectItem value="all">Vue tous</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <BotActions running={running} />

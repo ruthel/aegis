@@ -47,6 +47,9 @@ class BinanceClient(ExchangeBase):
     def fetch_open_orders(self, symbol=None):
         return self._exchange.fetch_open_orders(symbol)
 
+    def fetch_order(self, order_id, symbol=None):
+        return self._exchange.fetch_order(order_id, symbol)
+
     def cancel_order(self, order_id, symbol=None):
         return self._exchange.cancel_order(order_id, symbol)
 

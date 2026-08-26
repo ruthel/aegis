@@ -76,7 +76,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.save_logs = os.getenv('SAVE_LOGS', 'True') == 'True'
         
         # Frais dynamiques
-        self.trading_fee = 0.001
+        self.trading_fee = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
         self.min_profit_threshold = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
         
         # Stats
@@ -212,12 +212,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # Sync initiale
         if not self.paper_trading:
             try:
-                self.sync_positions_from_exchange()
+                self.balance_manager.force_balance_sync()
             except Exception as e:
                 print(f"⚠️ Erreur sync initiale: {e}")
         
-        # Ajustement automatique selon le capital
-        self.capital_manager.auto_adjust_bot()
+        # Sync frais exchange
         self.capital_manager.sync_fees_to_bot()
         
         # Calculer win rate global 30 jours au démarrage
@@ -585,6 +584,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 # Prix cible = prix moyen + profit minimum configuré
                 min_profit = float(os.getenv('MIN_PROFIT_THRESHOLD', '1.0')) / 100
                 target_price = avg_price * (1 + min_profit)
+                current_price = self.get_price(symbol)
+                if hasattr(self, '_is_sell_limit_close_enough') and not self._is_sell_limit_close_enough(current_price, target_price):
+                    return False
 
                 order_id = f'ml_sell_{symbol.replace("/", "")}_{_time.time_ns()}'
                 position = {
@@ -676,6 +678,85 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return pair
         if pair.endswith('USD'): return f"{pair[:-3]}/USD"
         return pair
+
+    def _sanitize_realtime_price(self, symbol, price):
+        """Valide qu'un tick temps reel correspond bien au bid/ask de sa paire."""
+        try:
+            clean_symbol = str(symbol).replace('/', '').upper()
+            tick_price = float(price or 0.0)
+            if tick_price <= 0:
+                return None
+            ws = getattr(self, 'websocket', None)
+            meta = getattr(ws, 'market_meta', {}).get(clean_symbol, {}) if ws else {}
+            bid = float(meta.get('bid') or 0.0)
+            ask = float(meta.get('ask') or 0.0)
+            if bid > 0 and ask > 0:
+                lower = bid * 0.80
+                upper = ask * 1.20
+                if tick_price < lower or tick_price > upper:
+                    replacement = (bid + ask) / 2.0
+                    now = time.time()
+                    key = f'{clean_symbol}:bad_tick'
+                    throttle = getattr(self, '_decision_log_throttle', None)
+                    if throttle is None:
+                        throttle = {}
+                        self._decision_log_throttle = throttle
+                    if now - throttle.get(key, 0) > 60:
+                        throttle[key] = now
+                        print(
+                            f"⚠️ Prix tick incohérent {symbol}: {tick_price:.8f} remplacé par mid {replacement:.8f} "
+                            f"(bid/ask {bid:.8f}/{ask:.8f})"
+                        )
+                    return replacement
+            return tick_price
+        except Exception:
+            return None
+
+    def _ensure_min_tradeable_entry_size(self, symbol, position_data, current_price, account_balance):
+        """Remonte une petite position au minimum exchange si le capital le permet."""
+        try:
+            current_price = float(current_price or 0.0)
+            account_balance = float(account_balance or 0.0)
+            if current_price <= 0 or account_balance <= 0:
+                return position_data
+
+            size_usd = float(position_data.get('position_size_usd') or 0.0)
+            size_crypto = float(position_data.get('position_size_crypto') or 0.0)
+            limits = self.get_min_amount(symbol)
+            min_amount = float((limits or {}).get('min_amount') or 0.0)
+            min_cost = float((limits or {}).get('min_cost') or 0.0)
+            fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+            if fee_rate <= 0:
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+
+            min_trade_usd = max(min_cost, min_amount * current_price * (1 + fee_rate))
+            if min_trade_usd <= 0:
+                return position_data
+
+            is_below_min = size_crypto <= 0 or size_usd < min_trade_usd
+            if not is_below_min:
+                return position_data
+
+            if min_trade_usd > account_balance:
+                return position_data
+            if hasattr(self, 'capital_manager') and not self.capital_manager.can_open_new_position(symbol, min_trade_usd):
+                return position_data
+
+            raw_crypto = min_trade_usd / current_price
+            adjusted_crypto = self.stuck_manager.round_quantity(symbol, raw_crypto)
+            if adjusted_crypto <= 0:
+                adjusted_crypto = min_amount
+            adjusted_usd = adjusted_crypto * current_price * (1 + fee_rate)
+            if adjusted_usd > account_balance:
+                return position_data
+
+            position_data['position_size_usd'] = round(adjusted_usd, 2)
+            position_data['position_size_crypto'] = adjusted_crypto
+            reason = position_data.get('sizing_reason') or 'sizing'
+            position_data['sizing_reason'] = f"{reason} • minimum exchange petit capital"
+            return position_data
+        except Exception:
+            return position_data
 
     def _calculate_momentum_pct(self, klines, periods):
         if len(klines) <= periods:
@@ -874,23 +955,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         adjusted['risk_metrics'] = metrics
         return adjusted
 
-    def _confidence_sizing_factor(self, signal_strength):
-        """Ajuste prudemment la taille avant le ML selon la force du signal technique."""
-        try:
-            strength = float(signal_strength or 0.0)
-        except Exception:
-            strength = 50.0
-
-        if strength >= 80.0:
-            return 1.0
-        if strength >= 65.0:
-            return 0.85
-        if strength >= 50.0:
-            return 0.70
-        if strength >= 35.0:
-            return 0.50
-        return 0.35
-
     def _get_backtest_interval(self):
         # Dynamique : plus volatile = recalcul plus fréquent
         try:
@@ -1047,21 +1111,27 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if symbol not in self.min_amounts:
             try:
                 if not self.paper_trading:
-                    self.safe_request(self.exchange.load_markets)
-                    if hasattr(self.exchange, 'markets') and self.exchange.markets:
-                        market = self.exchange.markets.get(symbol)
-                        if market and market.get('limits'):
-                            limits = market['limits']
-                            amount_limits = limits.get('amount', {})
-                            cost_limits = limits.get('cost', {})
+                    if hasattr(self.exchange, 'get_market_limits'):
+                        limits = self.safe_request(self.exchange.get_market_limits, symbol)
+                        if isinstance(limits, dict):
                             self.min_amounts[symbol] = {
-                                'min_amount': amount_limits.get('min', 0.001),
-                                'min_cost': cost_limits.get('min', 1.0)
+                                'min_amount': limits.get('min_amount') or 0.001,
+                                'min_cost': limits.get('min_cost') or 1.0,
                             }
                         else:
-                            raise Exception("Market data unavailable")
+                            raise Exception("Market limits unavailable")
                     else:
-                        raise Exception("Markets not loaded")
+                        markets = self.safe_request(self.exchange.load_markets) or getattr(self.exchange, 'markets', {}) or {}
+                        market = markets.get(symbol)
+                        if not market or not market.get('limits'):
+                            raise Exception("Market data unavailable")
+                        limits = market['limits']
+                        amount_limits = limits.get('amount', {})
+                        cost_limits = limits.get('cost', {})
+                        self.min_amounts[symbol] = {
+                            'min_amount': amount_limits.get('min', 0.001),
+                            'min_cost': cost_limits.get('min', 1.0)
+                        }
                 else:
                     exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
                     if exchange_name == 'kraken':
@@ -1082,15 +1152,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
                         'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
                         'SOL/USD': {'min_amount': 0.01, 'min_cost': 0.5},
-                        'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
-                        'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
+                        'ADA/USD': {'min_amount': 1.0, 'min_cost': 0.5},
                     }
                 else:
                     fallback_minimums = {
                         'BTC/USD': {'min_amount': 0.00001, 'min_cost': 15.0},
                         'ETH/USD': {'min_amount': 0.0001, 'min_cost': 10.0},
                         'SOL/USD': {'min_amount': 0.01, 'min_cost': 8.0},
-                        'ADA/USD': {'min_amount': 0.001, 'min_cost': 12.0},
                         'ADA/USD': {'min_amount': 1.0, 'min_cost': 5.0},
                         'DOT/USD': {'min_amount': 0.1, 'min_cost': 6.0},
                         'MATIC/USD': {'min_amount': 1.0, 'min_cost': 3.0},
@@ -1256,9 +1324,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if tracker['count'] >= 4:
             total_change_pct = abs(tracker['cumulative_change']) * 100
             if total_change_pct >= 0.3:  # Cumul ≥ 0.3%
-                direction_text = "baisse" if tracker['direction'] < 0 else "hausse"
-                print(f"📊 {symbol}: Tendance cumulative détectée! {tracker['count']}x {direction_text} = {total_change_pct:.2f}%")
-                
                 # Envoyer notification Telegram
                 if hasattr(self, 'notifier'):
                     self.notifier.notify_cumulative_trend(symbol, tracker['direction'], tracker['count'], total_change_pct, current_price)
@@ -1281,6 +1346,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             formatted_symbol = f"{symbol[:-3]}/USD"
         else:
             formatted_symbol = symbol
+
+        price = self._sanitize_realtime_price(formatted_symbol, price)
+        if price is None:
+            return
 
         self._update_trailing_stop_from_tick(formatted_symbol, price)
         
@@ -1320,8 +1389,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             position_data = self.trailing_stop_manager.positions[symbol]
             tf = os.getenv('MAIN_TIMEFRAME', '15m')
-            klines = self.get_klines(symbol, 30, tf)
-            btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
+            
+            # Fetch klines en parallèle (symbol + BTC) pour réduire la latence
+            if symbol != 'BTC/USD':
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    fut_klines = executor.submit(self.get_klines, symbol, 30, tf)
+                    fut_btc = executor.submit(self.get_klines, 'BTC/USD', 30, tf)
+                    klines = fut_klines.result()
+                    btc_klines = fut_btc.result()
+            else:
+                klines = self.get_klines(symbol, 30, tf)
+                btc_klines = None
             market_context = self.get_market_context(symbol)
             bot_context = self._build_ml_bot_context(symbol, market_context=market_context)
             preliminary_score = self.exit_decision_engine.compute_continuation_score(
@@ -1392,7 +1471,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return None
 
     def _apply_ml_exit_management(self, symbol, current_price, exit_result):
-        """Applique uniquement les décisions de sortie ML actives."""
+        """Applique uniquement les décisions de sortie ML actives (optimisé latence)."""
         if not exit_result:
             return False
         if not hasattr(self, 'trailing_stop_manager') or symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
@@ -1403,12 +1482,23 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if decision in ('FORCE_EXIT', 'TAKE_PROFIT'):
             if not self._cancel_sell_orders_for_symbol(symbol):
                 return False
-            balance = self.balance_manager.get_balance(force_refresh=True)
+            
+            # Déterminer le montant à vendre
             base_currency = symbol.split('/')[0]
-            available = balance.get(base_currency, {}).get('free', 0)
             position_data = self.trailing_stop_manager.positions.get(symbol, {})
             pos_amount = float(position_data.get('amount') or position_data.get('position_size_crypto') or 0.0)
-            sell_amount = max(available, pos_amount) if self.paper_trading else available
+            
+            if self.paper_trading:
+                balance = self.balance_manager.get_balance(force_refresh=True)
+                available = balance.get(base_currency, {}).get('free', 0)
+                sell_amount = max(available, pos_amount)
+            else:
+                # Fast path live: balance sans ledger sync (économise ~3-5s)
+                balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=True)
+                available = balance.get(base_currency, {}).get('free', 0)
+                # Après annulation d'un limit sell, le crypto est libre dans 'available'
+                sell_amount = available
+            
             if sell_amount <= 0.00001:
                 return False
             if self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}"):
@@ -1595,30 +1685,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if executed:
             self.save_state()
     
-    def check_and_recover_stuck_positions(self):
-        balance = self.balance_manager.get_balance()
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(','):
-            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
-            base_currency = symbol.split('/')[0]
-            current_holding = balance.get(base_currency, {}).get('free', 0)
-            if current_holding <= 0.00001:
-                continue
-            position_value = current_holding * self.get_price(symbol)
-            min_trade_value = self.get_min_amount(symbol)['min_cost']
-            if position_value < min_trade_value:
-                continue
-            buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-            if not buy_positions:
-                continue
-            buy_price = self.get_real_buy_price(symbol)
-            if not buy_price:
-                continue
-            buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp']).timestamp()
-            current_price = self.get_price(symbol)
-            is_stuck, loss_percent = self.stuck_manager.check_stuck_position(symbol, current_price, buy_price, buy_time)
-            if is_stuck:
-                self.stuck_manager.execute_recovery(self, symbol, current_price)
-    
     def check_and_recover_stuck_positions_filtered(self, tradable_pairs):
         """Vérifie les positions bloquées seulement pour les cryptos tradables"""
         balance = self.balance_manager.get_balance()
@@ -1713,10 +1779,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if tradable_pairs:
                     self.check_and_recover_stuck_positions_filtered(tradable_pairs)
                 
-                # Vérifier exécution ordres limite paper trading
-                self.check_paper_limit_orders()
-                self.manage_trailing_stops(tradable_pairs)
-                
                 # Vérifier avec le minimum requis (seulement cryptos tradables)
                 min_required = min(self.get_min_amount(symbol)['min_cost'] for symbol in tradable_pairs) if tradable_pairs else 10
                 self.balance_manager.ensure_trading_balance(min_required)
@@ -1733,27 +1795,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         self.last_balance_sync = time.time()
                 else:
                     self.last_balance_sync = time.time()
-                
-                # Vérifier optimisation positions existantes (mode réel uniquement)
-                # En paper, le trailing stop gère la sortie
-                optimized_any = False
-                if not self.paper_trading:
-                    for symbol in tradable_pairs:
-                        base_currency = symbol.split('/')[0]
-                        balance_fresh = self.balance_manager.get_balance(force_refresh=True)
-                        free_holding = balance_fresh.get(base_currency, {}).get('free', 0)
-                        locked_holding = balance_fresh.get(base_currency, {}).get('used', 0)
-                        total_holding = free_holding + locked_holding
-                        if total_holding > 0.00001:
-                            position_value = total_holding * self.get_price(symbol)
-                            min_cost = self.get_min_amount(symbol)['min_cost']
-                            if position_value >= min_cost:
-                                if self.optimize_existing_position(symbol):
-                                    optimized_any = True
-                                    break
-                
-                if optimized_any:
-                    continue
                 
                 # Envoyer status périodique Telegram
                 if hasattr(self, 'notifier'):
@@ -1936,12 +1977,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         account_balance = self.get_account_balance()
         position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
 
-        factor = self._confidence_sizing_factor(signal_strength)
-        if factor != 1.0:
-            position_data['position_size_usd'] = round(position_data['position_size_usd'] * factor, 2)
-            raw_crypto = position_data['position_size_crypto'] * factor
-            position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
-
         position_data = self.apply_market_context_position_adjustment(position_data, market_context)
         position_data['trailing_stop_percent'] = adaptive_trailing
         if support_check.get('is_support_touch'):
@@ -1955,6 +1990,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         ml_entry_features = None
         ml_trade_context = None
         ml_entry_learning_id = None
+        sizing_replay_payload = None
         ml_bot_context = self._build_ml_bot_context(
             symbol,
             market_context=market_context,
@@ -1969,11 +2005,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         )
         if hasattr(self, 'ml_engine') and self.ml_engine is not None:
             try:
-                klines_15m = self.get_klines(symbol, 50, '15m')
-                klines_5m = self.get_klines(symbol, 30, '5m')
-                klines_1h = self.get_klines(symbol, 30, '1h')
-                klines_4h = self.get_klines(symbol, 30, '4h')
-                klines_1d = self.get_klines(symbol, 30, '1d')
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    fut_15m = executor.submit(self.get_klines, symbol, 50, '15m')
+                    fut_5m = executor.submit(self.get_klines, symbol, 30, '5m')
+                    fut_1h = executor.submit(self.get_klines, symbol, 30, '1h')
+                    fut_4h = executor.submit(self.get_klines, symbol, 30, '4h')
+                    fut_1d = executor.submit(self.get_klines, symbol, 30, '1d')
+                    klines_15m = fut_15m.result()
+                    klines_5m = fut_5m.result()
+                    klines_1h = fut_1h.result()
+                    klines_4h = fut_4h.result()
+                    klines_1d = fut_1d.result()
                 ml_trade_context = self._build_ml_trade_context(position_data, account_balance)
                 ml_entry_features = self.ml_engine.extract_features_from_klines(
                     klines_15m,
@@ -2012,11 +2055,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 }
                 self.save_state()
 
-                # ── Option A : Sizing gradué selon confiance ML ──────────────────
-                # REJECT_RISK  < 50%   → Position 0%   (bloqué — ML a une conviction négative)
-                # NEUTRAL bas  50-55%  → Position 40%  (signal incertain — taille mini)
-                # NEUTRAL haut 55-65%  → Position 70%  (signal douteux — taille réduite)
-                # BUY_HIGH     ≥ 65%   → Position 100% (pleine confiance — taille normale)
                 if ml_win_prob < 50.0:
                     # REJECT_RISK : ML dit NON — bloquer
                     reject_cooldown_seconds = self.get_ml_reject_cooldown_seconds(
@@ -2052,25 +2090,45 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         reason=f'ml_reject_risk_{ml_win_prob:.1f}%'
                     )
                     return
-                # ── Option A : Sizing gradué selon confiance ML & Kelly (Phase 6) ──
                 sizing_info = self.risk_manager.calculate_position_size(
                     self, symbol, base_amount=getattr(self, 'trade_amount', 10), ml_win_prob=ml_win_prob
                 )
+                sizing_limits = self.risk_manager.get_position_size_limits(self, symbol)
+                base_sizing_usd = float(sizing_info.get('position_size_usd') or 0.0)
+                ml_sizing = {}
+                if hasattr(self.ml_engine, 'predict_position_size_factor'):
+                    ml_sizing = self.ml_engine.predict_position_size_factor(features=ml_entry_features)
+                    if ml_sizing.get('ml_sizing_available'):
+                        sizing_factor = float(ml_sizing.get('sizing_factor') or 1.0)
+                        sizing_info['position_size_usd'] = round(float(sizing_info['position_size_usd']) * sizing_factor, 2)
+                        sizing_info['position_size_usd'] = self.risk_manager.clamp_position_size(
+                            self, symbol, sizing_info['position_size_usd']
+                        )
+                        sizing_info['sizing_reason'] = (
+                            f"{sizing_info['sizing_reason']} • ML sizing {sizing_factor:.2f}x"
+                        )
                 position_data['sizing_reason'] = sizing_info['sizing_reason']
                 position_data['ml_buy_prob'] = ml_win_prob
+                if ml_sizing:
+                    position_data['ml_sizing_factor'] = ml_sizing.get('sizing_factor')
+                    position_data['ml_sizing_reason'] = ml_sizing.get('reason')
+                    position_data['ml_sizing_base_usd'] = base_sizing_usd
+                    position_data['ml_sizing_max_usd'] = sizing_limits.get('max_position_size_usd')
+                    position_data['ml_sizing_exposure_after_usd'] = round(
+                        float(sizing_limits.get('exposure_before_usd') or 0.0)
+                        + float(sizing_info.get('position_size_usd') or 0.0),
+                        2
+                    )
 
-                if ml_win_prob < self.ml_min_probability:
-                    ml_position_factor = sizing_info['ml_factor']
-                    position_data['position_size_usd'] = sizing_info['position_size_usd']
-                    raw_crypto = (position_data['position_size_usd'] / current_price) if current_price > 0 else 0
-                    position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
-                    position_data['ml_position_factor'] = ml_position_factor
-                    position_data['ml_neutral_sizing'] = True
-                    print(f"🟡 {crypto}: ML NEUTRE {ml_win_prob:.1f}% → Sizing Phase 6: {position_data['position_size_usd']:.2f} USD [{position_data['sizing_reason']}]")
-                else:
-                    position_data['position_size_usd'] = sizing_info['position_size_usd']
-                    raw_crypto = (position_data['position_size_usd'] / current_price) if current_price > 0 else 0
-                    position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
+                position_data['position_size_usd'] = sizing_info['position_size_usd']
+                raw_crypto = (position_data['position_size_usd'] / current_price) if current_price > 0 else 0
+                position_data['position_size_crypto'] = self.stuck_manager.round_quantity(symbol, raw_crypto)
+                position_data = self._ensure_min_tradeable_entry_size(
+                    symbol,
+                    position_data,
+                    current_price,
+                    account_balance
+                )
 
                 if self._should_reject_entry_for_ml_exit(ml_exit_forecast):
                     reject_cooldown_seconds = self.get_ml_reject_cooldown_seconds(
@@ -2106,8 +2164,50 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         reason=f"ml_reject_exit_{ml_exit_forecast.get('p_continue', 0):.1f}%"
                     )
                     return
+                sizing_replay_payload = {
+                    'mode': 'paper' if self.paper_trading else 'live',
+                    'symbol': symbol,
+                    'p_win': ml_win_prob,
+                    'p_continue': (ml_exit_forecast or {}).get('p_continue') if isinstance(ml_exit_forecast, dict) else None,
+                    'base_position_size_usd': base_sizing_usd,
+                    'raw_sizing_factor': ml_sizing.get('raw_sizing_factor') if isinstance(ml_sizing, dict) else None,
+                    'sizing_factor': ml_sizing.get('sizing_factor') if isinstance(ml_sizing, dict) else 1.0,
+                    'final_position_size_usd': sizing_info.get('position_size_usd'),
+                    'min_position_size_usd': sizing_limits.get('min_position_size_usd'),
+                    'max_position_size_usd': sizing_limits.get('max_position_size_usd'),
+                    'exposure_before_usd': sizing_limits.get('exposure_before_usd'),
+                    'exposure_after_usd': position_data.get('ml_sizing_exposure_after_usd'),
+                    'max_exposure_usd': sizing_limits.get('max_exposure_usd'),
+                    'decision': 'accepted',
+                    'reason': sizing_info.get('sizing_reason'),
+                }
             except Exception as e:
                 print(f"⚠️ Erreur prédiction ML pour {symbol}: {e}")
+                sizing_replay_payload = None
+
+        final_size_usd = float(position_data.get('position_size_usd') or 0.0)
+        final_size_crypto = float(position_data.get('position_size_crypto') or 0.0)
+        if final_size_usd <= 0 or final_size_crypto <= 0:
+            print(
+                f"⛔ {crypto}: signal validé mais achat impossible "
+                f"(taille finale {final_size_usd:.2f} USD / {final_size_crypto:.8f}, capital/minimum exchange)"
+            )
+            self.record_decision(
+                symbol, 'buy', False, 'capital_or_exchange_minimum_blocked',
+                {
+                    'price': current_price,
+                    'score': crypto_score,
+                    'min_score': dynamic_min_score,
+                    'confidence': global_signal.get('confidence'),
+                    'min_confidence': adaptive_threshold,
+                    'position_size_usd': final_size_usd,
+                    'position_size_crypto': final_size_crypto,
+                    **self._build_ml_entry_decision_metrics(current_price, ml_win_prob, ml_exit_forecast, ml_bot_context),
+                    'market_context': market_context
+                },
+                throttle_seconds=120
+            )
+            return
         
         # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
@@ -2132,6 +2232,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             trade_context=ml_trade_context,
             reason=reason
         )
+        if sizing_replay_payload and getattr(self, 'ml_live_logger', None):
+            sizing_replay_payload['entry_id'] = ml_entry_learning_id
+            self.ml_live_logger.record_sizing_recommendation(**sizing_replay_payload)
         self.record_decision(
             symbol, 'buy', True, reason,
             {
@@ -2643,19 +2746,26 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         # 1. Vérification en Paper Trading
         if self.paper_trading:
+            max_pos_per_crypto = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '2'))
+            max_total_positions = int(os.getenv('MAX_TOTAL_POSITIONS', str(max_pos_per_crypto * max(1, len(getattr(self, 'trading_pairs', [])) or 4))))
             open_paper_positions = [
                 p for p in self.state.get('positions', [])
-                if p.get('symbol') == symbol and p.get('side') == 'sell' and p.get('status') == 'opened'
+                if p.get('symbol') == symbol
+                and (
+                    (p.get('side') == 'buy' and not p.get('closed_at'))
+                    or (p.get('side') == 'sell' and p.get('status') == 'opened')
+                )
             ]
-            if open_paper_positions:
+            if len(open_paper_positions) >= max_pos_per_crypto:
                 return False  # Déjà 1 position ouverte sur ce symbole en Paper Trading -> BLOQUER
 
             total_open = len([
                 p for p in self.state.get('positions', [])
-                if p.get('side') == 'sell' and p.get('status') == 'opened'
+                if (p.get('side') == 'buy' and not p.get('closed_at'))
+                or (p.get('side') == 'sell' and p.get('status') == 'opened')
             ])
-            if total_open >= 3:
-                return False  # Maximum 3 positions globales simultanées atteint -> BLOQUER
+            if total_open >= max_total_positions:
+                return False  # Maximum global de positions simultanées atteint -> BLOQUER
 
             min_cost = self.get_min_amount(symbol)['min_cost']
             if self.paper_balance < min_cost:
@@ -2683,7 +2793,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 return False  # Position réelle déjà ouverte, bloquer
             
-            usd_available = balance.get('USD', {}).get('free', 0)
+            usd_available = self.capital_manager.get_available_cash_usd() if hasattr(self.capital_manager, 'get_available_cash_usd') else (balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']
             
             if usd_available < min_cost:
@@ -2713,96 +2823,38 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return True
 
         try:
-            open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-            for order in open_orders:
-                if order.get('side') == 'sell':
-                    self.safe_request(self.exchange.cancel_order, order['id'], symbol)
+            # Fast path: vérifier si on a des ordres sell trackés en mémoire pour ce symbole
+            target_sym = str(symbol).replace('/', '').upper()
+            tracked_sell_ids = [
+                oid for oid, od in getattr(self, 'pending_orders', {}).items()
+                if str(od.get('symbol', '')).replace('/', '').upper() == target_sym
+                and od.get('side') == 'sell'
+                and od.get('status') in ('opened', None)
+            ]
+            
+            if not tracked_sell_ids:
+                # Aucun ordre sell tracké -> skip l'appel API coûteux
+                return True
+            
+            # Annuler uniquement les ordres trackés (évite fetch_open_orders)
+            for order_id in tracked_sell_ids:
+                try:
+                    self.safe_request(self.exchange.cancel_order, order_id, symbol)
+                except Exception:
+                    pass
+                if order_id in self.pending_orders:
+                    del self.pending_orders[order_id]
+            
+            # Mettre à jour les positions en mémoire
+            for p in reversed(self.state.get('positions', [])):
+                p_sym = str(p.get('symbol', '')).replace('/', '').upper()
+                if p_sym == target_sym and p.get('side') == 'sell' and p.get('status') == 'opened':
+                    p['status'] = 'canceled'
+            
             return True
         except Exception as e:
             print(f"⚠️ Impossible d'annuler les ordres de vente {symbol}: {e}")
             return False
-
-    def manage_trailing_stops(self, tradable_pairs):
-        """Met à jour les trailing stops et vend au marché si un stop est touché."""
-        if os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true':
-            return
-        if not hasattr(self, 'trailing_stop_manager') or not tradable_pairs:
-            return
-
-        for symbol in tradable_pairs:
-            try:
-                current_price = self.get_price(symbol)
-                if not current_price:
-                    continue
-
-                ml_owns_exits = os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true'
-                if not ml_owns_exits:
-                    self.trailing_stop_manager.update_position(symbol, current_price)
-                self._evaluate_exit_engine_for_symbol(symbol, current_price)
-                if ml_owns_exits:
-                    continue
-                hard_stop_enabled = os.getenv('HARD_STOP_EXIT_ENABLED', 'False').lower() == 'true'
-                if not hard_stop_enabled or not self.trailing_stop_manager.should_stop_loss(symbol, current_price):
-                    continue
-
-                if not self._cancel_sell_orders_for_symbol(symbol):
-                    continue
-
-                balance = self.balance_manager.get_balance(force_refresh=True)
-                base_currency = symbol.split('/')[0]
-                available = balance.get(base_currency, {}).get('free', 0)
-                if available <= 0.00001:
-                    continue
-
-                if self.sell_market(symbol, available):
-                    self.trailing_stop_manager.remove_position(symbol)
-            except Exception as e:
-                print(f"⚠️ Erreur trailing stop {symbol}: {e}")
-        self.save_state()
-    
-    def get_entry_signal(self, symbol, current_price):
-        """Obtient le signal d'entrée - NIVEAUX DYNAMIQUES + PATTERNS"""
-        # 1. Niveaux dynamiques professionnels (priorité)
-        entry_opportunities = self.pattern_analyzer.get_entry_levels(symbol, current_price)
-        if entry_opportunities:
-            best_entry = entry_opportunities[0]
-            return True, f"Niveau dynamique: {best_entry['type']} ({best_entry['distance']:.1f}%)"
-        
-        # 2. Pattern Recognition (nouveau)
-        try:
-            klines = self.get_klines(symbol, 50, '1h')
-            if len(klines) >= 20:
-                pattern_result = self.pattern_analyzer.detect_patterns(klines)
-                
-                # Patterns haussiers détectés
-                if pattern_result['bullish_patterns']:
-                    strongest = max(pattern_result['bullish_patterns'], key=lambda x: x['confidence'])
-                    if strongest['confidence'] > 75:
-                        return True, f"Pattern: {strongest['description']} ({strongest['confidence']:.0f}%)"
-                
-                # Bloquer si patterns baissiers forts
-                if pattern_result['bearish_detected']:
-                    crypto = symbol.split('/')[0]
-                    bearish_pattern = next(p for p in pattern_result['patterns'] if p.get('bullish') == False)
-                    print(f"❌ {crypto}: Pattern baissier {bearish_pattern['description']} détecté")
-                    return False, None
-        except Exception as e:
-            print(f"⚠️ Erreur pattern recognition {symbol}: {e}")
-        
-        # 3. Signaux techniques (fallback)
-        try:
-            analysis = self.get_cached_analysis(symbol, current_price)
-            global_signal = analysis['global_signal']
-            min_confidence = int(os.getenv('MIN_CONFIDENCE', '30'))
-            
-            if (global_signal['action'] in ['BUY', 'STRONG_BUY'] and 
-                global_signal['confidence'] >= min_confidence):
-                return True, f"Signal technique {global_signal['confidence']:.0f}%"
-        except:
-            pass
-        
-        return False, None
-    
 
     def calculate_ema(self, prices, period):
         """Calcule l'EMA"""
@@ -2835,7 +2887,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         """Récupère le solde total du compte"""
         try:
             balance = self.balance_manager.get_balance()
-            usd_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
+            usd_balance = (
+                (balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}).get('free', 0)
+            )
             
             if self.paper_trading:
                 return self.paper_balance
@@ -2854,6 +2908,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         crypto = symbol.split('/')[0]
         cooldown_remaining = self.get_symbol_cooldown_remaining(symbol)
         if cooldown_remaining > 0 or not self.can_open_position(symbol):
+            return False
+        if hasattr(self, 'capital_manager') and not self.capital_manager.can_open_new_position(
+            symbol,
+            float(position_data.get('position_size_usd') or 0.0)
+        ):
             return False
 
         result = self.buy_market(
@@ -2924,7 +2983,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 print(f"❌ Impossible de forcer l'achat: Capital insuffisant ({usd_available:.2f} USD < min {min_cost:.2f} USD)")
                 return
                 
-            # 2. Calculer position sizing avec une confiance fixée à 100% pour avoir la taille maximale autorisée
+            # 2. Calculer une taille manuelle neutre; les garde-fous capital restent appliques dans execute_buy.
             account_balance = self.get_account_balance()
             position_data = self.stuck_manager.calculate_position_size(symbol, 100, account_balance)
             

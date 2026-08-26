@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, text, update
 
@@ -30,6 +30,7 @@ from core.db_orm import (
     MlFeatureValue,
     MlOpenEntry,
     MlModelMetadata,
+    MlSizingRecommendation,
     SysAudit,
     MlTradeOutcome,
     SupportTouchResult,
@@ -247,6 +248,13 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_open_entries', 'spread_pct', 'REAL')
                 self._ensure_column(conn, 'ml_open_entries', 'order_type', 'TEXT')
                 self._ensure_column(conn, 'ml_open_entries', 'duration_ms', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'p_continue', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'raw_sizing_factor', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'min_position_size_usd', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'max_position_size_usd', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'exposure_before_usd', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'exposure_after_usd', 'REAL')
+                self._ensure_column(conn, 'ml_sizing_recommendations', 'max_exposure_usd', 'REAL')
                 self._ensure_column(conn, 'ml_trade_outcomes', 'slippage_pct', 'REAL')
                 self._ensure_column(conn, 'ml_trade_outcomes', 'spread_pct', 'REAL')
                 # Renommer la table ml_raw_events en sys_audit si besoin
@@ -331,31 +339,66 @@ class MLLiveLogger:
             return base, quote
         return value, 'USD'
 
-    def _insert_ledger_entry(self, conn, ledger_id, account_id, entry_ts, entry_type, asset, amount, order_id=None, fill_id=None, symbol=None, source_position_idx=None, description=None, source='state_accounting'):
+    def _normalize_asset_code(self, asset):
+        value = str(asset or '').upper()
+        aliases = {
+            'XXBT': 'BTC',
+            'XBT': 'BTC',
+            'XETH': 'ETH',
+            'ZUSD': 'USD',
+            'ZCAD': 'CAD',
+            'ZUSDT': 'USDT',
+        }
+        return aliases.get(value, value)
+
+    def _map_exchange_ledger_type(self, entry):
+        raw_type = str((entry or {}).get('type') or '').lower()
+        direction = str((entry or {}).get('direction') or '').lower()
+        info = (entry or {}).get('info') if isinstance((entry or {}).get('info'), dict) else {}
+        raw_ref_type = str(info.get('type') or info.get('subtype') or '').lower()
+        text = f'{raw_type} {direction} {raw_ref_type}'
+        if 'deposit' in text:
+            return 'deposit'
+        if 'withdraw' in text:
+            return 'withdrawal'
+        if 'fee' in text:
+            return 'fee'
+        if 'trade' in text:
+            return 'trade'
+        if 'transfer' in text or 'staking' in text:
+            return 'transfer'
+        if 'margin' in text or 'adjust' in text or 'correction' in text:
+            return 'adjustment'
+        return raw_type or 'external_ledger'
+
+    def _insert_ledger_entry(self, conn, ledger_id, account_id, entry_ts, entry_type, asset, amount, order_id=None, fill_id=None, symbol=None, source_position_idx=None, description=None, source='state_accounting', balance_after=None):
         now = now_iso()
         clean_amount = self._clean(amount) or 0.0
-        previous_balance = conn.execute(
-            """
-            SELECT balance_after
-            FROM ledger_entries
-            WHERE account_id=? AND asset=? AND ledger_id<>?
-            ORDER BY entry_ts DESC, created_at DESC, ledger_id DESC
-            LIMIT 1
-            """,
-            (account_id, asset, ledger_id),
-        ).fetchone()
-        if previous_balance and previous_balance[0] is not None:
-            balance_after = float(previous_balance[0] or 0.0) + float(clean_amount)
+        if balance_after is not None:
+            computed_balance_after = float(balance_after)
         else:
-            existing_total = conn.execute(
+            previous_balance = conn.execute(
                 """
-                SELECT COALESCE(SUM(amount), 0)
+                SELECT balance_after
                 FROM ledger_entries
                 WHERE account_id=? AND asset=? AND ledger_id<>?
+                ORDER BY entry_ts DESC, created_at DESC, ledger_id DESC
+                LIMIT 1
                 """,
                 (account_id, asset, ledger_id),
             ).fetchone()
-            balance_after = float(existing_total[0] or 0.0) + float(clean_amount)
+            if previous_balance and previous_balance[0] is not None:
+                computed_balance_after = float(previous_balance[0] or 0.0) + float(clean_amount)
+            else:
+                existing_total = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM ledger_entries
+                    WHERE account_id=? AND asset=? AND ledger_id<>?
+                    """,
+                    (account_id, asset, ledger_id),
+                ).fetchone()
+                computed_balance_after = float(existing_total[0] or 0.0) + float(clean_amount)
         conn.execute(
             """
             INSERT OR REPLACE INTO ledger_entries
@@ -370,7 +413,7 @@ class MLLiveLogger:
                 entry_type,
                 asset,
                 clean_amount,
-                balance_after,
+                computed_balance_after,
                 order_id,
                 fill_id,
                 symbol,
@@ -540,7 +583,7 @@ class MLLiveLogger:
         except Exception:
             return None
 
-    def record_order_transaction(self, symbol, side, amount, price=None, order_type='market', status='open', order_id=None, mode='paper', source='accounting_transaction'):
+    def record_order_transaction(self, symbol, side, amount, price=None, order_type='market', status='open', order_id=None, mode='paper', source='accounting_transaction', recalculate_balances=True):
         try:
             now = now_iso()
             symbol = self._normalize_live_symbol(symbol)
@@ -575,13 +618,14 @@ class MLLiveLogger:
                         now,
                     ),
                 )
-                self._recalculate_balances(conn, account_id)
+                if recalculate_balances:
+                    self._recalculate_balances(conn, account_id)
                 conn.commit()
             return order_id
         except Exception:
             return None
 
-    def record_fill_transaction(self, order_id, symbol, side, amount, price, fee_amount=None, fee_asset=None, mode='paper', source='accounting_transaction'):
+    def record_fill_transaction(self, order_id, symbol, side, amount, price, fee_amount=None, fee_asset=None, mode='paper', source='accounting_transaction', write_ledger=True, recalculate_balances=True):
         try:
             now = now_iso()
             symbol = self._normalize_live_symbol(symbol)
@@ -624,18 +668,20 @@ class MLLiveLogger:
                     (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount, fee_asset, source, now, now, now),
                 )
                 gross = amount * price
-                if side == 'buy':
-                    self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, -gross, order_id, fill_id, symbol, description='buy_quote_debit', source=source)
-                    self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, amount, order_id, fill_id, symbol, description='buy_base_credit', source=source)
-                    if fee_amount:
-                        self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='buy_fee', source=source)
-                    usd_delta = -gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
-                else:
-                    self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, -amount, order_id, fill_id, symbol, description='sell_base_debit', source=source)
-                    self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, gross, order_id, fill_id, symbol, description='sell_quote_credit', source=source)
-                    if fee_amount:
-                        self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='sell_fee', source=source)
-                    usd_delta = gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
+                usd_delta = 0.0
+                if write_ledger:
+                    if side == 'buy':
+                        self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, -gross, order_id, fill_id, symbol, description='buy_quote_debit', source=source)
+                        self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, amount, order_id, fill_id, symbol, description='buy_base_credit', source=source)
+                        if fee_amount:
+                            self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='buy_fee', source=source)
+                        usd_delta = -gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
+                    else:
+                        self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, -amount, order_id, fill_id, symbol, description='sell_base_debit', source=source)
+                        self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, gross, order_id, fill_id, symbol, description='sell_quote_credit', source=source)
+                        if fee_amount:
+                            self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='sell_fee', source=source)
+                        usd_delta = gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
                 conn.execute(
                     """
                     UPDATE orders
@@ -648,7 +694,22 @@ class MLLiveLogger:
                     """,
                     (amount, price, now, now, account_id, order_id),
                 )
-                if quote == 'USD':
+                if side == 'sell':
+                    conn.execute(
+                        """
+                        UPDATE orders
+                        SET status='cancelled',
+                            closed_at=COALESCE(closed_at, ?),
+                            updated_at=?
+                        WHERE account_id=?
+                          AND symbol=?
+                          AND side='sell'
+                          AND status='open'
+                          AND order_id<>?
+                        """,
+                        (now, now, account_id, symbol, order_id),
+                    )
+                if write_ledger and quote == 'USD' and mode == 'paper':
                     state = conn.execute(
                         "SELECT paper_balance, created_at FROM bot_state WHERE mode=?",
                         (mode,),
@@ -670,7 +731,8 @@ class MLLiveLogger:
                             now,
                         ),
                     )
-                self._recalculate_balances(conn, account_id)
+                if recalculate_balances:
+                    self._recalculate_balances(conn, account_id)
                 conn.commit()
             return fill_id
         except Exception:
@@ -2439,6 +2501,41 @@ class MLLiveLogger:
         if event.get('decision') != 'HOLD':
             self._insert_feature_values(session, MlFeatureValue, event.get('event_id'), event.get('features') or {})
 
+    def record_sizing_recommendation(self, **payload):
+        """Journalise une recommandation de taille sans polluer le journal de decisions final."""
+        try:
+            now = now_iso()
+            sizing_id = payload.get('sizing_id') or self._new_id('sizing')
+            with self._orm_session() as session:
+                session.merge(MlSizingRecommendation(
+                    sizing_id=str(sizing_id),
+                    timestamp=payload.get('timestamp') or now,
+                    mode=payload.get('mode'),
+                    symbol=payload.get('symbol') or '',
+                    entry_id=payload.get('entry_id'),
+                    p_win=self._clean(payload.get('p_win')),
+                    p_continue=self._clean(payload.get('p_continue')),
+                    base_position_size_usd=self._clean(payload.get('base_position_size_usd')),
+                    raw_sizing_factor=self._clean(payload.get('raw_sizing_factor')),
+                    sizing_factor=self._clean(payload.get('sizing_factor')),
+                    final_position_size_usd=self._clean(payload.get('final_position_size_usd')),
+                    min_position_size_usd=self._clean(payload.get('min_position_size_usd')),
+                    max_position_size_usd=self._clean(payload.get('max_position_size_usd')),
+                    exposure_before_usd=self._clean(payload.get('exposure_before_usd')),
+                    exposure_after_usd=self._clean(payload.get('exposure_after_usd')),
+                    max_exposure_usd=self._clean(payload.get('max_exposure_usd')),
+                    decision=payload.get('decision'),
+                    reason=payload.get('reason'),
+                    risk_veto_reason=payload.get('risk_veto_reason'),
+                    created_at=now,
+                    updated_at=now,
+                ))
+                session.commit()
+            return sizing_id
+        except Exception as exc:
+            print(f"⚠️ Erreur record_sizing_recommendation: {exc}")
+            return None
+
     def _insert_feature_values(self, session, model, event_id, features):
         if not event_id or not isinstance(features, dict):
             return
@@ -2641,6 +2738,270 @@ class MLLiveLogger:
         except Exception:
             return False
 
+    def sync_external_balances(self, balances, mode='live', source='exchange_balance'):
+        """Remplace les soldes d'un compte par la verite retournee par l'exchange."""
+        if mode == 'paper' or not isinstance(balances, dict):
+            return False
+        try:
+            now = now_iso()
+            clean_rows = []
+            for asset, data in balances.items():
+                if asset in ('free', 'used', 'total', 'info') or not isinstance(data, dict):
+                    continue
+                free = self._clean(data.get('free')) or 0.0
+                locked = self._clean(data.get('used') if data.get('used') is not None else data.get('locked')) or 0.0
+                total = self._clean(data.get('total'))
+                if total is None:
+                    total = free + locked
+                if abs(float(free or 0.0)) < 1e-12 and abs(float(locked or 0.0)) < 1e-12 and abs(float(total or 0.0)) < 1e-12:
+                    continue
+                clean_rows.append((str(asset).upper(), float(free), float(locked), float(total)))
+            if not clean_rows:
+                return False
+
+            with self._lock:
+                conn = self._get_conn()
+                account_id = self._ensure_account(conn, mode=mode, initial_balance=0.0)
+                conn.execute("DELETE FROM balances WHERE account_id=?", (account_id,))
+                for asset, free, locked, total in clean_rows:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO balances
+                        (account_id, asset, free, locked, total, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM balances WHERE account_id=? AND asset=?), ?), ?)
+                        """,
+                        (account_id, asset, free, locked, total, account_id, asset, now, now),
+                    )
+                conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def latest_exchange_ledger_since_ms(self, mode='live', source='kraken_ledger'):
+        try:
+            account_id = self._account_id(mode)
+            conn = self._get_conn()
+            row = conn.execute(
+                """
+                SELECT entry_ts
+                FROM ledger_entries
+                WHERE account_id=? AND source=?
+                ORDER BY entry_ts DESC, created_at DESC
+                LIMIT 1
+                """,
+                (account_id, source),
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            try:
+                from datetime import datetime, timezone
+                text = str(row[0]).replace('Z', '+00:00')
+                dt = datetime.fromisoformat(text)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return max(0, int(dt.timestamp() * 1000) - 60000)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def import_exchange_ledger(self, entries, mode='live', source='kraken_ledger'):
+        """Importe le ledger reel Kraken/CCXT sans deviner depuis les deltas de balance."""
+        if mode == 'paper' or not entries:
+            return 0
+        imported = 0
+        try:
+            now = now_iso()
+            account_id = self._account_id(mode)
+            with self._lock:
+                conn = self._get_conn()
+                self._ensure_account(conn, mode=mode, initial_balance=0.0)
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    external_id = str(entry.get('id') or entry.get('txid') or entry.get('referenceId') or '').strip()
+                    currency = self._normalize_asset_code(entry.get('currency') or entry.get('code') or entry.get('asset'))
+                    if not currency:
+                        continue
+                    amount = self._clean(entry.get('amount'))
+                    if amount is None:
+                        continue
+                    direction = str(entry.get('direction') or '').lower()
+                    if direction in {'out', 'debit'} and amount > 0:
+                        amount = -amount
+                    entry_type = self._map_exchange_ledger_type(entry)
+                    timestamp = entry.get('datetime') or entry.get('timestamp') or now
+                    if isinstance(timestamp, (int, float)):
+                        from datetime import datetime, timezone
+                        timestamp = datetime.fromtimestamp(float(timestamp) / 1000.0, tz=timezone.utc).isoformat()
+                    balance_after = self._clean(entry.get('after'))
+                    reference_id = entry.get('referenceId') or entry.get('reference_id')
+                    ledger_id = f'{account_id}:{source}:{external_id or reference_id or currency + ":" + str(timestamp) + ":" + str(amount)}'
+                    exists = conn.execute(
+                        "SELECT 1 FROM ledger_entries WHERE ledger_id=?",
+                        (ledger_id,),
+                    ).fetchone()
+                    description_payload = {
+                        'exchange_type': entry.get('type'),
+                        'direction': entry.get('direction'),
+                        'reference_id': reference_id,
+                        'status': entry.get('status'),
+                    }
+                    self._insert_ledger_entry(
+                        conn,
+                        ledger_id,
+                        account_id,
+                        timestamp,
+                        entry_type,
+                        currency,
+                        amount,
+                        order_id=str(reference_id) if reference_id else None,
+                        description=json.dumps(description_payload, ensure_ascii=False),
+                        source=source,
+                        balance_after=balance_after,
+                    )
+                    if not exists:
+                        imported += 1
+                self._sync_orders_from_exchange_ledger(conn, account_id, source=source)
+                conn.commit()
+            return imported
+        except Exception:
+            return imported
+
+    def _sync_orders_from_exchange_ledger(self, conn, account_id, source='kraken_ledger'):
+        """Cree les orders/fills locaux manquants depuis les paires trade du ledger exchange."""
+        try:
+            now = now_iso()
+            tradable_assets = {'BTC', 'ETH', 'SOL', 'ADA'}
+            rows = conn.execute(
+                """
+                SELECT order_id, MIN(entry_ts) AS entry_ts
+                FROM ledger_entries
+                WHERE account_id=? AND source=? AND entry_type='trade' AND order_id IS NOT NULL
+                GROUP BY order_id
+                """,
+                (account_id, source),
+            ).fetchall()
+            for order_id, entry_ts in rows:
+                if not order_id:
+                    continue
+                if conn.execute(
+                    "SELECT 1 FROM orders WHERE account_id=? AND order_id=?",
+                    (account_id, order_id),
+                ).fetchone():
+                    continue
+                legs = conn.execute(
+                    """
+                    SELECT asset, SUM(amount) AS amount
+                    FROM ledger_entries
+                    WHERE account_id=? AND source=? AND entry_type='trade' AND order_id=?
+                    GROUP BY asset
+                    """,
+                    (account_id, source, order_id),
+                ).fetchall()
+                amounts = {str(asset or '').upper(): float(amount or 0.0) for asset, amount in legs}
+                quote_amount = amounts.get('USD', 0.0)
+                base_asset = None
+                base_amount = 0.0
+                for asset, amount in amounts.items():
+                    if asset in tradable_assets and abs(amount) > abs(base_amount):
+                        base_asset = asset
+                        base_amount = amount
+                if not base_asset or abs(base_amount) <= 1e-12 or abs(quote_amount) <= 1e-12:
+                    continue
+                side = None
+                if base_amount > 0 and quote_amount < 0:
+                    side = 'buy'
+                elif base_amount < 0 and quote_amount > 0:
+                    side = 'sell'
+                if not side:
+                    continue
+                symbol = f'{base_asset}/USD'
+                amount = abs(base_amount)
+                price = abs(quote_amount) / amount if amount > 0 else 0.0
+                if price <= 0:
+                    continue
+                ts = entry_ts or now
+                
+                # Skip si un live_trade existe deja pour ce meme trade (eviter doublons)
+                if self._has_matching_local_live_trade(conn, account_id, symbol, side, amount, ts):
+                    continue
+                
+                # Pas de fee_amount pour kraken_ledger: les frais sont deja integres
+                # dans les montants du ledger (prix net apres frais)
+                fee_amount = 0
+                
+                fill_id = f'{account_id}:fill:{source}:{order_id}'
+                conn.execute(
+                    """
+                    INSERT INTO orders
+                    (account_id, order_id, symbol, side, order_type, status, amount, price,
+                     filled_amount, avg_fill_price, source, source_position_idx,
+                     opened_at, closed_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'market', 'filled', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    """,
+                    (account_id, order_id, symbol, side, amount, price, amount, price, source, ts, ts, ts, now),
+                )
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO fills
+                    (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount,
+                     fee_asset, source, source_position_idx, fill_ts, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, NULL, ?, ?, ?)
+                    """,
+                    (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount, source, ts, ts, now),
+                )
+                if side == 'sell':
+                    conn.execute(
+                        """
+                        UPDATE orders
+                        SET status='cancelled',
+                            closed_at=COALESCE(closed_at, ?),
+                            updated_at=?
+                        WHERE account_id=?
+                          AND symbol=?
+                          AND side='sell'
+                          AND status='open'
+                          AND order_id<>?
+                        """,
+                        (ts, now, account_id, symbol, order_id),
+                    )
+        except Exception:
+            return
+
+    def _has_matching_local_live_trade(self, conn, account_id, symbol, side, amount, entry_ts, tolerance_seconds=300):
+        try:
+            from datetime import datetime, timezone
+            target_text = str(entry_ts or '').replace('Z', '+00:00')
+            target_dt = datetime.fromisoformat(target_text)
+            if target_dt.tzinfo is None:
+                target_dt = target_dt.replace(tzinfo=timezone.utc)
+            target_seconds = target_dt.timestamp()
+            rows = conn.execute(
+                """
+                SELECT opened_at, amount
+                FROM orders
+                WHERE account_id=?
+                  AND symbol=?
+                  AND side=?
+                  AND status='filled'
+                  AND source='live_trade'
+                """,
+                (account_id, symbol, side),
+            ).fetchall()
+            for opened_at, local_amount in rows:
+                if abs(float(local_amount or 0.0) - float(amount or 0.0)) > max(1e-8, abs(float(amount or 0.0)) * 0.001):
+                    continue
+                local_text = str(opened_at or '').replace('Z', '+00:00')
+                local_dt = datetime.fromisoformat(local_text)
+                if local_dt.tzinfo is None:
+                    local_dt = local_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                if abs(local_dt.timestamp() - target_seconds) <= tolerance_seconds:
+                    return True
+            return False
+        except Exception:
+            return False
+
     def _positions_from_accounting(self, conn, mode='paper'):
         account_id = self._account_id(mode)
         positions = []
@@ -2657,6 +3018,77 @@ class MLLiveLogger:
             """,
             (account_id,),
         ).fetchall()
+
+        def _parse_accounting_ts(raw):
+            try:
+                dt = datetime.fromisoformat(str(raw or '').replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    try:
+                        from zoneinfo import ZoneInfo
+                        dt = dt.replace(tzinfo=ZoneInfo(os.getenv('AEGIS_LOCAL_TZ', 'America/Toronto')))
+                    except Exception:
+                        offset_hours = float(os.getenv('AEGIS_LOCAL_UTC_OFFSET_HOURS', '-4'))
+                        dt = dt.replace(tzinfo=timezone(timedelta(hours=offset_hours)))
+                return dt.timestamp()
+            except Exception:
+                return 0.0
+
+        def _is_duplicate_live_trade(row, kraken_rows, tolerance_seconds=120):
+            if mode != 'live':
+                return False
+            order_id, symbol, side, status, amount, price, opened_at, closed_at = row[:8]
+            source = row[12] if len(row) > 12 else None
+            if source != 'live_trade':
+                return False
+            if str(status or '').lower() not in {'filled', 'closed', 'executed'}:
+                return False
+            row_symbol = self._normalize_live_symbol(symbol)
+            row_side = str(side or '').lower()
+            row_amount = float(amount or 0.0)
+            row_ts = _parse_accounting_ts(opened_at or row[8] or row[9])
+            for kraken_row in kraken_rows:
+                k_symbol = self._normalize_live_symbol(kraken_row[1])
+                k_side = str(kraken_row[2] or '').lower()
+                k_amount = float(kraken_row[4] or 0.0)
+                if row_symbol != k_symbol or row_side != k_side:
+                    continue
+                if abs(row_amount - k_amount) > max(1e-8, abs(k_amount) * 0.005):
+                    continue
+                if abs(row_ts - _parse_accounting_ts(kraken_row[6] or kraken_row[8] or kraken_row[9])) <= tolerance_seconds:
+                    return True
+            return False
+
+        if mode == 'live':
+            kraken_rows = [
+                row for row in rows
+                if str(row[12] or '').startswith('kraken_ledger')
+                and str(row[3] or '').lower() in {'filled', 'closed', 'executed'}
+            ]
+            rows = [row for row in rows if not _is_duplicate_live_trade(row, kraken_rows)]
+
+        def _row_ts(row):
+            raw = row[6] or row[8] or row[9] or ''
+            try:
+                dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    try:
+                        from zoneinfo import ZoneInfo
+                        dt = dt.replace(tzinfo=ZoneInfo(os.getenv('AEGIS_LOCAL_TZ', 'America/Toronto')))
+                    except Exception:
+                        offset_hours = float(os.getenv('AEGIS_LOCAL_UTC_OFFSET_HOURS', '-4'))
+                        dt = dt.replace(tzinfo=timezone(timedelta(hours=offset_hours)))
+                return dt.timestamp()
+            except Exception:
+                return 0.0
+
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                row[10] if row[10] is not None else 999999999,
+                _row_ts(row),
+                str(row[0] or ''),
+            ),
+        )
         buy_remaining = {}
         buy_closed_at = {}
         buy_queues = {}
@@ -2709,6 +3141,7 @@ class MLLiveLogger:
                 'position_size_usd': self._clean(float(amount or 0) * float(price or 0)),
                 'position_size_crypto': self._clean(amount),
                 'source_position_idx': source_position_idx,
+                'source': source,
             })
         return positions
 
@@ -2902,7 +3335,7 @@ class MLLiveLogger:
                         'status': 'executed',
                         'order_id': row.order_id,
                         'timestamp': row.opened_at,
-                        'fee_rate': 0.001,
+                        'fee_rate': float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0,
                         'position_size_usd': amount * price,
                         'position_size_crypto': amount,
                         'stop_loss_price': stop_price,
@@ -3328,6 +3761,7 @@ class MLLiveLogger:
                 session.execute(delete(MlFeatureImportance).where(MlFeatureImportance.model_id == model_id))
                 self._add_feature_importance_orm(session, model_id, 'entry', metadata.get('feature_importance'))
                 self._add_feature_importance_orm(session, model_id, 'exit', metadata.get('exit_feature_importance'))
+                self._add_feature_importance_orm(session, model_id, 'sizing', metadata.get('sizing_feature_importance'))
                 session.commit()
             return model_id
         except Exception:
@@ -3396,8 +3830,14 @@ class MLLiveLogger:
                 ).all()
             feature_importance = []
             exit_feature_importance = []
+            sizing_feature_importance = []
             for item in importances:
-                target = exit_feature_importance if item.scope == 'exit' else feature_importance
+                if item.scope == 'exit':
+                    target = exit_feature_importance
+                elif item.scope == 'sizing':
+                    target = sizing_feature_importance
+                else:
+                    target = feature_importance
                 target.append((item.feature_name, item.importance))
             return {
                 'model_id': row.model_id,
@@ -3405,9 +3845,11 @@ class MLLiveLogger:
                 'model_path': row.model_path,
                 'n_features': row.n_features,
                 'exit_n_features': row.exit_n_features,
+                'sizing_n_features': len(sizing_feature_importance) or None,
                 'stored_at': row.stored_at,
                 'feature_importance': feature_importance,
                 'exit_feature_importance': exit_feature_importance,
+                'sizing_feature_importance': sizing_feature_importance,
             }
         except Exception:
             return {}
@@ -3553,6 +3995,42 @@ class MLLiveLogger:
                     },
                 })
             return items
+        except Exception:
+            return []
+
+    def get_latest_sizing_recommendations(self, mode='paper', limit=20):
+        try:
+            with self._orm_session() as session:
+                rows = session.scalars(
+                    select(MlSizingRecommendation)
+                    .where(MlSizingRecommendation.mode == mode)
+                    .order_by(MlSizingRecommendation.timestamp.desc())
+                    .limit(int(limit))
+                ).all()
+            return [
+                {
+                    'sizing_id': row.sizing_id,
+                    'timestamp': row.timestamp,
+                    'mode': row.mode,
+                    'symbol': row.symbol,
+                    'entry_id': row.entry_id,
+                    'p_win': row.p_win,
+                    'p_continue': row.p_continue,
+                    'base_position_size_usd': row.base_position_size_usd,
+                    'raw_sizing_factor': row.raw_sizing_factor,
+                    'sizing_factor': row.sizing_factor,
+                    'final_position_size_usd': row.final_position_size_usd,
+                    'min_position_size_usd': row.min_position_size_usd,
+                    'max_position_size_usd': row.max_position_size_usd,
+                    'exposure_before_usd': row.exposure_before_usd,
+                    'exposure_after_usd': row.exposure_after_usd,
+                    'max_exposure_usd': row.max_exposure_usd,
+                    'decision': row.decision,
+                    'reason': row.reason,
+                    'risk_veto_reason': row.risk_veto_reason,
+                }
+                for row in rows
+            ]
         except Exception:
             return []
 

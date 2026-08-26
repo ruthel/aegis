@@ -16,6 +16,7 @@ Derniere mise a jour : 2026-08-08
 * **Phase 7 (Execution intelligente & microstructure marche)** : 🟡 **Partiel actif**
 * **Phase 8 (Robustesse production & observabilite)** : 🟡 **Partiel actif**
 * **Phase 10 (Autonomie controlee & gouvernance risque)** : 🔜 **A faire**
+* **Phase 11 (Sizing ML dedie & nettoyage sizing legacy)** : 🟡 **Partiel actif**
 
 ---
 
@@ -140,14 +141,14 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 
 ---
 
-## ✅ Phase 6 : Position Sizing ML & Allocation Dynamique (Terminé)
+## ✅ Phase 6 : Position Sizing & Allocation Dynamique (Remplace par Phase 11 pour la decision de taille)
 
 Objectif : ne plus seulement décider **si** le bot entre, mais aussi **combien** il engage selon la qualité du setup.
 
-- [x] **Sizing par confiance ML** : taille graduée (40%, 70%, 100%) selon le niveau de confiance `p_win` du modèle ML (`core/trading_bot.py`).
+- [x] **Sizing par confiance ML historique** : ancienne taille graduée (40%, 70%, 100%) retirée du chemin actif; la decision de taille est maintenant portée par le `sizing_model` Phase 11.
 - [x] **Sizing par volatilité** : ajustement dynamique du montant selon l'ATR, la volatilité et les contraintes de risque (`utils/risk_manager.py`).
 - [x] **Budget par symbole** : contrôle des corrélations inter-crypto (`CorrelationManager`).
-- [x] **Kelly fractionné ML** : application institutionnelle d'un Kelly fractionné 25% basé sur le win rate live et le payoff ratio (`calculate_kelly_fractional_factor`).
+- [x] **Kelly fractionné ML historique** : retiré du chemin actif pour éviter une double decision de sizing avant le `sizing_model`.
 - [x] **UI allocation & Sizing Reason** : affichage explicatif de la raison du sizing sous la valeur USD dans le tableau de bord web.
 
 Impact attendu : moins de pertes lourdes sur setups incertains, meilleur rendement quand le ML est vraiment confiant.
@@ -191,7 +192,46 @@ Etat actuel : quelques briques existent deja (`governance_logs`, sauvegarde cham
 - [x] **Promotion avec garde-fous complets** : minimum trades, minimum jours, drawdown max, PnL net positif, profit factor minimum, calibration acceptable et statut drift autorise avant promotion.
 - [x] **Mode safe fallback automatise** : active le mode safe si pertes consecutives, perte journaliere/hebdo, drift ML critique ou health CRITICAL persistant depassent les seuils configures.
 - [x] **Journal de gouvernance complet** : enregistre evaluation des garde-fous, promotions/refus, retraining, health status/action required et safe fallback avec raison + metriques JSON.
-- [ ] **Limites capital strictes** : perte journaliere, perte hebdo, nombre max de positions, exposition max par crypto et blocage automatique si limite atteinte.
+- [x] **Limites capital strictes** : perte journaliere, perte hebdo, nombre max de positions, exposition globale, positions max par crypto et blocage automatique si limite atteinte.
 - [x] **Surveillance health checks** : `HealthManager.run_checks()` est planifie; les WARN/CRITICAL notifient et journalisent, les CRITICAL repetes peuvent declencher le safe fallback si `HEALTH_SAFE_FALLBACK_ENABLED=true`.
 
 Impact attendu : apprentissage autonome, mais sous controle explicite, avec audit complet.
+
+---
+
+## 🟡 Phase 11 : Sizing ML Dedie & Nettoyage Sizing Legacy
+
+Objectif : ajouter un troisieme modele dans le champion ML pour decider **combien engager** sur un trade, sans remplacer les garde-fous de risque.
+
+Architecture visee :
+
+```text
+data/aegis_model.joblib
+├── model         -> entree / P_win
+├── exit_model    -> sortie / P_continue
+└── sizing_model  -> taille recommandee / sizing_factor
+```
+
+Le `sizing_model` ne decide pas d'acheter ou vendre. Il propose un facteur de taille, puis le Risk Manager garde le veto final.
+
+### Etapes de creation
+
+- [x] **Definition cible sizing initiale** : facteurs de taille (`0.25x`, `0.40x`, `0.50x`, `0.75x`, `1.00x`, `1.25x`) derives du PnL net historique dans `sizing_factor_target_from_pnl()`.
+- [ ] **Features sizing** : reutiliser les features d'entree/sortie utiles et ajouter les metriques deja connues du trade prevu : capital disponible, exposition globale, exposition symbole, volatilite, Kelly, regime, spread et liquidite.
+- [x] **Modele sizing champion/challenger** : entrainer un `sizing_model` separe et le sauvegarder dans le meme `aegis_model.joblib` / `aegis_challenger.joblib`.
+- [x] **Prediction live sizing** : `MLEngine.predict_position_size_factor()` retourne `sizing_factor`, `raw_sizing_factor` et `reason`, avec fallback `1.0x` si le modele est absent.
+- [x] **Integration trading initiale** : dans `TradingBot`, le facteur ML sizing ajuste la taille de base calculee quand le modele sizing est disponible; sinon un fallback neutre `1.0x` reste actif.
+- [x] **Garde-fous risk manager** : conserver les plafonds stricts : exposition globale, exposition par symbole, capital disponible, minimum exchange, perte journaliere/hebdo et safe fallback.
+- [x] **Journalisation sizing** : enregistrer la recommandation sizing dans SQLite (`ml_sizing_recommendations`) avec facteur propose, facteur final applique, exposition et plafonds risk manager.
+- [x] **UI Config & Live** : afficher le statut du modele sizing, son facteur recommande et la raison du sizing dans les cartes ML/Config.
+- [x] **Backtest / replay sizing** : comparer sizing legacy vs sizing ML sur trades fermes et refus rejoues via `scripts/backtest_ml_sizing.py`, avec sauvegarde dans `ml_sizing_backtests`.
+
+### Etapes de nettoyage apres validation
+
+- [x] **Retirer sizing fixe redondant** : seuils durs `40% / 70% / 100%`, `_confidence_sizing_factor()` et branche `ml_neutral_sizing` retires du chemin actif.
+- [x] **Nettoyer anciennes variables inutiles** : suppression des sorties runtime `ml_factor`, `ml_position_factor`, `ml_neutral_sizing` et Kelly fractionne legacy.
+- [x] **Simplifier `risk_manager.calculate_position_size()`** : conserve une taille de base neutre, volatilite et limites; la decision cible de taille est deplacee vers le ML.
+- [x] **Audit code mort sizing** : `docs/AUDIT_CODE_MORT.md` mis a jour apres suppression des branches sizing legacy confirmees.
+- [x] **Documentation finale** : `README.md` et `docs/CARTOGRAPHIE_APP.md` mis a jour avec le cerveau ML entree/sortie/sizing.
+
+Impact attendu : moins de capital sur setups fragiles, plus de capital sur opportunites propres, et rendement mieux optimise sans augmenter le capital total.

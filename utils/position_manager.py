@@ -437,10 +437,10 @@ class PositionManager:
             size_crypto = self.round_quantity(symbol, size_crypto_raw)
             filters = self.get_symbol_filters(symbol)
             step_size = filters['stepSize']
-            min_amount = max(
-                float(filters.get('minQty') or 0),
-                float(self.bot.get_min_amount(symbol).get('min_amount') or 0)
-            )
+            bot_limits = self.bot.get_min_amount(symbol) if hasattr(self.bot, 'get_min_amount') else {}
+            min_amount = float((bot_limits or {}).get('min_amount') or filters.get('minQty') or 0)
+            if min_amount > 0 and step_size > min_amount:
+                step_size = 0.00000001 if min_amount < 1 else min_amount
             
             if size_crypto < min_amount:
                 import math
@@ -530,7 +530,7 @@ class PositionManager:
     
     def _get_fee_rate(self):
         """Retourne un taux de frais spot fallback."""
-        return 0.001
+        return float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
     
     def get_symbol_filters(self, symbol):
         """Récupère filtres LOT_SIZE depuis l'exchange"""
@@ -552,7 +552,15 @@ class PositionManager:
             if market and market.get('limits'):
                 amount_limits = market['limits'].get('amount', {})
                 precision = market.get('precision', {}).get('amount', 8)
-                step_size = 10 ** (-precision) if precision else 0.0001
+                if isinstance(precision, (int, float)):
+                    precision_value = float(precision)
+                    # CCXT peut retourner soit un nombre de décimales (8), soit le pas réel (0.00000001).
+                    if 0 < precision_value < 1:
+                        step_size = precision_value
+                    else:
+                        step_size = 10 ** (-int(precision_value)) if precision_value else 0.0001
+                else:
+                    step_size = 0.0001
                 filters = {
                     'minQty': float(amount_limits.get('min', 0.0001)),
                     'stepSize': step_size

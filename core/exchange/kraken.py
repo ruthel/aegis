@@ -35,10 +35,10 @@ class KrakenClient(ExchangeBase):
 
     @property
     def markets(self):
-        return self._exchange.markets or {}
+        return self._markets or self._exchange.markets or {}
 
     def connect(self):
-        self._exchange.load_markets()
+        self.load_markets()
 
     def fetch_balance(self, params=None):
         return self._exchange.fetch_balance(params or {})
@@ -67,15 +67,59 @@ class KrakenClient(ExchangeBase):
     def fetch_open_orders(self, symbol=None):
         return self._exchange.fetch_open_orders(symbol)
 
+    def fetch_order(self, order_id, symbol=None):
+        return self._exchange.fetch_order(order_id, symbol)
+
     def cancel_order(self, order_id, symbol=None):
         return self._exchange.cancel_order(order_id, symbol)
 
     def fetch_my_trades(self, symbol, since=None, limit=100):
         return self._exchange.fetch_my_trades(symbol, since=since, limit=limit)
 
+    def fetch_ledger(self, code=None, since=None, limit=100, params=None):
+        return self._exchange.fetch_ledger(code=code, since=since, limit=limit, params=params or {})
+
+    def fetch_deposits(self, code=None, since=None, limit=100, params=None):
+        return self._exchange.fetch_deposits(code=code, since=since, limit=limit, params=params or {})
+
+    def fetch_withdrawals(self, code=None, since=None, limit=100, params=None):
+        return self._exchange.fetch_withdrawals(code=code, since=since, limit=limit, params=params or {})
+
+    def fetch_transactions(self, code=None, since=None, limit=100, params=None):
+        return self._exchange.fetch_transactions(code=code, since=since, limit=limit, params=params or {})
+
     def load_markets(self):
-        self._exchange.load_markets()
-        self._markets = self._exchange.markets
+        self._markets = self._exchange.load_markets() or {}
+        return self._markets
+
+    def fetch_trading_fees(self):
+        """Retourne les frais maker/taker par paire au format attendu par le bot."""
+        fees = {}
+        try:
+            if hasattr(self._exchange, 'fetch_trading_fees'):
+                raw_fees = self._exchange.fetch_trading_fees()
+                if isinstance(raw_fees, dict) and raw_fees:
+                    for symbol, item in raw_fees.items():
+                        if not isinstance(item, dict):
+                            continue
+                        fees[symbol] = {
+                            'maker': float(item.get('maker') if item.get('maker') is not None else 0.0016),
+                            'taker': float(item.get('taker') if item.get('taker') is not None else 0.0026),
+                        }
+                    if fees:
+                        return fees
+        except Exception:
+            pass
+
+        markets = self.markets or self.load_markets()
+        for symbol, market in (markets or {}).items():
+            if not isinstance(market, dict):
+                continue
+            fees[symbol] = {
+                'maker': float(market.get('maker') if market.get('maker') is not None else 0.0016),
+                'taker': float(market.get('taker') if market.get('taker') is not None else 0.0026),
+            }
+        return fees
 
     def get_ws_url(self):
         return "wss://ws.kraken.com"
@@ -140,16 +184,16 @@ class KrakenClient(ExchangeBase):
         """BTCUSD -> BTC/USD"""
         if '/' in pair:
             return pair
-        for quote in ['USD', 'USDC', 'USD', 'BTC', 'ETH']:
+        for quote in ['USDT', 'USDC', 'USD', 'CAD', 'BTC', 'ETH']:
             if pair.endswith(quote):
                 return f"{pair[:-len(quote)]}/{quote}"
         return pair
 
     def get_market_limits(self, symbol):
         try:
-            if not self._exchange.markets:
-                self._exchange.load_markets()
-            market = self._exchange.markets.get(symbol)
+            symbol = self.normalize_symbol(symbol)
+            markets = self.markets or self.load_markets()
+            market = markets.get(symbol)
             if market and market.get('limits'):
                 limits = market['limits']
                 return {

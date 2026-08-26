@@ -34,6 +34,9 @@ export function ConfigView({
   const errors = config.errors || {}
   const retraining = config.ml_retraining || {}
   const evaluations = config.ml_model_evaluations || []
+  const riskSizing = config.risk_sizing || {}
+  const sizingRecommendations = config.ml_sizing_recommendations || []
+  const sizingBacktests = config.ml_sizing_backtests || []
   const retrainingRunning = Boolean(retraining.running)
   const [manualCheckOnly, setManualCheckOnly] = useState(values.ML_AUTO_RETRAIN_CHECK_ONLY !== 'False')
   const [manualFast, setManualFast] = useState(values.ML_AUTO_RETRAIN_FAST === 'True')
@@ -228,6 +231,65 @@ export function ConfigView({
       <TabsContent value="ml" className="space-y-4">
         <Card>
           <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-primary" />
+              Sizing ML & garde-fous
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <MetricPill label="Taille trade base" value={`${formatNumber(riskSizing.trade_amount_usd)} USD`} />
+              <MetricPill label="Max / position" value={`${formatNumber(riskSizing.max_position_size_usd)} USD`} />
+              <MetricPill label="Expo capital max" value={`${formatNumber(riskSizing.max_total_capital_exposure_pct)}%`} />
+              <MetricPill label="Positions max" value={`${asString(riskSizing.max_total_positions, '--')} total · ${asString(riskSizing.max_positions_per_crypto, '--')} / crypto`} />
+            </div>
+            <div className="rounded-lg border border-border/80 bg-background/70">
+              <div className="grid grid-cols-[1fr_80px_110px_1fr] gap-2 border-b border-border px-3 py-2 text-[11px] font-black uppercase text-muted-foreground">
+                <span>Symbole</span>
+                <span>Facteur</span>
+                <span>Taille</span>
+                <span>Raison</span>
+              </div>
+              {sizingRecommendations.length === 0 ? (
+                <div className="px-3 py-3 text-[13px] text-muted-foreground">Aucune recommandation sizing enregistrée.</div>
+              ) : (
+                sizingRecommendations.slice(0, 6).map((item, index) => (
+                  <div key={`${asString(item.sizing_id || item.symbol)}-${index}`} className="grid grid-cols-[1fr_80px_110px_1fr] gap-2 border-b border-border/60 px-3 py-2 text-[12.5px] last:border-b-0">
+                    <strong>{asString(item.symbol)}</strong>
+                    <span className="font-black text-emerald-300">{formatNumber(item.sizing_factor)}x</span>
+                    <span>{formatNumber(item.final_position_size_usd)} USD</span>
+                    <span className="truncate text-muted-foreground" title={asString(item.reason)}>{asString(item.reason, '--')}</span>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              {sizingBacktests.length === 0 ? (
+                <div className="rounded-lg border border-border bg-background/70 p-3 text-[13px] text-muted-foreground md:col-span-3">
+                  Aucun replay sizing enregistré.
+                </div>
+              ) : sizingBacktests.slice(0, 3).map((item, index) => (
+                <div key={`${asString(item.run_id)}-${index}`} className="rounded-lg border border-border bg-background/70 p-3">
+                  <div className="text-[12px] font-bold uppercase text-muted-foreground">Replay sizing</div>
+                  <div className="mt-1 text-[13px] font-black">{asString(item.samples, '0')} samples</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
+                    <span className="text-muted-foreground">Fixe</span>
+                    <strong>{formatNumber(item.baseline_pnl_usd)} USD</strong>
+                    <span className="text-muted-foreground">ML</span>
+                    <strong>{formatNumber(item.sizing_pnl_usd)} USD</strong>
+                    <span className="text-muted-foreground">Delta</span>
+                    <strong className={Number(item.pnl_delta_usd) >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                      {Number(item.pnl_delta_usd) >= 0 ? '+' : ''}{formatNumber(item.pnl_delta_usd)} USD
+                    </strong>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <div className="flex items-center justify-between gap-3">
               <CardTitle className="flex items-center gap-2">
                 <BrainCircuit className="h-4 w-4 text-emerald-300" />
@@ -392,6 +454,11 @@ function MetricPill({ label, value }: { label: string; value: string }) {
       <div className="mt-1 font-black">{value}</div>
     </div>
   )
+}
+
+function formatNumber(value: unknown, digits = 2) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed.toFixed(digits) : '--'
 }
 
 function StatusTile({

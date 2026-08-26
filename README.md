@@ -1,6 +1,6 @@
 # 🤖 Aegis Trading Bot v3
 
-Bot de trading spot multi-exchange avec **cerveau ML entrée/sortie**, 52 features d'entrée, 37 features de sortie, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
+Bot de trading spot multi-exchange avec **cerveau ML entrée/sortie/sizing**, 52 features d'entrée, features de sortie, sizing ML dédié, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -39,11 +39,11 @@ python run.py
 - **Crypto Scoring** : Sélection automatique des meilleures cryptos (score 0-100)
 - **Intervalle Adaptatif** : Calcul dynamique 2s-60s selon volatilité (remplace CHECK_INTERVAL statique)
 - **Sessions Optimales** : Filtrage automatique sessions Europe/Asie (remplace TimingOptimizer complexe)
-- **Position Sizing Institutionnel** : Basé sur Kelly Criterion, volatilité et corrélation
+- **Position Sizing ML** : taille proposée par un modèle dédié, puis bornée par le Risk Manager
 - **Risk Management Pro** : Stop-loss adaptatif, trailing stop, circuit breakers
 - **Edge Detection** : Identification automatique des avantages statistiques
 
-### 🧠 Architecture ML Entrée/Sortie
+### 🧠 Architecture ML Entrée/Sortie/Sizing
 Le bot ne fonctionne plus comme une cascade de verrous durs. Les anciens signaux métier sont désormais transmis au ML comme features, afin que le modèle décide sur l'ensemble du contexte au lieu de subir des blocages séparés.
 
 | Couche | Rôle |
@@ -52,6 +52,7 @@ Le bot ne fonctionne plus comme une cascade de verrous durs. Les anciens signaux
 | Features d'entrée ML | Régime symbole/BTC, bear mode, reversal, falling knife, Support Touch, score crypto, signal technique, timing, frais, valeur position |
 | Décision d'entrée ML | Achat seulement si `P_win >= 65%` et continuation attendue suffisante |
 | Gestion de sortie ML | `HOLD` ou `FORCE_EXIT` ; les anciennes règles de protection sont retirées du chemin actif |
+| Sizing ML | Propose `sizing_factor` et taille finale; le Risk Manager garde les plafonds capital/minimum exchange |
 
 Support Touch n'est plus un fast-path d'exécution. Il reste utile comme source statistique pour le modèle : nombre de trades, win rate, PnL total, PnL moyen et régime récent.
 Les stops, objectifs et métriques de continuation restent visibles comme contexte de suivi, mais ne déclenchent plus de vente automatique quand `ML_OWNS_EXITS=true`.
@@ -102,7 +103,7 @@ python start.py
 - **Live** : Flux WebSocket temps réel, positions ouvertes, volumes affichés en USD, cooldowns opérationnels, contexte d'entrée, décisions finales et alertes.
 - **UI** : cartes métriques principales, **Core ML Engine**, contexte d'entrée, marché live, positions et console d'alertes.
 - **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, historique des scores crypto par symbole/période, daily/hourly bar charts amCharts 5 et heatmap crypto.
-- **🧠 Core ML Engine** : modèle d'entrée RandomForest 52 features, modèle de sortie 37 features, P_win temps réel, état réel du prochain achat et décisions finales ML (`HOLD`/`FORCE_EXIT`).
+- **🧠 Core ML Engine** : modèle d'entrée RandomForest, modèle de sortie, modèle de sizing, P_win/P_continue temps réel, facteur de taille recommandé et décisions finales ML (`HOLD`/`FORCE_EXIT`).
 - **Trades** : Historique des trades fermés + positions ouvertes affichées avec statut `OPEN`.
 - **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel.
 - **Console** : Logs bot en temps réel avec autoscroll, limite de lignes et filtrage visuel.
@@ -175,7 +176,7 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 aegis/
 ├── core/                        # Cœur du bot (pattern Mixin)
 │   ├── trading_bot.py          # Bot principal — orchestration trading + décisions ML
-│   ├── ml_engine.py            # 🧠 Core ML Engine (RandomForest, 52 features entrée + sorties ML)
+│   ├── ml_engine.py            # 🧠 Core ML Engine (RandomForest entrée + sortie + sizing)
 │   ├── bot/trading.py          # TradingMixin - Ordres & exécution
 │   ├── bot/sync.py             # SyncMixin - Synchronisation exchange
 │   ├── bot/analysis.py         # AnalysisMixin - Analyses & prévisions
@@ -183,7 +184,7 @@ aegis/
 │   ├── exchange/               # Clients spot CCXT
 │   └── websocket.py            # WebSocket temps réel
 ├── utils/                       # Utilitaires spécialisés
-│   ├── risk_manager.py         # Gestion risques + seuils adaptatifs
+│   ├── risk_manager.py         # Garde-fous risques + taille de base neutre avant sizing ML
 │   ├── timeframe_analyzer.py   # Timeframes adaptatifs intelligents
 │   ├── position_manager.py     # Position sizing + récupération positions bloquées
 │   ├── pattern_analyzer.py     # Patterns + Support/Résistance + Niveaux dynamiques
@@ -191,7 +192,8 @@ aegis/
 │   ├── exit_engine.py          # ExitDecisionEngine (ContinuationScore 0-100)
 │   └── capital_manager.py      # Gestion capital + frais dynamiques
 ├── scripts/
-│   ├── train_and_evaluate_ml_model.py # Pipeline unifiée ML (entraînement Entrée + Sortie, évaluation, promotion)
+│   ├── train_and_evaluate_ml_model.py # Pipeline unifiée ML (entraînement Entrée + Sortie + Sizing, évaluation, promotion)
+│   ├── backtest_ml_sizing.py          # Replay sizing fixe vs sizing ML
 │   ├── walk_forward_validation.py     # Validation temporelle sans fuite
 │   └── analyze_ml_live_performance.py # Analyse live, calibration et drift
 ├── data/

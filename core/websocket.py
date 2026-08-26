@@ -42,6 +42,7 @@ class WebSocketManager:
         self.last_tick_ts = {}
         self.last_analysis_ts = {}
         self.market_meta = {}
+        self._last_bad_tick_log = {}
         self.live_logger = MLLiveLogger(data_dir='data', sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
         self.live_status_interval = float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '1'))
         self._last_live_status_write = 0
@@ -75,7 +76,19 @@ class WebSocketManager:
         def _hb():
             while self.running:
                 self.write_live_status()
-                time.sleep(1)
+                # Watchdog: si aucun tick recu depuis 90s et qu'on est cense etre connecte, forcer reconnexion
+                if self.is_ws_connected and self.last_tick_ts:
+                    last_any_tick = max(self.last_tick_ts.values()) if self.last_tick_ts else 0
+                    if last_any_tick > 0 and (time.time() - last_any_tick) > 90:
+                        print(f"⚠️ Watchdog: aucun tick depuis {time.time() - last_any_tick:.0f}s — reconnexion forcée")
+                        self.is_ws_connected = False
+                        try:
+                            if self.ws:
+                                self.ws.close()
+                        except Exception:
+                            pass
+                        self.reconnect()
+                time.sleep(5)
         _th.Thread(target=_hb, daemon=True).start()
 
     def _start_worker(self):
@@ -96,35 +109,12 @@ class WebSocketManager:
         self.worker_thread.start()
         
     def connect(self):
-        """Établit la connexion WebSocket selon l'exchange configuré"""
+        """Établit la connexion WebSocket Kraken"""
         try:
-            exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
-
-            if exchange_name == 'binance':
-                self._connect_binance()
-            else:
-                self._connect_kraken()
-
+            self._connect_kraken()
         except Exception as e:
             print(f"Erreur connexion WebSocket: {e}")
             self.reconnect()
-
-    def _connect_binance(self):
-        """Connexion WebSocket Binance"""
-        streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
-        url = f"wss://stream.binance.com:9443/ws/{'/'.join(streams)}"
-
-        self.ws = websocket.WebSocketApp(
-            url,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open
-        )
-
-        self.ws_thread = threading.Thread(target=self.ws.run_forever)
-        self.ws_thread.daemon = True
-        self.ws_thread.start()
 
     def _connect_kraken(self):
         """Connexion WebSocket Kraken"""
@@ -266,47 +256,28 @@ class WebSocketManager:
         self.is_ws_connected = True
         self.last_connected_ts = time.time()
     
-    def on_message(self, ws, message):
-        """Traite les messages Binance (optimisé)"""
-        try:
-            data = JSON_LOADS(message)
-
-            if 'k' in data:
-                kline = data['k']
-                symbol = kline['s']
-                current_price = float(kline['c'])
-
-                self.prices[symbol] = current_price
-                self.market_meta[symbol] = {
-                    'source': 'kline',
-                    'candle_open': float(kline['o']),
-                    'candle_high': float(kline['h']),
-                    'candle_low': float(kline['l']),
-                    'candle_volume': float(kline['v']),
-                    'candle_closed': bool(kline['x']),
-                    'candle_timestamp': kline['t'],
-                }
-                self._process_price_update(symbol, current_price)
-
-                # Kline fermée : sauvegarde
-                if kline['x']:
-                    candle = self._candle_template.copy()
-                    candle.update({
-                        'timestamp': kline['t'],
-                        'open': float(kline['o']),
-                        'high': float(kline['h']),
-                        'low': float(kline['l']),
-                        'close': current_price,
-                        'volume': float(kline['v'])
-                    })
-                    self.klines[symbol].append(candle)
-
-        except:
-            pass
-
     def _process_price_update(self, symbol, current_price):
         """Logique commune de filtrage et dispatch des prix"""
         symbol = self._normalize_symbol(symbol)
+        try:
+            current_price = float(current_price)
+            meta = self.market_meta.get(symbol, {}) if isinstance(self.market_meta, dict) else {}
+            bid = float(meta.get('bid') or 0.0)
+            ask = float(meta.get('ask') or 0.0)
+            if bid > 0 and ask > 0:
+                lower = bid * 0.80
+                upper = ask * 1.20
+                if current_price < lower or current_price > upper:
+                    now_bad = time.time()
+                    if now_bad - self._last_bad_tick_log.get(symbol, 0) > 60:
+                        self._last_bad_tick_log[symbol] = now_bad
+                        print(
+                            f"⚠️ Tick WS ignoré {symbol}: prix {current_price:.8f} hors bid/ask "
+                            f"({bid:.8f}/{ask:.8f})"
+                        )
+                    return
+        except Exception:
+            return
         should_analyze = False
         last_price = self.last_prices.get(symbol, 0)
         now = time.time()
@@ -466,11 +437,11 @@ class WebSocketManager:
         if not exchange:
             return
         import os as _os
+        from concurrent.futures import ThreadPoolExecutor
         exchange_name = _os.getenv('EXCHANGE', 'kraken').lower()
-        for symbol in self.symbols:
+        
+        def fetch_symbol(symbol):
             try:
-                # Convertir format interne (BTCUSD) vers format CCXT (BTC/USD)
-                # BTCUSD->BTC/USD, ETHUSD->ETH/USD (enlever suffixe USD)
                 if symbol.endswith('USD'):
                     base = symbol[:-3]
                 else:
@@ -487,6 +458,9 @@ class WebSocketManager:
             except Exception as e:
                 if os.getenv('WS_PRELOAD_DEBUG', 'false').lower() == 'true':
                     print(f'WS preload erreur {symbol}: {e}')
+        
+        with ThreadPoolExecutor(max_workers=len(self.symbols)) as executor:
+            executor.map(fetch_symbol, self.symbols)
 
     def get_klines(self, symbol, count=50):
         """Récupère les dernières bougies"""

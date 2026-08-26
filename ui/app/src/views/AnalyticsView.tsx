@@ -54,13 +54,12 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
     }
     const maxAgeMs = msMap[pnlTimeRange] ?? Infinity
 
-    const filtered = history.filter((item, idx) => {
-      if (idx === 0) return true
+    const filtered = history.filter((item) => {
       if (maxAgeMs === Infinity) return true
       const rawTime = asString(item.time)
-      if (!rawTime || rawTime === 'start') return true
+      if (!rawTime || rawTime === 'start') return false
       const itemTs = new Date(rawTime).getTime()
-      if (isNaN(itemTs)) return true
+      if (isNaN(itemTs)) return false
       return now - itemTs <= maxAgeMs
     })
 
@@ -187,6 +186,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
                 color={Number(pnlHistory.total_pnl || 0) >= 0 ? '#34d399' : '#fb7185'}
                 yAxisTitle="P&L Net Cumulé ($ USD)"
                 xAxisTitle="Chronologie Temporelle (Date & Durée)"
+                timeRange={pnlTimeRange}
               />
             ) : (
               <EmptyAnalytics text="Pas assez de trades enregistrés pour cette durée" />

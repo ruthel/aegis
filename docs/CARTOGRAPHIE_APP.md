@@ -1,6 +1,6 @@
 # Cartographie de l'Application Aegis
 
-Derniere mise a jour : 2026-07-31
+Derniere mise a jour : 2026-08-23
 
 Ce document decrit l'etat actuel de l'application apres la migration SQLite, la fusion ML entree/sortie, la SPA React et les nettoyages de logs/decisions.
 
@@ -11,7 +11,7 @@ Aegis est compose de quatre blocs principaux :
 | Bloc | Role | Source principale |
 |------|------|-------------------|
 | Bot trading | Analyse marche, decisions ML, execution paper/live, etat runtime | `core/trading_bot.py` + mixins `core/bot/*` |
-| Cerveau ML | Modele entree, modele sortie, features, sauvegarde joblib | `core/ml_engine.py` |
+| Cerveau ML | Modele entree, modele sortie, modele sizing, features, sauvegarde joblib | `core/ml_engine.py` |
 | Memoire SQLite | Etat bot, positions, decisions, ML live, Telegram, analytics | `data/aegis_db.sqlite3` via `core/ml_live_logger.py` et `core/db_orm.py` |
 | UI web | Flask API + WebSocket + SPA React/Vite | `ui/server.py` et `ui/app` |
 
@@ -59,6 +59,7 @@ Responsabilites actuelles :
 - calculer contexte marche par symbole;
 - alimenter les 52 features d'entree ML;
 - demander au ML `P_win` pour l'entree;
+- demander au ML `sizing_factor` pour la taille de position;
 - verifier seulement les securites operationnelles avant achat : cooldown, position deja ouverte, capital, minimum exchange;
 - evaluer les positions ouvertes avec le modele de sortie;
 - appliquer les decisions de sortie ML `HOLD` ou `FORCE_EXIT`;
@@ -85,7 +86,7 @@ Seuils actuels :
 
 ```env
 ML_EXIT_SELL_THRESHOLD=35.0
-ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT=0.05
+ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT=0.35
 ML_EXIT_PROFIT_PROTECT_THRESHOLD=70.0
 ```
 
@@ -99,6 +100,7 @@ Modele actuel :
 
 - RandomForest entree;
 - RandomForest sortie;
+- RandomForest sizing;
 - modele champion actif : `data/aegis_model.joblib`;
 - challenger possible : `data/aegis_challenger.joblib`.
 
@@ -113,6 +115,15 @@ Sortie :
 - 37 features environ;
 - calcule `P_continue`;
 - decide `HOLD` ou `FORCE_EXIT`.
+
+Sizing :
+
+- reutilise les features d'entree disponibles dans le sample;
+- calcule `sizing_factor` borne entre `0.25x` et `1.25x`;
+- ajuste la taille de base neutre fournie par `RiskManager.calculate_position_size()`;
+- reste soumis aux garde-fous : capital disponible, minimum exchange, exposition globale et nombre max de positions;
+- journalise les recommandations dans `ml_sizing_recommendations`;
+- les replays comparatifs sont stockes dans `ml_sizing_backtests`.
 
 Les anciens verrous metier comme Support Touch, falling knife, bear mode, HTF ou timing ne sont plus des blocages durs redondants. Ils sont principalement injectes comme features ML.
 
@@ -159,8 +170,12 @@ Tables principales :
 | `ml_trade_outcomes` | resultat final des trades |
 | `ml_model_metadata` | metadata du modele entraine |
 | `ml_feature_importances` | importances de features |
+| `ml_sizing_recommendations` | facteurs/taille proposes par le modele sizing en live |
+| `ml_sizing_backtests` | replay sizing fixe vs sizing ML |
 | `ml_analysis_runs` | runs d'analyse live |
 | `ml_prediction_calibration` | calibration prediction/resultat |
+| `ml_rejected_replay_results` | replay des trades refuses |
+| `ml_drift_alerts` | alertes de drift |
 
 La couche transactionnelle vit dans `core/ml_live_logger.py` :
 
@@ -170,14 +185,30 @@ La couche transactionnelle vit dans `core/ml_live_logger.py` :
 - soldes : recalculés depuis `ledger_entries` et les ordres sell ouverts.
 
 Les achats et ventes paper appellent cette couche transactionnelle dans le chemin normal. Les `paper_balance +=/-=` restants sont des fallbacks si le logger DB n'est pas disponible.
-| `ml_rejected_replay_results` | replay des trades refuses |
-| `ml_drift_alerts` | alertes de drift |
+
+En mode live, `BalanceManager.get_balance(force_refresh=True)` lit la balance réelle de l'exchange, normalise les actifs Kraken/CCXT (`ZUSD` -> `USD`, `XXBT` -> `BTC`) et synchronise `balances` pour le compte `live:<exchange>:USD`. L'UI lit ensuite ces lignes pour afficher le solde live.
+
+Le ledger Kraken réel est aussi importé via `fetch_ledger()` quand la balance live est synchronisée. Ces lignes sont stockées dans `ledger_entries` avec `source='kraken_ledger'` et un `ledger_id` stable basé sur l'identifiant Kraken. Cela évite de deviner les dépôts/retraits par simple différence de balance : une conversion CAD -> USD reste un mouvement Kraken de type `trade`/`transfer` selon le ledger, pas un faux `deposit` USD + faux `withdrawal` CAD.
+
+Cet import dépend d'une permission API Kraken distincte de la lecture balance. Si Kraken retourne `EGeneral:Permission denied`, le bot désactive l'import ledger pour la session en cours, garde la synchronisation des balances live active, et ne spamme pas les logs. Pour désactiver volontairement cet import, utiliser `KRAKEN_LEDGER_SYNC_ENABLED=False`.
 
 Les fichiers JSON runtime ne sont plus la source de verite. Les vieux scripts scratch ont ete retires.
 
 ## API Flask
 
 Fichier : `ui/server.py`
+
+### Mode trading vs mode de vue
+
+Deux notions sont separees :
+
+| Notion | Effet |
+|--------|------|
+| Mode trading (`paper` / `live`) | Determine ou le bot execute réellement ses ordres. |
+| Mode de vue (`paper` / `live` / `all`) | Filtre uniquement les donnees affichees dans l'UI. |
+
+Le selecteur global de la toolbar React change seulement le mode de vue. Il ne bascule jamais le bot entre paper et live.
+Les endpoints principaux acceptent `?view_mode=paper|live|all` : `/api/status`, `/api/analytics`, `/api/trades`, `/api/ledger`, `/api/ml_status` et le WebSocket `/ws/live`.
 
 Routes pages SPA :
 
@@ -186,6 +217,7 @@ Routes pages SPA :
 | `/` | Live |
 | `/analytics` | Analytics |
 | `/trades` | Trades |
+| `/ledger` | Ledger entries |
 | `/console` | Console |
 | `/config` | Config |
 
@@ -255,6 +287,7 @@ Vues :
 | `LiveView.tsx` | `/` | dashboard live : cartes, marche, ML, positions, decisions |
 | `AnalyticsView.tsx` | `/analytics` | metriques, PnL, scores crypto, daily/hourly bar charts |
 | `TradesView.tsx` | `/trades` | positions ouvertes et trades fermes |
+| `LedgerView.tsx` | `/ledger` | mouvements comptables, ledger Kraken, depots/retraits/frais/trades |
 | `ConsoleView.tsx` | `/console` | console bot/logs |
 | `ConfigView.tsx` | `/config` | configuration editable |
 

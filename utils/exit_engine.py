@@ -179,10 +179,11 @@ class ExitDecisionEngine:
         if created_at_str:
             try:
                 if 'T' in created_at_str:
-                    created_dt = datetime.fromisoformat(created_at_str.replace('Z', ''))
+                    created_dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
                 else:
                     created_dt = datetime.strptime(created_at_str, '%Y-%m-%d %H:%M:%S')
-                duration_minutes = (datetime.now() - created_dt).total_seconds() / 60.0
+                now_for_delta = datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()
+                duration_minutes = (now_for_delta - created_dt).total_seconds() / 60.0
             except Exception:
                 duration_minutes = 0
 

@@ -69,18 +69,6 @@ class ExecutionManager:
                     break
         return micro
 
-    def adjust_size_for_depth(self, symbol, position_size_crypto, current_price):
-        """Ajuste le montant de la position selon la liquidité live."""
-        if position_size_crypto <= 0:
-            return position_size_crypto
-        try:
-            micro = self.get_market_microstructure(symbol)
-            order_cost = position_size_crypto * current_price
-            # Si le montant USD est au-dessus du minimum et que la liquidité est normale, valider
-            return position_size_crypto
-        except Exception:
-            return position_size_crypto
-
     def execute_smart_buy(self, symbol, position_data, current_price, reason, ml_entry_learning_id=None):
         """
         Exécute un achat intelligent selon la Phase 7 :
@@ -108,7 +96,17 @@ class ExecutionManager:
 
         # 3. Dynamic Volume & Sizing Adjustment
         size_crypto = position_data.get('position_size_crypto', 0)
-        size_crypto = self.adjust_size_for_depth(symbol, size_crypto, current_price)
+        final_position_usd = float(size_crypto or 0.0) * float(current_price or 0.0)
+        if float(size_crypto or 0.0) <= 0 or final_position_usd <= 0:
+            print(f"❌ Smart Execution: taille invalide sur {symbol} ({float(size_crypto or 0.0):.8f}, {final_position_usd:.2f} USD)")
+            try:
+                self.bot.set_symbol_cooldown(symbol, self.bot.symbol_failure_cooldown_seconds, reason='invalid_order_size')
+            except Exception:
+                pass
+            return False
+        if hasattr(self.bot, 'capital_manager') and not self.bot.capital_manager.can_open_new_position(symbol, final_position_usd):
+            print(f"❌ Smart Execution: Garde-fou capital refuse {symbol} ({final_position_usd:.2f} USD)")
+            return False
 
         # 4. Adaptive Order Selection (Market Taker vs Limit Maker)
         ml_buy_prob = position_data.get('ml_buy_prob', 0.65) or 0.65
@@ -157,10 +155,48 @@ class ExecutionManager:
             self._log_execution(symbol, 'buy', order_type, expected_price, requested_price, None, None, micro['spread_pct'], size_crypto, (time.time() - start_time)*1000.0, False, "Order placement failed")
             return False
 
-        # 6. Slippage Tracking & Logging
-        executed_price = float(order.get('price') or current_price)
+        # 6. Slippage Tracking & Logging. Pour le live, le prix demande peut
+        # diverger du prix moyen réellement exécuté, surtout après un fallback.
+        execution = self.bot._resolve_exchange_execution(
+            symbol,
+            order,
+            size_crypto,
+            current_price,
+            side='buy',
+        )
+        executed_price = float(execution.get('price') or order.get('price') or current_price)
+        executed_amount = float(execution.get('amount') or size_crypto)
         slippage_pct = ((executed_price - expected_price) / expected_price * 100.0) if expected_price > 0 else 0.0
         exec_duration_ms = (time.time() - start_time) * 1000.0
+
+        if order_type == 'limit' and not self.bot.paper_trading:
+            self.bot._record_live_order_accounting(
+                symbol,
+                'buy',
+                executed_amount,
+                executed_price,
+                order,
+                order_type='limit',
+                filled=True,
+            )
+            position = {
+                'symbol': symbol,
+                'side': 'buy',
+                'amount': executed_amount,
+                'price': executed_price,
+                'timestamp': datetime.now().isoformat(),
+                'order_id': order.get('id'),
+                'source': 'bot',
+                'paper': False,
+                'status': 'executed',
+                'fee': execution.get('fee_amount'),
+                'position_size_crypto': executed_amount,
+                'position_size_usd': executed_amount * executed_price,
+                'sizing_reason': position_data.get('sizing_reason'),
+                'ml_buy_prob': ml_buy_prob,
+            }
+            self.bot.state.setdefault('positions', []).append(position)
+            self.bot.save_state()
 
         if ml_entry_learning_id and getattr(self.bot, 'ml_live_logger', None):
             try:
@@ -169,7 +205,7 @@ class ExecutionManager:
                     ml_entry_learning_id,
                     order=order,
                     price=executed_price,
-                    amount=size_crypto
+                    amount=executed_amount
                 )
             except Exception:
                 pass
@@ -183,7 +219,7 @@ class ExecutionManager:
                 'price': executed_price,
                 'avg_entry_price': avg_entry_price,
                 'position_size_usd': position_data.get('position_size_usd'),
-                'position_size_crypto': size_crypto,
+                'position_size_crypto': executed_amount,
                 'stop_loss_price': position_data.get('stop_loss_price'),
                 'risk_reward_ratio': position_data.get('risk_reward_ratio'),
                 'slippage_pct': round(slippage_pct, 4),
@@ -197,10 +233,10 @@ class ExecutionManager:
         position_count = len(existing_positions)
         
         slippage_str = f" | Slippage: {slippage_pct:+.2f}%" if abs(slippage_pct) > 0.01 else ""
-        print(f"✅ ACHAT {crypto} (#{position_count}): {size_crypto:.6f} {crypto} @ {executed_price:.2f} USD ({position_data['position_size_usd']:.1f} USD) [{order_type.upper()}]{slippage_str} | Stop {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
+        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} USD ({executed_amount * executed_price:.1f} USD) [{order_type.upper()}]{slippage_str} | Stop {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
 
         # Enregistrer dans SQLite
-        self._log_execution(symbol, 'buy', order_type, expected_price, requested_price, executed_price, slippage_pct, micro['spread_pct'], size_crypto, exec_duration_ms, True, reason)
+        self._log_execution(symbol, 'buy', order_type, expected_price, requested_price, executed_price, slippage_pct, micro['spread_pct'], executed_amount, exec_duration_ms, True, reason)
 
         # Ajouter trailing stop
         hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
@@ -215,9 +251,6 @@ class ExecutionManager:
         # Placer ordre de vente (paper ET réel)
         if self.bot.paper_trading:
             self.bot._place_paper_sell_order(symbol)
-        else:
-            time.sleep(1)
-            self.bot.optimize_existing_position(symbol)
 
         return True
 

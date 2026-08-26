@@ -23,6 +23,182 @@ class TradingMixin:
         except Exception:
             pass
 
+    def _elapsed_since_iso(self, timestamp):
+        created_at = datetime.fromisoformat(str(timestamp or '').replace('Z', '+00:00'))
+        now_for_delta = datetime.now(created_at.tzinfo) if created_at.tzinfo else datetime.now()
+        return now_for_delta - created_at
+
+    def _record_live_order_accounting(self, symbol, side, amount, price, order, order_type='market', filled=True):
+        """Trace les ordres live dans orders/fills sans dupliquer le ledger Kraken."""
+        if self.paper_trading or not getattr(self, 'ml_live_logger', None) or not order:
+            return
+        try:
+            order_id = str(order.get('id') or f'live_{side}_{symbol.replace("/", "")}_{time.time_ns()}')
+            self.ml_live_logger.record_order_transaction(
+                symbol,
+                side,
+                amount,
+                price,
+                order_type=order_type,
+                status='open',
+                order_id=order_id,
+                mode='live',
+                source='live_trade',
+                recalculate_balances=False,
+            )
+            if filled:
+                execution = self._extract_execution_details(order, amount, price)
+                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+                if fee_rate <= 0:
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_amount = execution.get('fee_amount')
+                if fee_amount is None:
+                    fee_amount = float(amount or 0.0) * float(price or 0.0) * fee_rate
+                self.ml_live_logger.record_fill_transaction(
+                    order_id,
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    fee_amount=fee_amount,
+                    fee_asset=execution.get('fee_asset') or 'USD',
+                    mode='live',
+                    source='live_trade',
+                    write_ledger=False,
+                    recalculate_balances=False,
+                )
+        except Exception as e:
+            print(f"⚠️ Comptabilité live non enregistrée pour {symbol}: {e}")
+
+    def _extract_execution_details(self, order, fallback_amount, fallback_price):
+        """Retourne le prix moyen réel, la quantité remplie et les frais depuis CCXT/Kraken."""
+        try:
+            order = order or {}
+            trades = order.get('trades') if isinstance(order.get('trades'), list) else []
+            filled = float(order.get('filled') or order.get('amount') or fallback_amount or 0.0)
+            cost = float(order.get('cost') or 0.0)
+            fee_amount = 0.0
+            fee_asset = 'USD'
+
+            if trades:
+                trade_amount = 0.0
+                trade_cost = 0.0
+                for trade in trades:
+                    amount = float(trade.get('amount') or 0.0)
+                    price = float(trade.get('price') or 0.0)
+                    trade_amount += amount
+                    trade_cost += float(trade.get('cost') or (amount * price))
+                    fee = trade.get('fee') or {}
+                    fee_amount += float(fee.get('cost') or 0.0)
+                    if fee.get('currency'):
+                        fee_asset = str(fee.get('currency')).upper()
+                if trade_amount > 0:
+                    filled = trade_amount
+                    cost = trade_cost
+
+            average = (
+                order.get('average')
+                or order.get('price')
+                or ((cost / filled) if cost > 0 and filled > 0 else None)
+                or fallback_price
+            )
+
+            fee = order.get('fee') or {}
+            if fee and not fee_amount:
+                fee_amount = float(fee.get('cost') or 0.0)
+                if fee.get('currency'):
+                    fee_asset = str(fee.get('currency')).upper()
+
+            return {
+                'price': float(average),
+                'amount': float(filled or fallback_amount or 0.0),
+                'cost': float(cost or (float(filled or fallback_amount or 0.0) * float(average or fallback_price or 0.0))),
+                'fee_amount': fee_amount if fee_amount > 0 else None,
+                'fee_asset': fee_asset,
+            }
+        except Exception:
+            return {
+                'price': float(fallback_price or 0.0),
+                'amount': float(fallback_amount or 0.0),
+                'cost': float(fallback_amount or 0.0) * float(fallback_price or 0.0),
+                'fee_amount': None,
+                'fee_asset': 'USD',
+            }
+
+    def _resolve_exchange_execution(self, symbol, order, fallback_amount, fallback_price, side=None):
+        """Relit Kraken juste apres l'ordre pour eviter de comptabiliser le prix demande."""
+        execution = self._extract_execution_details(order, fallback_amount, fallback_price)
+        if self.paper_trading or not order or not getattr(self, 'exchange', None):
+            return execution
+
+        # Fast path: si l'ordre retourne déjà un prix et montant rempli, pas besoin de re-fetch
+        if execution.get('amount') and execution.get('price'):
+            status = str(order.get('status') or '').lower()
+            filled = float(order.get('filled') or 0.0)
+            if status in {'closed', 'filled'} or filled > 0:
+                return execution
+
+        order_id = str(order.get('id') or '')
+        candidates = []
+        if order_id and hasattr(self.exchange, 'fetch_order'):
+            # Délais réduits pour market orders (remplis instantanément)
+            for delay in (0.15, 0.5, 1.5):
+                try:
+                    time.sleep(delay)
+                    fetched = self.safe_request(self.exchange.fetch_order, order_id, symbol)
+                    if fetched:
+                        candidates.append(fetched)
+                        fetched_exec = self._extract_execution_details(fetched, fallback_amount, fallback_price)
+                        if fetched_exec.get('amount') and fetched_exec.get('price'):
+                            status = str(fetched.get('status') or '').lower()
+                            filled = float(fetched.get('filled') or fetched_exec.get('amount') or 0.0)
+                            if status in {'closed', 'filled'} or filled > 0:
+                                execution = fetched_exec
+                                break
+                except Exception:
+                    continue
+
+        if (not execution.get('amount') or not execution.get('price') or order_id) and hasattr(self.exchange, 'fetch_my_trades'):
+            try:
+                since = None
+                timestamp = order.get('timestamp') or order.get('lastTradeTimestamp')
+                if timestamp:
+                    since = int(max(0, float(timestamp) - 120000))
+                trades = self.safe_request(self.exchange.fetch_my_trades, symbol, since, 20) or []
+                matches = []
+                for trade in trades:
+                    if order_id and str(trade.get('order') or trade.get('orderId') or '') != order_id:
+                        continue
+                    if side and str(trade.get('side') or '').lower() != str(side).lower():
+                        continue
+                    matches.append(trade)
+                if matches:
+                    execution = self._extract_execution_details({'trades': matches}, fallback_amount, fallback_price)
+            except Exception:
+                pass
+
+        return execution
+
+    def _sell_limit_arm_distance_pct(self):
+        try:
+            return max(0.0, float(os.getenv('SELL_LIMIT_ARM_DISTANCE_PCT', '0.30')))
+        except Exception:
+            return 0.30
+
+    def _is_sell_limit_close_enough(self, current_price, target_price):
+        """Autorise un sell limit seulement quand le prix est proche du target."""
+        try:
+            current = float(current_price or 0.0)
+            target = float(target_price or 0.0)
+            if current <= 0 or target <= 0:
+                return False
+            if current >= target:
+                return True
+            distance_pct = ((target - current) / target) * 100.0
+            return distance_pct <= self._sell_limit_arm_distance_pct()
+        except Exception:
+            return False
+
     def _calculate_fee_details(self, amount, sell_price, buy_price=None):
         """Retourne les frais paper en USD pour audit des positions sell."""
         fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
@@ -140,7 +316,7 @@ class TradingMixin:
         
         if not self.paper_trading:
             balance = self.balance_manager.get_balance()
-            available = balance.get('USD', balance.get('USD', {})).get('free', 0)
+            available = (balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}).get('free', 0)
             if cost > available:
                 return None
         
@@ -178,18 +354,21 @@ class TradingMixin:
                 print(f"✅ {action_text} exécuté: {amount:.6f} {symbol}")
             
             if order:
-                exec_price = order.get('price', price)
+                execution = self._resolve_exchange_execution(symbol, order, amount, price, side='buy')
+                exec_price = float(execution['price'])
+                exec_amount = float(execution['amount'] or amount)
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                buy_fee = amount * exec_price * fee_rate
+                buy_fee = float(execution.get('fee_amount') or (exec_amount * exec_price * fee_rate))
+                self._record_live_order_accounting(symbol, 'buy', exec_amount, exec_price, order, order_type='market', filled=True)
 
                 position = {
-                    'symbol': symbol, 'side': 'buy', 'amount': amount,
+                    'symbol': symbol, 'side': 'buy', 'amount': exec_amount,
                     'price': exec_price, 'timestamp': datetime.now().isoformat(),
                     'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
                     'averaging': allow_averaging, 'status': 'executed',
-                    'fee_rate': fee_rate, 'fee': buy_fee, 'position_size_crypto': amount, 'position_size_usd': exec_price * amount,
+                    'fee_rate': fee_rate, 'fee': buy_fee, 'position_size_crypto': exec_amount, 'position_size_usd': exec_price * exec_amount,
                     'sizing_reason': sizing_reason, 'ml_buy_prob': ml_buy_prob
                 }
                 if 'positions' not in self.state:
@@ -206,13 +385,13 @@ class TradingMixin:
                     self.total_trades = 1
                 
                 if hasattr(self, 'notifier'):
-                    analysis = self.get_cached_analysis(symbol, price)
+                    analysis = self.get_cached_analysis(symbol, exec_price)
                     signal_data = {
                         'trend': analysis['global_signal'].get('dominant_trend', 'N/A'),
                         'confidence': analysis['global_signal'].get('confidence', 0),
                         'volatility': analysis.get('volatility', 0)
                     }
-                    self.notifier.notify_trade_buy(symbol, amount, price, cost, signal_data)
+                    self.notifier.notify_trade_buy(symbol, exec_amount, exec_price, exec_amount * exec_price, signal_data)
             
             return order
         except Exception as e:
@@ -261,6 +440,10 @@ class TradingMixin:
                 order = self.safe_request(self.exchange.create_market_sell_order, symbol, amount)
             
             if order:
+                execution = self._resolve_exchange_execution(symbol, order, amount, price, side='sell')
+                exec_price = float(execution['price'])
+                exec_amount = float(execution['amount'] or amount)
+                self._record_live_order_accounting(symbol, 'sell', exec_amount, exec_price, order, order_type='market', filled=True)
                 # Mettre à jour la position sell existante → 'executed' au lieu d'insérer un doublon
                 updated = False
                 target_sym = str(symbol).replace('/', '').upper()
@@ -268,34 +451,34 @@ class TradingMixin:
                     p_sym = str(p.get('symbol', '')).replace('/', '').upper()
                     if p_sym == target_sym and p.get('side') == 'sell':
                         p['status'] = 'executed'
-                        p['price'] = order.get('price', price)
-                        p['amount'] = amount
+                        p['price'] = exec_price
+                        p['amount'] = exec_amount
                         p['order_id'] = order.get('id', p.get('order_id'))
                         p['avg_entry_price'] = buy_price
                         p['closed_at'] = datetime.now().isoformat()
                         if self.paper_trading:
                             p.update(self._calculate_fee_details(
-                                amount, order.get('price', price), buy_price
+                                exec_amount, exec_price, buy_price
                             ))
                         updated = True
                         break
                 if not updated:
                     position = {
-                        'symbol': symbol, 'side': 'sell', 'amount': amount,
-                        'price': order.get('price', price), 'timestamp': datetime.now().isoformat(),
+                        'symbol': symbol, 'side': 'sell', 'amount': exec_amount,
+                        'price': exec_price, 'timestamp': datetime.now().isoformat(),
                         'order_id': order.get('id'), 'source': 'bot', 'paper': self.paper_trading,
                         'avg_entry_price': buy_price, 'status': 'executed',
                         'closed_at': datetime.now().isoformat()
                     }
                     if self.paper_trading:
                         position.update(self._calculate_fee_details(
-                            amount, order.get('price', price), buy_price
+                            exec_amount, exec_price, buy_price
                         ))
                     self.state['positions'].append(position)
                 self.save_state()
                 self.total_trades += 1
                 
-                pnl = self.calculate_pnl(symbol, 'sell', amount, price, buy_price=buy_price)
+                pnl = self.calculate_pnl(symbol, 'sell', exec_amount, exec_price, buy_price=buy_price)
                 if hasattr(self, 'risk_manager') and pnl is not None:
                     self.risk_manager.record_trade(pnl)
                 
@@ -304,12 +487,13 @@ class TradingMixin:
                 hold_time = "N/A"
                 if buy_positions:
                     buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
-                    delta = datetime.now() - buy_time
+                    now_for_delta = datetime.now(buy_time.tzinfo) if buy_time.tzinfo else datetime.now()
+                    delta = now_for_delta - buy_time
                     hours = delta.total_seconds() / 3600
                     hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                 
                 if hasattr(self, 'notifier'):
-                    self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+                    self.notifier.notify_trade_sell(symbol, exec_amount, exec_price, exec_amount * exec_price, buy_price or exec_price, pnl or 0, hold_time)
 
                 if hasattr(self, 'record_decision'):
                     self.record_decision(
@@ -318,8 +502,9 @@ class TradingMixin:
                         allowed=True,
                         reason=reason or "market_sell",
                         metrics={
-                            'price': price,
-                            'amount': amount,
+                            'price': exec_price,
+                            'requested_price': price,
+                            'amount': exec_amount,
                             'buy_price': buy_price,
                             'pnl': pnl,
                             'decision': 'FORCE_EXIT' if 'exit' in str(reason).lower() else 'SELL'
@@ -330,8 +515,8 @@ class TradingMixin:
                 if hasattr(self, 'record_ml_exit_learning_sample'):
                     self.record_ml_exit_learning_sample(
                         symbol,
-                        price,
-                        amount,
+                        exec_price,
+                        exec_amount,
                         buy_price=buy_price,
                         pnl=pnl,
                         hold_time=hold_time,
@@ -342,7 +527,7 @@ class TradingMixin:
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
                     
-                self._close_buy_positions(symbol, amount, price)
+                self._close_buy_positions(symbol, exec_amount, exec_price)
             
             return order
         except Exception as e:
@@ -458,6 +643,7 @@ class TradingMixin:
                     'position_size_crypto': amount, 'position_size_usd': amount * price
                 }
                 self.state.setdefault('positions', []).append(position)
+                self._record_live_order_accounting(symbol, 'sell', amount, price, order, order_type='limit', filled=False)
                 
                 # 🔥 NOTIFICATION ORDRE LIMITE (TOUJOURS)
                 if hasattr(self, 'notifier'):
@@ -605,248 +791,6 @@ class TradingMixin:
                 
                 return pnl
         return None
-    
-    def check_paper_limit_orders(self):
-        """Vérifie et exécute les ordres limite en paper trading"""
-        if not self.paper_trading or not hasattr(self, 'pending_orders'):
-            return
-        
-        executed_orders = []
-        
-        for order_id, order_data in self.pending_orders.items():
-            order = order_data['order']
-            symbol = order_data['symbol']
-            
-            if order.get('type') != 'limit':
-                continue
-                
-            current_price = self.get_price(symbol)
-            limit_price = order['price']
-            side = order['side']
-            amount = order['amount']
-            
-            # Vérifier si l'ordre doit être exécuté
-            should_execute = False
-            if side == 'sell' and current_price >= limit_price:
-                should_execute = True
-            elif side == 'buy' and current_price <= limit_price:
-                should_execute = True
-            
-            if should_execute:
-                # Exécuter l'ordre
-                if side == 'sell':
-                    fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                    if fee_rate <= 0:
-                        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                    buy_price = self.get_real_buy_price(symbol)
-                    revenue = amount * current_price
-                    if getattr(self, 'ml_live_logger', None):
-                        self.ml_live_logger.record_fill_transaction(
-                            order_id,
-                            symbol,
-                            'sell',
-                            amount,
-                            current_price,
-                            fee_amount=revenue * fee_rate,
-                            fee_asset='USD',
-                            mode='paper',
-                            source='paper_trade'
-                        )
-                        self._refresh_paper_balance_from_accounting()
-                    else:
-                        self.paper_balance += (revenue * (1 - fee_rate))
-                    print(f"✅ PAPER - Ordre limite VENTE exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
-                    
-                    # Calculer P&L
-                    pnl = self.calculate_pnl(symbol, 'sell', amount, current_price, buy_price=buy_price)
-                    if hasattr(self, 'risk_manager') and pnl is not None:
-                        self.risk_manager.record_trade(pnl)
-                    
-                    # Envoyer notification Telegram
-                    if hasattr(self, 'notifier'):
-                        buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
-                        hold_time = "N/A"
-                        if buy_positions:
-                            buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
-                            delta = datetime.now() - buy_time
-                            hours = delta.total_seconds() / 3600
-                            hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
-                        
-                        self.notifier.notify_trade_sell(symbol, amount, current_price, amount * current_price, buy_price or current_price, pnl or 0, hold_time)
-
-                    if hasattr(self, 'record_ml_exit_learning_sample'):
-                        self.record_ml_exit_learning_sample(
-                            symbol,
-                            current_price,
-                            amount,
-                            buy_price=buy_price,
-                            pnl=pnl,
-                            hold_time=hold_time if 'hold_time' in locals() else None,
-                            reason='paper_limit_sell',
-                            order=order
-                        )
-                    
-                    # Enregistrer la vente
-                    position = {
-                        'symbol': symbol, 'side': 'sell', 'amount': amount,
-                        'price': current_price, 'timestamp': datetime.now().isoformat(),
-                        'order_id': order_id, 'source': 'bot', 'paper': True,
-                        'avg_entry_price': buy_price
-                    }
-                    position.update(self._calculate_fee_details(amount, current_price, buy_price))
-                    self.state['positions'].append(position)
-                    if hasattr(self, 'set_symbol_cooldown'):
-                        self.set_symbol_cooldown(symbol, reason='paper_limit_sell_executed')
-                    
-                elif side == 'buy':
-                    cost = amount * current_price
-                    fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                    if fee_rate <= 0:
-                        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                    buy_fee = cost * fee_rate
-                    if getattr(self, 'ml_live_logger', None):
-                        self.ml_live_logger.record_fill_transaction(
-                            order_id,
-                            symbol,
-                            'buy',
-                            amount,
-                            current_price,
-                            fee_amount=buy_fee,
-                            fee_asset='USD',
-                            mode='paper',
-                            source='paper_trade'
-                        )
-                        self._refresh_paper_balance_from_accounting()
-                    else:
-                        self.paper_balance -= (cost * (1 + fee_rate))
-                    print(f"✅ PAPER - Ordre limite ACHAT exécuté: {amount:.6f} {symbol} @ {current_price:.6f}")
-                    
-                    # Enregistrer l'achat
-                    position = {
-                        'symbol': symbol, 'side': 'buy', 'amount': amount,
-                        'price': current_price, 'timestamp': datetime.now().isoformat(),
-                        'order_id': order_id, 'source': 'bot', 'paper': True
-                    }
-                    self.state['positions'].append(position)
-                    position['avg_entry_price'] = self.get_real_buy_price(symbol)
-                    if hasattr(self, 'set_symbol_cooldown'):
-                        self.set_symbol_cooldown(symbol, reason='paper_limit_buy_executed')
-                
-                executed_orders.append(order_id)
-        
-        # Supprimer les ordres exécutés
-        for order_id in executed_orders:
-            del self.pending_orders[order_id]
-        
-        if executed_orders:
-            self.save_state()
-    
-    def optimize_existing_position(self, symbol):
-        """Optimise une position existante avec prix cible intelligent et remplacement d'ordres"""
-        # Obtenir les soldes
-        balance = self.balance_manager.get_balance(force_refresh=True)
-        base_currency = symbol.split('/')[0]
-        free_holding = balance.get(base_currency, {}).get('free', 0)
-        locked_holding = balance.get(base_currency, {}).get('used', 0)
-        
-        total_amount = free_holding + locked_holding
-        
-        if total_amount <= 0.00001:
-            return False
-            
-        avg_buy_price = self.get_real_buy_price(symbol)
-        if not avg_buy_price:
-            return False
-            
-        current_price = self.get_price(symbol)
-        
-        # 1. Calculer le nouveau prix cible optimal basé sur les résistances et le profit minimum
-        min_profit_pct = self.min_profit_threshold * 100
-        prediction = self.market_analyzer.predict_price_target_with_probability(
-            self, symbol, current_price, min_profit_pct=min_profit_pct
-        )
-        
-        if prediction:
-            sell_price = prediction['target_price']
-            method = f"{prediction['method_used']} ({prediction['probability']}%)"
-        else:
-            # Fallback profit minimum
-            sell_price = avg_buy_price * (1 + self.min_profit_threshold)
-            method = "fallback"
-            
-        # S'assurer que la cible de profit est toujours supérieure au prix d'achat réel + frais (Pas de vente à perte)
-        min_profitable_price = avg_buy_price * (1 + self.trading_fee * 2 + 0.001)
-        if sell_price < min_profitable_price:
-            sell_price = max(sell_price, avg_buy_price * (1 + self.min_profit_threshold))
-            method = "guaranteed_profit_fallback"
-            
-        # 2. GESTION DU REPLACEMENT EN MODE PAPER
-        if self.paper_trading:
-            existing_oid = None
-            existing_price = None
-            for oid, od in list(self.pending_orders.items()):
-                if od.get('symbol') == symbol and od.get('side') == 'sell':
-                    existing_oid = oid
-                    existing_price = od['order']['price']
-                    break
-                    
-            if existing_oid:
-                # Remplacer si l'écart de prix est supérieur à 0.2%
-                if abs(existing_price - sell_price) / existing_price > 0.002:
-                    print(f"🔄 PAPER {base_currency} : Target de vente optimisée {existing_price:.4f} → {sell_price:.4f} ({method})")
-                    if existing_oid in self.pending_orders:
-                        del self.pending_orders[existing_oid]
-                    
-                    order_id = f'paper_sell_{symbol.replace("/", "_")}_{int(time.time())}'
-                    order = {'id': order_id, 'price': sell_price, 'amount': total_amount, 'type': 'limit', 'side': 'sell'}
-                    self.pending_orders[order_id] = {
-                        'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
-                    }
-                    return True
-                return False
-            else:
-                # Créer un nouvel ordre de vente paper
-                order_id = f'paper_sell_{symbol.replace("/", "_")}_{int(time.time())}'
-                order = {'id': order_id, 'price': sell_price, 'amount': total_amount, 'type': 'limit', 'side': 'sell'}
-                self.pending_orders[order_id] = {
-                    'order': order, 'timestamp': time.time(), 'symbol': symbol, 'side': 'sell'
-                }
-                print(f"🎯 PAPER {base_currency} → Ordre vente placé @ {sell_price:.4f} ({method}) | Qty: {total_amount:.6f}")
-                return True
-                
-        # 3. GESTION DU REPLACEMENT EN MODE RÉEL (KRAKEN)
-        else:
-            try:
-                open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
-                sell_orders = [o for o in open_orders if o['side'] == 'sell']
-                
-                if sell_orders:
-                    existing_order = sell_orders[0]
-                    existing_price = float(existing_order['price'])
-                    existing_id = existing_order['id']
-                    
-                    # Remplacer si l'écart de prix est supérieur à 0.2%
-                    if abs(existing_price - sell_price) / existing_price > 0.002:
-                        print(f"🔄 {base_currency} : Remplacement ordre de vente {existing_price:.6f} → {sell_price:.6f} ({method})")
-                        self.safe_request(self.exchange.cancel_order, existing_id, symbol)
-                        time.sleep(1)
-                        
-                        # Rafraîchir les fonds libres
-                        balance = self.balance_manager.get_balance(force_refresh=True)
-                        free_holding = balance.get(base_currency, {}).get('free', 0)
-                        if free_holding > 0.00001:
-                            self.sell_limit(symbol, free_holding, sell_price)
-                            return True
-                    return False
-                else:
-                    # Créer un nouvel ordre de vente réel
-                    if free_holding > 0.00001:
-                        self.sell_limit(symbol, free_holding, sell_price)
-                        return True
-                    return False
-            except Exception as e:
-                print(f"⚠️ Erreur optimisation position réelle {symbol}: {e}")
-                return False
 
     def _get_trade_order_id(self, trade):
         """Extrait l'id d'ordre depuis un trade CCXT, selon l'exchange."""
@@ -922,13 +866,15 @@ class TradingMixin:
     def _record_confirmed_order_execution(self, order_id, order_data, execution):
         """Enregistre et notifie seulement une exécution confirmée par l'historique."""
         trade_ids = set(execution.get('trade_ids') or [])
-        existing_ids = set()
+        executed_order_ids = set()
+        executed_trade_ids = set()
         for position in self.state.get('positions', []):
-            if position.get('order_id'):
-                existing_ids.add(str(position.get('order_id')))
-            existing_ids.update(str(trade_id) for trade_id in position.get('trade_ids', []))
+            if str(position.get('status') or '').lower() in {'executed', 'filled', 'closed'}:
+                if position.get('order_id'):
+                    executed_order_ids.add(str(position.get('order_id')))
+                executed_trade_ids.update(str(trade_id) for trade_id in position.get('trade_ids', []))
 
-        if str(order_id) in existing_ids or (trade_ids and trade_ids.intersection(existing_ids)):
+        if str(order_id) in executed_order_ids or (trade_ids and trade_ids.intersection(executed_trade_ids)):
             return True
 
         symbol = execution['symbol']
@@ -939,6 +885,23 @@ class TradingMixin:
 
         if side == 'sell':
             buy_price = self.get_real_buy_price(symbol)
+            if getattr(self, 'ml_live_logger', None) and not self.paper_trading:
+                try:
+                    self.ml_live_logger.record_fill_transaction(
+                        str(order_id),
+                        symbol,
+                        'sell',
+                        amount,
+                        price,
+                        fee_amount=execution.get('fee', 0),
+                        fee_asset='USD',
+                        mode='live',
+                        source='live_trade',
+                        write_ledger=False,
+                        recalculate_balances=False,
+                    )
+                except Exception:
+                    pass
             pnl = self.calculate_pnl(symbol, 'sell', amount, price, buy_price=buy_price)
             if hasattr(self, 'risk_manager') and pnl is not None:
                 self.risk_manager.record_trade(pnl)
@@ -947,8 +910,7 @@ class TradingMixin:
                 buy_positions = [p for p in self.state['positions'] if p['symbol'] == symbol and p['side'] == 'buy']
                 hold_time = "N/A"
                 if buy_positions:
-                    buy_time = datetime.fromisoformat(buy_positions[-1]['timestamp'])
-                    delta = datetime.now() - buy_time
+                    delta = self._elapsed_since_iso(buy_positions[-1]['timestamp'])
                     hours = delta.total_seconds() / 3600
                     hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                 self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)

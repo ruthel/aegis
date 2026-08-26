@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     import joblib
-    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
     from sklearn.preprocessing import StandardScaler
     SKLEARN_AVAILABLE = True
 except ImportError:
@@ -36,6 +36,8 @@ class MLEngine:
         self.scaler = None
         self.exit_model = None
         self.exit_scaler = None
+        self.sizing_model = None
+        self.sizing_scaler = None
         self.feature_names = [
             'rsi_14', 'ema9_slope', 'ema20_slope', 'ema_cross_diff',
             'atr_percent', 'volume_ratio', 'candle_body_pct', 'candle_wick_top',
@@ -62,7 +64,14 @@ class MLEngine:
             # Phase 5: ajout uniquement en fin de schema pour compatibilite champion.
             'rsi_4h', 'ema20_slope_4h', 'ema50_slope_4h', 'price_change_3b_4h',
             'daily_recovery_score', 'multi_tf_reversal_score',
-            'multi_tf_trend_alignment', 'volume_recovery_score'
+            'multi_tf_trend_alignment', 'volume_recovery_score',
+            # Faux rebonds: ajout en fin de schema pour compatibilite champion.
+            'rebound_from_recent_low_pct', 'previous_drop_pct',
+            'rebound_vs_drop_ratio', 'rebound_volume_ratio',
+            'green_candle_count_5', 'follow_through_3b_pct',
+            'momentum_decay_3b', 'upper_wick_rejection_ratio',
+            'distance_to_ema20_pct', 'ema20_rejection_active',
+            'rsi_rebound_strength', 'rebound_stall_score',
         ]
         self.exit_feature_names = [
             'entry_p_win', 'continuation_score', 'gross_pnl_pct', 'net_pnl_pct',
@@ -80,9 +89,11 @@ class MLEngine:
             'technical_action_code', 'technical_confidence',
             'technical_confidence_edge'
         ]
+        self.sizing_feature_names = list(self.feature_names)
         
         self.is_trained = False
         self.is_exit_trained = False
+        self.is_sizing_trained = False
         self.load_model()
 
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
@@ -241,6 +252,23 @@ class MLEngine:
         padded[:len(features)] = features
         return padded
 
+    def _sizing_model_feature_count(self) -> int:
+        if self.sizing_scaler is not None and hasattr(self.sizing_scaler, 'n_features_in_'):
+            return int(self.sizing_scaler.n_features_in_)
+        if self.sizing_model is not None and hasattr(self.sizing_model, 'n_features_in_'):
+            return int(self.sizing_model.n_features_in_)
+        return len(self.sizing_feature_names)
+
+    def _align_sizing_features_for_loaded_model(self, features: np.ndarray) -> np.ndarray:
+        expected = self._sizing_model_feature_count()
+        if len(features) == expected:
+            return features
+        if len(features) > expected:
+            return features[:expected]
+        padded = np.zeros(expected, dtype=np.float64)
+        padded[:len(features)] = features
+        return padded
+
     def _calc_rsi(self, closes: np.ndarray, period: int = 14) -> float:
         if len(closes) < period + 1:
             return 50.0
@@ -299,6 +327,94 @@ class MLEngine:
             'volume_ratio': volume_ratio,
             'recovery_score': float(recovery_score),
         }
+
+    def _rebound_exhaustion_features(
+        self,
+        closes: np.ndarray,
+        opens: np.ndarray,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        volumes: np.ndarray,
+        px: float,
+        ema20: float,
+        rsi: float,
+        price_change_3b: float,
+    ) -> Dict[str, float]:
+        """Features ML pour distinguer vrai rebond et rebond qui s'essouffle."""
+        defaults = {
+            'rebound_from_recent_low_pct': 0.0,
+            'previous_drop_pct': 0.0,
+            'rebound_vs_drop_ratio': 0.0,
+            'rebound_volume_ratio': 0.0,
+            'green_candle_count_5': 0.0,
+            'follow_through_3b_pct': 0.0,
+            'momentum_decay_3b': 0.0,
+            'upper_wick_rejection_ratio': 0.0,
+            'distance_to_ema20_pct': 0.0,
+            'ema20_rejection_active': 0.0,
+            'rsi_rebound_strength': 0.0,
+            'rebound_stall_score': 0.0,
+        }
+        try:
+            lookback = min(20, len(closes))
+            recent_lows = lows[-lookback:]
+            low_rel_idx = int(np.argmin(recent_lows))
+            low_abs_idx = len(lows) - lookback + low_rel_idx
+            recent_low = float(lows[low_abs_idx])
+
+            prior_start = max(0, low_abs_idx - 40)
+            prior_high = float(np.max(highs[prior_start:low_abs_idx + 1]))
+            rebound_from_low = max(0.0, (float(px) - recent_low) / (recent_low + 1e-9) * 100.0)
+            previous_drop = max(0.0, (prior_high - recent_low) / (prior_high + 1e-9) * 100.0)
+            rebound_vs_drop = rebound_from_low / (previous_drop + 1e-9) if previous_drop > 0 else 0.0
+
+            avg_vol_20 = float(np.mean(volumes[-lookback:])) if lookback else 0.0
+            rebound_volumes = volumes[low_abs_idx:]
+            rebound_volume_ratio = float(np.mean(rebound_volumes) / (avg_vol_20 + 1e-9)) if len(rebound_volumes) else 0.0
+
+            recent_count = min(5, len(closes))
+            green_candle_count_5 = float(np.sum(closes[-recent_count:] > opens[-recent_count:]))
+            follow_through_3b = float(price_change_3b)
+            prior_3b = (
+                (closes[-4] - closes[-7]) / (closes[-7] + 1e-9) * 100.0
+                if len(closes) >= 7 else 0.0
+            )
+            momentum_decay_3b = max(0.0, float(prior_3b - price_change_3b))
+
+            upper_wicks = []
+            for idx in range(len(closes) - recent_count, len(closes)):
+                candle_range = highs[idx] - lows[idx] + 1e-9
+                upper_wicks.append((highs[idx] - max(opens[idx], closes[idx])) / candle_range)
+            upper_wick_rejection_ratio = float(np.mean(upper_wicks)) if upper_wicks else 0.0
+
+            distance_to_ema20 = (float(px) - float(ema20)) / (float(ema20) + 1e-9) * 100.0
+            touched_ema20 = bool(lows[-1] <= ema20 <= highs[-1])
+            ema20_rejection_active = 1.0 if touched_ema20 and closes[-1] < ema20 and upper_wick_rejection_ratio > 0.35 else 0.0
+            rsi_rebound_strength = max(0.0, min(100.0, float(rsi) - 30.0))
+
+            stall_score = (
+                max(0.0, -follow_through_3b) * 20.0
+                + momentum_decay_3b * 15.0
+                + upper_wick_rejection_ratio * 35.0
+                + ema20_rejection_active * 20.0
+                + max(0.0, 1.0 - rebound_volume_ratio) * 15.0
+            )
+            return {
+                'rebound_from_recent_low_pct': float(rebound_from_low),
+                'previous_drop_pct': float(previous_drop),
+                'rebound_vs_drop_ratio': float(rebound_vs_drop),
+                'rebound_volume_ratio': float(rebound_volume_ratio),
+                'green_candle_count_5': green_candle_count_5,
+                'follow_through_3b_pct': follow_through_3b,
+                'momentum_decay_3b': float(momentum_decay_3b),
+                'upper_wick_rejection_ratio': upper_wick_rejection_ratio,
+                'distance_to_ema20_pct': float(distance_to_ema20),
+                'ema20_rejection_active': ema20_rejection_active,
+                'rsi_rebound_strength': float(rsi_rebound_strength),
+                'rebound_stall_score': max(0.0, min(100.0, float(stall_score))),
+            }
+        except Exception:
+            return defaults
 
     def extract_features_from_klines(
         self,
@@ -437,6 +553,9 @@ class MLEngine:
             multi_tf_reversal_score = (sum(positive_frames) + sum(slope_frames)) / 10.0 * 100.0
             multi_tf_trend_alignment = sum(1 if flag else -1 for flag in slope_frames)
             volume_recovery_score = min(300.0, max(0.0, (volume_ratio + tf_4h['volume_ratio'] + tf_1d['volume_ratio']) / 3.0 * 100.0))
+            rebound_features = self._rebound_exhaustion_features(
+                closes, opens, highs, lows, volumes, px, ema20, rsi, price_change_3b
+            )
 
             features = np.array([
                 rsi, ema9_slope, ema20_slope, ema_cross_diff,
@@ -475,7 +594,19 @@ class MLEngine:
                 bot_features['technical_confidence_edge'],
                 rsi_4h, ema20_slope_4h, ema50_slope_4h, price_change_3b_4h,
                 daily_recovery_score, multi_tf_reversal_score,
-                multi_tf_trend_alignment, volume_recovery_score
+                multi_tf_trend_alignment, volume_recovery_score,
+                rebound_features['rebound_from_recent_low_pct'],
+                rebound_features['previous_drop_pct'],
+                rebound_features['rebound_vs_drop_ratio'],
+                rebound_features['rebound_volume_ratio'],
+                rebound_features['green_candle_count_5'],
+                rebound_features['follow_through_3b_pct'],
+                rebound_features['momentum_decay_3b'],
+                rebound_features['upper_wick_rejection_ratio'],
+                rebound_features['distance_to_ema20_pct'],
+                rebound_features['ema20_rejection_active'],
+                rebound_features['rsi_rebound_strength'],
+                rebound_features['rebound_stall_score'],
             ], dtype=np.float64)
 
             return features
@@ -545,8 +676,9 @@ class MLEngine:
             created_at = position_data.get('created_at') or position_data.get('buy_time')
             if created_at and not position_data.get('duration_minutes'):
                 try:
-                    created_dt = datetime.fromisoformat(str(created_at).replace('Z', ''))
-                    duration_minutes = max(0.0, (datetime.now() - created_dt).total_seconds() / 60.0)
+                    created_dt = datetime.fromisoformat(str(created_at).replace('Z', '+00:00'))
+                    now_for_delta = datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()
+                    duration_minutes = max(0.0, (now_for_delta - created_dt).total_seconds() / 60.0)
                 except Exception:
                     duration_minutes = 0.0
 
@@ -630,6 +762,96 @@ class MLEngine:
             self.logger.error(f"Erreur entraînement ML sortie: {e}")
             return False
 
+    def train_sizing_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 6, min_samples_split: int = 10) -> bool:
+        """Entraîne le modèle ML de facteur de taille de position."""
+        if not SKLEARN_AVAILABLE:
+            return False
+        if len(X) < 30:
+            self.logger.warning("Données insuffisantes pour entraîner le modèle ML de sizing.")
+            return False
+        try:
+            self.sizing_scaler = StandardScaler()
+            X_scaled = self.sizing_scaler.fit_transform(X)
+            self.sizing_model = RandomForestRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_split=min_samples_split,
+                random_state=44,
+                n_jobs=-1
+            )
+            self.sizing_model.fit(X_scaled, y)
+            self.is_sizing_trained = True
+            self.save_model()
+            return True
+        except Exception as e:
+            self.logger.error(f"Erreur entraînement ML sizing: {e}")
+            return False
+
+    def predict_position_size_factor(
+        self,
+        features: Optional[np.ndarray] = None,
+        klines: Optional[List[Dict]] = None,
+        current_price: Optional[float] = None,
+        klines_5m: Optional[List[Dict]] = None,
+        klines_1h: Optional[List[Dict]] = None,
+        klines_4h: Optional[List[Dict]] = None,
+        klines_1d: Optional[List[Dict]] = None,
+        trade_context: Optional[Dict] = None,
+        bot_context: Optional[Dict] = None
+    ) -> Dict:
+        """Retourne le facteur ML de taille de position, clampé par prudence."""
+        if not self.is_sizing_trained or self.sizing_model is None or not SKLEARN_AVAILABLE:
+            return {
+                'ml_sizing_available': False,
+                'sizing_factor': 1.0,
+                'reason': 'sizing_model_untrained'
+            }
+
+        if features is None:
+            if not klines:
+                return {
+                    'ml_sizing_available': False,
+                    'sizing_factor': 1.0,
+                    'reason': 'sizing_features_unavailable'
+                }
+            features = self.extract_features_from_klines(
+                klines,
+                current_price,
+                klines_5m=klines_5m,
+                klines_1h=klines_1h,
+                klines_4h=klines_4h,
+                klines_1d=klines_1d,
+                trade_context=trade_context,
+                bot_context=bot_context
+            )
+        if features is None:
+            return {
+                'ml_sizing_available': False,
+                'sizing_factor': 1.0,
+                'reason': 'sizing_features_unavailable'
+            }
+
+        try:
+            features = self._align_sizing_features_for_loaded_model(features)
+            X = features.reshape(1, -1)
+            if self.sizing_scaler is not None:
+                X = self.sizing_scaler.transform(X)
+            raw_factor = float(self.sizing_model.predict(X)[0])
+            factor = max(0.25, min(1.25, raw_factor))
+            return {
+                'ml_sizing_available': True,
+                'sizing_factor': round(factor, 3),
+                'raw_sizing_factor': round(raw_factor, 3),
+                'reason': f'ml_sizing_factor_{factor:.2f}x'
+            }
+        except Exception as e:
+            self.logger.error(f"Erreur prédiction ML sizing: {e}")
+            return {
+                'ml_sizing_available': False,
+                'sizing_factor': 1.0,
+                'reason': 'sizing_prediction_error'
+            }
+
     def predict_exit_decision(
         self,
         klines: List[Dict],
@@ -675,7 +897,7 @@ class MLEngine:
 
             sell_threshold = float(os.getenv('ML_EXIT_SELL_THRESHOLD', '35.0'))
             avg_fee_pct = fee_rate * 100.0  # Moyenne des frais (frais_achat + frais_vente)/2
-            env_min_net = float(os.getenv('ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT', '0.10'))
+            env_min_net = float(os.getenv('ML_EXIT_PROFIT_PROTECT_MIN_NET_PCT', '0.35'))
             profit_protect_min_net = max(avg_fee_pct, env_min_net)
             profit_protect_threshold = float(os.getenv('ML_EXIT_PROFIT_PROTECT_THRESHOLD', '70.0'))
             if net_pnl_pct >= profit_protect_min_net:
@@ -754,7 +976,9 @@ class MLEngine:
                 'model': self.model,
                 'scaler': self.scaler,
                 'exit_model': self.exit_model,
-                'exit_scaler': self.exit_scaler
+                'exit_scaler': self.exit_scaler,
+                'sizing_model': self.sizing_model,
+                'sizing_scaler': self.sizing_scaler
             }, self.model_path)
 
             importance = {}
@@ -773,6 +997,12 @@ class MLEngine:
                     exit_importance[name] = round(float(imp), 4)
                 metadata['exit_feature_importance'] = sorted(exit_importance.items(), key=lambda x: x[1], reverse=True)
                 metadata['exit_n_features'] = len(self.exit_feature_names)
+            if self.sizing_model is not None and hasattr(self.sizing_model, 'feature_importances_'):
+                sizing_importance = {}
+                for name, imp in zip(self.sizing_feature_names, self.sizing_model.feature_importances_):
+                    sizing_importance[name] = round(float(imp), 4)
+                metadata['sizing_feature_importance'] = sorted(sizing_importance.items(), key=lambda x: x[1], reverse=True)
+                metadata['sizing_n_features'] = len(self.sizing_feature_names)
             try:
                 if os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
                     return True
@@ -802,12 +1032,17 @@ class MLEngine:
             self.scaler = data.get('scaler')
             self.exit_model = data.get('exit_model')
             self.exit_scaler = data.get('exit_scaler')
+            self.sizing_model = data.get('sizing_model')
+            self.sizing_scaler = data.get('sizing_scaler')
             if self.model is not None and hasattr(self.model, 'n_jobs'):
                 self.model.n_jobs = 1
             if self.exit_model is not None and hasattr(self.exit_model, 'n_jobs'):
                 self.exit_model.n_jobs = 1
+            if self.sizing_model is not None and hasattr(self.sizing_model, 'n_jobs'):
+                self.sizing_model.n_jobs = 1
             self.is_trained = self.model is not None
             self.is_exit_trained = self.exit_model is not None
+            self.is_sizing_trained = self.sizing_model is not None
 
             # Re-publier les feature importances en BD au chargement (ex: après reset DB)
             try:
@@ -826,6 +1061,12 @@ class MLEngine:
                         exit_importance[name] = round(float(imp), 4)
                     metadata['exit_feature_importance'] = sorted(exit_importance.items(), key=lambda x: x[1], reverse=True)
                     metadata['exit_n_features'] = len(self.exit_feature_names)
+                if self.sizing_model is not None and hasattr(self.sizing_model, 'feature_importances_'):
+                    sizing_importance = {}
+                    for name, imp in zip(self.sizing_feature_names, self.sizing_model.feature_importances_):
+                        sizing_importance[name] = round(float(imp), 4)
+                    metadata['sizing_feature_importance'] = sorted(sizing_importance.items(), key=lambda x: x[1], reverse=True)
+                    metadata['sizing_n_features'] = len(self.sizing_feature_names)
                 if not os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
                     from core.ml_live_logger import MLLiveLogger
                     with MLLiveLogger(

@@ -3,7 +3,7 @@
  */
 
 import { Activity, CircleDollarSign, EllipsisVertical, ListChecks, Power, RefreshCw, WalletCards } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState } from 'react'
 import { useIntl } from 'react-intl'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -65,10 +65,11 @@ function MetricsStrip({ status }: { status: StatusPayload }) {
   const stats = status.stats || {}
   const forecast = status.next_buy_forecast || {}
   const candidate = (forecast.candidate as JsonMap | undefined) || {}
+  const viewMode = asString(status.balance?.view_mode ?? status.bot?.view_mode ?? status.bot?.mode, 'paper')
+  const balanceLabel = viewMode === 'live' ? 'Solde Live' : viewMode === 'all' ? 'Solde Total' : 'Solde Paper'
   const totalTrades = Number(stats.total_trades || 0)
   const daysActive = Number(stats.days_active || 0)
   const avgStake = Number(stats.avg_stake || 0)
-  const gross = Number(stats.total_pnl_gross || 0)
   const net = Number(stats.total_pnl_net || 0)
   const perTrade = totalTrades > 0 ? net / totalTrades : 0
   const perDay = daysActive > 0 ? net / daysActive : 0
@@ -80,14 +81,8 @@ function MetricsStrip({ status }: { status: StatusPayload }) {
 
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-      <MetricCard icon={WalletCards} label="Solde Paper" value={`${num(status.balance?.paper_balance, 2)} USD`} />
-      <SplitMetricCard
-        label="Gain Cumulé"
-        leftLabel="PnL Brut"
-        leftValue={formatUsd(gross)}
-        rightLabel="PnL Net"
-        rightValue={formatUsd(net)}
-      />
+      <BalanceCard label={balanceLabel} status={status} />
+      <MetricCard icon={CircleDollarSign} label="PnL Net Cumulé" value={formatUsd(net)} />
       <SplitMetricCard
         label="Trades & Win Rate"
         leftLabel="Total (W / L)"
@@ -110,6 +105,73 @@ function MetricsStrip({ status }: { status: StatusPayload }) {
         rightLabel="État"
         rightValue={Boolean(candidate.ready) ? 'Prêt' : 'En attente'}
       />
+    </div>
+  )
+}
+
+function BalanceCard({ label, status }: { label: string; status: StatusPayload }) {
+  const balances = status.balance?.balances || {}
+  const liveSymbols = status.live?.symbols || {}
+  const usdAssets = new Set(['USD', 'USDT', 'USDC', 'ZUSD'])
+  const assetRows = Object.entries(balances)
+    .map(([asset, raw]) => {
+      const row = raw as JsonMap
+      const free = Number(row.free ?? 0)
+      const locked = Number(row.locked ?? row.used ?? 0)
+      const total = Number(row.total ?? free + locked)
+      const pair = `${asset}/USD`
+      const compactPair = `${asset}USD`
+      const live = liveSymbols[pair] ?? liveSymbols[compactPair]
+      const price = usdAssets.has(asset) ? 1 : Number((live as JsonMap | undefined)?.price ?? 0)
+      const usdValue = usdAssets.has(asset) ? total : total * price
+      return { asset, free, locked, total, usdValue }
+    })
+    .filter((row) => Math.abs(row.total) > 1e-10 || Math.abs(row.locked) > 1e-10)
+    .sort((a, b) => {
+      if (a.asset === 'USD') return -1
+      if (b.asset === 'USD') return 1
+      return b.usdValue - a.usdValue
+    })
+
+  const availableUsd = assetRows.reduce((sum, row) => sum + (usdAssets.has(row.asset) ? row.free : row.usdValue * (row.free / (row.total || 1))), 0)
+  const reservedUsd = assetRows.reduce((sum, row) => sum + (usdAssets.has(row.asset) ? row.locked : row.usdValue * (row.locked / (row.total || 1))), 0)
+  const totalUsd = assetRows.reduce((sum, row) => sum + row.usdValue, 0)
+  const displayAvailable = Number.isFinite(availableUsd) && totalUsd > 0 ? availableUsd : Number(status.balance?.paper_balance || 0)
+  const fullBalance = (value: number, asset: string) => {
+    if (!Number.isFinite(value)) return '--'
+    if (usdAssets.has(asset)) return num(value, 2)
+    const fixed = value.toFixed(12)
+    return fixed.replace(/0+$/, '').replace(/\.$/, '') || '0'
+  }
+
+  return (
+    <div className="rounded-lg border border-indigo-500/20 bg-card p-4 shadow-sm md:col-span-2 xl:col-span-1">
+      <div className="flex items-center gap-2 text-[10px] font-bold uppercase text-muted-foreground">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-primary">
+          <WalletCards className="h-4 w-4" />
+        </span>
+        <span>{label}</span>
+      </div>
+      <div className="mt-3 text-lg font-black leading-tight">{num(displayAvailable, 2)} USD</div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+        <div className="rounded-md border border-border bg-background/50 p-2">
+          <div className="uppercase text-muted-foreground">Réservé</div>
+          <strong className="text-amber-300">{num(reservedUsd, 2)} USD</strong>
+        </div>
+        <div className="rounded-md border border-border bg-background/50 p-2">
+          <div className="uppercase text-muted-foreground">Total estimé</div>
+          <strong>{num(totalUsd || displayAvailable, 2)} USD</strong>
+        </div>
+      </div>
+      {assetRows.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {assetRows.map((row) => (
+            <span key={row.asset} className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+              {row.asset} {fullBalance(row.total, row.asset)}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -189,6 +251,19 @@ function LivePrices({ live }: { live?: StatusPayload['live'] }) {
 }
 
 function Cooldowns({ cooldowns }: { cooldowns: JsonMap[] }) {
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    if (cooldowns.length === 0) return
+    const timer = window.setInterval(() => setTick((t) => t + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [cooldowns.length])
+
+  // Reset tick counter when new data arrives from server
+  useEffect(() => {
+    setTick(0)
+  }, [cooldowns])
+
   return (
     <Card className="h-full">
       <CardHeader>
@@ -199,17 +274,21 @@ function Cooldowns({ cooldowns }: { cooldowns: JsonMap[] }) {
       </CardHeader>
       <CardContent className="px-3.5 py-2">
         {cooldowns.length === 0 && <div className="py-2 text-sm text-muted-foreground">Aucun cooldown actif</div>}
-        {cooldowns.map((item, index) => (
-          <div key={`${asString(item.symbol)}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2.5 text-[12.5px] last:border-b-0">
-            <div className="min-w-0 overflow-hidden">
-              <strong className="block truncate text-[13px]">{asString(item.symbol)}</strong>
-              <span className="block truncate text-[11px] text-muted-foreground">Pause dynamique</span>
+        {cooldowns.map((item, index) => {
+          const serverRemaining = Math.max(0, Math.floor(Number(item.remaining_seconds) || 0))
+          const localRemaining = Math.max(0, serverRemaining - tick)
+          return (
+            <div key={`${asString(item.symbol)}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2.5 text-[12.5px] last:border-b-0">
+              <div className="min-w-0 overflow-hidden">
+                <strong className="block truncate text-[13px]">{asString(item.symbol)}</strong>
+                <span className="block truncate text-[11px] text-muted-foreground">Pause dynamique</span>
+              </div>
+              <Badge variant="warning" className="min-w-[46px] max-w-[76px] shrink-0 justify-center whitespace-nowrap px-2 py-1 text-[9.5px] normal-case tabular-nums">
+                {cooldownDurationText(localRemaining)}
+              </Badge>
             </div>
-            <Badge variant="warning" className="min-w-[46px] max-w-[76px] shrink-0 justify-center whitespace-nowrap px-2 py-1 text-[9.5px] normal-case tabular-nums">
-              {cooldownDurationText(item.remaining_seconds)}
-            </Badge>
-          </div>
-        ))}
+          )
+        })}
       </CardContent>
     </Card>
   )
@@ -231,10 +310,10 @@ function Positions({ positions, live }: { positions: JsonMap[]; live?: StatusPay
         <CardTitle>Positions</CardTitle>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
-        <table className="w-full min-w-[1240px] border-collapse text-left">
+        <table className="w-full min-w-[1120px] border-collapse text-left">
           <thead className="bg-secondary text-[11px] uppercase tracking-wide text-muted-foreground">
             <tr>
-              {['Symbole', 'Quantité', 'Prix Moyen', 'Objectif', 'Entrée', 'Actuel', 'Frais', 'P&L Brut', 'P&L Net', ''].map((head) => (
+              {['Symbole', 'Quantité', 'Prix Moyen', 'Objectif', 'Entrée', 'Actuel', 'Frais', 'P&L Net', ''].map((head) => (
                 <th key={head} className="border-b border-border px-3.5 py-3 font-semibold whitespace-nowrap">{head}</th>
               ))}
             </tr>
@@ -242,7 +321,7 @@ function Positions({ positions, live }: { positions: JsonMap[]; live?: StatusPay
           <tbody>
             {positions.length === 0 && (
               <tr>
-                <td className="px-3.5 py-3 text-muted-foreground" colSpan={10}>Aucune position ouverte</td>
+                <td className="px-3.5 py-3 text-muted-foreground" colSpan={9}>Aucune position ouverte</td>
               </tr>
             )}
             {positions.map((position, index) => {
@@ -260,7 +339,6 @@ function Positions({ positions, live }: { positions: JsonMap[]; live?: StatusPay
               const currentValue = hasLivePnl ? amount * livePriceNumber : Number(position.current_value)
               const hasCurrentValue = Number.isFinite(currentValue)
               const pnlGross = hasLivePnl ? Number(currentValue) - entryValue : position.pnl_gross ?? position.pnl
-              const pnlGrossPct = hasLivePnl ? (Number(pnlGross) / entryValue) * 100 : position.pnl_gross_pct
               const pnlNet = hasLivePnl ? Number(pnlGross) - feeValue : position.pnl_net ?? position.pnl_net_pct
               const pnlNetPct = hasLivePnl ? (Number(pnlNet) / entryValue) * 100 : position.pnl_net_pct
               const hasPnl = Number.isFinite(Number(pnlGross)) && Number.isFinite(Number(pnlNet))
@@ -280,11 +358,6 @@ function Positions({ positions, live }: { positions: JsonMap[]; live?: StatusPay
                   <td className="px-3.5 py-3 whitespace-nowrap">{num(entryValue, 2)} USD</td>
                   <td className="px-3.5 py-3 whitespace-nowrap">{!hasCurrentValue ? '--' : `${num(currentValue, 2)} USD`}</td>
                   <td className="px-3.5 py-3 font-medium text-muted-foreground whitespace-nowrap">{num(feeValue, 2)} USD ({num(feePct, 2)}%)</td>
-                  <td className="px-3.5 py-3 whitespace-nowrap">
-                    <Badge variant={Number(pnlGross ?? 0) >= 0 ? 'success' : 'danger'}>
-                      {hasPnl ? `${signed(pnlGross)} (${signed(pnlGrossPct)}%)` : '--'}
-                    </Badge>
-                  </td>
                   <td className="px-3.5 py-3 whitespace-nowrap">
                     <Badge variant={Number(pnlNet ?? 0) >= 0 ? 'success' : 'danger'}>
                       {hasPnl ? `${signed(pnlNet)} (${signed(pnlNetPct)}%)` : '--'}
@@ -339,9 +412,12 @@ function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] })
               <Badge variant={ml.is_trained ? 'success' : 'danger'} className="ml-1">
                 {ml.is_trained ? 'Filtre Actif (En Direct)' : 'Non entraîné'}
               </Badge>
+              <Badge variant={ml.sizing_model_active ? 'success' : 'warning'} className="ml-1">
+                {ml.sizing_model_active ? 'Sizing ML actif' : 'Sizing standard'}
+              </Badge>
             </CardTitle>
             <span className="text-[11px] text-muted-foreground">
-              Entraîné sur {ml.total_samples || 0} trades 2026 (Features Multi-Timeframe)
+              Entraîné sur {ml.total_samples || 0} trades 2026 · sizing {ml.sizing_n_features || 0} features
             </span>
           </div>
         </div>
@@ -350,6 +426,7 @@ function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] })
         <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
           {pairs.map((symbol) => {
             const item = predictions[symbol] || {}
+            const sizing = (item.sizing || {}) as JsonMap
             const openPosition = positionBySymbol[symbol] || positionBySymbol[symbol.replace('/', '')]
             const exitRec = (openPosition?.exit_recommendation || {}) as JsonMap
             const mlExit = (exitRec.ml_exit || {}) as JsonMap
@@ -406,6 +483,14 @@ function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] })
                   </span>
                   {inSellMode && <span>PnL net {formatSignedPct(openPosition?.pnl_net_pct ?? exitRec.net_pnl_pct, 2)}</span>}
                 </div>
+                {!inSellMode && sizing.sizing_factor !== undefined && (
+                  <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-border/70 bg-black/15 px-2 py-1.5 text-[10px]">
+                    <span className="text-muted-foreground">Sizing</span>
+                    <span className="font-black text-emerald-300">
+                      {num(sizing.sizing_factor, 2)}x · {num(sizing.final_position_size_usd, 2)} USD
+                    </span>
+                  </div>
+                )}
               </div>
             )
           })}

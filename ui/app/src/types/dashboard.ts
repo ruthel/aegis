@@ -1,4 +1,5 @@
-export type View = 'live' | 'analytics' | 'trades' | 'console' | 'config'
+export type View = 'live' | 'analytics' | 'trades' | 'ledger' | 'console' | 'config'
+export type DataViewMode = 'paper' | 'live' | 'all'
 export type JsonMap = Record<string, unknown>
 
 export type BotControl = {
@@ -11,6 +12,7 @@ export type StatusPayload = {
   bot?: {
     name?: string
     mode?: string
+    view_mode?: DataViewMode | string
     exchange?: string
     last_update?: string
     control?: BotControl
@@ -25,6 +27,10 @@ export type StatusPayload = {
   logs?: string[]
   balance?: {
     paper_balance?: number
+    balances?: Record<string, JsonMap>
+    balances_by_mode?: Record<string, Record<string, JsonMap>>
+    view_mode?: DataViewMode | string
+    source?: string
   }
   stats?: {
     total_trades?: number
@@ -51,6 +57,10 @@ export type MlStatus = {
   min_probability?: number
   live_predictions?: Record<string, JsonMap>
   analytics?: JsonMap
+  sizing_model_active?: boolean
+  sizing_n_features?: number | null
+  top_sizing_features?: Array<[string, number]>
+  sizing_recommendations?: JsonMap[]
 }
 
 export type ConsolePayload = {
@@ -74,6 +84,9 @@ export type ConfigPayload = {
     exit_code?: number | null
   }
   ml_model_evaluations?: ModelEvaluation[]
+  risk_sizing?: JsonMap
+  ml_sizing_recommendations?: JsonMap[]
+  ml_sizing_backtests?: JsonMap[]
   trading_mode?: {
     mode?: 'paper' | 'live' | string
     paper_trading?: boolean
@@ -126,4 +139,29 @@ export type TradesPayload = {
   buys?: JsonMap[]
   sells?: JsonMap[]
   total?: number
+}
+
+export type LedgerEntry = {
+  ledger_id?: string
+  account_id?: string
+  mode?: DataViewMode | string
+  entry_ts?: string | null
+  entry_type?: string
+  asset?: string
+  amount?: number
+  balance_after?: number | null
+  order_id?: string | null
+  fill_id?: string | null
+  symbol?: string | null
+  source?: string | null
+  description?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LedgerPayload = {
+  entries?: LedgerEntry[]
+  total?: number
+  view_mode?: DataViewMode | string
+  limit?: number
 }

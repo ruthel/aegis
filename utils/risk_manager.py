@@ -8,8 +8,6 @@ from core.ml_live_logger import MLLiveLogger
 
 class RiskManager:
     def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500, max_daily_losing_trades=None):
-        self.correlation_data = {}
-        self.active_positions = {}
         # Safety Manager integration
         self.max_daily_trades = max_daily_trades
         self.max_daily_loss = max_daily_loss
@@ -22,7 +20,6 @@ class RiskManager:
         )
         self.daily_stats = self.load_daily_stats()
         # Adaptive Thresholds integration
-        self.performance_history = []
         self.trading_pairs = TRADING_PAIRS
         self.market_regimes = {}
         self.adaptive_thresholds = {}
@@ -64,78 +61,92 @@ class RiskManager:
             print(f"Erreur calcul volatilité {symbol}: {e}")
             return 0.02  # Volatilité par défaut (2%)
 
-    def calculate_kelly_fractional_factor(self, bot, symbol, ml_win_prob=None):
-        """
-        Calcule un facteur Kelly fractionné prudent (Phase 6) basé sur le Win Rate live
-        et le ratio Gain / Perte moyen.
-        Formule : Kelly f* = (p * b - (1 - p)) / b
-        Kelly Fractionné = 0.25 * f* (limité entre 0.5x et 1.5x)
-        """
-        try:
-            # Probabilité de gain p (ML ou Win Rate 30j live)
-            p = (float(ml_win_prob) / 100.0) if ml_win_prob is not None else 0.55
-            
-            # Payoff ratio b (gains moyens / pertes moyennes, par défaut 1.25)
-            b = 1.25
-            if hasattr(bot, 'winning_trades') and hasattr(bot, 'total_trades') and bot.total_trades > 5:
-                live_wr = bot.winning_trades / bot.total_trades
-                p = 0.6 * p + 0.4 * live_wr  # Fusion pondérée ML + live
-
-            # Critère de Kelly f*
-            kelly_full = (p * b - (1.0 - p)) / b if b > 0 else 0.0
-            
-            # Kelly Fractionné 25% (sécurité institutionnelle)
-            kelly_fraction = 0.25 * kelly_full
-            
-            # Facteur multiplicateur final clampé entre 0.5x et 1.5x
-            kelly_factor = max(0.5, min(1.5, 1.0 + kelly_fraction))
-            return round(kelly_factor, 2)
-        except Exception as e:
-            return 1.0
-
     def calculate_position_size(self, bot, symbol, base_amount=10, max_risk_percent=2, ml_win_prob=None):
-        """Calcule la taille de position dynamique basée sur Volatilité, ML Confidence & Kelly Fractionné (Phase 6)"""
-        from config import USE_FULL_BALANCE, MAX_BALANCE_PER_TRADE
-        
+        """Calcule une taille de base neutre; le sizing cible vient ensuite du modele ML."""
         volatility = self.calculate_volatility(bot, symbol)
-        kelly_factor = self.calculate_kelly_fractional_factor(bot, symbol, ml_win_prob=ml_win_prob)
-        
-        # Facteur ML confidence
-        ml_prob = float(ml_win_prob) if ml_win_prob is not None else 65.0
-        if ml_prob < 55.0:
-            ml_factor = 0.40
-            ml_label = "Neutre bas (40%)"
-        elif ml_prob < 65.0:
-            ml_factor = 0.70
-            ml_label = "Neutre haut (70%)"
-        else:
-            ml_factor = 1.00
-            ml_label = "Pleine confiance (100%)"
-
-        if USE_FULL_BALANCE:
-            balance = bot.balance_manager.get_balance()
-            usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
-            max_allowed = usd_available * (MAX_BALANCE_PER_TRADE / 100)
-            raw_size = min(usd_available, max_allowed)
-            position_size = max(base_amount, raw_size * ml_factor * kelly_factor)
-        else:
-            risk_factor = max_risk_percent / max(0.01, volatility * 100)
-            vol_adjusted = base_amount * min(risk_factor, 2.0)
-            position_size = vol_adjusted * ml_factor * kelly_factor
-
-        min_notionals = {'BTC/USD': 5, 'ETH/USD': 10, 'SOL/USD': 8, 'ADA/USD': 12}
-        min_required = min_notionals.get(symbol, 10)
-        max_amount = getattr(bot, 'trade_amount', base_amount) * 2.5
-        final_size = round(max(min_required, min(max_amount, position_size)), 2)
-
-        sizing_reason = f"{int(ml_factor*100)}% ({ml_label} • Kelly {kelly_factor}x)"
-        print(f"📊 {symbol}: Sizing Phase 6 → {final_size:.2f} USD [{sizing_reason}]")
+        risk_factor = max_risk_percent / max(0.01, volatility * 100)
+        volatility_factor = max(0.50, min(1.25, risk_factor))
+        base_size = float(base_amount or getattr(bot, 'trade_amount', 10) or 10)
+        final_size = self.clamp_position_size(bot, symbol, base_size * volatility_factor)
+        sizing_reason = f"base risk sizing • volatility {volatility * 100:.2f}% • vol factor {volatility_factor:.2f}x"
         return {
             'position_size_usd': final_size,
             'sizing_reason': sizing_reason,
-            'ml_factor': ml_factor,
-            'kelly_factor': kelly_factor,
+            'volatility_factor': round(volatility_factor, 2),
             'volatility': round(volatility * 100, 2)
+        }
+
+    def clamp_position_size(self, bot, symbol, position_size_usd):
+        """Applique le plafond final par position après tous les ajustements ML."""
+        try:
+            limits = self.get_position_size_limits(bot, symbol)
+            size = float(position_size_usd or 0.0)
+            max_amount = float(limits.get('max_position_size_usd') or size)
+            min_required = float(limits.get('min_position_size_usd') or 0.0)
+            clamped = min(max_amount, max(min_required, size))
+            return round(clamped, 2)
+        except Exception:
+            return round(float(position_size_usd or 0.0), 2)
+
+    def get_position_size_limits(self, bot, symbol):
+        """Retourne les plafonds de sizing applicables au trade courant."""
+        base_amount = float(getattr(bot, 'trade_amount', 10) or 10)
+        try:
+            exchange_limits = bot.get_min_amount(symbol) if hasattr(bot, 'get_min_amount') else {}
+            min_required = float((exchange_limits or {}).get('min_cost') or 1.0)
+        except Exception:
+            min_required = 1.0
+        account_balance = 0.0
+        try:
+            account_balance = float(bot.get_account_balance() if hasattr(bot, 'get_account_balance') else 0.0)
+        except Exception:
+            account_balance = 0.0
+
+        configured_max_per_position = base_amount * float(os.getenv('MAX_POSITION_TRADE_AMOUNT_MULTIPLIER', '2.5'))
+        max_position_exposure_pct = None
+        if account_balance > 0 and hasattr(bot, 'capital_manager') and hasattr(bot.capital_manager, 'get_max_position_size_usd'):
+            max_per_position = float(bot.capital_manager.get_max_position_size_usd(account_balance) or 0.0)
+            if hasattr(bot.capital_manager, 'get_max_position_exposure_pct'):
+                max_position_exposure_pct = float(bot.capital_manager.get_max_position_exposure_pct(account_balance) or 0.0)
+        else:
+            max_per_position = configured_max_per_position
+        if account_balance > 0:
+            max_per_position = min(max_per_position, account_balance)
+
+        if hasattr(bot, 'capital_manager') and hasattr(bot.capital_manager, 'get_max_total_exposure_pct'):
+            max_exposure_pct = float(bot.capital_manager.get_max_total_exposure_pct(account_balance) or 60.0)
+        else:
+            max_exposure_pct = float(os.getenv('MAX_TOTAL_CAPITAL_EXPOSURE_PCT', '60.0'))
+        max_exposure_usd = account_balance * (max_exposure_pct / 100.0) if account_balance > 0 else None
+        current_exposure = 0.0
+        try:
+            if hasattr(bot, 'capital_manager'):
+                positions = bot.capital_manager._open_positions_for_active_mode()
+            else:
+                positions = getattr(bot, 'state', {}).get('positions', [])
+            for pos in positions:
+                if not isinstance(pos, dict) or pos.get('side') != 'buy' or pos.get('status') == 'canceled':
+                    continue
+                amount = float(pos.get('amount') or 0.0)
+                entry_price = float(pos.get('price') or 0.0)
+                price = bot.get_price(pos.get('symbol')) if hasattr(bot, 'get_price') and pos.get('symbol') else entry_price
+                current_exposure += amount * (price or entry_price)
+        except Exception:
+            current_exposure = 0.0
+        if max_exposure_usd is not None:
+            remaining_exposure = max(0.0, max_exposure_usd - current_exposure)
+            max_per_position = min(max_per_position, remaining_exposure)
+
+        return {
+            'base_trade_amount_usd': round(base_amount, 2),
+            'min_position_size_usd': round(min_required, 2),
+            'max_position_size_usd': round(max_per_position, 2),
+            'configured_max_position_size_usd': round(configured_max_per_position, 2),
+            'max_position_exposure_pct': round(max_position_exposure_pct, 2) if max_position_exposure_pct is not None else None,
+            'account_balance_usd': round(account_balance, 2),
+            'max_total_exposure_pct': round(max_exposure_pct, 2),
+            'max_exposure_usd': round(max_exposure_usd, 2) if max_exposure_usd is not None else None,
+            'exposure_before_usd': round(current_exposure, 2),
         }
 
     def load_daily_stats(self):
@@ -183,11 +194,26 @@ class RiskManager:
             print("🚨 ARRÊT D'URGENCE ACTIVÉ")
             return False
 
-        # 2. Vérifier la limite de trades perdants (protection principale)
-        losing_trades = self.daily_stats.get('losing_trades_count', 0)
-        if losing_trades >= self.max_daily_losing_trades:
-            print(f"⛔ Limite de trades perdants atteinte: {losing_trades}/{self.max_daily_losing_trades} pertes aujourd'hui")
-            return False
+        # 2. Vérifier la perte journalière vs capital (protection principale basée sur %)
+        # Déblocage manuel: OVERRIDE_DAILY_LOSS_LIMIT=true dans .env
+        if os.getenv('OVERRIDE_DAILY_LOSS_LIMIT', 'false').lower() != 'true':
+            max_daily_loss_pct = float(os.getenv('MAX_DAILY_LOSS_PCT', '5.0'))
+            total_loss = abs(self.daily_stats.get('total_loss', 0))
+            try:
+                import sqlite3
+                conn = sqlite3.connect(os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+                row = conn.execute("SELECT paper_balance, initial_balance FROM bot_state WHERE mode='live'").fetchone()
+                conn.close()
+                total_capital = float(row[1] if row and row[1] else row[0] if row else 0)
+                if total_capital <= 0:
+                    total_capital = float(os.getenv('INITIAL_CAPITAL', '100.0'))
+            except Exception:
+                total_capital = float(os.getenv('INITIAL_CAPITAL', '100.0'))
+            
+            max_loss_allowed = total_capital * (max_daily_loss_pct / 100.0)
+            if total_loss >= max_loss_allowed:
+                print(f"⛔ Perte journalière max atteinte: ${total_loss:.2f} >= {max_daily_loss_pct}% du capital (${max_loss_allowed:.2f})")
+                return False
 
         # 3. Vérifier la perte maximale journalière en USD
         total_loss = abs(self.daily_stats.get('total_loss', 0))
@@ -577,31 +603,6 @@ class RiskManager:
         except:
             return 0
     
-    def optimize_thresholds_daily(self):
-        """Optimisation adaptative des seuils"""
-        now = time.time()
-        
-        try:
-            current_check_interval = self.bot.get_optimal_check_interval(self.trading_pairs)
-            optimization_interval = current_check_interval * self.base_multiplier
-        except:
-            optimization_interval = 3600
-        
-        if now - self.last_optimization < optimization_interval:
-            return
-        
-        performance_metrics = self._analyze_threshold_performance()
-        
-        self.last_optimization = now
-    
-    def _analyze_threshold_performance(self):
-        """Analyse performance des seuils actuels"""
-        return {
-            'win_rate': 0.65,
-            'profit_factor': 1.3,
-            'needs_adjustment': False
-        }
-    
     def get_threshold_summary(self, symbol):
         """Résumé des seuils pour monitoring"""
         if symbol not in self.adaptive_thresholds:
@@ -874,26 +875,6 @@ class CorrelationManager:
             'major': ['BTC/USD', 'ETH/USD'],
             'altcoins': ['SOL/USD', 'ADA/USD']
         }
-        self.active_positions = set()
-        self.market_sentiment = 'neutral'  # 'bullish', 'bearish', 'neutral'
-        self.last_sentiment_check = 0
-    
-    def update_market_sentiment(self, bot):
-        """Analyse le sentiment du marché"""
-        if time.time() - self.last_sentiment_check < 300:  # Check toutes les 5 minutes
-            return
-            
-        try:
-            btc_price = bot.get_price('BTC/USD')
-            eth_price = bot.get_price('ETH/USD')
-            
-            # Logique simplifiée de sentiment (à améliorer avec de vrais indicateurs)
-            # Pour l'instant, on reste neutre
-            self.market_sentiment = 'neutral'
-            self.last_sentiment_check = time.time()
-            
-        except Exception as e:
-            print(f"Erreur analyse sentiment: {e}")
     
     def can_open_position(self, symbol, bot):
         """Vérifie si on peut ouvrir une position selon la corrélation"""
@@ -909,10 +890,6 @@ class CorrelationManager:
             if position_value >= min_trade_value:
                 print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USD)")
                 return False
-            # else:
-            #     print(f"🧹 {base_currency} poussière ignorée: {current_holding:.6f} ({position_value:.2f} < {min_trade_value:.2f})")
-        
-        self.update_market_sentiment(bot)
         
         # Trouver le groupe de la crypto
         symbol_group = None
@@ -938,18 +915,5 @@ class CorrelationManager:
         
         if group_positions >= self.max_correlated_positions:
             return False
-        
-        if self.market_sentiment == 'bearish':
-            return False
             
         return True
-    
-    def add_position(self, symbol):
-        """Ajoute une position active"""
-        self.active_positions.add(symbol)
-        print(f"📊 Position ajoutée: {symbol} (Total: {len(self.active_positions)})")
-    
-    def remove_position(self, symbol):
-        """Supprime une position fermée"""
-        self.active_positions.discard(symbol)
-        print(f"📊 Position fermée: {symbol} (Total: {len(self.active_positions)})")

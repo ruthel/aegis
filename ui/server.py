@@ -10,11 +10,11 @@ import threading
 import time
 import json
 from collections import deque, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, has_request_context, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +38,19 @@ ML_RETRAIN_STATE = {
     'fast': None,
     'exit_code': None,
 }
+
+
+def parse_dt_safe(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            offset_hours = float(os.getenv('AEGIS_LOCAL_UTC_OFFSET_HOURS', '-4'))
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=offset_hours)))
+        return dt
+    except Exception:
+        return None
 
 
 def aegis_db_path() -> Path:
@@ -106,6 +119,127 @@ def latest_model_evaluations(limit=5):
     except Exception:
         return []
 
+
+def latest_sizing_recommendations(limit=12, view_mode=None):
+    try:
+        mode = view_mode or current_view_mode()
+        with db_logger() as logger:
+            if mode == 'all':
+                rows = []
+                for item_mode in ('paper', 'live'):
+                    rows.extend(logger.get_latest_sizing_recommendations(mode=item_mode, limit=limit))
+                rows.sort(key=lambda item: str(item.get('timestamp') or ''), reverse=True)
+                return rows[:int(limit)]
+            return logger.get_latest_sizing_recommendations(mode=mode, limit=limit)
+    except Exception:
+        return []
+
+
+def latest_sizing_backtests(limit=3):
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT run_id, generated_at, model_path, samples, baseline_pnl_usd,
+                   sizing_pnl_usd, pnl_delta_usd, avg_sizing_factor,
+                   min_sizing_factor, max_sizing_factor,
+                   positive_samples, negative_samples
+            FROM ml_sizing_backtests
+            ORDER BY generated_at DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
+
+
+def dynamic_capital_exposure_pct(total_capital_usd):
+    try:
+        total = float(total_capital_usd or 0.0)
+    except Exception:
+        total = 0.0
+    if total < 50:
+        return 100.0
+    if total < 100:
+        return 80.0
+    if total < 300:
+        return 70.0
+    return 60.0
+
+
+def dynamic_position_exposure_pct(total_capital_usd):
+    try:
+        total = float(total_capital_usd or 0.0)
+    except Exception:
+        total = 0.0
+    if total < 50:
+        return 50.0
+    if total < 100:
+        return 35.0
+    if total < 300:
+        return 25.0
+    return 15.0
+
+
+def risk_sizing_config():
+    def env_float(name, default):
+        try:
+            return float(os.getenv(name, str(default)))
+        except Exception:
+            return float(default)
+
+    def env_int(name, default):
+        try:
+            return int(os.getenv(name, str(default)))
+        except Exception:
+            return int(default)
+
+    trade_amount = env_float('TRADE_AMOUNT', 50.0)
+    max_multiplier = env_float('MAX_POSITION_TRADE_AMOUNT_MULTIPLIER', 2.5)
+    total_capital = 0.0
+    try:
+        state = load_accounting_state(view_mode=active_trading_mode())
+        total_capital = float(state.get('paper_balance') or 0.0)
+    except Exception:
+        total_capital = 0.0
+    active_exposure_pct = dynamic_capital_exposure_pct(total_capital)
+    active_position_pct = dynamic_position_exposure_pct(total_capital)
+    dynamic_max_position_usd = round(total_capital * active_position_pct / 100.0, 2) if total_capital > 0 else round(trade_amount * max_multiplier, 2)
+    return {
+        'trade_amount_usd': trade_amount,
+        'max_position_trade_amount_multiplier': max_multiplier,
+        'max_position_size_usd': dynamic_max_position_usd,
+        'max_position_exposure_pct': active_position_pct,
+        'max_position_exposure_source': 'dynamic_by_capital',
+        'configured_max_position_size_usd': round(trade_amount * max_multiplier, 2),
+        'position_exposure_tiers': [
+            {'max_capital_usd': 50, 'exposure_pct': 50},
+            {'min_capital_usd': 50, 'max_capital_usd': 100, 'exposure_pct': 35},
+            {'min_capital_usd': 100, 'max_capital_usd': 300, 'exposure_pct': 25},
+            {'min_capital_usd': 300, 'exposure_pct': 15},
+        ],
+        'sell_limit_arm_distance_pct': env_float('SELL_LIMIT_ARM_DISTANCE_PCT', 0.30),
+        'max_total_capital_exposure_pct': active_exposure_pct,
+        'max_total_capital_exposure_source': 'dynamic_by_capital',
+        'capital_for_exposure_usd': round(total_capital, 2),
+        'exposure_tiers': [
+            {'max_capital_usd': 50, 'exposure_pct': 100},
+            {'min_capital_usd': 50, 'max_capital_usd': 100, 'exposure_pct': 80},
+            {'min_capital_usd': 100, 'max_capital_usd': 300, 'exposure_pct': 70},
+            {'min_capital_usd': 300, 'exposure_pct': 60},
+        ],
+        'legacy_configured_max_total_capital_exposure_pct': env_float('MAX_TOTAL_CAPITAL_EXPOSURE_PCT', 60.0),
+        'max_positions_per_crypto': env_int('MAX_POSITIONS_PER_CRYPTO', 2),
+        'max_total_positions': env_int('MAX_TOTAL_POSITIONS', 8),
+        'max_daily_loss_usd': env_float('MAX_DAILY_LOSS', 50.0),
+        'max_weekly_loss_usd': env_float('MAX_WEEKLY_LOSS', 150.0),
+    }
+
 # ML Engine chargé une seule fois au démarrage du UI (en dehors du bot)
 _ws_ml_engine = None
 _ws_ml_engine_loaded = False
@@ -148,6 +282,12 @@ CONFIG_FIELDS = {
     'TRADE_AMOUNT': {'type': 'float', 'label': 'Montant trade USD', 'section': 'Trading', 'min': 0.5, 'max': 10000, 'restart': 'bot'},
     'MAX_DAILY_TRADES': {'type': 'int', 'label': 'Trades max / jour', 'section': 'Risque', 'min': 0, 'max': 200, 'restart': 'bot'},
     'MAX_DAILY_LOSS': {'type': 'float', 'label': 'Perte max / jour', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
+    'MAX_WEEKLY_LOSS': {'type': 'float', 'label': 'Perte max / semaine', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
+    'MAX_TOTAL_CAPITAL_EXPOSURE_PCT': {'type': 'float', 'label': 'Exposition capitale max %', 'section': 'Risque', 'min': 1, 'max': 100, 'restart': 'bot'},
+    'MAX_POSITIONS_PER_CRYPTO': {'type': 'int', 'label': 'Positions max / crypto', 'section': 'Risque', 'min': 1, 'max': 20, 'restart': 'bot'},
+    'MAX_TOTAL_POSITIONS': {'type': 'int', 'label': 'Positions max total', 'section': 'Risque', 'min': 1, 'max': 100, 'restart': 'bot'},
+    'MAX_POSITION_TRADE_AMOUNT_MULTIPLIER': {'type': 'float', 'label': 'Multiplicateur max / position', 'section': 'Risque', 'min': 0.1, 'max': 20, 'restart': 'bot'},
+    'SELL_LIMIT_ARM_DISTANCE_PCT': {'type': 'float', 'label': 'Distance activation sell limit %', 'section': 'Risque', 'min': 0.0, 'max': 10, 'restart': 'bot'},
     'STOP_LOSS_PERCENT': {'type': 'float', 'label': 'Stop loss %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'TRAILING_STOP_PERCENT': {'type': 'float', 'label': 'Trailing stop %', 'section': 'Risque', 'min': 0.1, 'max': 50, 'restart': 'bot'},
     'BREAKEVEN_STOP_ENABLED': {'type': 'bool', 'label': 'Activer Stop Zéro Perte (Breakeven)', 'section': 'Risque', 'restart': 'bot'},
@@ -326,6 +466,9 @@ def config_payload():
         },
         'ml_retraining': ml_retrain_status(),
         'ml_model_evaluations': latest_model_evaluations(),
+        'risk_sizing': risk_sizing_config(),
+        'ml_sizing_recommendations': latest_sizing_recommendations(8),
+        'ml_sizing_backtests': latest_sizing_backtests(3),
         'message': 'Les changements sont ecrits dans .env.ui. Redemarrage requis selon le champ.',
     }
 
@@ -815,14 +958,30 @@ def env_bool(name, default='False'):
     return os.getenv(name, default).lower() == 'true'
 
 
-def active_state_source():
-    mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+def active_trading_mode():
+    return 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+
+
+def current_view_mode():
+    raw = active_trading_mode()
+    if has_request_context():
+        raw = (request.args.get('view_mode') or request.args.get('mode') or raw).lower()
+    return raw if raw in {'paper', 'live', 'all'} else active_trading_mode()
+
+
+def modes_for_view(view_mode=None):
+    mode = view_mode or current_view_mode()
+    return ['paper', 'live'] if mode == 'all' else [mode]
+
+
+def active_state_source(view_mode=None):
+    mode_key = view_mode or active_trading_mode()
     return f'data/aegis_db.sqlite3:bot_state[{mode_key}]'
 
 
-def load_bot_state(fallback=None):
+def load_bot_state(fallback=None, mode=None):
     fallback = fallback or {'positions': []}
-    mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+    mode_key = mode or active_trading_mode()
     try:
         from core.ml_live_logger import MLLiveLogger
         with MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path())) as logger:
@@ -834,35 +993,87 @@ def load_bot_state(fallback=None):
     return fallback
 
 
-def load_accounting_state(fallback=None):
+def _tag_mode(items, mode):
+    tagged = []
+    for item in items or []:
+        if isinstance(item, dict):
+            row = dict(item)
+            row.setdefault('mode', mode)
+            tagged.append(row)
+    return tagged
+
+
+def load_accounting_state(fallback=None, view_mode=None):
     """Charge l'état UI directement depuis orders/fills/balances."""
     fallback = fallback or {'positions': []}
-    mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+    selected_view = view_mode or current_view_mode()
+    selected_modes = modes_for_view(selected_view)
     try:
-        state = load_bot_state(fallback) or {}
         with db_logger() as logger:
             conn = logger._get_conn()
-            account_id = logger._account_id(mode_key)
-            state['positions'] = logger._positions_from_accounting(conn, mode_key)
-            state['pending_orders'] = logger._pending_orders_from_accounting(conn, mode_key)
-            balances = {}
-            for asset, free, locked, total in conn.execute(
-                "SELECT asset, free, locked, total FROM balances WHERE account_id=?",
-                (account_id,),
-            ).fetchall():
-                balances[asset] = {
-                    'free': float(free or 0.0),
-                    'used': float(locked or 0.0),
-                    'locked': float(locked or 0.0),
-                    'total': float(total or 0.0),
-                }
-            state['balances'] = balances
-            usd_balance = balances.get('USD') or balances.get('USDT') or {}
-            if usd_balance:
-                state['paper_balance'] = round(float(usd_balance.get('free') or 0.0), 2)
+            state = {}
+            merged_positions = []
+            merged_pending_orders = {}
+            balances_by_mode = {}
+            display_balance = None
+            for mode_key in selected_modes:
+                mode_state = load_bot_state(fallback, mode=mode_key) or {}
+                if not state:
+                    state.update(mode_state)
+                account_id = logger._account_id(mode_key)
+                merged_positions.extend(_tag_mode(logger._positions_from_accounting(conn, mode_key), mode_key))
+                pending = logger._pending_orders_from_accounting(conn, mode_key)
+                for key, value in (pending or {}).items():
+                    row = dict(value)
+                    row.setdefault('mode', mode_key)
+                    merged_pending_orders[f'{mode_key}:{key}'] = row
+                balances = {}
+                for asset, free, locked, total in conn.execute(
+                    "SELECT asset, free, locked, total FROM balances WHERE account_id=?",
+                    (account_id,),
+                ).fetchall():
+                    balances[asset] = {
+                        'free': float(free or 0.0),
+                        'used': float(locked or 0.0),
+                        'locked': float(locked or 0.0),
+                        'total': float(total or 0.0),
+                    }
+                balances_by_mode[mode_key] = balances
+                usd_balance = balances.get('USD') or balances.get('USDT') or balances.get('USDC') or {}
+                if selected_view != 'all' and usd_balance:
+                    display_balance = round(float(usd_balance.get('free') or 0.0), 2)
+            state['positions'] = merged_positions
+            state['pending_orders'] = merged_pending_orders
+            state['balances_by_mode'] = balances_by_mode
+            if selected_view == 'all':
+                merged_balances = {}
+                for balances in balances_by_mode.values():
+                    for asset, row in balances.items():
+                        target = merged_balances.setdefault(asset, {
+                            'free': 0.0,
+                            'used': 0.0,
+                            'locked': 0.0,
+                            'total': 0.0,
+                        })
+                        target['free'] += float(row.get('free') or 0.0)
+                        target['used'] += float(row.get('used') or 0.0)
+                        target['locked'] += float(row.get('locked') or 0.0)
+                        target['total'] += float(row.get('total') or 0.0)
+                state['balances'] = merged_balances
+                display_balance = round(sum(float((balances_by_mode.get(mode, {}).get('USD') or balances_by_mode.get(mode, {}).get('USDT') or balances_by_mode.get(mode, {}).get('USDC') or {}).get('free') or 0.0) for mode in selected_modes), 2)
+            else:
+                state['balances'] = balances_by_mode.get(selected_modes[0], {})
+            if display_balance is not None:
+                state['paper_balance'] = display_balance
+            elif selected_view != 'paper':
+                state.pop('paper_balance', None)
+            state['view_mode'] = selected_view
+            state['trading_mode'] = active_trading_mode()
             return state
     except Exception:
-        return load_bot_state(fallback)
+        fallback_state = load_bot_state(fallback, mode=active_trading_mode())
+        fallback_state['view_mode'] = selected_view
+        return fallback_state
 
 
 def trade_stats(positions):
@@ -874,7 +1085,11 @@ def trade_stats(positions):
     stakes = []  # stake sizes (cost of entry)
     timestamps = []  # sell timestamps for duration calc
 
-    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+    def stat_sort_key(item):
+        parsed = parse_dt_safe(item.get('timestamp'))
+        return parsed.timestamp() if parsed else 0.0
+
+    for pos in sorted(positions, key=stat_sort_key):
         symbol = pos.get('symbol')
         side = pos.get('side')
         amount = float(pos.get('amount') or 0)
@@ -884,36 +1099,40 @@ def trade_stats(positions):
 
         status = pos.get('status')
         if side == 'buy' and status != 'canceled':
-            buys.setdefault(symbol, []).append({'amount': amount, 'price': px, 'ts': pos.get('timestamp')})
+            buys.setdefault(symbol, []).append({
+                'amount': amount,
+                'price': px,
+                'fee': float(pos.get('fee') or 0.0),
+                'ts': pos.get('timestamp'),
+            })
         elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
             queue = buys.get(symbol, [])
+            sell_fee_total = float(pos.get('fee') or 0.0)
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
                 pnl_gross = filled * (px - entry['price'])
-                fee_rate = pos.get('fee_rate')
-                if fee_rate is not None:
-                    fees = (entry['price'] * filled * float(fee_rate)) + (px * filled * float(fee_rate))
-                else:
-                    total_fee = float(pos.get('fee') or 0)
-                    fees = total_fee * (filled / amount) if amount > 0 else 0
+                buy_fee = float(entry.get('fee') or 0.0) * (filled / entry['amount']) if entry['amount'] > 0 else 0.0
+                sell_fee = sell_fee_total * (filled / amount) if amount > 0 else 0.0
+                fees = buy_fee + sell_fee
                 pnl_net = pnl_gross - fees
                 trades.append(pnl_net)
                 gross_trades.append(pnl_gross)
                 fees_total += fees
                 stakes.append(filled * entry['price'])
                 if entry.get('ts'):
-                    try:
-                        timestamps.append(datetime.fromisoformat(entry['ts']))
-                    except Exception:
-                        pass
+                    parsed = parse_dt_safe(entry['ts'])
+                    if parsed:
+                        timestamps.append(parsed)
                 if pos.get('timestamp'):
-                    try:
-                        timestamps.append(datetime.fromisoformat(pos['timestamp']))
-                    except Exception:
-                        pass
+                    parsed = parse_dt_safe(pos['timestamp'])
+                    if parsed:
+                        timestamps.append(parsed)
+                old_amount = entry['amount']
                 entry['amount'] -= filled
+                if old_amount > 0:
+                    entry['fee'] = float(entry.get('fee') or 0.0) * max(0.0, entry['amount'] / old_amount)
                 remaining -= filled
                 if entry['amount'] <= 1e-12:
                     queue.pop(0)
@@ -948,15 +1167,13 @@ def trade_stats(positions):
 
 
 def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit_recommendations=None, cryptos=None):
-    open_sell_symbols = set(
-        p.get('symbol') for p in positions
-        if p.get('side') == 'sell' and p.get('status') == 'opened'
-    )
     by_symbol = {}
-    for position in sorted(positions, key=lambda item: item.get('timestamp', '')):
+    def position_sort_key(item):
+        parsed = parse_dt_safe(item.get('timestamp'))
+        return parsed.timestamp() if parsed else 0.0
+
+    for position in sorted(positions, key=position_sort_key):
         symbol = position.get('symbol')
-        if symbol not in open_sell_symbols:
-            continue
 
         side = position.get('side')
         amount = float(position.get('amount') or 0)
@@ -1203,20 +1420,16 @@ def live_status():
 
 # ===== NOUVEAU: Fonctions pour les nouvelles fonctionnalités =====
 
-def _calc_net_pnl(pos_sell, entry_price, sell_price, filled_amount):
-    """Calcule le PnL Net en déduisant les frais réels de transaction (Maker/Taker)."""
+def _calc_net_pnl(pos_sell, entry_price, sell_price, filled_amount, entry_fee=0.0):
+    """Calcule le PnL net avec les frais reellement stockes depuis Kraken."""
     pnl_gross = filled_amount * (sell_price - entry_price)
-    fee_rate = pos_sell.get('fee_rate') if isinstance(pos_sell, dict) else None
-    if fee_rate is not None:
-        fees = (entry_price * filled_amount * float(fee_rate)) + (sell_price * filled_amount * float(fee_rate))
-    else:
-        total_fee = float(pos_sell.get('fee') or 0) if isinstance(pos_sell, dict) else 0
-        orig_amount = float(pos_sell.get('amount') or filled_amount) if isinstance(pos_sell, dict) else filled_amount
+    sell_fee = 0.0
+    if isinstance(pos_sell, dict):
+        total_fee = float(pos_sell.get('fee') or 0.0)
+        orig_amount = float(pos_sell.get('amount') or filled_amount)
         if total_fee > 0 and orig_amount > 0:
-            fees = total_fee * (filled_amount / orig_amount)
-        else:
-            default_fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-            fees = filled_amount * (entry_price + sell_price) * default_fee_rate
+            sell_fee = total_fee * (filled_amount / orig_amount)
+    fees = float(entry_fee or 0.0) + sell_fee
     pnl_net = pnl_gross - fees
     return pnl_gross, fees, pnl_net
 
@@ -1226,7 +1439,11 @@ def compute_advanced_metrics(positions, paper_balance):
     buys = {}
     trades = []  # [{pnl, symbol, buy_price, sell_price, amount, buy_time, sell_time}]
 
-    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+    def position_sort_key(item):
+        parsed = parse_dt_safe(item.get('timestamp'))
+        return parsed.timestamp() if parsed else 0.0
+
+    for pos in sorted(positions, key=position_sort_key):
         symbol = pos.get('symbol')
         side = pos.get('side')
         amount = float(pos.get('amount') or 0)
@@ -1237,7 +1454,10 @@ def compute_advanced_metrics(positions, paper_balance):
         status = pos.get('status')
         if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({
-                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+                'amount': amount,
+                'price': px,
+                'fee': float(pos.get('fee') or 0.0),
+                'ts': pos.get('timestamp'),
             })
         elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
@@ -1245,7 +1465,8 @@ def compute_advanced_metrics(positions, paper_balance):
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled)
+                entry_fee = float(entry.get('fee') or 0.0) * (filled / entry['amount']) if entry['amount'] > 0 else 0.0
+                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled, entry_fee=entry_fee)
                 entry_cost = filled * entry['price']
                 pnl_net_pct = (pnl_net / entry_cost * 100) if entry_cost > 0 else 0
                 trades.append({
@@ -1260,7 +1481,10 @@ def compute_advanced_metrics(positions, paper_balance):
                     'buy_time': entry.get('ts'),
                     'sell_time': pos.get('timestamp'),
                 })
+                old_amount = entry['amount']
                 entry['amount'] -= filled
+                if old_amount > 0:
+                    entry['fee'] = float(entry.get('fee') or 0.0) * max(0.0, entry['amount'] / old_amount)
                 remaining -= filled
                 if entry['amount'] <= 1e-12:
                     queue.pop(0)
@@ -1430,7 +1654,11 @@ def compute_trade_history(positions):
     """
     trades = []
     positions_by_symbol = {}
-    for p in sorted(positions, key=lambda x: x.get('timestamp', '')):
+    def trade_position_sort_key(item):
+        parsed = parse_dt_safe(item.get('timestamp'))
+        return parsed.timestamp() if parsed else 0.0
+
+    for p in sorted(positions, key=trade_position_sort_key):
         sym = p.get('symbol')
         if sym:
             positions_by_symbol.setdefault(sym, []).append(p)
@@ -1450,31 +1678,37 @@ def compute_trade_history(positions):
                 buy_queue.append({
                     'amount': amount,
                     'price': px,
+                    'fee': float(pos.get('fee') or 0.0),
                     'timestamp': pos.get('timestamp'),
                     'order_id': pos.get('order_id'),
+                    'mode': pos.get('mode'),
                     'ml_buy_prob': pos.get('ml_buy_prob') or pos.get('p_win') or pos.get('ml_prob'),
                     'sizing_reason': pos.get('sizing_reason')
                 })
             elif side == 'sell':
                 tot_amount = sum(b['amount'] for b in buy_queue)
                 tot_cost = sum(b['amount'] * b['price'] for b in buy_queue)
-                avg_buy_price = tot_cost / tot_amount if tot_amount > 0 else px
+                if status == 'opened' and tot_amount <= 0:
+                    continue
                 buy_ml_prob = buy_queue[0].get('ml_buy_prob') if buy_queue else pos.get('ml_buy_prob')
                 sell_ml_prob = pos.get('ml_sell_prob') or pos.get('ml_exit_prob') or pos.get('continuation_score')
                 sizing_reason = buy_queue[0].get('sizing_reason') if buy_queue else pos.get('sizing_reason')
 
                 if status == 'opened':
+                    avg_buy_price = tot_cost / tot_amount if tot_amount > 0 else px
+                    display_amount = min(amount, tot_amount) if tot_amount > 0 else amount
                     trades.append({
                         'symbol': symbol,
+                        'mode': buy_queue[0].get('mode') if buy_queue else pos.get('mode'),
                         'side': 'buy',
                         'status': 'open',
                         'price': round(avg_buy_price, 8),
                         'buy_price': round(avg_buy_price, 8),
                         'sell_price': round(px, 8),
                         'target_price': round(px, 8),
-                        'amount': round(amount, 8),
-                        'entry_value': round(amount * avg_buy_price, 4),
-                        'usd_value': round(amount * avg_buy_price, 4),
+                        'amount': round(display_amount, 8),
+                        'entry_value': round(display_amount * avg_buy_price, 4),
+                        'usd_value': round(display_amount * avg_buy_price, 4),
                         'pnl': None,
                         'pnl_pct': None,
                         'pnl_gross': None,
@@ -1487,15 +1721,47 @@ def compute_trade_history(positions):
                         'ml_sell_prob': None,
                         'sizing_reason': sizing_reason,
                     })
+                    rem = display_amount
+                    while rem > 1e-12 and buy_queue:
+                        item = buy_queue[0]
+                        take = min(rem, item['amount'])
+                        item['amount'] -= take
+                        rem -= take
+                        if item['amount'] <= 1e-12:
+                            buy_queue.pop(0)
                 elif status in ('executed', 'filled'):
-                    entry_value = amount * avg_buy_price
-                    pnl_gross = amount * (px - avg_buy_price)
-                    fee_rate = pos.get('fee_rate')
-                    if fee_rate is not None:
-                        fees = (avg_buy_price * amount * float(fee_rate)) + (px * amount * float(fee_rate))
-                    else:
-                        total_fee = float(pos.get('fee') or 0)
-                        fees = total_fee * (amount / tot_amount) if tot_amount > 0 else 0
+                    consumed = []
+                    rem = amount
+                    while rem > 1e-12 and buy_queue:
+                        item = buy_queue[0]
+                        item_amount = float(item.get('amount') or 0.0)
+                        if item_amount <= 0:
+                            buy_queue.pop(0)
+                            continue
+                        take = min(rem, item_amount)
+                        consumed.append({
+                            **item,
+                            'amount': take,
+                            'fee': float(item.get('fee') or 0.0) * (take / item_amount),
+                        })
+                        old_amount = item['amount']
+                        item['amount'] -= take
+                        if old_amount > 0:
+                            item['fee'] = float(item.get('fee') or 0.0) * max(0.0, item['amount'] / old_amount)
+                        rem -= take
+                        if item['amount'] <= 1e-12:
+                            buy_queue.pop(0)
+
+                    if not consumed:
+                        continue
+
+                    matched_amount = sum(item['amount'] for item in consumed)
+                    entry_value = sum(item['amount'] * item['price'] for item in consumed)
+                    avg_buy_price = entry_value / matched_amount if matched_amount > 0 else px
+                    buy_fees = sum(float(item.get('fee') or 0.0) for item in consumed)
+                    pnl_gross = matched_amount * (px - avg_buy_price)
+                    sell_fee = float(pos.get('fee') or 0.0)
+                    fees = buy_fees + sell_fee
 
                     pnl_net = pnl_gross - fees
                     pnl_gross_pct = (pnl_gross / entry_value) * 100 if entry_value else 0
@@ -1503,11 +1769,12 @@ def compute_trade_history(positions):
 
                     trades.append({
                         'symbol': symbol,
+                        'mode': buy_queue[0].get('mode') if buy_queue else pos.get('mode'),
                         'side': '--',
                         'status': 'closed',
                         'buy_price': round(avg_buy_price, 8),
                         'sell_price': round(px, 8),
-                        'amount': round(amount, 8),
+                        'amount': round(matched_amount, 8),
                         'entry_value': round(entry_value, 4),
                         'usd_value': round(entry_value, 4),
                         'pnl_gross': round(pnl_gross, 4),
@@ -1517,7 +1784,7 @@ def compute_trade_history(positions):
                         'pnl_net_pct': round(pnl_net_pct, 2),
                         'pnl': round(pnl_net, 4),
                         'pnl_pct': round(pnl_net_pct, 2),
-                        'buy_time': buy_queue[0]['timestamp'] if buy_queue else pos.get('timestamp'),
+                        'buy_time': consumed[0].get('timestamp') or pos.get('timestamp'),
                         'sell_time': pos.get('timestamp'),
                         'timestamp': pos.get('timestamp'),
                         'profitable': pnl_net > 0,
@@ -1526,14 +1793,35 @@ def compute_trade_history(positions):
                         'sizing_reason': sizing_reason,
                     })
 
-                    rem = amount
-                    while rem > 1e-12 and buy_queue:
-                        item = buy_queue[0]
-                        take = min(rem, item['amount'])
-                        item['amount'] -= take
-                        rem -= take
-                        if item['amount'] <= 1e-12:
-                            buy_queue.pop(0)
+        for item in buy_queue:
+            if item['amount'] <= 1e-12:
+                continue
+            trades.append({
+                'symbol': symbol,
+                'mode': item.get('mode'),
+                'side': 'buy',
+                'status': 'open',
+                'price': round(item['price'], 8),
+                'buy_price': round(item['price'], 8),
+                'sell_price': None,
+                'target_price': None,
+                'amount': round(item['amount'], 8),
+                'entry_value': round(item['amount'] * item['price'], 4),
+                'usd_value': round(item['amount'] * item['price'], 4),
+                'pnl': None,
+                'pnl_pct': None,
+                'pnl_gross': None,
+                'pnl_gross_pct': None,
+                'pnl_net': None,
+                'pnl_net_pct': None,
+                'buy_time': item.get('timestamp'),
+                'timestamp': item.get('timestamp'),
+                'order_id': item.get('order_id'),
+                'profitable': None,
+                'ml_buy_prob': round(float(item.get('ml_buy_prob')), 1) if item.get('ml_buy_prob') is not None else None,
+                'ml_sell_prob': None,
+                'sizing_reason': item.get('sizing_reason'),
+            })
 
     sorted_trades = sorted(trades, key=lambda t: t.get('timestamp') or t.get('buy_time') or '', reverse=True)
     return _enrich_trades_with_ml_confidence(sorted_trades)
@@ -1544,7 +1832,11 @@ def compute_heatmap(positions):
     buys = {}
     trades = []
 
-    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+    def position_sort_key(item):
+        parsed = parse_dt_safe(item.get('timestamp'))
+        return parsed.timestamp() if parsed else 0.0
+
+    for pos in sorted(positions, key=position_sort_key):
         symbol = pos.get('symbol')
         side = pos.get('side')
         amount = float(pos.get('amount') or 0)
@@ -1555,7 +1847,10 @@ def compute_heatmap(positions):
         status = pos.get('status')
         if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({
-                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+                'amount': amount,
+                'price': px,
+                'fee': float(pos.get('fee') or 0.0),
+                'ts': pos.get('timestamp'),
             })
         elif side == 'sell' and status in ('executed', 'filled'):
             remaining = amount
@@ -1563,7 +1858,8 @@ def compute_heatmap(positions):
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled)
+                entry_fee = float(entry.get('fee') or 0.0) * (filled / entry['amount']) if entry['amount'] > 0 else 0.0
+                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled, entry_fee=entry_fee)
                 trades.append({
                     'symbol': symbol,
                     'pnl': pnl_net,
@@ -1572,7 +1868,10 @@ def compute_heatmap(positions):
                     'buy_time': entry.get('ts'),
                     'sell_time': pos.get('timestamp'),
                 })
+                old_amount = entry['amount']
                 entry['amount'] -= filled
+                if old_amount > 0:
+                    entry['fee'] = float(entry.get('fee') or 0.0) * max(0.0, entry['amount'] / old_amount)
                 remaining -= filled
                 if entry['amount'] <= 1e-12:
                     queue.pop(0)
@@ -1593,7 +1892,9 @@ def compute_heatmap(positions):
 
         if t['sell_time']:
             try:
-                dt = datetime.fromisoformat(t['sell_time'])
+                dt = parse_dt_safe(t['sell_time'])
+                if not dt:
+                    continue
                 day_name = dt.strftime('%A')
                 hour = dt.hour
                 by_day[day_name]['trades'] += 1
@@ -1701,10 +2002,14 @@ def compute_pnl_history(state):
     initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
 
     cumulative_pnl = 0.0
-    history = [{'time': 'start', 'balance': round(initial_balance, 2), 'pnl': 0.0}]
+    history = []
 
     buys = {}
-    for pos in sorted(positions, key=lambda p: p.get('timestamp', '')):
+    def position_sort_key(item):
+        parsed = parse_dt_safe(item.get('timestamp'))
+        return parsed.timestamp() if parsed else 0.0
+
+    for pos in sorted(positions, key=position_sort_key):
         symbol = pos.get('symbol')
         side = pos.get('side')
         amount = float(pos.get('amount') or 0)
@@ -1715,7 +2020,10 @@ def compute_pnl_history(state):
         status = pos.get('status')
         if side == 'buy' and status != 'canceled':
             buys.setdefault(symbol, []).append({
-                'amount': amount, 'price': px, 'ts': pos.get('timestamp')
+                'amount': amount,
+                'price': px,
+                'fee': float(pos.get('fee') or 0.0),
+                'ts': pos.get('timestamp'),
             })
             # Achat : le P&L réalisé ne change pas, on enregistre l'événement au même niveau
             history.append({
@@ -1731,10 +2039,14 @@ def compute_pnl_history(state):
             while remaining > 1e-12 and queue:
                 entry = queue[0]
                 filled = min(remaining, entry['amount'])
-                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled)
+                entry_fee = float(entry.get('fee') or 0.0) * (filled / entry['amount']) if entry['amount'] > 0 else 0.0
+                pnl_gross, fees, pnl_net = _calc_net_pnl(pos, entry['price'], px, filled, entry_fee=entry_fee)
                 trade_pnl += pnl_net
                 remaining -= filled
+                old_amount = entry['amount']
                 entry['amount'] -= filled
+                if old_amount > 0:
+                    entry['fee'] = float(entry.get('fee') or 0.0) * max(0.0, entry['amount'] / old_amount)
                 if entry['amount'] <= 1e-12:
                     queue.pop(0)
             
@@ -1817,7 +2129,10 @@ def compute_next_buy_forecast(state):
         age_seconds = None
         try:
             if timestamp:
-                age_seconds = max(0, int((now - datetime.fromisoformat(timestamp)).total_seconds()))
+                parsed = parse_dt_safe(timestamp)
+                if parsed:
+                    now_for_delta = datetime.now(parsed.tzinfo)
+                    age_seconds = max(0, int((now_for_delta - parsed).total_seconds()))
         except Exception:
             age_seconds = None
         
@@ -1854,14 +2169,21 @@ def compute_next_buy_forecast(state):
     }
 
 
-def dashboard_status_payload():
-    state = load_accounting_state({'positions': []})
-    mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+def dashboard_status_payload(view_mode=None):
+    view_mode = view_mode or current_view_mode()
+    state = load_accounting_state({'positions': []}, view_mode=view_mode)
+    mode_key = active_trading_mode() if view_mode == 'all' else view_mode
     live = live_status()
     with db_logger() as logger:
-        raw_decisions = logger.get_decision_journal(mode_key, 300)
+        if view_mode == 'all':
+            raw_decisions = []
+            for item_mode in ('paper', 'live'):
+                raw_decisions.extend(logger.get_decision_journal(item_mode, 300))
+            raw_decisions.sort(key=lambda item: str(item.get('timestamp') or ''))
+        else:
+            raw_decisions = logger.get_decision_journal(mode_key, 300)
         decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], 20)
-        total_decisions = logger.count_decision_journal(mode_key)
+        total_decisions = sum(logger.count_decision_journal(item_mode) for item_mode in modes_for_view(view_mode))
     positions = weighted_positions(
         state.get('positions', []),
         state.get('trailing_stops'),
@@ -1872,18 +2194,25 @@ def dashboard_status_payload():
     sell_orders = open_sell_orders(state.get('pending_orders'), live.get('symbols', {}))
 
     stats = trade_stats(state.get('positions', []))
+    if view_mode == 'live':
+        stats = apply_live_balance_pnl(stats, state, live)
 
     return {
         'bot': {
             'name': os.getenv('BOT_NAME', 'Aegis'),
-            'mode': 'paper' if env_bool('PAPER_TRADING', 'True') else 'live',
+            'mode': active_trading_mode(),
+            'view_mode': view_mode,
             'exchange': os.getenv('EXCHANGE', 'unknown'),
-            'state_file': active_state_source(),
+            'state_file': active_state_source(mode_key),
             'last_update': state.get('last_update'),
             'control': bot_status_payload(),
         },
         'balance': {
             'paper_balance': state.get('paper_balance'),
+            'balances': state.get('balances') or {},
+            'balances_by_mode': state.get('balances_by_mode') or {},
+            'view_mode': state.get('view_mode') or view_mode,
+            'source': active_state_source(mode_key),
         },
         'stats': stats,
         'positions': positions,
@@ -1900,6 +2229,74 @@ def dashboard_status_payload():
             'file': str(ENV_DASHBOARD.relative_to(ROOT)),
         },
     }
+
+
+def _balance_equity_usd(balances, live_symbols):
+    usd_assets = {'USD', 'USDT', 'USDC', 'ZUSD'}
+    total = 0.0
+    for asset, row in (balances or {}).items():
+        asset_text = str(asset or '').upper()
+        amount = float((row or {}).get('total') or 0.0)
+        if asset_text in usd_assets:
+            total += amount
+            continue
+        pair = f'{asset_text}/USD'
+        compact_pair = f'{asset_text}USD'
+        quote = (live_symbols or {}).get(pair) or (live_symbols or {}).get(compact_pair) or {}
+        price = float((quote or {}).get('price') or 0.0)
+        if price > 0:
+            total += amount * price
+    return total
+
+
+def _latest_live_capital_baseline():
+    try:
+        with db_logger() as logger:
+            conn = logger._get_conn()
+            account_id = logger._account_id('live')
+            row = conn.execute(
+                """
+                SELECT balance_after
+                FROM ledger_entries
+                WHERE account_id=?
+                  AND asset IN ('USD', 'ZUSD', 'USDT', 'USDC')
+                  AND entry_type NOT IN ('trade', 'fee')
+                  AND balance_after IS NOT NULL
+                ORDER BY entry_ts DESC, created_at DESC
+                LIMIT 1
+                """,
+                (account_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+            row = conn.execute(
+                "SELECT initial_balance FROM bot_state WHERE mode='live'",
+            ).fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+    except Exception:
+        return None
+    return None
+
+
+def apply_live_balance_pnl(stats, state, live):
+    """En live, le resume doit suivre l'equity Kraken plutot que le FIFO explicatif."""
+    adjusted = dict(stats or {})
+    balances = state.get('balances') or {}
+    equity = _balance_equity_usd(balances, (live or {}).get('symbols') or {})
+    baseline = _latest_live_capital_baseline()
+    if baseline is None or baseline <= 0:
+        baseline = equity
+    pnl = equity - baseline
+    adjusted['total_pnl_net'] = round(pnl, 4)
+    adjusted['total_pnl'] = round(pnl, 4)
+    adjusted['total_pnl_gross'] = round(pnl, 4)
+    adjusted['current_equity'] = round(equity, 8)
+    adjusted['initial_balance'] = round(baseline, 8)
+    adjusted['closed_trades_pnl_net'] = round(float((stats or {}).get('total_pnl_net') or 0.0), 4)
+    adjusted['balance_reconciliation_delta'] = round(pnl - float((stats or {}).get('total_pnl_net') or 0.0), 4)
+    adjusted['pnl_source'] = 'kraken_balance'
+    return adjusted
 
 
 @app.route('/api/status')
@@ -1920,14 +2317,21 @@ def api_decisions():
         except ValueError:
             limit = 80
 
-    mode_key = 'paper' if env_bool('PAPER_TRADING', 'True') else 'live'
+    view_mode = current_view_mode()
+    mode_key = active_trading_mode() if view_mode == 'all' else view_mode
     with db_logger() as logger:
-        if limit == 100000:
+        if view_mode == 'all':
+            raw_decisions = []
+            fetch_limit = limit if limit == 100000 else max(limit * 20, limit)
+            for item_mode in ('paper', 'live'):
+                raw_decisions.extend(logger.get_decision_journal(item_mode, fetch_limit))
+            raw_decisions.sort(key=lambda item: str(item.get('timestamp') or ''))
+        elif limit == 100000:
             raw_decisions = logger.get_decision_journal(mode_key, limit)
         else:
             raw_decisions = logger.get_decision_journal(mode_key, max(limit * 20, limit))
         decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], limit)
-        total_count = logger.count_decision_journal(mode_key)
+        total_count = sum(logger.count_decision_journal(item_mode) for item_mode in modes_for_view(view_mode))
 
     return jsonify({
         'decisions': decisions,
@@ -2085,7 +2489,7 @@ def api_live():
 @app.route('/api/analytics')
 def api_analytics():
     """Endpoint pour les metriques avancees, heatmap, capital breakdown, PnL history"""
-    state = load_accounting_state({'positions': []})
+    state = load_accounting_state({'positions': []}, view_mode=current_view_mode())
     positions = state.get('positions', [])
     paper_balance = state.get('paper_balance', float(os.getenv('PAPER_BALANCE', '1000')))
 
@@ -2099,6 +2503,7 @@ def api_analytics():
         'heatmap': heatmap,
         'capital_breakdown': capital,
         'pnl_history': pnl_history,
+        'view_mode': state.get('view_mode'),
     })
     response.headers['Cache-Control'] = 'no-store'
     return response
@@ -2142,10 +2547,14 @@ def sanitize_ml_predictions(predictions):
     return cleaned
 
 
-def ml_status_payload():
+def ml_status_payload(view_mode=None):
     """Endpoint pour le Core ML Engine avec statistiques complètes et prévisions"""
     global ML_PREDS_CACHE
-    state = load_bot_state({'positions': [], 'ml_predictions': {}})
+    view_mode = view_mode or current_view_mode()
+    state = load_bot_state(
+        {'positions': [], 'ml_predictions': {}},
+        mode=active_trading_mode() if view_mode == 'all' else view_mode
+    )
     ml_preds = state.get('ml_predictions', {})
     clean_ml_preds = sanitize_ml_predictions(ml_preds)
 
@@ -2154,6 +2563,15 @@ def ml_status_payload():
     ML_PREDS_CACHE = clean_ml_preds
 
     meta = latest_ml_metadata()
+    sizing_recommendations = latest_sizing_recommendations(12, view_mode=view_mode)
+    latest_sizing_by_symbol = {}
+    for rec in sizing_recommendations:
+        symbol = rec.get('symbol')
+        if symbol and symbol not in latest_sizing_by_symbol:
+            latest_sizing_by_symbol[symbol] = rec
+    for symbol, rec in latest_sizing_by_symbol.items():
+        if symbol in clean_ml_preds:
+            clean_ml_preds[symbol]['sizing'] = rec
     
     is_trained = (DATA_DIR / 'aegis_model.joblib').exists()
     
@@ -2163,7 +2581,12 @@ def ml_status_payload():
         'total_samples': 2952 if is_trained else 0,
         'min_probability': float(os.getenv('ML_MIN_PROBABILITY', '65.0')),
         'top_features': meta.get('feature_importance', [])[:6],
+        'sizing_model_active': bool(meta.get('sizing_feature_importance')),
+        'sizing_n_features': meta.get('sizing_n_features'),
+        'top_sizing_features': meta.get('sizing_feature_importance', [])[:6],
+        'sizing_recommendations': sizing_recommendations,
         'live_predictions': clean_ml_preds,
+        'view_mode': view_mode,
         'analytics': {
             'test_precision': 67.1,
             'test_accuracy': 65.1,
@@ -2212,7 +2635,8 @@ def api_analytics_scores():
 @app.route('/api/trades')
 def api_trades():
     """Endpoint pour l'historique complet des trades"""
-    state = load_accounting_state({'positions': []})
+    view_mode = current_view_mode()
+    state = load_accounting_state({'positions': []}, view_mode=view_mode)
     positions = state.get('positions', [])
     trades = compute_trade_history(positions)
 
@@ -2241,10 +2665,111 @@ def api_trades():
         'trades': trades,
         'buys': raw_buys,
         'sells': raw_sells,
+        'view_mode': state.get('view_mode'),
         'total': len(trades),
     })
     response.headers['Cache-Control'] = 'no-store'
     return response
+
+
+@app.route('/api/ledger')
+def api_ledger():
+    """Endpoint pour les mouvements comptables importes/locaux."""
+    view_mode = current_view_mode()
+    source_filter = (request.args.get('source') or '').strip()
+    asset_filter = (request.args.get('asset') or '').strip().upper()
+    type_filter = (request.args.get('entry_type') or request.args.get('type') or '').strip()
+    query = (request.args.get('q') or '').strip().lower()
+    try:
+        limit = int(request.args.get('limit', '500'))
+    except Exception:
+        limit = 500
+    limit = max(1, min(limit, 2000))
+
+    try:
+        with db_logger() as logger:
+            conn = logger._get_conn()
+            account_ids = [logger._account_id(mode_key) for mode_key in modes_for_view(view_mode)]
+            placeholders = ','.join('?' for _ in account_ids)
+            where = [f'account_id IN ({placeholders})']
+            params = list(account_ids)
+
+            if source_filter:
+                where.append('LOWER(COALESCE(source, "")) = LOWER(?)')
+                params.append(source_filter)
+            if asset_filter:
+                where.append('UPPER(asset) = ?')
+                params.append(asset_filter)
+            if type_filter:
+                where.append('LOWER(entry_type) = LOWER(?)')
+                params.append(type_filter)
+            if query:
+                where.append(
+                    """
+                    (
+                        LOWER(COALESCE(ledger_id, '')) LIKE ?
+                        OR LOWER(COALESCE(order_id, '')) LIKE ?
+                        OR LOWER(COALESCE(fill_id, '')) LIKE ?
+                        OR LOWER(COALESCE(symbol, '')) LIKE ?
+                        OR LOWER(COALESCE(source, '')) LIKE ?
+                        OR LOWER(COALESCE(description, '')) LIKE ?
+                    )
+                    """
+                )
+                like_query = f'%{query}%'
+                params.extend([like_query] * 6)
+
+            where_sql = ' AND '.join(where)
+            total_row = conn.execute(
+                f'SELECT COUNT(*) FROM ledger_entries WHERE {where_sql}',
+                params,
+            ).fetchone()
+            rows = conn.execute(
+                f"""
+                SELECT
+                    ledger_id, account_id, entry_ts, entry_type, asset, amount, balance_after,
+                    order_id, fill_id, symbol, source, description, created_at, updated_at
+                FROM ledger_entries
+                WHERE {where_sql}
+                ORDER BY COALESCE(entry_ts, created_at) DESC, created_at DESC, ledger_id DESC
+                LIMIT ?
+                """,
+                params + [limit],
+            ).fetchall()
+
+        entries = []
+        for row in rows:
+            account_id = row[1]
+            mode = str(account_id).split(':', 1)[0] if account_id else None
+            entries.append({
+                'ledger_id': row[0],
+                'account_id': account_id,
+                'mode': mode,
+                'entry_ts': row[2],
+                'entry_type': row[3],
+                'asset': row[4],
+                'amount': row[5],
+                'balance_after': row[6],
+                'order_id': row[7],
+                'fill_id': row[8],
+                'symbol': row[9],
+                'source': row[10],
+                'description': row[11],
+                'created_at': row[12],
+                'updated_at': row[13],
+            })
+
+        response = jsonify({
+            'entries': entries,
+            'total': int(total_row[0] if total_row else len(entries)),
+            'view_mode': view_mode,
+            'limit': limit,
+        })
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except Exception as exc:
+        return jsonify({'entries': [], 'total': 0, 'view_mode': view_mode, 'error': str(exc)}), 500
+
 BACKTEST_PROCESS = None
 
 @app.route('/api/support_touch/run_backtest', methods=['POST'])
@@ -2293,6 +2818,7 @@ def api_support_touch_backtest_status():
 @sock.route('/ws/live')
 def ws_live(ws):
     import json as _json
+    ws_view_mode = current_view_mode()
     last_live_data = None
     last_status_data = None
     last_ml_status_data = None
@@ -2317,7 +2843,7 @@ def ws_live(ws):
             # --- Statut ui complet, remplace le polling /api/status ---
             if now - last_dashboard_status_push >= STATUS_PUSH_INTERVAL:
                 last_dashboard_status_push = now
-                raw = _json.dumps({'__type': 'status', 'payload': dashboard_status_payload()}, ensure_ascii=False)
+                raw = _json.dumps({'__type': 'status', 'payload': dashboard_status_payload(view_mode=ws_view_mode)}, ensure_ascii=False)
                 if raw != last_status_data:
                     last_status_data = raw
                     ws.send(raw)
@@ -2325,7 +2851,7 @@ def ws_live(ws):
             # --- Statut ML complet, remplace le polling /api/ml_status ---
             if now - last_ml_status_push >= ML_STATUS_PUSH_INTERVAL:
                 last_ml_status_push = now
-                raw = _json.dumps({'__type': 'ml_status', 'payload': ml_status_payload()}, ensure_ascii=False)
+                raw = _json.dumps({'__type': 'ml_status', 'payload': ml_status_payload(view_mode=ws_view_mode)}, ensure_ascii=False)
                 if raw != last_ml_status_data:
                     last_ml_status_data = raw
                     ws.send(raw)

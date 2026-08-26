@@ -59,7 +59,7 @@ export function TradesView() {
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({
     date: '', symbol: '', status: '', buy_price: '', sell_price: '',
     price: '', amount: '', usd_value: '', ml_buy_prob: '', ml_sell_prob: '',
-    pnl_gross: '', pnl: '',
+    pnl: '',
   })
 
   useEffect(() => { setCurrentPage(1) }, [activeTab, symbol, columnFilters, sortField, sortOrder, pageSize])
@@ -70,7 +70,7 @@ export function TradesView() {
     } else {
       setSortField(field)
       setSortOrder(
-        ['date', 'buy_price', 'sell_price', 'price', 'amount', 'usd_value', 'ml_buy_prob', 'ml_sell_prob', 'pnl_gross', 'pnl'].includes(field)
+        ['date', 'buy_price', 'sell_price', 'price', 'amount', 'usd_value', 'ml_buy_prob', 'ml_sell_prob', 'pnl'].includes(field)
           ? 'desc'
           : 'asc',
       )
@@ -82,7 +82,7 @@ export function TradesView() {
   }
 
   const clearAllFilters = () => {
-    setColumnFilters({ date: '', symbol: '', status: '', buy_price: '', sell_price: '', price: '', amount: '', usd_value: '', ml_buy_prob: '', ml_sell_prob: '', pnl_gross: '', pnl: '' })
+    setColumnFilters({ date: '', symbol: '', status: '', buy_price: '', sell_price: '', price: '', amount: '', usd_value: '', ml_buy_prob: '', ml_sell_prob: '', pnl: '' })
     setSymbol('')
   }
 
@@ -108,7 +108,7 @@ export function TradesView() {
       }
       if (columnFilters.status) {
         let statusStr = ''
-        if (tab === 'trades') statusStr = item.status === 'open' ? 'open' : 'closed'
+        if (tab === 'trades') statusStr = asString(item.status || 'closed')
         else if (tab === 'sells') statusStr = item.status === 'opened' ? 'open' : 'executed'
         else statusStr = asString(item.status || 'executed')
         if (!statusStr.toLowerCase().includes(columnFilters.status.toLowerCase())) return false
@@ -135,10 +135,6 @@ export function TradesView() {
         const valStr = item.ml_sell_prob != null ? `${Number(item.ml_sell_prob).toFixed(1)}%` : ''
         if (!valStr.toLowerCase().includes(columnFilters.ml_sell_prob.toLowerCase())) return false
       }
-      if (columnFilters.pnl_gross) {
-        if (item.status === 'open') { if (!'en cours'.includes(columnFilters.pnl_gross) && !'open'.includes(columnFilters.pnl_gross)) return false }
-        else if (!String(item.pnl_gross ?? '').toLowerCase().includes(columnFilters.pnl_gross.toLowerCase()) && !formatTradePnl(item.pnl_gross).toLowerCase().includes(columnFilters.pnl_gross.toLowerCase())) return false
-      }
       if (columnFilters.pnl) {
         if (item.status === 'open') { if (!'en cours'.includes(columnFilters.pnl) && !'open'.includes(columnFilters.pnl)) return false }
         else if (!String(item.pnl ?? item.pnl_net ?? '').toLowerCase().includes(columnFilters.pnl.toLowerCase()) && !formatTradePnl(item.pnl ?? item.pnl_net).toLowerCase().includes(columnFilters.pnl.toLowerCase())) return false
@@ -162,7 +158,6 @@ export function TradesView() {
         case 'usd_value': valA = Number(a.usd_value ?? a.entry_value ?? (Number(a.buy_price ?? a.price ?? 0) * Number(a.amount ?? 0))); valB = Number(b.usd_value ?? b.entry_value ?? (Number(b.buy_price ?? b.price ?? 0) * Number(b.amount ?? 0))); break
         case 'ml_buy_prob': valA = a.ml_buy_prob != null ? Number(a.ml_buy_prob) : -1; valB = b.ml_buy_prob != null ? Number(b.ml_buy_prob) : -1; break
         case 'ml_sell_prob': valA = a.ml_sell_prob != null ? Number(a.ml_sell_prob) : -1; valB = b.ml_sell_prob != null ? Number(b.ml_sell_prob) : -1; break
-        case 'pnl_gross': valA = a.status === 'open' ? -999999999 : Number(a.pnl_gross ?? 0); valB = b.status === 'open' ? -999999999 : Number(b.pnl_gross ?? 0); break
         case 'pnl': valA = a.status === 'open' ? -999999999 : Number(a.pnl ?? a.pnl_net ?? 0); valB = b.status === 'open' ? -999999999 : Number(b.pnl ?? b.pnl_net ?? 0); break
         default: valA = 0; valB = 0
       }
@@ -246,7 +241,6 @@ export function TradesView() {
       { field: 'usd_value', label: 'Valeur USD', placeholder: 'Filtrer USD...' },
       { field: 'ml_buy_prob', label: 'ML % achat', placeholder: 'ML % Achat...' },
       { field: 'ml_sell_prob', label: 'ML % vente', placeholder: 'ML % Vente...' },
-      { field: 'pnl_gross', label: 'PnL brut', placeholder: 'Filtrer PnL...' },
       { field: 'pnl', label: 'PnL net', placeholder: 'Filtrer PnL...' },
     ]
     : [
@@ -369,7 +363,7 @@ export function TradesView() {
       <CardContent className="space-y-4">
         <div className="overflow-auto rounded-lg border border-border/60 bg-background/50">
           {activeTab === 'trades' && (
-            <table className="w-full min-w-[920px] text-left text-sm">
+            <table className="w-full min-w-[860px] text-left text-sm">
               <thead className="text-xs uppercase text-muted-foreground bg-secondary/30">
                 <tr>
                   {renderSortableTh('Date', 'date', 'min-w-[170px] whitespace-nowrap')}
@@ -381,25 +375,31 @@ export function TradesView() {
                   {renderSortableTh('Valeur USD', 'usd_value')}
                   {renderSortableTh('ML % Achat', 'ml_buy_prob')}
                   {renderSortableTh('ML % Vente', 'ml_sell_prob')}
-                  {renderSortableTh('PnL Brut', 'pnl_gross')}
                   {renderSortableTh('PnL Net', 'pnl')}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/40">
                 {paginatedTrades.length === 0 ? (
-                  <tr><td colSpan={11} className="py-8 text-center text-muted-foreground font-medium">Aucun trade trouvé</td></tr>
+                  <tr><td colSpan={10} className="py-8 text-center text-muted-foreground font-medium">Aucun trade trouvé</td></tr>
                 ) : (
                   paginatedTrades.map((trade, index) => {
                     const tradeSymbol = asString(trade.symbol)
                     const time = formatTradeTime(trade.timestamp ?? trade.buy_time ?? trade.closed_at ?? trade.sell_time, intl)
                     const usdVal = Number(trade.usd_value ?? trade.entry_value ?? (Number(trade.buy_price ?? trade.price ?? 0) * Number(trade.amount ?? 0)))
-                    const pnlGross = trade.pnl_gross
                     const pnlNet = trade.pnl ?? trade.pnl_net
+                    const tradeStatus = asString(trade.status || 'closed')
+                    const isOpen = tradeStatus === 'open'
+                    const isReconciliation = tradeStatus === 'reconciliation'
                     return (
                       <tr key={rowKey(trade, index, 'trade')} className="hover:bg-secondary/30">
                         <td className="min-w-[170px] whitespace-nowrap py-2.5 px-3"><span className="block whitespace-nowrap font-semibold text-foreground">{time.absolute}</span><span className="block whitespace-nowrap text-[11px] text-muted-foreground/80">{time.relative}</span></td>
                         <td className="px-3 font-semibold text-foreground">{tradeSymbol}</td>
-                        <td className="px-3"><span className={cn('rounded-full border px-2.5 py-0.5 text-[11px] font-black uppercase tracking-wide', trade.status === 'open' ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300 shadow-sm' : 'border-border/80 bg-secondary/80 text-muted-foreground')}>{trade.status === 'open' ? 'OPEN' : 'CLOSED'}</span></td>
+                        <td className="px-3">
+                          <span className={cn(
+                            'rounded-full border px-2.5 py-0.5 text-[11px] font-black uppercase tracking-wide',
+                            isOpen ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300 shadow-sm' : isReconciliation ? 'border-amber-500/50 bg-amber-500/15 text-amber-300' : 'border-border/80 bg-secondary/80 text-muted-foreground',
+                          )}>{isOpen ? 'OPEN' : isReconciliation ? 'AJUSTEMENT' : 'CLOSED'}</span>
+                        </td>
                         <td className="px-3 font-mono">{formatLivePrice(tradeSymbol, trade.buy_price ?? trade.price)}</td>
                         <td className="px-3 font-mono">{trade.sell_price ? formatLivePrice(tradeSymbol, trade.sell_price) : <span className="text-muted-foreground/60">--</span>}</td>
                         <td className="px-3 font-mono text-foreground"><div>{formatCryptoAmount(trade.amount)}</div><div className="text-[11px] text-muted-foreground/75 font-sans font-medium">{formatUsdValue(usdVal)}</div></td>
@@ -414,8 +414,7 @@ export function TradesView() {
                             <span className={cn('rounded border px-2 py-0.5 font-bold font-mono text-xs inline-block', Number(trade.ml_sell_prob) >= 50 ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300' : 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300')}>{Number(trade.ml_sell_prob).toFixed(1)}%</span>
                           ) : <span className="text-muted-foreground/40 font-mono text-xs">--</span>}
                         </td>
-                        <td className="px-3 font-medium font-mono">{trade.status === 'open' ? <span className="text-emerald-400/90 font-semibold italic">En cours</span> : <span className={cn(Number(pnlGross ?? 0) > 0 ? 'text-emerald-400 font-semibold' : Number(pnlGross ?? 0) < 0 ? 'text-rose-400 font-semibold' : 'text-muted-foreground')}>{formatTradePnl(pnlGross)}</span>}</td>
-                        <td className="px-3 font-medium font-mono">{trade.status === 'open' ? <span className="text-emerald-400/90 font-semibold italic">En cours</span> : <span className={cn(Number(pnlNet ?? 0) > 0 ? 'text-emerald-400 font-semibold' : Number(pnlNet ?? 0) < 0 ? 'text-rose-400 font-semibold' : 'text-muted-foreground')}>{formatTradePnl(pnlNet)}</span>}</td>
+                        <td className="px-3 font-medium font-mono">{isOpen ? <span className="text-emerald-400/90 font-semibold italic">En cours</span> : <span className={cn(Number(pnlNet ?? 0) > 0 ? 'text-emerald-400 font-semibold' : Number(pnlNet ?? 0) < 0 ? 'text-rose-400 font-semibold' : 'text-muted-foreground')}>{formatTradePnl(pnlNet)}</span>}</td>
                       </tr>
                     )
                   })

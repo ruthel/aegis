@@ -777,7 +777,7 @@ class NotificationManager:
                                 profit_pct = ((order_price - current_price) / current_price) * 100
                             
                             order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
-                            time_diff = datetime.now() - order_time
+                            time_diff = datetime.now(order_time.tzinfo) - order_time if order_time.tzinfo else datetime.now() - order_time
                             
                             if time_diff.days > 0:
                                 hours = time_diff.seconds // 3600

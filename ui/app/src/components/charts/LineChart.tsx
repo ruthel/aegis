@@ -11,11 +11,30 @@ type Point = {
   time?: string
 }
 
+type TimeRange = '24h' | '7d' | '30d' | '90d' | 'all'
+
 interface LineChartProps {
   data: Point[]
   color?: string
   yAxisTitle?: string
   xAxisTitle?: string
+  timeRange?: TimeRange
+}
+
+function gridIntervalForRange(range: TimeRange): am5.time.ITimeInterval {
+  if (range === '24h') return { timeUnit: 'minute', count: 90 }
+  if (range === '7d') return { timeUnit: 'hour', count: 12 }
+  if (range === '30d') return { timeUnit: 'day', count: 2 }
+  if (range === '90d') return { timeUnit: 'week', count: 1 }
+  return { timeUnit: 'month', count: 1 }
+}
+
+function labelFormatForRange(range: TimeRange): string {
+  if (range === '24h') return 'HH:mm'
+  if (range === '7d') return 'dd/MM HH:mm'
+  if (range === '30d') return 'dd/MM'
+  if (range === '90d') return 'dd/MM'
+  return 'MM/yyyy'
 }
 
 function LineChartBase({
@@ -23,10 +42,11 @@ function LineChartBase({
   color = '#34d399',
   yAxisTitle = 'P&L Net Cumulé ($ USD)',
   xAxisTitle = 'Événements & Trades (N° Événement)',
+  timeRange = '30d',
 }: LineChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const rootRef = useRef<am5.Root | null>(null)
-  const xAxisRef = useRef<am5xy.CategoryAxis<am5xy.AxisRenderer> | null>(null)
+  const xAxisRef = useRef<am5xy.DateAxis<am5xy.AxisRenderer> | null>(null)
   const seriesRef = useRef<am5xy.LineSeries | null>(null)
 
   useLayoutEffect(() => {
@@ -48,12 +68,20 @@ function LineChartBase({
       }),
     )
 
-    const xRenderer = am5xy.AxisRendererX.new(root, { minGridDistance: 65 })
+    const xRenderer = am5xy.AxisRendererX.new(root, { minGridDistance: 80 })
     xRenderer.labels.template.setAll({ fill: am5.color(0x94a3b8), fontSize: 11 })
 
     const xAxis = chart.xAxes.push(
-      am5xy.CategoryAxis.new(root, {
-        categoryField: 'label',
+      am5xy.DateAxis.new(root, {
+        baseInterval: { timeUnit: 'minute', count: 1 },
+        dateFormats: {
+          minute: labelFormatForRange(timeRange),
+          hour: labelFormatForRange(timeRange),
+          day: labelFormatForRange(timeRange),
+          week: labelFormatForRange(timeRange),
+          month: labelFormatForRange(timeRange),
+        },
+        gridIntervals: [gridIntervalForRange(timeRange)],
         renderer: xRenderer,
       }),
     )
@@ -100,20 +128,25 @@ function LineChartBase({
       getFillFromSprite: false,
       labelText: "[#ffffff][bold]{event}[/]\nP&L Net: [bold]{valueY} USD[/]\nSolde: [bold]{balance} USD[/][/]",
     })
-    tooltip.label.setAll({ fill: am5.color(0xffffff), fontSize: 12 })
+    tooltip.label.setAll({
+      fill: am5.color(0xffffff),
+      fontSize: 12,
+      oversizedBehavior: 'wrap',
+    })
     tooltip.get("background")?.setAll({
       fill: am5.color(0x0f172a),
       fillOpacity: 0.95,
       stroke: am5.color(color),
       strokeWidth: 1.5,
     })
+    tooltip.label.adapters.add('fill', () => am5.color(0xffffff))
 
     const series = chart.series.push(
       am5xy.LineSeries.new(root, {
         xAxis,
         yAxis,
+        valueXField: 'valueX',
         valueYField: 'value',
-        categoryXField: 'label',
         valueField: 'value',
         stroke: am5.color(color),
         tooltip,
@@ -131,7 +164,7 @@ function LineChartBase({
       xAxisRef.current = null
       seriesRef.current = null
     }
-  }, [yAxisTitle, xAxisTitle])
+  }, [yAxisTitle, xAxisTitle, timeRange])
 
   useEffect(() => {
     const series = seriesRef.current
@@ -142,8 +175,15 @@ function LineChartBase({
     series.set('fill', stroke)
     series.strokes.template.setAll({ stroke })
     series.fills.template.setAll({ fill: stroke })
-    xAxis.data.setAll(data)
-    series.data.setAll(data)
+    const chartData = data
+      .map((point) => {
+        const valueX = new Date(point.time || point.label).getTime()
+        return { ...point, valueX }
+      })
+      .filter((point) => Number.isFinite(point.valueX))
+      .sort((a, b) => a.valueX - b.valueX)
+    xAxis.data.setAll(chartData)
+    series.data.setAll(chartData)
   }, [data, color])
 
   return <div ref={ref} className="h-[280px] w-full" />

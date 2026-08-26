@@ -44,19 +44,131 @@ class CapitalManager:
             'BCH/USD': {'min_amount': 0.001, 'min_cost': 1.0}
         }
 
+    def _configured_float(self, key, fallback):
+        value = os.getenv(key)
+        if value is None or str(value).strip() == '':
+            return float(fallback)
+        try:
+            return float(value)
+        except Exception:
+            return float(fallback)
+
+    def _configured_int(self, key, fallback):
+        value = os.getenv(key)
+        if value is None or str(value).strip() == '':
+            return int(fallback)
+        try:
+            return int(value)
+        except Exception:
+            return int(fallback)
+
+    def _active_mode(self):
+        return 'paper' if getattr(self.bot, 'paper_trading', True) else 'live'
+
+    def _total_balance_usd(self):
+        try:
+            if getattr(self.bot, 'paper_trading', True):
+                return float(getattr(self.bot, 'paper_balance', 0.0) or 0.0)
+            if hasattr(self.bot, 'get_account_balance'):
+                return float(self.bot.get_account_balance() or 0.0)
+            if hasattr(self.bot, 'balance_manager'):
+                balance_info = self.bot.balance_manager.get_total_balance_usd()
+                if isinstance(balance_info, dict):
+                    return float(balance_info.get('total') or 0.0)
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def get_max_total_exposure_pct(self, total_balance_usd=None):
+        """Plafond d'exposition dynamique selon la taille du capital."""
+        try:
+            total = self._total_balance_usd() if total_balance_usd is None else float(total_balance_usd or 0.0)
+        except Exception:
+            total = 0.0
+        if total < 50:
+            return 100.0
+        if total < 100:
+            return 80.0
+        if total < 300:
+            return 70.0
+        return 60.0
+
+    def get_max_position_exposure_pct(self, total_balance_usd=None):
+        """Plafond dynamique par position selon la taille du capital."""
+        try:
+            total = self._total_balance_usd() if total_balance_usd is None else float(total_balance_usd or 0.0)
+        except Exception:
+            total = 0.0
+        if total < 50:
+            return 50.0
+        if total < 100:
+            return 35.0
+        if total < 300:
+            return 25.0
+        return 15.0
+
+    def get_max_position_size_usd(self, total_balance_usd=None):
+        """Montant USD maximum autorisé pour une seule position."""
+        try:
+            total = self._total_balance_usd() if total_balance_usd is None else float(total_balance_usd or 0.0)
+        except Exception:
+            total = 0.0
+        if total <= 0:
+            return 0.0
+        return round(total * (self.get_max_position_exposure_pct(total) / 100.0), 2)
+
+    def get_total_capital(self):
+        """Retourne le capital total du mode actif en equivalent USD."""
+        return round(self._total_balance_usd(), 2)
+
+    def get_available_cash_usd(self):
+        """Retourne le cash immédiatement utilisable pour les paires USD."""
+        try:
+            if getattr(self.bot, 'paper_trading', True):
+                return float(getattr(self.bot, 'paper_balance', 0.0) or 0.0)
+            if hasattr(self.bot, 'balance_manager'):
+                balance = self.bot.balance_manager.get_balance()
+                cash = balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}
+                return float(cash.get('free') or 0.0)
+        except Exception:
+            pass
+        return 0.0
+
+    def _open_positions_for_active_mode(self):
+        mode = self._active_mode()
+        try:
+            logger = getattr(self.bot, 'ml_live_logger', None)
+            if logger:
+                conn = logger._get_conn()
+                positions = logger._positions_from_accounting(conn, mode)
+                return [
+                    p for p in positions
+                    if isinstance(p, dict)
+                    and p.get('side') == 'buy'
+                    and not p.get('closed_at')
+                    and str(p.get('status') or '').lower() in {'opened', 'open', 'executed', 'filled', 'closed'}
+                ]
+        except Exception:
+            pass
+
+        if mode == 'paper':
+            return [
+                p for p in getattr(self.bot, 'state', {}).get('positions', [])
+                if isinstance(p, dict) and p.get('side') == 'buy' and not p.get('closed_at')
+            ]
+        return []
+
     def get_trade_amount(self, symbol=None):
         """Retourne le montant d'un trade en USD adapté au capital et au mode safe."""
         try:
-            total_balance = float(getattr(self.bot, 'paper_balance', 1000.0))
-            if hasattr(self.bot, 'balance_manager'):
-                total_balance = self.bot.balance_manager.get_total_balance_usd() or total_balance
+            total_balance = self._total_balance_usd()
             config = self.get_adaptive_config(total_balance)
             trade_amount = float(config.get('trade_amount', 50.0))
             if getattr(self.bot, 'safe_fallback_mode', False):
                 trade_amount *= getattr(self.bot, 'bear_mode_trade_multiplier', 0.35)
             return round(trade_amount, 2)
         except Exception:
-            return 50.0
+            return 1.0
         
     def get_adaptive_config(self, total_balance_usd):
         """Configuration automatique selon le capital avec limites de positions"""
@@ -68,15 +180,29 @@ class CapitalManager:
         from utils.market_analyzer import MarketAnalyzer
         limits = MarketAnalyzer.get_position_limits(total_balance_usd)
         
+        max_exposure_pct = self.get_max_total_exposure_pct(total_balance_usd)
+        max_spot_allocation = max(0.0, min(1.0, max_exposure_pct / 100.0))
+        configured_daily_loss = os.getenv('MAX_DAILY_LOSS')
+        configured_max_positions = self._configured_int(
+            'MAX_POSITIONS_PER_CRYPTO',
+            min(int(limits.get('max_positions_per_crypto', 2)), 2)
+        )
+        configured_total_positions = self._configured_int(
+            'MAX_TOTAL_POSITIONS',
+            configured_max_positions * int(limits.get('max_tradeable_cryptos', 4))
+        )
+
         if total_balance_usd < 20:
             # Mode Micro-Capital (8-20 USD)
+            adaptive_daily_loss = max(10, total_balance_usd * 0.25)
             return {
                 'trade_amount': max(min_amounts.get('min_trade', 1), total_balance_usd * 0.15),
-                'spot_allocation': 1.0,  # 100% spot
-                'max_daily_loss': max(10, total_balance_usd * 0.25),
-                'max_positions': limits['max_positions_per_crypto'],
+                'spot_allocation': max_spot_allocation,
+                'cash_reserve': 1.0 - max_spot_allocation,
+                'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
+                'max_positions': configured_max_positions,
                 'max_tradeable_cryptos': limits['max_tradeable_cryptos'],
-                'total_max_positions': limits['total_max_positions'],
+                'total_max_positions': configured_total_positions,
                 'aggressive_mode': True,
                 'compound_rate': 1.0,  # 100% réinvestissement
                 'min_profit_threshold': 0.5,  # 0.5% minimum
@@ -86,11 +212,15 @@ class CapitalManager:
             
         elif total_balance_usd < 50:
             # Mode Croissance (20-50 USD)
+            adaptive_daily_loss = max(10, total_balance_usd * 0.20)
             return {
                 'trade_amount': max(min_amounts.get('min_trade', 2), total_balance_usd * 0.12),
-                'spot_allocation': 1.0,  # 100% spot
-                'max_daily_loss': max(10, total_balance_usd * 0.20),
-                'max_positions': 2,
+                'spot_allocation': max_spot_allocation,
+                'cash_reserve': 1.0 - max_spot_allocation,
+                'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
+                'max_positions': configured_max_positions,
+                'max_tradeable_cryptos': limits['max_tradeable_cryptos'],
+                'total_max_positions': configured_total_positions,
                 'aggressive_mode': True,
                 'compound_rate': 0.9,  # 90% réinvestissement
                 'min_profit_threshold': 0.6,
@@ -100,12 +230,16 @@ class CapitalManager:
             
         elif total_balance_usd < 200:
             # Mode Équilibré (50-200 USD)
+            adaptive_daily_loss = max(10, total_balance_usd * 0.15)
+            spot_allocation = min(0.95, max_spot_allocation)
             return {
                 'trade_amount': max(min_amounts.get('min_trade', 5), total_balance_usd * 0.08),
-                'spot_allocation': 0.95,  # 95% spot
-                'cash_reserve': 0.05,  # 5% cash
-                'max_daily_loss': max(10, total_balance_usd * 0.15),
-                'max_positions': 3,
+                'spot_allocation': spot_allocation,
+                'cash_reserve': 1.0 - spot_allocation,
+                'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
+                'max_positions': configured_max_positions,
+                'max_tradeable_cryptos': limits['max_tradeable_cryptos'],
+                'total_max_positions': configured_total_positions,
                 'aggressive_mode': False,
                 'compound_rate': 0.8,  # 80% réinvestissement
                 'min_profit_threshold': 0.8,
@@ -115,12 +249,16 @@ class CapitalManager:
             
         else:
             # Mode Professionnel (200+ USD)
+            adaptive_daily_loss = max(20, total_balance_usd * 0.10)
+            spot_allocation = min(0.85, max_spot_allocation)
             return {
                 'trade_amount': max(min_amounts.get('min_trade', 10), total_balance_usd * 0.05),
-                'spot_allocation': 0.85,  # 85% spot
-                'cash_reserve': 0.15,  # 15% cash
-                'max_daily_loss': max(20, total_balance_usd * 0.10),
-                'max_positions': 5,
+                'spot_allocation': spot_allocation,
+                'cash_reserve': 1.0 - spot_allocation,
+                'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
+                'max_positions': configured_max_positions,
+                'max_tradeable_cryptos': limits['max_tradeable_cryptos'],
+                'total_max_positions': configured_total_positions,
                 'aggressive_mode': False,
                 'compound_rate': 0.7,  # 70% réinvestissement
                 'min_profit_threshold': 1.0,
@@ -131,23 +269,36 @@ class CapitalManager:
     def can_open_new_position(self, symbol, new_position_usd) -> bool:
         """
         Gouvernance Risque Phase 10 :
-        Vérifie que l'exposition globale ne dépasse pas 60% du capital total
+        Vérifie que l'exposition globale ne dépasse pas le plafond dynamique du capital total
         et que le nombre de positions sur le même symbole ne dépasse pas max_positions_per_crypto.
         """
         try:
-            max_exposure_pct = float(os.getenv('MAX_TOTAL_CAPITAL_EXPOSURE_PCT', '60.0'))
-            max_pos_per_crypto = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '2'))
+            from utils.market_analyzer import MarketAnalyzer
 
-            total_balance = float(self.bot.get_account_balance() or 100.0)
-            open_positions = [
-                p for p in self.bot.state.get('positions', [])
-                if isinstance(p, dict) and p.get('side') == 'buy' and not p.get('closed_at')
-            ]
+            total_balance = self._total_balance_usd()
+            if total_balance <= 0:
+                print("CapitalManager: capital live indisponible ou nul, achat bloqué")
+                return False
+            max_exposure_pct = self.get_max_total_exposure_pct(total_balance)
+            limits = MarketAnalyzer.get_position_limits(total_balance)
+            max_pos_per_crypto = self._configured_int(
+                'MAX_POSITIONS_PER_CRYPTO',
+                min(int(limits.get('max_positions_per_crypto', 2)), 2)
+            )
+            max_total_positions = self._configured_int(
+                'MAX_TOTAL_POSITIONS',
+                max_pos_per_crypto * int(limits.get('max_tradeable_cryptos', 4))
+            )
+            open_positions = self._open_positions_for_active_mode()
 
-            # 1. Limite par crypto (max 2)
+            if len(open_positions) >= max_total_positions:
+                print(f"CapitalManager: Limite globale atteinte ({len(open_positions)}/{max_total_positions} positions ouvertes)")
+                return False
+
+            # 1. Limite par crypto
             symbol_positions = [p for p in open_positions if p.get('symbol') == symbol]
             if len(symbol_positions) >= max_pos_per_crypto:
-                print(f"🛑 CapitalManager: Limite atteinte de {max_pos_per_crypto} positions max sur {symbol}")
+                print(f"CapitalManager: Limite atteinte de {max_pos_per_crypto} positions max sur {symbol}")
                 return False
 
             # 2. Plafond d'exposition globale (max 60%)
@@ -159,26 +310,27 @@ class CapitalManager:
             max_allowed_usd = total_balance * (max_exposure_pct / 100.0)
 
             if total_after_trade > max_allowed_usd:
-                print(f"🛑 CapitalManager: Plafond d'exposition globale atteint ({current_exposure_usd:.1f} + {new_position_usd:.1f} = {total_after_trade:.1f} USD > max {max_allowed_usd:.1f} USD [{max_exposure_pct}%])")
+                print(f"CapitalManager: Plafond d'exposition globale atteint ({current_exposure_usd:.1f} + {new_position_usd:.1f} = {total_after_trade:.1f} USD > max {max_allowed_usd:.1f} USD [{max_exposure_pct}%])")
                 return False
 
             return True
         except Exception as e:
-            print(f"⚠️ Erreur can_open_new_position: {e}")
+            print(f"Erreur can_open_new_position: {e}")
             return True
 
     def get_total_exposure_ratio(self) -> float:
         """Retourne le ratio d'exposition globale du capital (ex: 0.15 pour 15%)."""
         try:
-            total_balance = float(self.bot.paper_balance if getattr(self.bot, 'paper_trading', False) else (self.bot.get_account_balance() if hasattr(self.bot, 'get_account_balance') else 1000.0)) or 1000.0
+            total_balance = self._total_balance_usd()
             if total_balance <= 0:
                 return 0.0
-            open_pos = self.bot.get_open_positions() if hasattr(self.bot, 'get_open_positions') else {}
             total_exposure_usd = 0.0
-            for symbol, data in open_pos.items():
-                price = self.bot.get_price(symbol) if hasattr(self.bot, 'get_price') else data.get('entry_price', 0.0)
-                amount = float(data.get('amount', 0.0))
-                total_exposure_usd += amount * (price or data.get('entry_price', 0.0))
+            for position in self._open_positions_for_active_mode():
+                symbol = position.get('symbol')
+                entry_price = float(position.get('price') or position.get('entry_price') or 0.0)
+                price = self.bot.get_price(symbol) if symbol and hasattr(self.bot, 'get_price') else entry_price
+                amount = float(position.get('amount') or 0.0)
+                total_exposure_usd += amount * (price or entry_price)
             return round(total_exposure_usd / total_balance, 4)
         except Exception as e:
             print(f"⚠️ Erreur get_total_exposure_ratio: {e}")
@@ -202,14 +354,22 @@ class CapitalManager:
             
             # Récupérer les infos d'échange (mode live seulement)
             if hasattr(self.bot, 'exchange') and self.bot.exchange:
-                markets = self.bot.exchange.load_markets()
+                markets = self.bot.exchange.load_markets() or getattr(self.bot.exchange, 'markets', {}) or {}
                 
                 min_amounts = {
                     'min_trade': 1.0
                 }
                 
                 # Analyser les minimums pour les principales paires
-                for symbol in ['BTC/USD', 'ETH/USD', 'DOGE/USD']:
+                symbols = []
+                for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(','):
+                    pair = pair.strip()
+                    if not pair:
+                        continue
+                    if hasattr(self.bot.exchange, 'normalize_symbol'):
+                        pair = self.bot.exchange.normalize_symbol(pair)
+                    symbols.append(pair)
+                for symbol in symbols or ['BTC/USD', 'ETH/USD']:
                     if symbol in markets:
                         market = markets[symbol]
                         min_cost = market.get('limits', {}).get('cost', {}).get('min', 1.0)
@@ -287,22 +447,7 @@ class CapitalManager:
                 # En paper trading, utiliser paper_balance
                 total_balance = getattr(self.bot, 'paper_balance', 1000)
             else:
-                # En mode live, utiliser balance_manager
-                if hasattr(self.bot, 'balance_manager'):
-                    try:
-                        balance_info = self.bot.balance_manager.get_total_balance_usd()
-                        total_balance = balance_info['total']
-                    except:
-                        # Fallback sur balance simple
-                        balance = self.bot.balance_manager.get_balance()
-                        total_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
-                else:
-                    # Fallback direct
-                    try:
-                        balance = self.bot.exchange.fetch_balance()
-                        total_balance = balance.get('USD', balance.get('USD', {})).get('free', 0)
-                    except:
-                        total_balance = 0
+                total_balance = self._total_balance_usd()
             
             # Obtenir et appliquer la configuration
             config = self.get_adaptive_config(total_balance)
@@ -390,7 +535,7 @@ class CapitalManager:
                 symbol = first_pair
             
             fees = self.get_real_trading_fees(symbol)
-            taker_fee = fees.get('taker', 0.001)
+            taker_fee = fees.get('taker', float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0)
             
             # Mettre à jour les variables sur le bot
             self.bot.trading_fee = taker_fee
@@ -429,7 +574,7 @@ class CapitalManager:
         elif "VIP" in str(self.vip_level):
             base_fee = 0.0005
         else:
-            base_fee = 0.001
+            base_fee = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
         
         return {
             'maker': base_fee * 0.9,

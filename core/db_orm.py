@@ -358,6 +358,32 @@ class MlTradeOutcome(Base):
     spread_pct: Mapped[float | None] = mapped_column(Float)
 
 
+class MlSizingRecommendation(Base):
+    __tablename__ = 'ml_sizing_recommendations'
+
+    sizing_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text)
+    entry_id: Mapped[str | None] = mapped_column(Text)
+    p_win: Mapped[float | None] = mapped_column(Float)
+    p_continue: Mapped[float | None] = mapped_column(Float)
+    base_position_size_usd: Mapped[float | None] = mapped_column(Float)
+    raw_sizing_factor: Mapped[float | None] = mapped_column(Float)
+    sizing_factor: Mapped[float | None] = mapped_column(Float)
+    final_position_size_usd: Mapped[float | None] = mapped_column(Float)
+    min_position_size_usd: Mapped[float | None] = mapped_column(Float)
+    max_position_size_usd: Mapped[float | None] = mapped_column(Float)
+    exposure_before_usd: Mapped[float | None] = mapped_column(Float)
+    exposure_after_usd: Mapped[float | None] = mapped_column(Float)
+    max_exposure_usd: Mapped[float | None] = mapped_column(Float)
+    decision: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    risk_veto_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
 class Notification(Base):
     __tablename__ = 'notifications'
 
@@ -457,6 +483,7 @@ Index('idx_sys_audit_type_time', SysAudit.event_type, SysAudit.timestamp)
 Index('idx_decision_logs_type_symbol_time', DecisionLog.action_type, DecisionLog.symbol, DecisionLog.timestamp)
 Index('idx_ml_feature_name', MlFeatureValue.feature_name)
 Index('idx_ml_outcome_entry', MlTradeOutcome.entry_id)
+Index('idx_ml_sizing_symbol_time', MlSizingRecommendation.symbol, MlSizingRecommendation.timestamp)
 Index('idx_notifications_time', Notification.timestamp)
 Index('idx_notifications_direction', Notification.direction)
 Index('idx_crypto_scores_symbol_time', CryptoScore.symbol, CryptoScore.timestamp)

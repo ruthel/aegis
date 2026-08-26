@@ -58,7 +58,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         samples, labels, _ = generate_samples_from_klines(
             klines_by_tf, symbol,
             stop_percent=1.0, trailing_percent=2.5,
-            fee_rate=0.001, position_value_usd=10.0,
+            fee_rate=float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0, position_value_usd=10.0,
             btc_history=btc_history
         )
         for s, l in zip(samples, labels):

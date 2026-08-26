@@ -156,6 +156,18 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
         'multi_tf_reversal_score': 0.0,
         'multi_tf_trend_alignment': 0.0,
         'volume_recovery_score': 100.0,
+        'rebound_from_recent_low_pct': 0.0,
+        'previous_drop_pct': 0.0,
+        'rebound_vs_drop_ratio': 0.0,
+        'rebound_volume_ratio': 1.0,
+        'green_candle_count_5': 0.0,
+        'follow_through_3b_pct': 0.0,
+        'momentum_decay_3b': 0.0,
+        'upper_wick_rejection_ratio': 0.0,
+        'distance_to_ema20_pct': 0.0,
+        'ema20_rejection_active': 0.0,
+        'rsi_rebound_strength': 0.0,
+        'rebound_stall_score': 0.0,
     }
     samples, labels, weights = [], [], []
     for row in rows:
@@ -208,6 +220,22 @@ def support_stats_from_history(pnls):
         'total_pnl': float(sum(window)),
         'avg_pnl': float(sum(window) / len(window)),
     }
+
+
+def sizing_factor_target_from_pnl(pnl_percent):
+    """Cible prudente pour le sizing model, derivee du resultat net historique."""
+    pnl = float(pnl_percent or 0.0)
+    if pnl <= -0.30:
+        return 0.25
+    if pnl <= 0.0:
+        return 0.40
+    if pnl < 0.30:
+        return 0.50
+    if pnl < 0.80:
+        return 0.75
+    if pnl < 1.60:
+        return 1.00
+    return 1.25
 
 
 def build_training_bot_context(history, signal, ts, btc_history=None, index=None, support_stats=None):
@@ -283,7 +311,7 @@ def generate_samples_from_klines(
     symbol,
     stop_percent=1.0,
     trailing_percent=2.5,
-    fee_rate=0.001,
+    fee_rate=float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0,
     position_value_usd=10.0,
     btc_history=None,
 ):
@@ -389,14 +417,14 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
         start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
         btc_history = fetch_symbol_history_2026(exchange, 'BTC/USDT', timeframe='15m', start_date=start_date)
 
-        X_samples, y_labels = [], []
+        X_samples, y_labels, sizing_targets = [], [], []
         for symbol in pairs:
             klines_15m = btc_history if symbol == 'BTC/USDT' and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
             if len(klines_15m) < 100:
                 continue
 
             next_allowed_index = 0
-            fee_rate = 0.001
+            fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
             support_pnls = []
 
             for index in range(50, len(klines_15m) - 1):
@@ -446,6 +474,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
 
                 X_samples.append(features)
                 y_labels.append(label)
+                sizing_targets.append(sizing_factor_target_from_pnl(pnl_percent))
                 if signal.get('type') == 'support_touch':
                     support_pnls.append(float(pnl_percent))
                 next_allowed_index = exit_index + 4
@@ -455,6 +484,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
             return True
 
         X, y = np.array(X_samples), np.array(y_labels)
+        y_sizing = np.array(sizing_targets, dtype=np.float64)
         success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5)
         if success:
             # Entraînement unifié du modèle de Sortie dans le même payload Challenger
@@ -463,8 +493,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                 print(f"  ✅ Modèle de Sortie entraîné et fusionné dans Challenger")
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sortie: {ex}")
+            try:
+                ml_engine.train_sizing_model(X, y_sizing, n_estimators=120, max_depth=6, min_samples_split=10)
+                print(f"  ✅ Modèle de Sizing entraîné et fusionné dans Challenger")
+            except Exception as ex:
+                print(f"  ⚠️ Note entraînement modèle sizing: {ex}")
 
-            print(f"  ✅ Challenger Entrée & Sortie entraîné et sauvegardé dans {challenger_path}")
+            print(f"  ✅ Challenger Entrée, Sortie & Sizing entraîné et sauvegardé dans {challenger_path}")
             return True
         elif os.path.exists(champion_path):
             shutil.copy2(champion_path, challenger_path)

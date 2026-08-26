@@ -113,7 +113,9 @@ def detect_trade_signal(pattern_analyzer, history, current_price):
     return None
 
 
-def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent, max_hold, trailing_percent, breakeven_stop=False, breakeven_trigger=1.5, breakeven_lock=0.0, fee_rate=0.001, resistance_price=None, use_resistance=False):
+def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent, max_hold, trailing_percent, breakeven_stop=False, breakeven_trigger=1.5, breakeven_lock=0.0, fee_rate=None, resistance_price=None, use_resistance=False):
+    if fee_rate is None:
+        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
     highest_price = entry_price
     initial_percent = trailing_percent
     stop_price = entry_price * (1 - initial_percent / 100)
@@ -191,20 +193,13 @@ def backtest_symbol(exchange, symbol, args):
     trades = []
 
     # Déterminer les frais de transaction réels (Taker)
-    fee_rate = 0.001  # 0.1% par défaut
-    env_fee = os.getenv('TRADING_FEE_PERCENT')
-    if env_fee:
-        try:
-            fee_rate = float(env_fee) / 100.0
-        except ValueError:
-            pass
-    else:
-        try:
-            market = exchange.markets.get(symbol)
-            if market and market.get('taker') is not None:
-                fee_rate = float(market['taker'])
-        except Exception:
-            pass
+    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
+    try:
+        market = exchange.markets.get(symbol)
+        if market and market.get('taker') is not None:
+            fee_rate = float(market['taker'])
+    except Exception:
+        pass
 
     next_allowed_index = 0
 

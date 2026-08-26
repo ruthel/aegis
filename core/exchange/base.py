@@ -46,6 +46,11 @@ class ExchangeBase(ABC):
         pass
 
     @abstractmethod
+    def fetch_order(self, order_id, symbol=None):
+        """Récupère un ordre précis"""
+        pass
+
+    @abstractmethod
     def cancel_order(self, order_id, symbol=None):
         """Annule un ordre"""
         pass

@@ -219,13 +219,16 @@ class DisplayMixin:
         """Affiche les métriques professionnelles de gouvernance et de gestion du risque."""
         try:
             exp_ratio = 0.0
+            max_exposure_pct = 60.0
             if hasattr(self, 'capital_manager') and hasattr(self.capital_manager, 'get_total_exposure_ratio'):
                 exp_ratio = float(self.capital_manager.get_total_exposure_ratio() or 0.0)
+                if hasattr(self.capital_manager, 'get_max_total_exposure_pct'):
+                    max_exposure_pct = float(self.capital_manager.get_max_total_exposure_pct() or max_exposure_pct)
             safe_str = " 🛡️ SAFE MODE" if getattr(self, 'safe_fallback_mode', False) else ""
             weekly_loss = 0.0
             if hasattr(self, 'risk_manager') and hasattr(self.risk_manager, 'get_weekly_loss'):
                 weekly_loss = float(self.risk_manager.get_weekly_loss() or 0.0)
-            self.async_print(f"📈 EXPOSITION GLOBALE: {exp_ratio * 100.0:.1f}% / 60.0% | PERTE HEBDO: {weekly_loss:.2f} USD{safe_str}")
+            self.async_print(f"📈 EXPOSITION GLOBALE: {exp_ratio * 100.0:.1f}% / {max_exposure_pct:.0f}% | PERTE HEBDO: {weekly_loss:.2f} USD{safe_str}")
         except Exception:
             pass
 
@@ -264,13 +267,14 @@ class DisplayMixin:
     def show_sell_predictions(self, sell_predictions):
         """Affiche les prévisions de vente"""
         if sell_predictions:
-            self.async_print("\n🔮 PRÉVISIONS VENTES:")
             for symbol, pred in sell_predictions:
                 crypto = symbol.split('/')[0]
-                self.async_print(f"🟢 {crypto}: Ordre @ {pred['target_price']:.2f} USD")
-                self.async_print(f"   📍 Actuel: {pred['current_price']:.2f} (+{pred['distance_pct']:.1f}% à atteindre)")
-                self.async_print(f"   ⏱️ Estimation: {pred['time_estimate']} | 🎯 Probabilité: {pred['probability']}%")
-                self.async_print(f"   💡 {pred['reason']} (Vol: {pred['volatility']:.1f}/5, Mom: {pred['momentum']:+.1f}%)")
+                self.async_print(
+                    f"🟢 {crypto}: Ordre @ {pred['target_price']:.2f} USD | "
+                    f"Actuel {pred['current_price']:.2f} ({pred['distance_pct']:+.1f}% à atteindre) | "
+                    f"ETA {pred['time_estimate']} | Proba {pred['probability']}% | "
+                    f"{pred['reason']} (Vol {pred['volatility']:.1f}/5, Mom {pred['momentum']:+.1f}%)"
+                )
     
     def show_buy_predictions(self, buy_predictions):
         """Affiche les prévisions d'achat avec Support/Résistance"""
