@@ -97,7 +97,7 @@ class MLEngine:
         self.load_model()
 
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
-        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+        fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
         max_hold_candles = int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96'))
         planned_hold_minutes = float(os.getenv('ML_PLANNED_HOLD_MINUTES', max_hold_candles * 15))
         planned_exit_dt = entry_dt + timedelta(minutes=planned_hold_minutes)

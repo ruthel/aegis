@@ -118,28 +118,60 @@ function App() {
   }, [activeView, refreshAnalytics, refreshLedger, refreshMl, refreshStatus, refreshTrades, viewMode])
 
   useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/live?view_mode=${encodeURIComponent(viewMode)}`)
-    ws.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { __type?: string; payload?: unknown; live?: unknown }
-        if (payload.__type === 'status') {
-          const nextStatus = payload.payload as StatusPayload
-          const nextRevision = dataRevision(nextStatus)
-          if (lastDataRevision.current && nextRevision !== lastDataRevision.current) {
-            void refreshLoadedData()
+    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let isMounted = true
+
+    function connectWs() {
+      if (!isMounted) return
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      ws = new WebSocket(`${proto}://${window.location.host}/ws/live?view_mode=${encodeURIComponent(viewMode)}`)
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as { __type?: string; payload?: unknown; live?: unknown }
+          if (payload.__type === 'status') {
+            const nextStatus = payload.payload as StatusPayload
+            const nextRevision = dataRevision(nextStatus)
+            if (lastDataRevision.current && nextRevision !== lastDataRevision.current) {
+              void refreshLoadedData()
+            }
+            lastDataRevision.current = nextRevision
+            setStatus(nextStatus)
           }
-          lastDataRevision.current = nextRevision
-          setStatus(nextStatus)
+          if (payload.__type === 'ml_status') setMl(payload.payload as MlStatus)
+          if (payload.__type === 'live')
+            setStatus((current) => ({ ...current, live: payload.live as StatusPayload['live'] }))
+        } catch {
+          // Ignore malformed websocket payloads.
         }
-        if (payload.__type === 'ml_status') setMl(payload.payload as MlStatus)
-        if (payload.__type === 'live')
-          setStatus((current) => ({ ...current, live: payload.live as StatusPayload['live'] }))
-      } catch {
-        // Ignore malformed websocket payloads.
+      }
+      ws.onclose = () => {
+        if (isMounted) {
+          reconnectTimer = setTimeout(connectWs, 2000)
+        }
+      }
+      ws.onerror = () => {
+        ws?.close()
       }
     }
-    return () => ws.close()
+
+    connectWs()
+
+    // Reconnect immediately when tab becomes visible again
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible' && ws?.readyState !== WebSocket.OPEN) {
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        connectWs()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      isMounted = false
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      ws?.close()
+    }
   }, [refreshLoadedData, setMl, setStatus, viewMode])
 
   useEffect(() => {

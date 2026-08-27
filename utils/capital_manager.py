@@ -69,13 +69,32 @@ class CapitalManager:
         try:
             if getattr(self.bot, 'paper_trading', True):
                 return float(getattr(self.bot, 'paper_balance', 0.0) or 0.0)
-            if hasattr(self.bot, 'get_account_balance'):
-                return float(self.bot.get_account_balance() or 0.0)
+            # Capital total = USD libre + valeur des positions ouvertes en crypto
+            usd_free = 0.0
+            crypto_value = 0.0
             if hasattr(self.bot, 'balance_manager'):
-                balance_info = self.bot.balance_manager.get_total_balance_usd()
-                if isinstance(balance_info, dict):
-                    return float(balance_info.get('total') or 0.0)
-            return 0.0
+                balance = self.bot.balance_manager.get_balance()
+                usd_free = float((balance.get('USD') or balance.get('USDT') or {}).get('free', 0) or 0)
+                # Ajouter la valeur de toutes les crypto detenues
+                trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+                for pair in trading_pairs:
+                    pair = pair.strip()
+                    if '/' in pair:
+                        symbol = pair
+                        base = pair.split('/')[0]
+                    elif pair.endswith('USD'):
+                        base = pair[:-3]
+                        symbol = f"{base}/USD"
+                    else:
+                        continue
+                    holding = float((balance.get(base) or {}).get('total', 0) or 0)
+                    if holding > 0.00001:
+                        try:
+                            price = self.bot.get_price(symbol)
+                            crypto_value += holding * float(price or 0)
+                        except Exception:
+                            pass
+            return usd_free + crypto_value
         except Exception:
             return 0.0
 
@@ -310,7 +329,6 @@ class CapitalManager:
             max_allowed_usd = total_balance * (max_exposure_pct / 100.0)
 
             if total_after_trade > max_allowed_usd:
-                print(f"CapitalManager: Plafond d'exposition globale atteint ({current_exposure_usd:.1f} + {new_position_usd:.1f} = {total_after_trade:.1f} USD > max {max_allowed_usd:.1f} USD [{max_exposure_pct}%])")
                 return False
 
             return True

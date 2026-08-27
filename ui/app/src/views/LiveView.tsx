@@ -110,6 +110,7 @@ function MetricsStrip({ status }: { status: StatusPayload }) {
 }
 
 function BalanceCard({ label, status }: { label: string; status: StatusPayload }) {
+  const [showPanel, setShowPanel] = useState(false)
   const balances = status.balance?.balances || {}
   const liveSymbols = status.live?.symbols || {}
   const usdAssets = new Set(['USD', 'USDT', 'USDC', 'ZUSD'])
@@ -124,7 +125,7 @@ function BalanceCard({ label, status }: { label: string; status: StatusPayload }
       const live = liveSymbols[pair] ?? liveSymbols[compactPair]
       const price = usdAssets.has(asset) ? 1 : Number((live as JsonMap | undefined)?.price ?? 0)
       const usdValue = usdAssets.has(asset) ? total : total * price
-      return { asset, free, locked, total, usdValue }
+      return { asset, free, locked, total, usdValue, price }
     })
     .filter((row) => Math.abs(row.total) > 1e-10 || Math.abs(row.locked) > 1e-10)
     .sort((a, b) => {
@@ -134,9 +135,9 @@ function BalanceCard({ label, status }: { label: string; status: StatusPayload }
     })
 
   const availableUsd = assetRows.reduce((sum, row) => sum + (usdAssets.has(row.asset) ? row.free : row.usdValue * (row.free / (row.total || 1))), 0)
-  const reservedUsd = assetRows.reduce((sum, row) => sum + (usdAssets.has(row.asset) ? row.locked : row.usdValue * (row.locked / (row.total || 1))), 0)
   const totalUsd = assetRows.reduce((sum, row) => sum + row.usdValue, 0)
   const displayAvailable = Number.isFinite(availableUsd) && totalUsd > 0 ? availableUsd : Number(status.balance?.paper_balance || 0)
+  const cryptoRows = assetRows.filter((row) => !usdAssets.has(row.asset))
   const fullBalance = (value: number, asset: string) => {
     if (!Number.isFinite(value)) return '--'
     if (usdAssets.has(asset)) return num(value, 2)
@@ -145,31 +146,59 @@ function BalanceCard({ label, status }: { label: string; status: StatusPayload }
   }
 
   return (
-    <div className="rounded-lg border border-indigo-500/20 bg-card p-4 shadow-sm md:col-span-2 xl:col-span-1">
+    <div className="relative rounded-lg border border-indigo-500/20 bg-card p-4 shadow-sm md:col-span-2 xl:col-span-1">
       <div className="flex items-center gap-2 text-[10px] font-bold uppercase text-muted-foreground">
         <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-primary">
           <WalletCards className="h-4 w-4" />
         </span>
         <span>{label}</span>
+        {cryptoRows.length > 0 && (
+          <button
+            onClick={() => setShowPanel(!showPanel)}
+            className="ml-auto rounded-md border border-border bg-background/80 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+          >
+            {cryptoRows.length} crypto{cryptoRows.length > 1 ? 's' : ''}
+          </button>
+        )}
       </div>
-      <div className="mt-3 text-lg font-black leading-tight">{num(displayAvailable, 2)} USD</div>
+      <div className="mt-3 text-lg font-black leading-tight">{num(totalUsd || displayAvailable, 2)} USD</div>
       <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
         <div className="rounded-md border border-border bg-background/50 p-2">
-          <div className="uppercase text-muted-foreground">Réservé</div>
-          <strong className="text-amber-300">{num(reservedUsd, 2)} USD</strong>
+          <div className="uppercase text-muted-foreground">Disponible</div>
+          <strong className="text-emerald-400">{num(displayAvailable, 2)} USD</strong>
         </div>
         <div className="rounded-md border border-border bg-background/50 p-2">
-          <div className="uppercase text-muted-foreground">Total estimé</div>
-          <strong>{num(totalUsd || displayAvailable, 2)} USD</strong>
+          <div className="uppercase text-muted-foreground">En position</div>
+          <strong className="text-amber-300">{num(totalUsd - displayAvailable, 2)} USD</strong>
         </div>
       </div>
-      {assetRows.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {assetRows.map((row) => (
-            <span key={row.asset} className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
-              {row.asset} {fullBalance(row.total, row.asset)}
-            </span>
-          ))}
+
+      {showPanel && (
+        <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-lg border border-border bg-card p-3 shadow-xl">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase text-muted-foreground">Soldes Crypto</span>
+            <button onClick={() => setShowPanel(false)} className="text-muted-foreground hover:text-foreground text-xs">✕</button>
+          </div>
+          <div className="space-y-1.5">
+            {assetRows.map((row) => (
+              <div key={row.asset} className="flex items-center justify-between rounded-md border border-border/50 bg-background/30 px-2.5 py-1.5">
+                <div>
+                  <span className="text-[11px] font-bold">{row.asset}</span>
+                  <span className="ml-2 text-[10px] text-muted-foreground">{fullBalance(row.total, row.asset)}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[11px] font-semibold">${num(row.usdValue, 2)}</span>
+                  {!usdAssets.has(row.asset) && row.price > 0 && (
+                    <span className="ml-1 text-[9px] text-muted-foreground">@{num(row.price, 2)}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex justify-between border-t border-border pt-2 text-[10px] font-bold">
+            <span className="text-muted-foreground">TOTAL</span>
+            <span>{num(totalUsd, 2)} USD</span>
+          </div>
         </div>
       )}
     </div>

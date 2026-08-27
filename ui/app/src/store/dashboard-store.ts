@@ -157,6 +157,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     } finally {
       set({ loading: false })
     }
+    // Preload all data in background so pages are instant
+    void Promise.all([
+      get().refreshTrades({ force: false }),
+      get().refreshLedger({ force: false }),
+      get().refreshConfig(),
+      get().refreshAnalytics({ force: false }),
+    ])
   },
   runBotAction: async (action) => {
     await postJson<JsonMap>(`/api/bot/${action}`)

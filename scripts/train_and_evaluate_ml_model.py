@@ -408,20 +408,28 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
             shutil.copy2(champion_path, challenger_path)
             return True
 
-        exchange = ccxt.binance({'enableRateLimit': True})
+        exchange = ccxt.kraken({'enableRateLimit': True})
         ml_engine = MLEngine(model_dir=output_dir)
         ml_engine.model_path = challenger_path
         analyzer = PatternAnalyzer(bot=None)
 
-        pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'ADA/USDT']
+        pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
         start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
-        btc_history = fetch_symbol_history_2026(exchange, 'BTC/USDT', timeframe='15m', start_date=start_date)
+        btc_history = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='15m', start_date=start_date)
+        btc_history_1h = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='1h', start_date=start_date)
 
         X_samples, y_labels, sizing_targets = [], [], []
         for symbol in pairs:
-            klines_15m = btc_history if symbol == 'BTC/USDT' and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
+            print(f"  📊 Fetch {symbol} (15m, 5m, 1h, 4h, 1d)...")
+            klines_15m = btc_history if symbol == 'BTC/USD' and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
             if len(klines_15m) < 100:
                 continue
+            # Fetch real multi-TF klines from Kraken
+            klines_5m_full = fetch_symbol_history_2026(exchange, symbol, timeframe='5m', start_date=start_date)
+            klines_1h_full = btc_history_1h if symbol == 'BTC/USD' else fetch_symbol_history_2026(exchange, symbol, timeframe='1h', start_date=start_date)
+            klines_4h_full = fetch_symbol_history_2026(exchange, symbol, timeframe='4h', start_date=start_date)
+            klines_1d_full = fetch_symbol_history_2026(exchange, symbol, timeframe='1d', start_date=start_date)
+            print(f"    15m: {len(klines_15m)} | 5m: {len(klines_5m_full)} | 1h: {len(klines_1h_full)} | 4h: {len(klines_4h_full)} | 1d: {len(klines_1d_full)}")
 
             next_allowed_index = 0
             fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
@@ -440,10 +448,12 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                     continue
                 support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
 
-                history_5m = [k for k in klines_15m[max(0, index-20):index]]
-                history_1h = aggregate_ohlcv(history, 4)[-60:]
-                history_4h = aggregate_ohlcv(history, 16)[-60:]
-                history_1d = aggregate_ohlcv(history, 96)[-60:]
+                # Utiliser les vraies klines multi-TF (lookup par timestamp)
+                candle_ts = klines_15m[index]['timestamp']
+                history_5m = [k for k in klines_5m_full if k['timestamp'] <= candle_ts][-30:]
+                history_1h = [k for k in klines_1h_full if k['timestamp'] <= candle_ts][-30:]
+                history_4h = [k for k in klines_4h_full if k['timestamp'] <= candle_ts][-30:]
+                history_1d = [k for k in klines_1d_full if k['timestamp'] <= candle_ts][-30:]
                 planned_hold_minutes = 96 * 15.0
                 planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
 
@@ -487,10 +497,65 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
         y_sizing = np.array(sizing_targets, dtype=np.float64)
         success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5)
         if success:
-            # Entraînement unifié du modèle de Sortie dans le même payload Challenger
+            # Entraînement du modèle de Sortie avec les VRAIES features exit
             try:
-                ml_engine.train_exit_model(X, y, n_estimators=150, max_depth=6, min_samples_split=10)
-                print(f"  ✅ Modèle de Sortie entraîné et fusionné dans Challenger")
+                X_exit_samples, y_exit_labels = [], []
+                for index in range(50, len(klines_15m) - 10):
+                    if len(X_exit_samples) >= 8000:
+                        break
+                    history = klines_15m[:index]
+                    entry_price = float(klines_15m[index]['close'])
+                    ts = klines_15m[index]['timestamp']
+                    
+                    # Simuler le trade pour connaitre l'issue
+                    exit_index, exit_price, _ = simulate_trade(
+                        klines_15m, index, entry_price, None, 1.0, 96, 2.5,
+                        breakeven_stop=True, breakeven_trigger=1.5, breakeven_lock=1.0, fee_rate=fee_rate
+                    )
+                    final_pnl = ((exit_price * (1 - fee_rate) - entry_price * (1 + fee_rate)) / entry_price) * 100
+                    
+                    # Generer des samples a differents moments pendant le hold
+                    checkpoints = [index + 4, index + 8, index + 16, index + 32]
+                    for cp in checkpoints:
+                        if cp >= len(klines_15m) or cp >= exit_index:
+                            break
+                        cp_price = float(klines_15m[cp]['close'])
+                        cp_history = klines_15m[:cp]
+                        if len(cp_history) < 20:
+                            continue
+                        
+                        duration_minutes = (cp - index) * 15.0
+                        position_data = {
+                            'entry_price': entry_price,
+                            'buy_price': entry_price,
+                            'fee_rate': fee_rate,
+                            'duration_minutes': duration_minutes,
+                            'stop_price': entry_price * 0.99,
+                            'target_price': entry_price * 1.02,
+                        }
+                        
+                        # Label: 1 = continue (trade finit positif), 0 = exit (trade finit negatif)
+                        exit_label = 1 if final_pnl > 0 else 0
+                        
+                        bot_ctx = build_training_bot_context(cp_history, None, ts, btc_history=btc_history, index=cp)
+                        exit_features = ml_engine.extract_exit_features(
+                            cp_history, cp_price, position_data,
+                            continuation_score=50.0,
+                            entry_p_win=50.0,
+                            btc_klines=btc_history[max(0, cp-30):cp] if btc_history else None,
+                            bot_context=bot_ctx
+                        )
+                        if exit_features is not None:
+                            X_exit_samples.append(exit_features)
+                            y_exit_labels.append(exit_label)
+                
+                if len(X_exit_samples) >= 30:
+                    X_exit = np.array(X_exit_samples)
+                    y_exit = np.array(y_exit_labels)
+                    ml_engine.train_exit_model(X_exit, y_exit, n_estimators=150, max_depth=6, min_samples_split=10)
+                    print(f"  ✅ Modèle de Sortie entraîné avec {len(X_exit_samples)} samples exit")
+                else:
+                    print(f"  ⚠️ Pas assez de samples exit ({len(X_exit_samples)}), modèle sortie non entraîné")
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sortie: {ex}")
             try:

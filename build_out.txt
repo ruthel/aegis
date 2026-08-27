@@ -1,0 +1,6 @@
+
+> frontend@0.0.0 build C:\Users\baloc\Projects\aegis\ui\app
+> tsc -b && vite build
+
+src/views/LiveView.tsx(138,9): error TS6133: 'reservedUsd' is declared but its value is never read.
+ ELIFECYCLE  Command failed with exit code 2.
