@@ -336,7 +336,10 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
     symbol_regime = simple_regime(history)
     btc_regime = None
     if btc_history is not None and index is not None:
-        btc_regime = simple_regime(btc_history[:index])
+        # Borné aux ~60 dernières bougies avant index (simple_regime n'utilise que les 50
+        # dernières). Évite de copier btc_history[:index] qui grandit à chaque itération.
+        btc_win_start = max(0, index - 60)
+        btc_regime = simple_regime(btc_history[btc_win_start:index])
     dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc)
     confidence = float((signal or {}).get('confidence') or 0.0)
     crypto_score = confidence
@@ -743,7 +746,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                 if index < next_allowed_index:
                     continue
 
-                history = klines_15m[:index]
+                # Fenêtre bornée: toutes les fonctions consommatrices (detect_trade_signal,
+                # find_support_resistance_levels lookback=100, simple_regime 50) n'utilisent
+                # que les ~100 dernières bougies. Copier klines_15m[:index] (jusqu'à 105k
+                # éléments) à chaque itération causait un ralentissement quadratique.
+                hist_window = int(os.getenv('ML_GEN_HISTORY_WINDOW', '200'))
+                win_start = max(0, index - hist_window)
+                history = klines_15m[win_start:index]
                 current_price = klines_15m[index]['close']
                 ts = klines_15m[index]['timestamp']
 
