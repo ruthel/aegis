@@ -193,6 +193,17 @@ def compute_guardrail_metrics(db_file):
     return metrics
 
 
+def _advance_cursor(klines_full, cursor, candle_ts):
+    """Avance un curseur tant que la bougie suivante a un timestamp <= candle_ts.
+    Retourne le nouveau curseur = index de la DERNIÈRE bougie avec ts <= candle_ts (+1).
+    O(1) amorti car candle_ts ne fait qu'augmenter d'un appel à l'autre (curseur monotone).
+    Remplace le filtrage O(n) [k for k in klines_full if k['timestamp'] <= candle_ts]."""
+    n = len(klines_full)
+    while cursor < n and int(klines_full[cursor]['timestamp']) <= candle_ts:
+        cursor += 1
+    return cursor
+
+
 def aggregate_ohlcv(klines, group_size):
     if not klines or group_size <= 1:
         return list(klines or [])
@@ -423,82 +434,101 @@ def _save_cache(symbol, timeframe, klines):
             pass
 
 
-def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=""):
-    """Fetch réseau brut des bougies OHLCV entre 'since' et 'end_ts' (avec retry robuste).
-    Retourne une liste de dicts. C'est le cœur réseau, sans logique de cache.
-    Affiche une progression en direct (barre qui se met à jour sur la même ligne)."""
-    fetched = []
-    seen = set()
-    consecutive_errors = 0
-    max_consecutive_errors = 6
-    span = max(1, end_ts - since)  # fenêtre temporelle totale à couvrir
-    start_since = since
-    iterations = 0
-    show_progress = os.getenv('ML_FETCH_PROGRESS', 'true').lower() == 'true'
-
-    def _render_progress(done_ratio):
-        pct = max(0.0, min(1.0, done_ratio)) * 100.0
-        bar_len = 24
-        filled = int(bar_len * pct / 100.0)
-        bar = '█' * filled + '░' * (bar_len - filled)
-        # \r pour réécrire sur la même ligne, pas de \n
-        sys.stdout.write(f"\r      {label} [{bar}] {pct:5.1f}% — {len(fetched)} bougies")
-        sys.stdout.flush()
-
-    while since < end_ts:
+def _fetch_one_window(cb, symbol, timeframe, win_since, limit=300, max_retries=5):
+    """Fetch UNE fenêtre de bougies à partir de win_since. Retry avec backoff.
+    Retourne (liste de dicts, ok). Utilisé par le fetch parallèle par batches."""
+    attempt = 0
+    while attempt <= max_retries:
         try:
-            klines = cb.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=300)
-            consecutive_errors = 0
-            if not klines:
-                break
-            new_count = 0
-            for k in klines:
-                ts = int(k[0])
-                if ts in seen:
-                    continue
-                seen.add(ts)
-                fetched.append({
-                    'timestamp': ts,
+            klines = cb.fetch_ohlcv(symbol, timeframe=timeframe, since=win_since, limit=limit)
+            out = []
+            for k in klines or []:
+                out.append({
+                    'timestamp': int(k[0]),
                     'open': float(k[1]),
                     'high': float(k[2]),
                     'low': float(k[3]),
                     'close': float(k[4]),
                     'volume': float(k[5]),
                 })
-                new_count += 1
-            last = klines[-1][0]
-            if new_count == 0 or last <= since:
-                break
-            since = last + 1
-            iterations += 1
-            if show_progress and iterations % 5 == 0:
-                _render_progress((since - start_since) / span)
-            if len(fetched) >= max_candles:
-                break
-            time.sleep(cb.rateLimit / 1000)
+            return out, True
         except Exception as e:
-            if 'rate' in str(e).lower() or 'too many' in str(e).lower():
-                time.sleep(5)
-                continue
-            consecutive_errors += 1
-            if consecutive_errors >= max_consecutive_errors:
-                print(f"      ⚠️ Abandon fetch {symbol} {timeframe} après {consecutive_errors} erreurs consécutives: {e}")
-                break
-            backoff = min(30, 2 ** consecutive_errors)
-            # \n pour ne pas écraser le message d'erreur avec la barre de progression
-            if show_progress:
-                sys.stdout.write("\n")
-            print(f"      ⏳ Erreur transitoire {symbol} {timeframe} (retry {consecutive_errors}/{max_consecutive_errors} dans {backoff}s): {e}")
-            time.sleep(backoff)
-            since += 300 * _timeframe_ms(timeframe)
-            continue
+            msg = str(e).lower()
+            attempt += 1
+            wait = 5 if ('rate' in msg or 'too many' in msg or '429' in msg) else min(20, 2 ** attempt)
+            if attempt > max_retries:
+                return [], False
+            time.sleep(wait)
+    return [], False
 
-    # Terminer la barre proprement (100% + saut de ligne)
-    if show_progress and iterations >= 5:
-        _render_progress(1.0)
+
+def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=""):
+    """Fetch réseau des bougies OHLCV entre 'since' et 'end_ts' par BATCHES PARALLÈLES.
+
+    On calcule toutes les fenêtres 'since' à l'avance (le pas temporel est connu),
+    puis on lance ML_FETCH_CONCURRENCY appels en parallèle par batch, en respectant
+    la limite Coinbase (3 req/s soutenu, 6 en burst). Gain ~2-3x sur un fetch complet.
+    Robuste: retry par fenêtre, dédup, progression en direct."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    show_progress = os.getenv('ML_FETCH_PROGRESS', 'true').lower() == 'true'
+    concurrency = max(1, min(6, int(os.getenv('ML_FETCH_CONCURRENCY', '5'))))
+    limit = 300
+    tf_ms = _timeframe_ms(timeframe)
+    step_ms = limit * tf_ms  # durée couverte par un appel (300 bougies)
+
+    windows = []
+    s = since
+    while s < end_ts:
+        windows.append(s)
+        s += step_ms
+    total_windows = len(windows)
+    if total_windows == 0:
+        return []
+
+    merged = {}
+    done = 0
+
+    def _render_progress():
+        pct = min(1.0, done / max(1, total_windows)) * 100.0
+        bar_len = 24
+        filled = int(bar_len * pct / 100.0)
+        bar = '█' * filled + '░' * (bar_len - filled)
+        sys.stdout.write(f"\r      {label} [{bar}] {pct:5.1f}% — {len(merged)} bougies")
+        sys.stdout.flush()
+
+    for i in range(0, total_windows, concurrency):
+        batch = windows[i:i + concurrency]
+        batch_start = time.time()
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            results = list(executor.map(
+                lambda w: _fetch_one_window(cb, symbol, timeframe, w, limit),
+                batch
+            ))
+        for candles, ok in results:
+            for k in candles:
+                ts = int(k['timestamp'])
+                if since <= ts < end_ts:
+                    merged[ts] = k
+        done += len(batch)
+        if show_progress:
+            _render_progress()
+        if len(merged) >= max_candles:
+            break
+        # Pacing: un batch de N requêtes ne s'exécute pas en moins de N/6 s (<= 6 req/s)
+        min_batch_duration = len(batch) / 6.0
+        elapsed = time.time() - batch_start
+        if elapsed < min_batch_duration:
+            time.sleep(min_batch_duration - elapsed)
+
+    if show_progress:
+        _render_progress()
         sys.stdout.write("\n")
         sys.stdout.flush()
 
+    fetched = sorted(merged.values(), key=lambda k: k['timestamp'])
+    if len(fetched) > max_candles:
+        fetched = fetched[-max_candles:]
     return fetched
 
 
@@ -690,7 +720,26 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
             fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
             support_pnls = []
 
+            # Curseurs multi-TF (lookup O(1) amorti au lieu de re-scanner toute la liste
+            # à chaque itération). candle_ts est monotone croissant -> les curseurs avancent.
+            cur_5m = cur_1h = cur_4h = cur_1d = 0
+
+            # Progression de la génération des samples (barre qui se met à jour sur la même ligne)
+            show_gen_progress = os.getenv('ML_FETCH_PROGRESS', 'true').lower() == 'true'
+            gen_total = max(1, len(klines_15m) - 1 - 50)
+            gen_start = len(X_samples)
+
+            def _render_gen_progress(idx):
+                pct = min(1.0, max(0.0, (idx - 50) / gen_total)) * 100.0
+                bar_len = 24
+                filled = int(bar_len * pct / 100.0)
+                bar = '█' * filled + '░' * (bar_len - filled)
+                sys.stdout.write(f"\r      🧪 {symbol} génération [{bar}] {pct:5.1f}% — {len(X_samples) - gen_start} samples")
+                sys.stdout.flush()
+
             for index in range(50, len(klines_15m) - 1):
+                if show_gen_progress and index % 500 == 0:
+                    _render_gen_progress(index)
                 if index < next_allowed_index:
                     continue
 
@@ -703,12 +752,16 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                     continue
                 support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
 
-                # Utiliser les vraies klines multi-TF (lookup par timestamp)
+                # Utiliser les vraies klines multi-TF (lookup par curseur, O(1) amorti)
                 candle_ts = klines_15m[index]['timestamp']
-                history_5m = [k for k in klines_5m_full if k['timestamp'] <= candle_ts][-30:]
-                history_1h = [k for k in klines_1h_full if k['timestamp'] <= candle_ts][-30:]
-                history_4h = [k for k in klines_4h_full if k['timestamp'] <= candle_ts][-30:]
-                history_1d = [k for k in klines_1d_full if k['timestamp'] <= candle_ts][-30:]
+                cur_5m = _advance_cursor(klines_5m_full, cur_5m, candle_ts)
+                cur_1h = _advance_cursor(klines_1h_full, cur_1h, candle_ts)
+                cur_4h = _advance_cursor(klines_4h_full, cur_4h, candle_ts)
+                cur_1d = _advance_cursor(klines_1d_full, cur_1d, candle_ts)
+                history_5m = klines_5m_full[max(0, cur_5m - 30):cur_5m]
+                history_1h = klines_1h_full[max(0, cur_1h - 30):cur_1h]
+                history_4h = klines_4h_full[max(0, cur_4h - 30):cur_4h]
+                history_1d = klines_1d_full[max(0, cur_1d - 30):cur_1d]
                 planned_hold_minutes = 96 * 15.0
                 planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
 
@@ -756,6 +809,12 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                 if signal.get('type') == 'support_touch':
                     support_pnls.append(float(pnl_percent))
                 next_allowed_index = exit_index + 4
+
+            # Terminer la barre de génération proprement (100% + saut de ligne)
+            if show_gen_progress:
+                _render_gen_progress(len(klines_15m) - 1)
+                sys.stdout.write("\n")
+                sys.stdout.flush()
 
         if not X_samples and os.path.exists(champion_path):
             shutil.copy2(champion_path, challenger_path)
