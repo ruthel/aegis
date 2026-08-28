@@ -74,6 +74,26 @@ def latest_ml_metadata():
         return {}
 
 
+def model_train_samples():
+    """Lit le vrai nombre de samples d'entraînement depuis le joblib du champion.
+    Retourne None si indisponible (l'UI affichera alors une valeur neutre)."""
+    try:
+        import joblib
+        model_file = DATA_DIR / 'aegis_model.joblib'
+        if not model_file.exists():
+            return None
+        data = joblib.load(str(model_file))
+        md = data.get('model_metadata') if isinstance(data, dict) else None
+        if not isinstance(md, dict):
+            return None
+        raw = md.get('train_samples')
+        if raw is None:
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+
 def db_logger():
     from core.ml_live_logger import MLLiveLogger
     return MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path()))
@@ -133,6 +153,26 @@ def latest_sizing_recommendations(limit=12, view_mode=None):
             return logger.get_latest_sizing_recommendations(mode=mode, limit=limit)
     except Exception:
         return []
+
+
+def latest_sizing_by_symbol(view_mode=None):
+    """Dernière recommandation de sizing par symbole (une par paire, jamais masquée
+    par une paire plus active). En mode 'all', on garde la plus récente entre paper et live."""
+    try:
+        mode = view_mode or current_view_mode()
+        with db_logger() as logger:
+            if mode == 'all':
+                merged = {}
+                for item_mode in ('paper', 'live'):
+                    per_symbol = logger.get_latest_sizing_recommendation_per_symbol(mode=item_mode)
+                    for symbol, rec in per_symbol.items():
+                        existing = merged.get(symbol)
+                        if existing is None or str(rec.get('timestamp') or '') > str(existing.get('timestamp') or ''):
+                            merged[symbol] = rec
+                return merged
+            return logger.get_latest_sizing_recommendation_per_symbol(mode=mode)
+    except Exception:
+        return {}
 
 
 def latest_sizing_backtests(limit=3):
@@ -2563,22 +2603,23 @@ def ml_status_payload(view_mode=None):
     ML_PREDS_CACHE = clean_ml_preds
 
     meta = latest_ml_metadata()
+    # Fenêtre d'affichage (les 12 plus récentes, pour la liste "recommandations")
     sizing_recommendations = latest_sizing_recommendations(12, view_mode=view_mode)
-    latest_sizing_by_symbol = {}
-    for rec in sizing_recommendations:
-        symbol = rec.get('symbol')
-        if symbol and symbol not in latest_sizing_by_symbol:
-            latest_sizing_by_symbol[symbol] = rec
-    for symbol, rec in latest_sizing_by_symbol.items():
+    # Pour attacher LE dernier sizing de CHAQUE paire à sa carte, on interroge la base
+    # avec une agrégation "une ligne par symbole": aucune paire n'est masquée par une
+    # paire plus active (ex: BTC), contrairement à un simple LIMIT global.
+    sizing_by_symbol = latest_sizing_by_symbol(view_mode=view_mode)
+    for symbol, rec in sizing_by_symbol.items():
         if symbol in clean_ml_preds:
             clean_ml_preds[symbol]['sizing'] = rec
     
     is_trained = (DATA_DIR / 'aegis_model.joblib').exists()
+    real_samples = model_train_samples() if is_trained else 0
     
     return {
         'is_trained': is_trained,
         'trained_at': meta.get('trained_at'),
-        'total_samples': 2952 if is_trained else 0,
+        'total_samples': real_samples if real_samples is not None else 0,
         'min_probability': float(os.getenv('ML_MIN_PROBABILITY', '65.0')),
         'top_features': meta.get('feature_importance', [])[:6],
         'sizing_model_active': bool(meta.get('sizing_feature_importance')),

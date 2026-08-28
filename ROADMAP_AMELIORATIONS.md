@@ -1,6 +1,6 @@
 # Feuille de Route & Etat d'Avancement — Ameliorations Bot Aegis
 
-Derniere mise a jour : 2026-08-08
+Derniere mise a jour : 2026-08-26
 
 ---
 
@@ -11,12 +11,17 @@ Derniere mise a jour : 2026-08-08
 * **Phase 2 (Core ML Engine entree 52 features)** : ✅ **Termine & actif**
 * **Phase 3 (Suppression des anciens verrous durs)** : ✅ **Termine**
 * **Phase 4 (Dataset live & apprentissage controle)** : ✅ **Termine, schema actuel aligne SQLite**
-* **Phase 5 (Walk-forward, champion/challenger, calibration PnL)** : 🟡 **Partiel actif**
+* **Phase 5 (Walk-forward, champion/challenger, calibration PnL)** : ✅ **Termine**
 * **Phase 6 (Position sizing ML & allocation dynamique)** : ✅ **Termine**
-* **Phase 7 (Execution intelligente & microstructure marche)** : 🟡 **Partiel actif**
-* **Phase 8 (Robustesse production & observabilite)** : 🟡 **Partiel actif**
-* **Phase 10 (Autonomie controlee & gouvernance risque)** : 🔜 **A faire**
-* **Phase 11 (Sizing ML dedie & nettoyage sizing legacy)** : 🟡 **Partiel actif**
+* **Phase 7 (Execution intelligente & microstructure marche)** : ✅ **Termine (Phase 12)**
+* **Phase 8 (Robustesse production & observabilite)** : ✅ **Termine**
+* **Phase 10 (Autonomie controlee & gouvernance risque)** : ✅ **Termine**
+* **Phase 11 (Sizing ML dedie & nettoyage sizing legacy)** : ✅ **Termine**
+* **Phase 12 (Optimisation latence & execution)** : ✅ **Termine**
+* **Phase 13 (Correction frais & coherence PnL)** : ✅ **Termine**
+* **Phase 14 (Nettoyage code mort)** : ✅ **Termine**
+* **Phase 15 (Amelioration ML exit & training)** : ✅ **Termine**
+* **Phase 16 (Vers l'autonomie complete)** : 🔜 **À venir**
 
 ---
 
@@ -235,3 +240,105 @@ Le `sizing_model` ne decide pas d'acheter ou vendre. Il propose un facteur de ta
 - [x] **Documentation finale** : `README.md` et `docs/CARTOGRAPHIE_APP.md` mis a jour avec le cerveau ML entree/sortie/sizing.
 
 Impact attendu : moins de capital sur setups fragiles, plus de capital sur opportunites propres, et rendement mieux optimise sans augmenter le capital total.
+
+---
+
+## ✅ Phase 12 : Optimisation Latence & Execution (Terminé 2026-08-24/26)
+
+Objectif : réduire le temps entre la décision ML et l'exécution réelle sur Kraken.
+
+- [x] **Skip ledger sync sur ventes urgentes** : `get_balance(skip_ledger_sync=True)` évite le fetch ledger (~3-5s) pendant les exits ML.
+- [x] **Cancel orders optimisé** : vérification `pending_orders` en mémoire avant d'appeler l'API Kraken. Skip complet si rien à annuler.
+- [x] **Resolve execution fast-path** : si l'ordre Kraken retourne déjà les infos de fill (market orders), return immédiat sans re-fetch.
+- [x] **Délais réduits** : sleep de confirmation passé de (0.4s, 1.0s, 1.8s) à (0.15s, 0.5s, 1.5s).
+- [x] **Fetch klines parallèle (exit)** : klines symbole + BTC fetchées en parallèle via ThreadPoolExecutor (~3s au lieu de 6s).
+- [x] **Fetch klines parallèle (entry)** : 5 timeframes (15m, 5m, 1h, 4h, 1d) fetchés en parallèle (~3s au lieu de 15s).
+- [x] **Suppress sell limit quand ML_OWNS_EXITS=true** : plus de `optimize_existing_position` inutile, élimine le besoin de cancel orders.
+- [x] **Watchdog WebSocket** : reconnexion forcée si aucun tick reçu depuis 90s (évite les déconnexions silencieuses de 2h).
+- [x] **Preload klines parallèle au démarrage** : les 4 symboles fetchés en parallèle au boot (~3s au lieu de 12s).
+
+Résultats mesurés :
+- Latence exit (décision → vente) : **~16-21s → ~9-12s**
+- Intervalle évaluation exit : **~55s → ~15s**
+- Latence entry (score → achat) : **~20-25s → ~12s**
+
+---
+
+## ✅ Phase 13 : Correction Frais & Cohérence PnL (Terminé 2026-08-24/26)
+
+Objectif : aligner les frais utilisés partout dans le bot avec les frais réels Kraken (0.40% taker).
+
+- [x] **TRADING_FEE_PERCENT=0.4** dans `.env.local` et tous les fallbacks code.
+- [x] **Tous les hardcoded 0.001 remplacés** : trading_bot.py, train script, walk_forward, backtest, position_manager, capital_manager, ml_live_logger, ml_engine.
+- [x] **Frais ledger Kraken** : les imports `kraken_ledger` n'ajoutent plus de fee (le prix est déjà net après frais dans le ledger Kraken).
+- [x] **Déduplication live_trade vs kraken_ledger** : `_has_matching_local_live_trade()` empêche la création de doublons.
+- [x] **Limite perte journalière** : remplacée de "10 trades perdants max" par "5% du capital total" avec override manuel (`OVERRIDE_DAILY_LOSS_LIMIT`).
+- [x] **Capital total correct** : `_total_balance_usd()` retourne USD libre + valeur crypto détenue (pas juste l'USD libre).
+
+---
+
+## ✅ Phase 14 : Nettoyage Code Mort (Terminé 2026-08-24)
+
+- [x] Suppression `manage_trailing_stops()` (dead avec ML_OWNS_EXITS=true)
+- [x] Suppression boucle `optimize_existing_position` dans `run()`
+- [x] Suppression `check_and_recover_stuck_positions()` (remplacé par version _filtered)
+- [x] Suppression `get_entry_signal()` (remplacé par intelligent_strategy)
+- [x] Suppression `adjust_size_for_depth()` stub
+- [x] Suppression `optimize_thresholds_daily()` + `_analyze_threshold_performance()`
+- [x] Suppression dead code CorrelationManager (market_sentiment, add/remove_position)
+- [x] Suppression variables mortes RiskManager
+- [x] Suppression `test_all_balances()` + `show_balance_summary()`
+- [x] Suppression `check_paper_limit_orders()` dupliqué
+- [x] Suppression code Binance WebSocket
+- [x] Fix clés dupliquées `get_min_amount()`
+- [x] Suppression imports dupliqués trading_bot.py
+
+---
+
+## ✅ Phase 15 : Amélioration ML Exit & Training (Terminé 2026-08-26)
+
+- [x] **Labeling P_exit amélioré** : "rester est-il mieux que sortir maintenant ?" au lieu de "le trade finit-il positif ?". Le modèle apprend à prendre les profits au bon moment.
+- [x] **Exit model entraîné avec les bonnes features** : 37 features exit (PnL, durée, continuation_score...) au lieu des 68 features entrée.
+- [x] **Multi-TF réelles** : fetch 5m/1h/4h/1d depuis Binance au lieu d'agréger les 15m.
+- [x] **Métriques sauvegardées** : precision, accuracy, recall, F1, OOB score stockés dans le `.joblib` et affichés au training.
+- [x] **Dynamic Breakeven Lock** : protection par paliers (0%/50%/70% du plus haut gain) empêche un profit de devenir une perte.
+
+---
+
+## 🔜 Phase 16 : Vers l'Autonomie Complète (À venir)
+
+### Étape 1 — Consolidation (1 mois)
+
+- [x] **Auto-retraining bi-hebdomadaire** : réentraîner automatiquement avec les nouvelles données live toutes les 2 semaines. ✅ `ML_AUTO_RETRAIN_ENABLED=true`, intervalle 14 jours (`ML_AUTO_RETRAIN_INTERVAL_SECONDS=1209600`), promotion automatique via garde-fous.
+- [x] **Augmentation dataset** : objectif 15-20k samples atteint (**15346 samples**). ✅ Méthode retenue : extension de l'historique d'entraînement à **3 ans** (`ML_TRAINING_HISTORY_DAYS=1095`) via Coinbase, au lieu de la diversification des signaux d'entrée (testée puis abandonnée car elle dégradait la précision : 78.8% → 70.2%). Bonus : le dataset couvre désormais bear 2023-2024 + remontée + régime haussier actuel, ce qui rend le modèle robuste aux changements de régime.
+- [ ] **Feature importance monitoring** : tracker quelles features sont utiles, retirer celles qui contribuent < 0.5%.
+- [ ] **P_target model** : régresseur ML qui prédit le gain max atteignable pour fixer un take-profit intelligent.
+
+### Étape 2 — Apprentissage par Renforcement (1-3 mois)
+
+- [ ] **Agent DQN ou PPO** : remplace le RandomForest par un agent qui maximise le PnL cumulé (pas trade par trade).
+- [ ] **État complet** : l'agent voit positions ouvertes, capital, prix, indicateurs et choisit buy/sell/hold.
+- [ ] **Reward shaping** : récompense = PnL net réalisé + pénalité drawdown + bonus Sharpe.
+- [ ] **Self-play simulation** : entraînement sur simulateur avant déploiement live.
+
+### Étape 3 — Modèles Séquentiels (3-6 mois)
+
+- [ ] **LSTM / Transformer** : modèles qui traitent des séquences (30 derniers états) pour comprendre tendances et retournements.
+- [ ] **Attention mechanism** : le modèle apprend quelles bougies passées sont pertinentes pour la décision actuelle.
+- [ ] **Multi-horizon prediction** : prédire le prix à +15min, +1h, +4h simultanément.
+
+### Étape 4 — Multi-Agent Spécialisé (6-12 mois)
+
+- [ ] **Market Regime Detector** : identifie bull/bear/range en temps réel.
+- [ ] **Entry Specialist** : trouve les points d'entrée optimaux.
+- [ ] **Position Manager** : gère sorties, trailing, sizing dynamique.
+- [ ] **Risk Controller** : override les agents si risque global trop élevé.
+- [ ] **Meta-Learner** : sélectionne quel agent écouter selon le contexte.
+
+### Étape 5 — Système Auto-Évolutif (12+ mois)
+
+- [ ] **Online learning** : mise à jour continue du modèle avec chaque trade.
+- [ ] **Détection de régime automatique** : switch de stratégie sans intervention humaine.
+- [ ] **Multi-exchange / multi-asset** : diversification automatique selon les opportunités.
+- [ ] **Self-monitoring** : le système détecte quand il perd sa calibration et se met en pause.
+- [ ] **Capital scaling** : augmentation automatique des positions quand la performance est stable.

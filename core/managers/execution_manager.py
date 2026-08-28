@@ -194,6 +194,8 @@ class ExecutionManager:
                 'position_size_usd': executed_amount * executed_price,
                 'sizing_reason': position_data.get('sizing_reason'),
                 'ml_buy_prob': ml_buy_prob,
+                'ml_target_gain_pct': position_data.get('ml_target_gain_pct'),
+                'ml_target_price': position_data.get('ml_target_price'),
             }
             self.bot.state.setdefault('positions', []).append(position)
             self.bot.save_state()
@@ -229,6 +231,19 @@ class ExecutionManager:
             throttle_seconds=0
         )
 
+        # Notification Telegram (le chemin limit maker ne passe pas par buy_market qui notifie déjà)
+        if order_type == 'limit' and not self.bot.paper_trading and hasattr(self.bot, 'notifier'):
+            try:
+                analysis = self.bot.get_cached_analysis(symbol, executed_price)
+                signal_data = {
+                    'trend': analysis['global_signal'].get('dominant_trend', 'N/A'),
+                    'confidence': analysis['global_signal'].get('confidence', 0),
+                    'volatility': analysis.get('volatility', 0)
+                }
+                self.bot.notifier.notify_trade_buy(symbol, executed_amount, executed_price, executed_amount * executed_price, signal_data)
+            except Exception:
+                pass
+
         existing_positions = [p for p in self.bot.state.get('positions', []) if p['symbol'] == symbol and p['side'] == 'buy']
         position_count = len(existing_positions)
         
@@ -245,7 +260,8 @@ class ExecutionManager:
                 symbol, executed_price, 
                 trailing_percent=position_data.get('trailing_stop_percent'),
                 support_price=position_data.get('support_price'),
-                resistance_price=position_data.get('resistance_price')
+                resistance_price=position_data.get('resistance_price'),
+                target_gain_pct=position_data.get('ml_target_gain_pct')
             )
 
         # Placer ordre de vente (paper ET réel)

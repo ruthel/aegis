@@ -719,7 +719,7 @@ class TrailingStopManager:
             percent *= 100.0
         return max(0.05, min(percent, 25.0))
     
-    def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None, resistance_price=None, fee_rate=None):
+    def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None, resistance_price=None, fee_rate=None, target_gain_pct=None):
         """Ajoute une nouvelle position avec trailing stop adaptatif, support technique et résistance"""
         percent = self._normalize_trailing_percent(trailing_percent if trailing_percent is not None else self.trailing_percent)
         stop_price = buy_price * (1 - percent / 100)
@@ -742,6 +742,7 @@ class TrailingStopManager:
             'breakeven_active': False,
             'resistance_price': float(resistance_price) if resistance_price else None,
             'fee_rate': float(fee_rate or 0),
+            'target_gain_pct': float(target_gain_pct) if target_gain_pct else None,
             'created_at': datetime.now().isoformat()
         }
     

@@ -3998,6 +3998,30 @@ class MLLiveLogger:
         except Exception:
             return []
 
+    @staticmethod
+    def _serialize_sizing_row(row):
+        return {
+            'sizing_id': row.sizing_id,
+            'timestamp': row.timestamp,
+            'mode': row.mode,
+            'symbol': row.symbol,
+            'entry_id': row.entry_id,
+            'p_win': row.p_win,
+            'p_continue': row.p_continue,
+            'base_position_size_usd': row.base_position_size_usd,
+            'raw_sizing_factor': row.raw_sizing_factor,
+            'sizing_factor': row.sizing_factor,
+            'final_position_size_usd': row.final_position_size_usd,
+            'min_position_size_usd': row.min_position_size_usd,
+            'max_position_size_usd': row.max_position_size_usd,
+            'exposure_before_usd': row.exposure_before_usd,
+            'exposure_after_usd': row.exposure_after_usd,
+            'max_exposure_usd': row.max_exposure_usd,
+            'decision': row.decision,
+            'reason': row.reason,
+            'risk_veto_reason': row.risk_veto_reason,
+        }
+
     def get_latest_sizing_recommendations(self, mode='paper', limit=20):
         try:
             with self._orm_session() as session:
@@ -4007,32 +4031,31 @@ class MLLiveLogger:
                     .order_by(MlSizingRecommendation.timestamp.desc())
                     .limit(int(limit))
                 ).all()
-            return [
-                {
-                    'sizing_id': row.sizing_id,
-                    'timestamp': row.timestamp,
-                    'mode': row.mode,
-                    'symbol': row.symbol,
-                    'entry_id': row.entry_id,
-                    'p_win': row.p_win,
-                    'p_continue': row.p_continue,
-                    'base_position_size_usd': row.base_position_size_usd,
-                    'raw_sizing_factor': row.raw_sizing_factor,
-                    'sizing_factor': row.sizing_factor,
-                    'final_position_size_usd': row.final_position_size_usd,
-                    'min_position_size_usd': row.min_position_size_usd,
-                    'max_position_size_usd': row.max_position_size_usd,
-                    'exposure_before_usd': row.exposure_before_usd,
-                    'exposure_after_usd': row.exposure_after_usd,
-                    'max_exposure_usd': row.max_exposure_usd,
-                    'decision': row.decision,
-                    'reason': row.reason,
-                    'risk_veto_reason': row.risk_veto_reason,
-                }
-                for row in rows
-            ]
+            return [self._serialize_sizing_row(row) for row in rows]
         except Exception:
             return []
+
+    def get_latest_sizing_recommendation_per_symbol(self, mode='paper'):
+        """Retourne la recommandation de sizing la PLUS RÉCENTE pour chaque symbole.
+
+        Garantit qu'aucune paire n'est masquée par une paire plus active (ex: BTC),
+        contrairement à un simple LIMIT global. Un balayage suffit car les lignes
+        sont triées par timestamp décroissant: la première vue d'un symbole est sa
+        plus récente."""
+        try:
+            with self._orm_session() as session:
+                rows = session.scalars(
+                    select(MlSizingRecommendation)
+                    .where(MlSizingRecommendation.mode == mode)
+                    .order_by(MlSizingRecommendation.timestamp.desc())
+                ).all()
+            by_symbol = {}
+            for row in rows:
+                if row.symbol and row.symbol not in by_symbol:
+                    by_symbol[row.symbol] = self._serialize_sizing_row(row)
+            return by_symbol
+        except Exception:
+            return {}
 
     def count_decision_journal(self, mode='paper'):
         try:

@@ -52,7 +52,10 @@ class HealthManager:
                 wal_size_mb = round(os.path.getsize(wal_file) / (1024 * 1024), 2)
 
             status = 'OK'
-            if latency_ms > 1000 or wal_size_mb > 50.0:
+            # Seuils tolérants: SQLite peut avoir des pics transitoires (WAL, écritures concurrentes)
+            db_warn_ms = float(os.getenv('HEALTH_DB_WARN_MS', '3000'))
+            db_warn_wal_mb = float(os.getenv('HEALTH_DB_WARN_WAL_MB', '100'))
+            if latency_ms > db_warn_ms or wal_size_mb > db_warn_wal_mb:
                 status = 'WARN'
 
             return {

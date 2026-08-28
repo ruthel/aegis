@@ -38,6 +38,8 @@ class MLEngine:
         self.exit_scaler = None
         self.sizing_model = None
         self.sizing_scaler = None
+        self.target_model = None
+        self.target_scaler = None
         self.feature_names = [
             'rsi_14', 'ema9_slope', 'ema20_slope', 'ema_cross_diff',
             'atr_percent', 'volume_ratio', 'candle_body_pct', 'candle_wick_top',
@@ -47,9 +49,8 @@ class MLEngine:
             # Nouveaux indicateurs Multi-Timeframe (5m & 1H)
             'rsi_5m', 'ema9_slope_5m', 'price_change_3b_5m', 'candle_body_pct_5m',
             'rsi_1h', 'ema20_slope_1h', 'ema50_slope_1h', 'price_change_3b_1h',
-            # Paramètres de trade connus au moment de l'entrée
-            'fee_rate_bps', 'position_value_usd', 'position_value_pct_balance',
-            'planned_hold_minutes', 'planned_exit_hour',
+            # Paramètre de trade connu au moment de l'entrée (les 4 autres retirés: importance nulle)
+            'planned_exit_hour',
             # Contexte/verrous du bot exposés au ML
             'symbol_regime_code', 'btc_regime_code', 'bear_mode',
             'reversal_confirmed', 'falling_knife_active',
@@ -72,6 +73,10 @@ class MLEngine:
             'momentum_decay_3b', 'upper_wick_rejection_ratio',
             'distance_to_ema20_pct', 'ema20_rejection_active',
             'rsi_rebound_strength', 'rebound_stall_score',
+            # Features rapides ajoutées (cassure/momentum court terme) — en fin de schéma
+            'ema20_breakout_15m', 'ema9_cross_ema20_15m', 'breakout_high_20b', 'price_vs_vwap_pct',
+            'ema9_cross_ema20_5m', 'momentum_accel_5m', 'volume_surge_5m', 'consecutive_green_5m',
+            'short_tf_alignment', 'rsi_rising_5m_15m',
         ]
         self.exit_feature_names = [
             'entry_p_win', 'continuation_score', 'gross_pnl_pct', 'net_pnl_pct',
@@ -90,10 +95,13 @@ class MLEngine:
             'technical_confidence_edge'
         ]
         self.sizing_feature_names = list(self.feature_names)
+        # Le modèle P_target réutilise les mêmes features d'entrée que P_win/sizing
+        self.target_feature_names = list(self.feature_names)
         
         self.is_trained = False
         self.is_exit_trained = False
         self.is_sizing_trained = False
+        self.is_target_trained = False
         self.load_model()
 
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
@@ -261,6 +269,23 @@ class MLEngine:
 
     def _align_sizing_features_for_loaded_model(self, features: np.ndarray) -> np.ndarray:
         expected = self._sizing_model_feature_count()
+        if len(features) == expected:
+            return features
+        if len(features) > expected:
+            return features[:expected]
+        padded = np.zeros(expected, dtype=np.float64)
+        padded[:len(features)] = features
+        return padded
+
+    def _target_model_feature_count(self) -> int:
+        if self.target_scaler is not None and hasattr(self.target_scaler, 'n_features_in_'):
+            return int(self.target_scaler.n_features_in_)
+        if self.target_model is not None and hasattr(self.target_model, 'n_features_in_'):
+            return int(self.target_model.n_features_in_)
+        return len(self.target_feature_names)
+
+    def _align_target_features_for_loaded_model(self, features: np.ndarray) -> np.ndarray:
+        expected = self._target_model_feature_count()
         if len(features) == expected:
             return features
         if len(features) > expected:
@@ -501,17 +526,46 @@ class MLEngine:
                 opens_5m = np.array([float(k['open']) for k in klines_5m], dtype=np.float64)
                 highs_5m = np.array([float(k['high']) for k in klines_5m], dtype=np.float64)
                 lows_5m = np.array([float(k['low']) for k in klines_5m], dtype=np.float64)
+                volumes_5m = np.array([float(k.get('volume', 0.0) or 0.0) for k in klines_5m], dtype=np.float64)
 
                 rsi_5m = self._calc_rsi(closes_5m, 14)
                 ema9_slope_5m = self._calc_ema_slope(closes_5m, 9)
                 price_change_3b_5m = (closes_5m[-1] - closes_5m[-4]) / (closes_5m[-4] + 1e-9) * 100.0 if len(closes_5m) >= 4 else 0.0
                 c_range_5m = highs_5m[-1] - lows_5m[-1] + 1e-9
                 candle_body_pct_5m = abs(closes_5m[-1] - opens_5m[-1]) / c_range_5m
+
+                # --- GROUPE B: momentum/accélération 5m (features rapides) ---
+                ema9_5m = np.mean(closes_5m[-9:])
+                ema20_5m = np.mean(closes_5m[-20:]) if len(closes_5m) >= 20 else np.mean(closes_5m)
+                ema9_prev_5m = np.mean(closes_5m[-10:-1])
+                ema20_prev_5m = np.mean(closes_5m[-21:-1]) if len(closes_5m) >= 21 else ema20_5m
+                # Croisement haussier frais EMA9>EMA20 sur 5m (était sous, passe au-dessus)
+                ema9_cross_ema20_5m = 1.0 if (ema9_5m > ema20_5m and ema9_prev_5m <= ema20_prev_5m) else 0.0
+                # Accélération: momentum 3 dernières bougies vs 3 précédentes
+                chg_recent_5m = (closes_5m[-1] - closes_5m[-4]) / (closes_5m[-4] + 1e-9) * 100.0 if len(closes_5m) >= 4 else 0.0
+                chg_prior_5m = (closes_5m[-4] - closes_5m[-7]) / (closes_5m[-7] + 1e-9) * 100.0 if len(closes_5m) >= 7 else 0.0
+                momentum_accel_5m = float(chg_recent_5m - chg_prior_5m)
+                # Expansion de volume 5m
+                avg_vol_5m = np.mean(volumes_5m[-20:]) if len(volumes_5m) >= 20 else (np.mean(volumes_5m) if len(volumes_5m) else 0.0)
+                volume_surge_5m = float(volumes_5m[-1] / (avg_vol_5m + 1e-9)) if avg_vol_5m > 0 else 1.0
+                # Bougies vertes consécutives (jusqu'à 5)
+                consecutive_green_5m = 0.0
+                for i in range(len(closes_5m) - 1, max(-1, len(closes_5m) - 6), -1):
+                    if closes_5m[i] > opens_5m[i]:
+                        consecutive_green_5m += 1.0
+                    else:
+                        break
+                rsi_prev_5m = self._calc_rsi(closes_5m[:-1], 14) if len(closes_5m) >= 16 else rsi_5m
             else:
                 rsi_5m = rsi
                 ema9_slope_5m = ema9_slope
                 price_change_3b_5m = price_change_3b / 3.0
                 candle_body_pct_5m = candle_body_pct
+                ema9_cross_ema20_5m = 0.0
+                momentum_accel_5m = 0.0
+                volume_surge_5m = 1.0
+                consecutive_green_5m = 0.0
+                rsi_prev_5m = rsi_5m
 
             # =========================================================================
             # MULTI-TIMEFRAMES : FEATURES 1H (MACRO)
@@ -557,6 +611,43 @@ class MLEngine:
                 closes, opens, highs, lows, volumes, px, ema20, rsi, price_change_3b
             )
 
+            # =========================================================================
+            # GROUPE A : CASSURE / FRANCHISSEMENT (signaux rapides "ça repart maintenant")
+            # =========================================================================
+            # Cassure fraîche de l'EMA20 15m: le prix était sous l'EMA20 à la bougie
+            # précédente et repasse au-dessus maintenant (pas juste "au-dessus depuis longtemps")
+            ema20_prev = np.mean(closes[-21:-1]) if len(closes) >= 21 else ema20
+            ema20_breakout_15m = 1.0 if (closes[-1] > ema20 and closes[-2] <= ema20_prev) else 0.0
+            # Croisement haussier frais EMA9>EMA20 sur 15m
+            ema9_prev = np.mean(closes[-10:-1]) if len(closes) >= 10 else ema9
+            ema9_cross_ema20_15m = 1.0 if (ema9 > ema20 and ema9_prev <= ema20_prev) else 0.0
+            # Cassure du plus haut des 20 dernières bougies (breakout de range)
+            prev_high_20 = float(np.max(highs[-21:-1])) if len(highs) >= 21 else max_high_20
+            breakout_high_20b = 1.0 if px > prev_high_20 else 0.0
+            # Position du prix vs VWAP (approx sur la fenêtre disponible): pression acheteuse
+            typical = (highs + lows + closes) / 3.0
+            vwap_window = min(len(closes), 30)
+            vol_slice = volumes[-vwap_window:]
+            tp_slice = typical[-vwap_window:]
+            vwap = float(np.sum(tp_slice * vol_slice) / (np.sum(vol_slice) + 1e-9)) if np.sum(vol_slice) > 0 else float(np.mean(tp_slice))
+            price_vs_vwap_pct = (float(px) - vwap) / (vwap + 1e-9) * 100.0
+
+            # =========================================================================
+            # GROUPE C : CONFIRMATION MULTI-TF COURT TERME (5m + 15m, avant confirmation lente)
+            # =========================================================================
+            # Alignement haussier des timeframes COURTS uniquement (5m + 15m)
+            short_frames = [
+                ema9_slope_5m > 0,
+                price_change_3b_5m > 0,
+                ema9_slope > 0,
+                ema20_slope > 0,
+                price_change_3b > 0,
+            ]
+            short_tf_alignment = float(sum(1 if f else 0 for f in short_frames)) / len(short_frames) * 100.0
+            # RSI qui monte simultanément sur 5m et 15m (momentum d'oscillateur naissant)
+            rsi_prev_15m = self._calc_rsi(closes[:-1], 14) if len(closes) >= 16 else rsi
+            rsi_rising_5m_15m = 1.0 if (rsi_5m > rsi_prev_5m and rsi > rsi_prev_15m) else 0.0
+
             features = np.array([
                 rsi, ema9_slope, ema20_slope, ema_cross_diff,
                 atr_percent, volume_ratio, candle_body_pct, candle_wick_top,
@@ -566,10 +657,6 @@ class MLEngine:
                 # Multi-Timeframe 5m & 1H
                 rsi_5m, ema9_slope_5m, price_change_3b_5m, candle_body_pct_5m,
                 rsi_1h, ema20_slope_1h, ema50_slope_1h, price_change_3b_1h,
-                trade_features['fee_rate_bps'],
-                trade_features['position_value_usd'],
-                trade_features['position_value_pct_balance'],
-                trade_features['planned_hold_minutes'],
                 trade_features['planned_exit_hour'],
                 bot_features['symbol_regime_code'],
                 bot_features['btc_regime_code'],
@@ -607,6 +694,13 @@ class MLEngine:
                 rebound_features['ema20_rejection_active'],
                 rebound_features['rsi_rebound_strength'],
                 rebound_features['rebound_stall_score'],
+                # === Features rapides ajoutées (cassure/momentum court terme) ===
+                # Groupe A: cassure/franchissement (15m)
+                ema20_breakout_15m, ema9_cross_ema20_15m, breakout_high_20b, price_vs_vwap_pct,
+                # Groupe B: momentum/accélération (5m)
+                ema9_cross_ema20_5m, momentum_accel_5m, volume_surge_5m, consecutive_green_5m,
+                # Groupe C: confirmation court terme (5m+15m)
+                short_tf_alignment, rsi_rising_5m_15m,
             ], dtype=np.float64)
 
             return features
@@ -626,8 +720,15 @@ class MLEngine:
             return False
 
         try:
+            from sklearn.model_selection import train_test_split
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+            # Split train/test pour évaluer
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y if len(set(y)) > 1 else None)
+            
             self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X)
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
 
             self.model = RandomForestClassifier(
                 n_estimators=n_estimators,
@@ -635,10 +736,40 @@ class MLEngine:
                 min_samples_split=min_samples_split,
                 criterion=criterion,
                 random_state=42,
-                n_jobs=-1
+                n_jobs=-1,
+                oob_score=True
             )
-            self.model.fit(X_scaled, y, sample_weight=sample_weight)
+            sw_train = sample_weight[:len(X_train)] if sample_weight is not None else None
+            self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
             self.is_trained = True
+
+            # Calculer et stocker les métriques
+            y_pred = self.model.predict(X_test_scaled)
+            test_acc = accuracy_score(y_test, y_pred) * 100
+            test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
+            test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
+            test_f1 = f1_score(y_test, y_pred, zero_division=0) * 100
+            train_acc = self.model.score(X_train_scaled, y_train) * 100
+            oob = self.model.oob_score_ * 100 if hasattr(self.model, 'oob_score_') else None
+
+            self.model_metadata = {
+                'trained_at': datetime.now().isoformat(),
+                'n_features': int(X.shape[1]),
+                'exit_n_features': len(self.exit_feature_names),
+                'train_samples': int(len(X)),
+                'train_win_rate': f"{int(sum(y))/len(y)*100:.1f}%",
+                'test_accuracy': round(test_acc, 1),
+                'test_precision': round(test_prec, 1),
+                'test_recall': round(test_recall, 1),
+                'test_f1': round(test_f1, 1),
+                'train_accuracy': round(train_acc, 1),
+                'oob_score': round(oob, 1) if oob else None,
+            }
+
+            # Ré-entraîner sur toutes les données pour le modèle final
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X)
+            self.model.fit(X_scaled, y, sample_weight=sample_weight)
 
             self.save_model()
             return True
@@ -786,6 +917,105 @@ class MLEngine:
         except Exception as e:
             self.logger.error(f"Erreur entraînement ML sizing: {e}")
             return False
+
+    def train_target_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 8, min_samples_split: int = 10) -> bool:
+        """Entraîne le modèle P_target: régresseur du gain maximum atteignable (%) d'un trade.
+
+        y = pour chaque sample, le meilleur gain net % observé pendant le hold
+        (max favorable excursion). Sert à poser un take-profit intelligent."""
+        if not SKLEARN_AVAILABLE:
+            return False
+        if len(X) < 30:
+            self.logger.warning("Données insuffisantes pour entraîner le modèle ML P_target.")
+            return False
+        try:
+            self.target_scaler = StandardScaler()
+            X_scaled = self.target_scaler.fit_transform(X)
+            self.target_model = RandomForestRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_split=min_samples_split,
+                random_state=45,
+                n_jobs=-1
+            )
+            self.target_model.fit(X_scaled, y)
+            self.is_target_trained = True
+            self.save_model()
+            return True
+        except Exception as e:
+            self.logger.error(f"Erreur entraînement ML P_target: {e}")
+            return False
+
+    def predict_target(
+        self,
+        features: Optional[np.ndarray] = None,
+        klines: Optional[List[Dict]] = None,
+        current_price: Optional[float] = None,
+        klines_5m: Optional[List[Dict]] = None,
+        klines_1h: Optional[List[Dict]] = None,
+        klines_4h: Optional[List[Dict]] = None,
+        klines_1d: Optional[List[Dict]] = None,
+        trade_context: Optional[Dict] = None,
+        bot_context: Optional[Dict] = None
+    ) -> Dict:
+        """Prédit le gain net maximum réaliste (%) atteignable par un trade à l'entrée.
+
+        Retourne un take-profit cible clampé à des bornes prudentes. Utilisé pour
+        sécuriser les gains avant qu'ils ne s'évaporent (P_exit reste le filet)."""
+        min_target = float(os.getenv('ML_TARGET_MIN_PCT', '0.8'))
+        max_target = float(os.getenv('ML_TARGET_MAX_PCT', '12.0'))
+
+        if not self.is_target_trained or self.target_model is None or not SKLEARN_AVAILABLE:
+            return {
+                'ml_target_available': False,
+                'target_gain_pct': None,
+                'reason': 'target_model_untrained'
+            }
+
+        if features is None:
+            if not klines:
+                return {
+                    'ml_target_available': False,
+                    'target_gain_pct': None,
+                    'reason': 'target_features_unavailable'
+                }
+            features = self.extract_features_from_klines(
+                klines,
+                current_price,
+                klines_5m=klines_5m,
+                klines_1h=klines_1h,
+                klines_4h=klines_4h,
+                klines_1d=klines_1d,
+                trade_context=trade_context,
+                bot_context=bot_context
+            )
+        if features is None:
+            return {
+                'ml_target_available': False,
+                'target_gain_pct': None,
+                'reason': 'target_features_unavailable'
+            }
+
+        try:
+            features = self._align_target_features_for_loaded_model(features)
+            X = features.reshape(1, -1)
+            if self.target_scaler is not None:
+                X = self.target_scaler.transform(X)
+            raw_target = float(self.target_model.predict(X)[0])
+            target_gain_pct = max(min_target, min(max_target, raw_target))
+            return {
+                'ml_target_available': True,
+                'target_gain_pct': round(target_gain_pct, 3),
+                'raw_target_gain_pct': round(raw_target, 3),
+                'reason': f'ml_target_+{target_gain_pct:.2f}%'
+            }
+        except Exception as e:
+            self.logger.error(f"Erreur prédiction ML P_target: {e}")
+            return {
+                'ml_target_available': False,
+                'target_gain_pct': None,
+                'reason': 'target_prediction_error'
+            }
 
     def predict_position_size_factor(
         self,
@@ -978,7 +1208,10 @@ class MLEngine:
                 'exit_model': self.exit_model,
                 'exit_scaler': self.exit_scaler,
                 'sizing_model': self.sizing_model,
-                'sizing_scaler': self.sizing_scaler
+                'sizing_scaler': self.sizing_scaler,
+                'target_model': self.target_model,
+                'target_scaler': self.target_scaler,
+                'model_metadata': getattr(self, 'model_metadata', None),
             }, self.model_path)
 
             importance = {}
@@ -991,6 +1224,9 @@ class MLEngine:
                 'feature_importance': sorted(importance.items(), key=lambda x: x[1], reverse=True),
                 'n_features': len(self.feature_names)
             }
+            # Merger les métriques de test si disponibles
+            if hasattr(self, 'model_metadata') and isinstance(self.model_metadata, dict):
+                metadata.update(self.model_metadata)
             if self.exit_model is not None and hasattr(self.exit_model, 'feature_importances_'):
                 exit_importance = {}
                 for name, imp in zip(self.exit_feature_names, self.exit_model.feature_importances_):
@@ -1003,6 +1239,12 @@ class MLEngine:
                     sizing_importance[name] = round(float(imp), 4)
                 metadata['sizing_feature_importance'] = sorted(sizing_importance.items(), key=lambda x: x[1], reverse=True)
                 metadata['sizing_n_features'] = len(self.sizing_feature_names)
+            if self.target_model is not None and hasattr(self.target_model, 'feature_importances_'):
+                target_importance = {}
+                for name, imp in zip(self.target_feature_names, self.target_model.feature_importances_):
+                    target_importance[name] = round(float(imp), 4)
+                metadata['target_feature_importance'] = sorted(target_importance.items(), key=lambda x: x[1], reverse=True)
+                metadata['target_n_features'] = len(self.target_feature_names)
             try:
                 if os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
                     return True
@@ -1034,15 +1276,21 @@ class MLEngine:
             self.exit_scaler = data.get('exit_scaler')
             self.sizing_model = data.get('sizing_model')
             self.sizing_scaler = data.get('sizing_scaler')
+            self.target_model = data.get('target_model')
+            self.target_scaler = data.get('target_scaler')
             if self.model is not None and hasattr(self.model, 'n_jobs'):
                 self.model.n_jobs = 1
             if self.exit_model is not None and hasattr(self.exit_model, 'n_jobs'):
                 self.exit_model.n_jobs = 1
             if self.sizing_model is not None and hasattr(self.sizing_model, 'n_jobs'):
                 self.sizing_model.n_jobs = 1
+            if self.target_model is not None and hasattr(self.target_model, 'n_jobs'):
+                self.target_model.n_jobs = 1
             self.is_trained = self.model is not None
             self.is_exit_trained = self.exit_model is not None
             self.is_sizing_trained = self.sizing_model is not None
+            self.is_target_trained = self.target_model is not None
+            self.model_metadata = data.get('model_metadata') or {}
 
             # Re-publier les feature importances en BD au chargement (ex: après reset DB)
             try:
@@ -1067,6 +1315,12 @@ class MLEngine:
                         sizing_importance[name] = round(float(imp), 4)
                     metadata['sizing_feature_importance'] = sorted(sizing_importance.items(), key=lambda x: x[1], reverse=True)
                     metadata['sizing_n_features'] = len(self.sizing_feature_names)
+                if self.target_model is not None and hasattr(self.target_model, 'feature_importances_'):
+                    target_importance = {}
+                    for name, imp in zip(self.target_feature_names, self.target_model.feature_importances_):
+                        target_importance[name] = round(float(imp), 4)
+                    metadata['target_feature_importance'] = sorted(target_importance.items(), key=lambda x: x[1], reverse=True)
+                    metadata['target_n_features'] = len(self.target_feature_names)
                 if not os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
                     from core.ml_live_logger import MLLiveLogger
                     with MLLiveLogger(

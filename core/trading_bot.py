@@ -1480,28 +1480,42 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         decision = exit_result.get('decision')
 
         if decision in ('FORCE_EXIT', 'TAKE_PROFIT'):
-            if not self._cancel_sell_orders_for_symbol(symbol):
-                return False
+            # Le cancel ne doit pas bloquer la vente s'il échoue
+            try:
+                self._cancel_sell_orders_for_symbol(symbol)
+            except Exception as e:
+                print(f"⚠️ Cancel sell orders échoué {symbol} (on continue): {e}")
             
             # Déterminer le montant à vendre
             base_currency = symbol.split('/')[0]
             position_data = self.trailing_stop_manager.positions.get(symbol, {})
             pos_amount = float(position_data.get('amount') or position_data.get('position_size_crypto') or 0.0)
             
+            # En live: se fier UNIQUEMENT à la balance réelle Kraken (pas au montant tracké)
+            # car le crypto a pu être vendu ailleurs (dashboard, manuel, autre process)
             if self.paper_trading:
                 balance = self.balance_manager.get_balance(force_refresh=True)
                 available = balance.get(base_currency, {}).get('free', 0)
                 sell_amount = max(available, pos_amount)
             else:
-                # Fast path live: balance sans ledger sync (économise ~3-5s)
                 balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=True)
                 available = balance.get(base_currency, {}).get('free', 0)
-                # Après annulation d'un limit sell, le crypto est libre dans 'available'
-                sell_amount = available
+                sell_amount = available  # NE PAS fallback sur pos_amount en live
             
-            if sell_amount <= 0.00001:
+            # Vérifier le minimum exchange
+            try:
+                min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
+                min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
+            except Exception:
+                min_amount, min_cost = 0.00001, 0.5
+            
+            if sell_amount < min_amount or (sell_amount * current_price) < min_cost:
+                # Sécurité: crypto déjà vendu entre l'hydratation et maintenant → retirer du suivi
+                self.trailing_stop_manager.remove_position(symbol)
                 return False
-            if self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}"):
+            print(f"🔴 ML EXIT {symbol}: {decision} → vente de {sell_amount:.8f} {base_currency}")
+            order = self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}")
+            if order:
                 self.trailing_stop_manager.remove_position(symbol)
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason=f"ml_exit_{decision.lower()}")
@@ -1517,12 +1531,15 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     throttle_seconds=0
                 )
                 return True
+            else:
+                print(f"⚠️ ML EXIT {symbol}: vente échouée (sera retentée au prochain tick)")
             return False
 
         return False
 
     def _rehydrate_open_positions_for_exit_evaluation(self):
-        """Re-hydrate les positions ouvertes dans trailing_stop_manager pour l'évaluation de sortie ML."""
+        """Re-hydrate les positions ouvertes dans trailing_stop_manager pour l'évaluation de sortie ML.
+        Ignore les montants inférieurs au minimum exchange (poussière / positions fantômes)."""
         if not hasattr(self, 'trailing_stop_manager') or not self.trailing_stop_manager:
             return
         open_pos = self.get_open_positions()
@@ -1530,18 +1547,172 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
                 entry_price = float(data.get('entry_price', 0.0) or 0.0)
                 amount = float(data.get('amount', 0.0) or 0.0)
-                if entry_price > 0 and amount > 0:
-                    self.trailing_stop_manager.positions[symbol] = {
-                        'entry_price': entry_price,
-                        'buy_price': entry_price,
-                        'avg_entry_price': entry_price,
-                        'price': entry_price,
-                        'highest_price': entry_price,
-                        'stop_price': entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0),
-                        'trailing_active': False,
-                        'amount': amount,
-                        'buy_time': time.time()
-                    }
+                if entry_price <= 0 or amount <= 0:
+                    continue
+                # Ignorer la poussière: si le montant est sous le minimum exchange, ne pas suivre
+                try:
+                    min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
+                    min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
+                except Exception:
+                    min_amount, min_cost = 0.00001, 0.5
+                if amount < min_amount or (amount * entry_price) < min_cost:
+                    continue
+                # Récupérer le take-profit P_target depuis l'enregistrement persistant si présent
+                target_gain_pct = None
+                try:
+                    for p in reversed(self.state.get('positions', [])):
+                        if p.get('symbol') == symbol and p.get('side') == 'buy' and p.get('ml_target_gain_pct') is not None:
+                            target_gain_pct = float(p['ml_target_gain_pct'])
+                            break
+                except Exception:
+                    target_gain_pct = None
+                self.trailing_stop_manager.positions[symbol] = {
+                    'entry_price': entry_price,
+                    'buy_price': entry_price,
+                    'avg_entry_price': entry_price,
+                    'price': entry_price,
+                    'highest_price': entry_price,
+                    'stop_price': entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0),
+                    'trailing_active': False,
+                    'amount': amount,
+                    'target_gain_pct': target_gain_pct,
+                    'buy_time': time.time()
+                }
+
+    def _check_take_profit_target(self, symbol, current_price, position):
+        """Take-profit intelligent P_target: vend quand le gain net atteint la cible
+        prédite par le modèle P_target à l'entrée. Sécurise les gains avant qu'ils
+        ne s'évaporent. Le P_exit reste le filet de sécurité si la cible n'est jamais atteinte.
+        Retourne True si vente forcée effectuée."""
+        if not os.getenv('ML_TAKE_PROFIT_ENABLED', 'true').lower() == 'true':
+            return False
+
+        target_gain_pct = position.get('target_gain_pct')
+        if target_gain_pct is None or float(target_gain_pct) <= 0:
+            return False
+        target_gain_pct = float(target_gain_pct)
+
+        entry_price = float(position.get('entry_price') or position.get('buy_price') or position.get('avg_entry_price') or 0)
+        if entry_price <= 0:
+            return False
+
+        fee_rate = float(getattr(self, 'trading_fee', 0) or float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0)
+        breakeven_price = entry_price * (1 + fee_rate) / (1 - fee_rate)
+        net_pnl_pct = ((current_price - breakeven_price) / entry_price) * 100.0
+
+        # Cible non atteinte -> laisser courir (le trailing/breakeven/P_exit gèrent le reste)
+        if net_pnl_pct < target_gain_pct:
+            return False
+
+        base_currency = symbol.split('/')[0]
+        balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=not self.paper_trading)
+        available = balance.get(base_currency, {}).get('free', 0)
+        try:
+            min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
+            min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
+        except Exception:
+            min_amount, min_cost = 0.00001, 0.5
+
+        if self.paper_trading:
+            sell_amount = available if available > min_amount else float(position.get('amount') or 0)
+        else:
+            sell_amount = available
+        position_value = sell_amount * current_price
+
+        if sell_amount < min_amount or position_value < min_cost:
+            self.trailing_stop_manager.remove_position(symbol)
+            return False
+
+        print(f"🎯 TAKE-PROFIT {symbol}: gain net {net_pnl_pct:+.2f}% >= cible P_target {target_gain_pct:+.2f}% → Vente")
+        order = self.sell_market(symbol, sell_amount, reason=f"take_profit_target_{target_gain_pct:.1f}pct")
+        self.trailing_stop_manager.remove_position(symbol)
+        if order:
+            if hasattr(self, 'set_symbol_cooldown'):
+                self.set_symbol_cooldown(symbol, reason='take_profit_target')
+            self.record_decision(
+                symbol, 'sell', True, "take_profit_target",
+                {'price': current_price, 'net_pnl_pct': net_pnl_pct, 'target_gain_pct': target_gain_pct},
+                throttle_seconds=0
+            )
+        return True
+
+    def _check_dynamic_breakeven_lock(self, symbol, current_price, position):
+        """
+        Breakeven Dynamique par paliers:
+        - Profit 0.35-0.80% net → plancher = breakeven (0%)
+        - Profit 0.80-1.50% net → plancher = 50% du plus haut gain
+        - Profit > 1.50% net → plancher = 70% du plus haut gain
+        Retourne True si vente forcée effectuée.
+        """
+        if not os.getenv('DYNAMIC_BREAKEVEN_ENABLED', 'true').lower() == 'true':
+            return False
+
+        entry_price = float(position.get('entry_price') or position.get('buy_price') or position.get('avg_entry_price') or 0)
+        if entry_price <= 0:
+            return False
+
+        fee_rate = float(getattr(self, 'trading_fee', 0) or float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0)
+        breakeven_price = entry_price * (1 + fee_rate) / (1 - fee_rate)
+        net_pnl_pct = ((current_price - breakeven_price) / entry_price) * 100.0
+
+        # Tracker le plus haut PnL net atteint
+        highest_net_pnl = float(position.get('highest_net_pnl_pct') or 0.0)
+        if net_pnl_pct > highest_net_pnl:
+            position['highest_net_pnl_pct'] = net_pnl_pct
+            highest_net_pnl = net_pnl_pct
+
+        # Seuil d'activation
+        activation_pct = float(os.getenv('BREAKEVEN_ACTIVATION_PCT', '0.35'))
+        if highest_net_pnl < activation_pct:
+            return False  # Pas encore assez de profit pour activer
+
+        # Calculer le plancher dynamique par paliers
+        if highest_net_pnl >= 1.50:
+            floor_pct = highest_net_pnl * 0.70  # Verrouiller 70%
+        elif highest_net_pnl >= 0.80:
+            floor_pct = highest_net_pnl * 0.50  # Verrouiller 50%
+        else:
+            floor_pct = 0.0  # Juste protéger le breakeven
+
+        # Si le PnL actuel est sous le plancher → vente forcée
+        if net_pnl_pct <= floor_pct:
+            base_currency = symbol.split('/')[0]
+            balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=not self.paper_trading)
+            available = balance.get(base_currency, {}).get('free', 0)
+            
+            # Récupérer le vrai min amount de l'exchange pour ce symbole
+            try:
+                min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
+                min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
+            except Exception:
+                min_amount, min_cost = 0.00001, 0.5
+
+            # En live: se fier à la balance réelle Kraken. En paper: fallback sur montant tracké.
+            if self.paper_trading:
+                sell_amount = available if available > min_amount else float(position.get('amount') or 0)
+            else:
+                sell_amount = available
+            position_value = sell_amount * current_price
+
+            # Sécurité: crypto déjà vendu entre l'hydratation et maintenant → retirer du suivi
+            if sell_amount < min_amount or position_value < min_cost:
+                self.trailing_stop_manager.remove_position(symbol)
+                return False
+
+            print(f"🔒 BREAKEVEN LOCK {symbol}: PnL {net_pnl_pct:+.2f}% < plancher {floor_pct:+.2f}% (plus haut: {highest_net_pnl:+.2f}%) → Vente forcée")
+            order = self.sell_market(symbol, sell_amount, reason=f"breakeven_lock_{floor_pct:.1f}pct")
+            # Retirer la position dans TOUS les cas (succès ou échec) pour éviter la boucle infinie
+            self.trailing_stop_manager.remove_position(symbol)
+            if order:
+                if hasattr(self, 'set_symbol_cooldown'):
+                    self.set_symbol_cooldown(symbol, reason='breakeven_lock')
+                self.record_decision(
+                    symbol, 'sell', True, f"breakeven_lock",
+                    {'price': current_price, 'net_pnl_pct': net_pnl_pct, 'floor_pct': floor_pct, 'highest_net_pnl': highest_net_pnl},
+                    throttle_seconds=0
+                )
+            return True
+        return False
 
     def _update_trailing_stop_from_tick(self, symbol, current_price):
         """Évalue la sortie ML dès le tick WebSocket, sans attendre la boucle principale."""
@@ -1553,6 +1724,15 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 return
 
         try:
+            # Take-Profit P_target: sécurise le gain dès que la cible prédite est atteinte
+            position = self.trailing_stop_manager.positions[symbol]
+            if self._check_take_profit_target(symbol, current_price, position):
+                return  # Vente take-profit effectuée
+
+            # Dynamic Breakeven Lock: protège les profits acquis
+            if self._check_dynamic_breakeven_lock(symbol, current_price, position):
+                return  # Vente forcée effectuée, pas besoin d'évaluer le ML
+
             ml_owns_exits = os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true'
             changed = False if ml_owns_exits else self.trailing_stop_manager.update_position(symbol, current_price)
             eval_res = self._evaluate_exit_engine_for_symbol(symbol, current_price)
@@ -2109,6 +2289,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         )
                 position_data['sizing_reason'] = sizing_info['sizing_reason']
                 position_data['ml_buy_prob'] = ml_win_prob
+
+                # P_target: prédire le gain maximum réaliste et poser un take-profit intelligent
+                if hasattr(self.ml_engine, 'predict_target'):
+                    try:
+                        ml_target = self.ml_engine.predict_target(features=ml_entry_features)
+                        if ml_target.get('ml_target_available') and ml_target.get('target_gain_pct') is not None:
+                            target_gain_pct = float(ml_target['target_gain_pct'])
+                            position_data['ml_target_gain_pct'] = round(target_gain_pct, 3)
+                            position_data['ml_target_price'] = round(current_price * (1 + target_gain_pct / 100.0), 8)
+                            position_data['ml_target_reason'] = ml_target.get('reason')
+                    except Exception as _target_ex:
+                        print(f"⚠️ P_target prédiction échouée {symbol}: {_target_ex}")
+
                 if ml_sizing:
                     position_data['ml_sizing_factor'] = ml_sizing.get('sizing_factor')
                     position_data['ml_sizing_reason'] = ml_sizing.get('reason')

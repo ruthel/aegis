@@ -12,9 +12,12 @@ import shutil
 import argparse
 import sqlite3
 import time
+import json
+import gzip
 from datetime import datetime, timedelta, timezone
 import numpy as np
 import ccxt
+import requests
 from dotenv import load_dotenv
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -30,6 +33,86 @@ from core.ml_live_logger import MLLiveLogger
 from core.managers.notification import NotificationManager
 from utils.pattern_analyzer import PatternAnalyzer
 from scripts.backtest_support_touch import detect_trade_signal, simulate_trade
+
+
+def detect_trade_signal_augmented(pattern_analyzer, history, current_price):
+    """Détecte plus de types de signaux pour augmenter le dataset d'entraînement.
+    Retourne le signal du support/breakout d'abord, sinon teste des signaux additionnels."""
+    # 1. Signaux existants (support touch + breakout)
+    sig = detect_trade_signal(pattern_analyzer, history, current_price)
+    if sig:
+        return sig
+
+    if len(history) < 25:
+        return None
+
+    closes = [float(k['close']) for k in history]
+    highs = [float(k['high']) for k in history]
+    lows = [float(k['low']) for k in history]
+    opens = [float(k['open']) for k in history]
+
+    # Filtre commun: pas d'achat en chute rapide
+    if closes[-1] < opens[-1] and (opens[-1] - closes[-1]) / opens[-1] >= 0.008:
+        return None
+
+    # 2. SIGNAL: Pullback sur EMA20 en tendance haussière (le prix touche l'EMA20 par le haut)
+    ema20 = sum(closes[-20:]) / 20.0
+    ema20_prev = sum(closes[-23:-3]) / 20.0
+    ema20_rising = ema20 > ema20_prev
+    if ema20_rising and lows[-1] <= ema20 <= highs[-1] and closes[-1] >= ema20:
+        return {
+            'type': 'ema20_pullback',
+            'support_price': ema20 * 0.99,
+            'resistance_price': current_price * 1.02,
+            'rebounds': 1,
+            'confidence': 65,
+            'reason': f"Pullback EMA20 haussier @ {ema20:.2f}",
+        }
+
+    # 3. SIGNAL: Rebond RSI survente (RSI remonte au-dessus de 32 après avoir été < 30)
+    def _rsi(vals, period=14):
+        if len(vals) < period + 1:
+            return 50.0
+        gains, losses = [], []
+        for i in range(-period, 0):
+            d = vals[i] - vals[i - 1]
+            gains.append(max(0, d))
+            losses.append(max(0, -d))
+        ag = sum(gains) / period
+        al = sum(losses) / period
+        if al == 0:
+            return 100.0
+        rs = ag / al
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    rsi_now = _rsi(closes)
+    rsi_prev = _rsi(closes[:-1])
+    if rsi_prev < 30 and 30 <= rsi_now <= 45 and closes[-1] > closes[-2]:
+        return {
+            'type': 'rsi_oversold_rebound',
+            'support_price': min(lows[-10:]),
+            'resistance_price': current_price * 1.02,
+            'rebounds': 1,
+            'confidence': 62,
+            'reason': f"Rebond RSI survente ({rsi_now:.0f})",
+        }
+
+    # 4. SIGNAL: Croisement EMA9 au-dessus EMA20 (momentum haussier naissant)
+    ema9 = sum(closes[-9:]) / 9.0
+    ema9_prev = sum(closes[-10:-1]) / 9.0
+    ema20_prev1 = sum(closes[-21:-1]) / 20.0
+    crossed_up = ema9_prev <= ema20_prev1 and ema9 > ema20
+    if crossed_up and closes[-1] > opens[-1]:
+        return {
+            'type': 'ema_cross_up',
+            'support_price': ema20 * 0.99,
+            'resistance_price': current_price * 1.02,
+            'rebounds': 1,
+            'confidence': 63,
+            'reason': f"Croisement EMA9>EMA20 @ {current_price:.2f}",
+        }
+
+    return None
 
 
 def compute_guardrail_metrics(db_file):
@@ -272,37 +355,205 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
     }
 
 
-def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None):
-    if not start_date:
-        start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
-    dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    start_ts = int(dt.timestamp() * 1000)
+def _prune_model_backups(backups_dir, keep=10):
+    """Ne conserve que les `keep` archives de modèle les plus récentes dans backups_dir."""
+    try:
+        import glob
+        archives = glob.glob(os.path.join(backups_dir, 'aegis_model_*.joblib'))
+        archives.sort(reverse=True)  # horodatage YYYYMMDD_HHMMSS -> plus récent en premier
+        for old in archives[keep:]:
+            try:
+                os.remove(old)
+                print(f"  🧹 Ancien backup supprimé : {os.path.basename(old)}")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-    all_klines = []
-    since = start_ts
-    limit = 1000
 
-    while True:
+def _timeframe_ms(timeframe):
+    """Convertit un timeframe ('5m','15m','1h','1d') en millisecondes."""
+    units = {'m': 60_000, 'h': 3_600_000, 'd': 86_400_000}
+    try:
+        return int(timeframe[:-1]) * units[timeframe[-1]]
+    except (KeyError, ValueError):
+        return 15 * 60_000  # défaut 15m
+
+
+def _cache_path(symbol, timeframe):
+    """Chemin du fichier cache OHLCV pour un (symbole, timeframe)."""
+    cache_dir = os.getenv('ML_OHLCV_CACHE_DIR', os.path.join('data', 'ohlcv_cache'))
+    os.makedirs(cache_dir, exist_ok=True)
+    safe_symbol = symbol.replace('/', '-')
+    return os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.json.gz")
+
+
+def _load_cache(symbol, timeframe):
+    """Charge les bougies en cache (liste triée par timestamp), ou [] si absent/corrompu."""
+    import gzip
+    path = _cache_path(symbol, timeframe)
+    if not os.path.exists(path):
+        return []
+    try:
+        with gzip.open(path, 'rt', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception as e:
+        print(f"      ⚠️ Cache illisible {symbol} {timeframe} ({e}) → refetch complet")
+        return []
+
+
+def _save_cache(symbol, timeframe, klines):
+    """Sauvegarde les bougies en cache (gzip JSON, écriture atomique)."""
+    import gzip
+    path = _cache_path(symbol, timeframe)
+    tmp = path + '.tmp'
+    try:
+        with gzip.open(tmp, 'wt', encoding='utf-8') as f:
+            json.dump(klines, f, separators=(',', ':'))
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"      ⚠️ Échec sauvegarde cache {symbol} {timeframe}: {e}")
         try:
-            raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
-            if not raw:
-                break
-            for r in raw:
-                all_klines.append({
-                    'timestamp': r[0],
-                    'open': float(r[1]),
-                    'high': float(r[2]),
-                    'low': float(r[3]),
-                    'close': float(r[4]),
-                    'volume': float(r[5])
-                })
-            since = raw[-1][0] + 1
-            if len(raw) < limit or len(all_klines) >= 45000:
-                break
-            time.sleep(0.05)
+            if os.path.exists(tmp):
+                os.remove(tmp)
         except Exception:
-            break
+            pass
 
+
+def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=""):
+    """Fetch réseau brut des bougies OHLCV entre 'since' et 'end_ts' (avec retry robuste).
+    Retourne une liste de dicts. C'est le cœur réseau, sans logique de cache.
+    Affiche une progression en direct (barre qui se met à jour sur la même ligne)."""
+    fetched = []
+    seen = set()
+    consecutive_errors = 0
+    max_consecutive_errors = 6
+    span = max(1, end_ts - since)  # fenêtre temporelle totale à couvrir
+    start_since = since
+    iterations = 0
+    show_progress = os.getenv('ML_FETCH_PROGRESS', 'true').lower() == 'true'
+
+    def _render_progress(done_ratio):
+        pct = max(0.0, min(1.0, done_ratio)) * 100.0
+        bar_len = 24
+        filled = int(bar_len * pct / 100.0)
+        bar = '█' * filled + '░' * (bar_len - filled)
+        # \r pour réécrire sur la même ligne, pas de \n
+        sys.stdout.write(f"\r      {label} [{bar}] {pct:5.1f}% — {len(fetched)} bougies")
+        sys.stdout.flush()
+
+    while since < end_ts:
+        try:
+            klines = cb.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=300)
+            consecutive_errors = 0
+            if not klines:
+                break
+            new_count = 0
+            for k in klines:
+                ts = int(k[0])
+                if ts in seen:
+                    continue
+                seen.add(ts)
+                fetched.append({
+                    'timestamp': ts,
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5]),
+                })
+                new_count += 1
+            last = klines[-1][0]
+            if new_count == 0 or last <= since:
+                break
+            since = last + 1
+            iterations += 1
+            if show_progress and iterations % 5 == 0:
+                _render_progress((since - start_since) / span)
+            if len(fetched) >= max_candles:
+                break
+            time.sleep(cb.rateLimit / 1000)
+        except Exception as e:
+            if 'rate' in str(e).lower() or 'too many' in str(e).lower():
+                time.sleep(5)
+                continue
+            consecutive_errors += 1
+            if consecutive_errors >= max_consecutive_errors:
+                print(f"      ⚠️ Abandon fetch {symbol} {timeframe} après {consecutive_errors} erreurs consécutives: {e}")
+                break
+            backoff = min(30, 2 ** consecutive_errors)
+            # \n pour ne pas écraser le message d'erreur avec la barre de progression
+            if show_progress:
+                sys.stdout.write("\n")
+            print(f"      ⏳ Erreur transitoire {symbol} {timeframe} (retry {consecutive_errors}/{max_consecutive_errors} dans {backoff}s): {e}")
+            time.sleep(backoff)
+            since += 300 * _timeframe_ms(timeframe)
+            continue
+
+    # Terminer la barre proprement (100% + saut de ligne)
+    if show_progress and iterations >= 5:
+        _render_progress(1.0)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    return fetched
+
+
+def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None):
+    """Récupère l'historique OHLCV via Coinbase avec CACHE INCRÉMENTAL sur disque.
+
+    - Charge le cache existant (data/ohlcv_cache/SYMBOL_TF.json.gz)
+    - Ne télécharge QUE les bougies plus récentes que la dernière en cache (le delta)
+    - Fusionne, purge tout ce qui est plus vieux que la fenêtre (3 ans par défaut), sauvegarde
+    Résultat: 1er run long (fetch complet), runs suivants quasi instantanés (delta seulement).
+    Désactivable via ML_OHLCV_CACHE_ENABLED=false (refetch complet à chaque fois)."""
+    if not start_date:
+        history_days = int(os.getenv('ML_TRAINING_HISTORY_DAYS', '1095'))
+        start_date = (datetime.now(timezone.utc) - timedelta(days=history_days)).strftime("%Y-%m-%d")
+    dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    window_start_ms = int(dt.timestamp() * 1000)  # borne basse de la fenêtre glissante
+    end_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    max_candles = int(os.getenv('ML_TRAINING_MAX_CANDLES', '330000'))
+    cache_enabled = os.getenv('ML_OHLCV_CACHE_ENABLED', 'true').lower() == 'true'
+
+    cb = ccxt.coinbase({'enableRateLimit': True})
+
+    cached = _load_cache(symbol, timeframe) if cache_enabled else []
+    # Ne garder du cache que ce qui est dans la fenêtre (purge le hors-3-ans)
+    cached = [k for k in cached if int(k.get('timestamp', 0)) >= window_start_ms]
+
+    if cached:
+        last_cached_ts = max(int(k['timestamp']) for k in cached)
+        since = last_cached_ts + 1  # ne fetch que le delta après la dernière bougie connue
+        cached_count = len(cached)
+    else:
+        since = window_start_ms
+        cached_count = 0
+
+    delta = _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=f"{symbol} {timeframe}") if since < end_ts else []
+
+    # Fusionner cache + delta, dédupliquer par timestamp, purger la fenêtre, trier
+    merged = {}
+    for k in cached:
+        merged[int(k['timestamp'])] = k
+    for k in delta:
+        merged[int(k['timestamp'])] = k
+    all_klines = [k for ts, k in merged.items() if ts >= window_start_ms]
+    all_klines.sort(key=lambda k: int(k['timestamp']))
+    # Respecter le plafond en gardant les plus RÉCENTES si dépassement
+    if len(all_klines) > max_candles:
+        all_klines = all_klines[-max_candles:]
+
+    if cache_enabled:
+        _save_cache(symbol, timeframe, all_klines)
+
+    if cached_count:
+        print(f"      → {symbol} {timeframe}: {len(all_klines)} bougies (cache: {cached_count}, delta: {len(delta)})")
+    else:
+        print(f"      → {symbol} {timeframe}: {len(all_klines)} bougies fetchées (cache créé)")
     return all_klines
 
 
@@ -408,27 +659,31 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
             shutil.copy2(champion_path, challenger_path)
             return True
 
-        exchange = ccxt.kraken({'enableRateLimit': True})
+        # Fetch historique via API REST Kraken directe (paires USD réelles), frais 0.4%
+        exchange = None  # plus utilisé pour le fetch, on passe par requests
         ml_engine = MLEngine(model_dir=output_dir)
         ml_engine.model_path = challenger_path
         analyzer = PatternAnalyzer(bot=None)
 
         pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
-        start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+        history_days = int(os.getenv('ML_TRAINING_HISTORY_DAYS', '1095'))
+        start_date = (datetime.now(timezone.utc) - timedelta(days=history_days)).strftime("%Y-%m-%d")
         btc_history = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='15m', start_date=start_date)
         btc_history_1h = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='1h', start_date=start_date)
 
-        X_samples, y_labels, sizing_targets = [], [], []
+        X_samples, y_labels, sizing_targets, target_labels = [], [], [], []
         for symbol in pairs:
             print(f"  📊 Fetch {symbol} (15m, 5m, 1h, 4h, 1d)...")
             klines_15m = btc_history if symbol == 'BTC/USD' and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
             if len(klines_15m) < 100:
                 continue
-            # Fetch real multi-TF klines from Kraken
+            # Fetch real multi-TF klines via Kraken REST
             klines_5m_full = fetch_symbol_history_2026(exchange, symbol, timeframe='5m', start_date=start_date)
             klines_1h_full = btc_history_1h if symbol == 'BTC/USD' else fetch_symbol_history_2026(exchange, symbol, timeframe='1h', start_date=start_date)
-            klines_4h_full = fetch_symbol_history_2026(exchange, symbol, timeframe='4h', start_date=start_date)
+            # Coinbase ne supporte pas '4h' -> on l'agrège depuis le 1h (4 bougies 1h = 1 bougie 4h)
+            klines_4h_full = aggregate_ohlcv(klines_1h_full, 4)
             klines_1d_full = fetch_symbol_history_2026(exchange, symbol, timeframe='1d', start_date=start_date)
+            print(f"    (4h agrégé depuis 1h: {len(klines_4h_full)} bougies)")
             print(f"    15m: {len(klines_15m)} | 5m: {len(klines_5m_full)} | 1h: {len(klines_1h_full)} | 4h: {len(klines_4h_full)} | 1d: {len(klines_1d_full)}")
 
             next_allowed_index = 0
@@ -482,9 +737,22 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                 pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
                 label = 1 if pnl_percent > 0 else 0
 
+                # Label P_target: gain net maximum réellement atteignable pendant le hold
+                # (max favorable excursion). C'est ce qu'un take-profit parfait aurait capturé.
+                # On prend le plus haut atteint entre l'entrée et la sortie, net des frais A/R.
+                highest_high = current_price
+                for j in range(index + 1, min(exit_index + 1, len(klines_15m))):
+                    hj = float(klines_15m[j]['high'])
+                    if hj > highest_high:
+                        highest_high = hj
+                max_net_gain_pct = ((highest_high * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
+                # Un take-profit ne peut viser qu'un gain positif; borne inférieure à 0
+                target_label = max(0.0, max_net_gain_pct)
+
                 X_samples.append(features)
                 y_labels.append(label)
                 sizing_targets.append(sizing_factor_target_from_pnl(pnl_percent))
+                target_labels.append(target_label)
                 if signal.get('type') == 'support_touch':
                     support_pnls.append(float(pnl_percent))
                 next_allowed_index = exit_index + 4
@@ -495,9 +763,18 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
 
         X, y = np.array(X_samples), np.array(y_labels)
         y_sizing = np.array(sizing_targets, dtype=np.float64)
+        y_target = np.array(target_labels, dtype=np.float64)
+        
+        # Stats du dataset d'entraînement
+        n_wins = int(np.sum(y == 1))
+        n_losses = int(np.sum(y == 0))
+        print(f"\n  📊 Dataset Entrée: {len(X)} samples | Wins: {n_wins} ({n_wins/len(y)*100:.1f}%) | Losses: {n_losses} ({n_losses/len(y)*100:.1f}%)")
+        print(f"  📊 Features: {X.shape[1]} | Fee rate: {fee_rate*100:.2f}%")
+        
         success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5)
         if success:
             # Entraînement du modèle de Sortie avec les VRAIES features exit
+            # Label amélioré: "rester est-il mieux que sortir maintenant ?"
             try:
                 X_exit_samples, y_exit_labels = [], []
                 for index in range(50, len(klines_15m) - 10):
@@ -534,8 +811,11 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                             'target_price': entry_price * 1.02,
                         }
                         
-                        # Label: 1 = continue (trade finit positif), 0 = exit (trade finit negatif)
-                        exit_label = 1 if final_pnl > 0 else 0
+                        # Label amélioré: "rester rapporte-t-il plus que sortir maintenant ?"
+                        pnl_now = ((cp_price * (1 - fee_rate) - entry_price * (1 + fee_rate)) / entry_price) * 100
+                        pnl_if_stay = final_pnl
+                        # Marge de tolérance: si la différence < 0.05%, considérer comme équivalent (HOLD)
+                        exit_label = 1 if (pnl_if_stay - pnl_now) > -0.05 else 0
                         
                         bot_ctx = build_training_bot_context(cp_history, None, ts, btc_history=btc_history, index=cp)
                         exit_features = ml_engine.extract_exit_features(
@@ -553,7 +833,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                     X_exit = np.array(X_exit_samples)
                     y_exit = np.array(y_exit_labels)
                     ml_engine.train_exit_model(X_exit, y_exit, n_estimators=150, max_depth=6, min_samples_split=10)
-                    print(f"  ✅ Modèle de Sortie entraîné avec {len(X_exit_samples)} samples exit")
+                    n_continue = sum(y_exit_labels)
+                    n_exit = len(y_exit_labels) - n_continue
+                    print(f"  ✅ Modèle de Sortie entraîné avec {len(X_exit_samples)} samples (continue:{n_continue}, exit:{n_exit})")
                 else:
                     print(f"  ⚠️ Pas assez de samples exit ({len(X_exit_samples)}), modèle sortie non entraîné")
             except Exception as ex:
@@ -564,7 +846,15 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sizing: {ex}")
 
-            print(f"  ✅ Challenger Entrée, Sortie & Sizing entraîné et sauvegardé dans {challenger_path}")
+            try:
+                ml_engine.train_target_model(X, y_target, n_estimators=120, max_depth=8, min_samples_split=10)
+                avg_target = float(np.mean(y_target)) if len(y_target) else 0.0
+                med_target = float(np.median(y_target)) if len(y_target) else 0.0
+                print(f"  ✅ Modèle P_target entraîné (gain cible moyen: {avg_target:.2f}%, médian: {med_target:.2f}%)")
+            except Exception as ex:
+                print(f"  ⚠️ Note entraînement modèle P_target: {ex}")
+
+            print(f"  ✅ Challenger Entrée, Sortie, Sizing & P_target entraîné et sauvegardé dans {challenger_path}")
             return True
         elif os.path.exists(champion_path):
             shutil.copy2(champion_path, challenger_path)
@@ -633,6 +923,43 @@ def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type=
 
     champ_acc = float(champ_meta.get('test_accuracy', 50.0))
     chall_acc = float(chall_meta.get('test_accuracy', 50.0))
+
+    # Logs détaillés des modèles
+    print("\n" + "=" * 70)
+    print("📊 ÉVALUATION DÉTAILLÉE DES MODÈLES")
+    print("=" * 70)
+    print("\n  🏆 CHAMPION (modèle actuel en production):")
+    print(f"    Precision (test):     {champ_prec:.1f}%")
+    print(f"    Accuracy (test):      {champ_acc:.1f}%")
+    print(f"    Features entrée:      {champ_meta.get('n_features', 'n/a')}")
+    print(f"    Features sortie:      {champ_meta.get('exit_n_features', 'n/a')}")
+    print(f"    Entraîné le:          {champ_meta.get('trained_at', 'n/a')}")
+    print(f"    Samples entraînement: {champ_meta.get('train_samples', 'n/a')}")
+    print(f"    Win rate dataset:     {champ_meta.get('train_win_rate', 'n/a')}")
+    for key in ('test_recall', 'test_f1', 'train_accuracy', 'oob_score'):
+        val = champ_meta.get(key)
+        if val is not None:
+            print(f"    {key:22s}: {val}")
+
+    print(f"\n  ⚔️ CHALLENGER (nouveau modèle candidat):")
+    print(f"    Precision (test):     {chall_prec:.1f}%")
+    print(f"    Accuracy (test):      {chall_acc:.1f}%")
+    print(f"    Features entrée:      {chall_meta.get('n_features', 'n/a')}")
+    print(f"    Features sortie:      {chall_meta.get('exit_n_features', 'n/a')}")
+    print(f"    Entraîné le:          {chall_meta.get('trained_at', 'n/a')}")
+    print(f"    Samples entraînement: {chall_meta.get('train_samples', 'n/a')}")
+    print(f"    Win rate dataset:     {chall_meta.get('train_win_rate', 'n/a')}")
+    for key in ('test_recall', 'test_f1', 'train_accuracy', 'oob_score'):
+        val = chall_meta.get(key)
+        if val is not None:
+            print(f"    {key:22s}: {val}")
+
+    print(f"\n  📈 COMPARAISON:")
+    prec_delta = chall_prec - champ_prec
+    acc_delta = chall_acc - champ_acc
+    print(f"    Precision delta:      {prec_delta:+.1f}% {'✅' if prec_delta >= -0.5 else '❌'}")
+    print(f"    Accuracy delta:       {acc_delta:+.1f}% {'✅' if acc_delta >= -1.0 else '❌'}")
+    print("=" * 70)
 
     min_trades = int(os.getenv('ML_PROMOTION_MIN_CLOSED_TRADES', '30'))
     min_days = int(os.getenv('ML_PROMOTION_MIN_ACTIVE_DAYS', '3'))
@@ -738,14 +1065,18 @@ def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type=
     # Step 3: Promotion
     print("\n🏆 PROMOTION DU CHALLENGER EN CHAMPION !")
     if os.path.exists(champion_path):
-        shutil.copy2(champion_path, backup_path)
-        print(f"  💾 Backup du Champion créé : {backup_path}")
-
         backups_dir = os.path.join(model_dir, 'backups')
         os.makedirs(backups_dir, exist_ok=True)
         ts_backup_path = os.path.join(backups_dir, f"aegis_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.joblib")
         shutil.copy2(champion_path, ts_backup_path)
         print(f"  📦 Archive horodatée créée dans backups/ : {ts_backup_path}")
+        _prune_model_backups(backups_dir, keep=10)
+        # Pas de backup redondant dans data/: l'archive horodatée fait foi
+        if os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except Exception:
+                pass
 
     shutil.copy2(challenger_path, champion_path)
     print(f"  ✅ NOUVEAU CHAMPION PROMU AVEC SUCCÈS : {champion_path}")
