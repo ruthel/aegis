@@ -3879,6 +3879,10 @@ class MLLiveLogger:
             return False
         try:
             metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
+            # Les métriques d'entrée ML sont imbriquées sous metrics['ml_decision']
+            # (cf. _build_ml_entry_decision_metrics). On lit donc p_win/p_continue/min_*
+            # depuis ce sous-dict en priorité, avec fallback sur le niveau racine.
+            ml_decision = metrics.get('ml_decision') if isinstance(metrics.get('ml_decision'), dict) else {}
             confidence = (
                 metrics.get('confidence')
                 if metrics.get('confidence') is not None
@@ -3887,11 +3891,15 @@ class MLLiveLogger:
             p_win = (
                 metrics.get('p_win')
                 if metrics.get('p_win') is not None
+                else ml_decision.get('p_win')
+                if ml_decision.get('p_win') is not None
                 else metrics.get('ml_p_win')
             )
             p_continue = (
                 metrics.get('p_continue')
                 if metrics.get('p_continue') is not None
+                else ml_decision.get('p_continue')
+                if ml_decision.get('p_continue') is not None
                 else metrics.get('continuation_score')
             )
             price = metrics.get('price') if metrics.get('price') is not None else entry.get('price')

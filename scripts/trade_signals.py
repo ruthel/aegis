@@ -1,10 +1,14 @@
 """Backtest public-data for the Support Touch Pro entry rule.
 
-Usage:
-    python scripts/backtest_support_touch.py
+Détection des signaux d'entrée (support touch, breakout de range, pullback EMA20 15m,
+croisement EMA9/EMA20 15m) + simulation de sortie réaliste (stop/breakeven/trailing).
+Sert au training (génération de samples), au replay des refus et au backtest support-touch.
+
+Usage (backtest support-touch):
+    python scripts/trade_signals.py
 
 Optional:
-    python scripts/backtest_support_touch.py --pairs BTC/USD,ETH/USD --limit 1000
+    python scripts/trade_signals.py --pairs BTC/USD,ETH/USD --limit 1000
 """
 import argparse
 import json
@@ -110,10 +114,191 @@ def detect_trade_signal(pattern_analyzer, history, current_price):
                 'reason': f"Cassure Haussière de Range ({recent_range_high:.2f})",
             }
 
+    # ── SIGNAUX RAPIDES NATIFS 15m (DURCIS pour réduire les faux positifs) ──
+    # Objectif: générer des samples sur des concepts qui se lisent sur le 15m lui-même
+    # (pente/EMA 15m). Version stricte: pente forte + confirmation VOLUME + bougie de
+    # reprise nette, pour éviter le bruit qui dégradait la précision du modèle.
+    if len(closes) >= 25:
+        ema9 = sum(closes[-9:]) / 9.0
+        ema20 = sum(closes[-20:]) / 20.0
+        ema9_prev = sum(closes[-10:-1]) / 9.0
+        ema20_prev = sum(closes[-21:-1]) / 20.0
+        # Pente EMA20 15m sur les 5 dernières bougies (tendance de fond COURT terme)
+        ema20_older = sum(closes[-25:-5]) / 20.0 if len(closes) >= 25 else ema20_prev
+        ema20_slope = (ema20 - ema20_older) / ema20_older if ema20_older else 0.0
+
+        # Confirmation VOLUME: la bougie actuelle doit avoir un volume nettement
+        # supérieur à la moyenne des 20 dernières (acheteurs réellement présents).
+        vols = [float(k.get('volume', 0.0) or 0.0) for k in history[-20:]]
+        avg_vol = (sum(vols) / len(vols)) if vols else 0.0
+        cur_vol = float(history[-1].get('volume', 0.0) or 0.0)
+        volume_confirmed = avg_vol > 0 and cur_vol >= avg_vol * 1.3
+
+        # Corps de bougie verte NET (reprise franche, pas une micro-bougie verte)
+        candle_range = float(history[-1].get('high', close_px)) - float(history[-1].get('low', close_px))
+        body = close_px - open_px
+        strong_green = close_px > open_px and candle_range > 0 and (body / candle_range) >= 0.5
+
+        # SIGNAL 3 : PULLBACK SUR EMA20 15m EN TENDANCE HAUSSIÈRE (STRICT)
+        # Tendance 15m FORTE (EMA9>EMA20, pente EMA20 > 0.15%), pullback SERRÉ sur l'EMA20
+        # (±0.2%), reprise verte NETTE confirmée par le VOLUME.
+        near_ema20 = abs(current_price - ema20) / ema20 <= 0.002 if ema20 else False
+        if (ema9 > ema20 and ema20_slope > 0.0015 and near_ema20
+                and strong_green and volume_confirmed):
+            return {
+                'type': 'ema_pullback_15m',
+                'support_price': ema20 * 0.997,   # stop juste sous l'EMA20
+                'resistance_price': None,
+                'rebounds': 1,
+                'confidence': 74,
+                'reason': f"Pullback EMA20 15m fort+volume ({ema20:.4f})",
+            }
+
+        # SIGNAL 4 : CROISEMENT FRAIS EMA9/EMA20 15m (STRICT)
+        # Croisement FRANC (écart EMA9-EMA20 >= 0.15%, pas un frôlement), prix AU-DESSUS
+        # des deux EMA, bougie verte nette + confirmation VOLUME.
+        fresh_cross = ema9 > ema20 and ema9_prev <= ema20_prev
+        cross_gap = (ema9 - ema20) / ema20 if ema20 else 0.0
+        price_above_emas = current_price > ema9 and current_price > ema20
+        if (fresh_cross and cross_gap >= 0.0015 and price_above_emas
+                and strong_green and volume_confirmed):
+            recent_low_10 = min([k['low'] for k in history[-10:]])
+            return {
+                'type': 'ema_cross_15m',
+                'support_price': recent_low_10,   # stop sous le plus bas récent
+                'resistance_price': None,
+                'rebounds': 1,
+                'confidence': 72,
+                'reason': f"Croisement EMA9>EMA20 15m ({ema9:.4f})",
+            }
+
     return None
 
 
-def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent, max_hold, trailing_percent, breakeven_stop=False, breakeven_trigger=1.5, breakeven_lock=0.0, fee_rate=None, resistance_price=None, use_resistance=False):
+def detect_all_trade_signals(pattern_analyzer, history, current_price):
+    """Comme detect_trade_signal, mais retourne la LISTE de TOUS les signaux qui matchent
+    à cet index (au lieu du premier seulement).
+
+    Utilisé par l'entraînement pour NE PAS écraser les signaux 15m sous support_touch:
+    chaque signal applicable génère son propre sample. Les mêmes filtres (pente baissière,
+    falling knife) s'appliquent globalement.
+    """
+    if len(history) < 15:
+        return []
+
+    closes = [k['close'] for k in history]
+
+    # Filtres globaux (identiques à detect_trade_signal)
+    if len(closes) >= 12:
+        ema10_curr = sum(closes[-10:]) / 10.0
+        ema10_prev = sum(closes[-13:-3]) / 10.0
+        slope = (ema10_curr - ema10_prev) / ema10_prev if ema10_prev else 0
+        if slope < -0.0002:
+            return []
+
+    last_candle = history[-1]
+    open_px = float(last_candle.get('open', current_price))
+    close_px = float(last_candle.get('close', current_price))
+    if close_px < open_px:
+        drop_pct = (open_px - close_px) / open_px
+        if drop_pct >= 0.006:
+            return []
+
+    signals = []
+
+    # SIGNAL 1 : Support Touch
+    levels = pattern_analyzer.find_support_resistance_levels(history)
+    for support in levels.get('support_levels', [])[:3]:
+        support_price = float(support['price'])
+        rebounds = int(support.get('strength', 1))
+        if current_price <= support_price * 1.001 and rebounds >= 2:
+            confidence = min(85, 60 + (rebounds - 2) * 10)
+            nearest_resistance = None
+            for res in levels.get('resistance_levels', []):
+                r_price = float(res['price'])
+                if r_price > current_price * 1.002:
+                    if nearest_resistance is None or r_price < nearest_resistance:
+                        nearest_resistance = r_price
+            signals.append({
+                'type': 'support_touch', 'support_price': support_price,
+                'resistance_price': nearest_resistance, 'rebounds': rebounds,
+                'confidence': confidence,
+                'reason': f"Support {rebounds} rebonds @ {support_price:.2f}",
+            })
+            break  # un seul support suffit
+
+    # SIGNAL 2 : Pattern Breakout
+    if len(closes) >= 20:
+        recent_range_high = max([k['high'] for k in history[-10:-1]])
+        recent_range_low = min([k['low'] for k in history[-10:-1]])
+        range_size_pct = (recent_range_high - recent_range_low) / recent_range_low
+        if range_size_pct < 0.018 and current_price > recent_range_high * 1.001 and close_px > open_px:
+            signals.append({
+                'type': 'pattern_breakout', 'support_price': recent_range_low,
+                'resistance_price': recent_range_high * 1.02, 'rebounds': 1,
+                'confidence': 75,
+                'reason': f"Cassure Haussière de Range ({recent_range_high:.2f})",
+            })
+
+    # SIGNAUX 15m (pullback + croisement) — mêmes conditions durcies que detect_trade_signal
+    if len(closes) >= 25:
+        ema9 = sum(closes[-9:]) / 9.0
+        ema20 = sum(closes[-20:]) / 20.0
+        ema9_prev = sum(closes[-10:-1]) / 9.0
+        ema20_prev = sum(closes[-21:-1]) / 20.0
+        ema20_older = sum(closes[-25:-5]) / 20.0 if len(closes) >= 25 else ema20_prev
+        ema20_slope = (ema20 - ema20_older) / ema20_older if ema20_older else 0.0
+        vols = [float(k.get('volume', 0.0) or 0.0) for k in history[-20:]]
+        avg_vol = (sum(vols) / len(vols)) if vols else 0.0
+        cur_vol = float(history[-1].get('volume', 0.0) or 0.0)
+        volume_confirmed = avg_vol > 0 and cur_vol >= avg_vol * 1.3
+        candle_range = float(history[-1].get('high', close_px)) - float(history[-1].get('low', close_px))
+        body = close_px - open_px
+        strong_green = close_px > open_px and candle_range > 0 and (body / candle_range) >= 0.5
+
+        near_ema20 = abs(current_price - ema20) / ema20 <= 0.002 if ema20 else False
+        if (ema9 > ema20 and ema20_slope > 0.0015 and near_ema20 and strong_green and volume_confirmed):
+            signals.append({
+                'type': 'ema_pullback_15m', 'support_price': ema20 * 0.997,
+                'resistance_price': None, 'rebounds': 1, 'confidence': 74,
+                'reason': f"Pullback EMA20 15m fort+volume ({ema20:.4f})",
+            })
+
+        fresh_cross = ema9 > ema20 and ema9_prev <= ema20_prev
+        cross_gap = (ema9 - ema20) / ema20 if ema20 else 0.0
+        price_above_emas = current_price > ema9 and current_price > ema20
+        if (fresh_cross and cross_gap >= 0.0015 and price_above_emas and strong_green and volume_confirmed):
+            recent_low_10 = min([k['low'] for k in history[-10:]])
+            signals.append({
+                'type': 'ema_cross_15m', 'support_price': recent_low_10,
+                'resistance_price': None, 'rebounds': 1, 'confidence': 72,
+                'reason': f"Croisement EMA9>EMA20 15m ({ema9:.4f})",
+            })
+
+    return signals
+
+
+def _ema(values, period):
+    """EMA simple sur une liste de closes. Retourne None si pas assez de données."""
+    if not values or len(values) < period:
+        return None
+    k = 2.0 / (period + 1.0)
+    ema = sum(values[:period]) / period  # seed = SMA des premières valeurs
+    for v in values[period:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+
+def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent, max_hold, trailing_percent, breakeven_stop=False, breakeven_trigger=1.5, breakeven_lock=0.0, fee_rate=None, resistance_price=None, use_resistance=False, trend_exit=False, trend_confirm_bars=2):
+    """Simule un trade.
+
+    trend_exit: si True, active une SORTIE CONDITIONNELLE (basée sur les conditions de marché
+    plutôt que sur une durée fixe). On sort quand la tendance haussière est invalidée:
+      close(15m) < EMA20(15m)  ET  close(1h) < EMA50(1h)
+    confirmé sur `trend_confirm_bars` clôtures 15m consécutives. Le stop-loss / breakeven /
+    trailing restent actifs comme protection à la baisse. `max_hold` devient un simple filet
+    de sécurité (rarement atteint). klines sont supposées être en 15m.
+    """
     if fee_rate is None:
         fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
     highest_price = entry_price
@@ -129,6 +314,7 @@ def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent
     last_index = min(len(klines) - 1, entry_index + max_hold)
     current_stop_price = stop_price
     be_active = False
+    trend_broken_streak = 0  # nb de clôtures 15m consécutives avec tendance cassée (EMA20-15m ET EMA50-1h)
 
     for exit_index in range(entry_index + 1, last_index + 1):
         candle = klines[exit_index]
@@ -136,6 +322,30 @@ def simulate_trade(klines, entry_index, entry_price, support_price, stop_percent
         # Sortie Stop Loss dynamique
         if candle['low'] <= current_stop_price:
             return exit_index, current_stop_price, 'loss'
+
+        # === SORTIE CONDITIONNELLE (tendance cassée) ===
+        # Ne se déclenche qu'en profit-taking: le stop gère déjà la baisse. Ici on décide
+        # de LAISSER COURIR (tendance intacte) vs PRENDRE LES GAINS (tendance retournée).
+        if trend_exit:
+            closes_hist = [float(k['close']) for k in klines[max(0, exit_index - 220):exit_index + 1]]
+            close_now = closes_hist[-1]
+            ema20_15m = _ema(closes_hist[-40:], 20) if len(closes_hist) >= 20 else None
+            # EMA50 en 1h approximée: 1 close 15m toutes les 4 bougies (4×15m = 1h)
+            closes_1h = closes_hist[::4]
+            ema50_1h = _ema(closes_1h[-120:], 50) if len(closes_1h) >= 50 else None
+            trend_broken = (
+                ema20_15m is not None and ema50_1h is not None
+                and close_now < ema20_15m and close_now < ema50_1h
+            )
+            if trend_broken:
+                trend_broken_streak += 1
+            else:
+                trend_broken_streak = 0
+            # Confirmé sur N clôtures consécutives -> sortie au close courant
+            if trend_broken_streak >= trend_confirm_bars:
+                exit_px = close_now
+                outcome = 'win' if exit_px > entry_price else 'loss'
+                return exit_index, exit_px, outcome
 
         # Mise à jour du plus haut et du trailing stop
         if candle['high'] > highest_price:

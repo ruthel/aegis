@@ -1,6 +1,6 @@
 # Feuille de Route & Etat d'Avancement — Ameliorations Bot Aegis
 
-Derniere mise a jour : 2026-08-26
+Derniere mise a jour : 2026-08-29
 
 ---
 
@@ -113,7 +113,7 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 - [x] **Journal live des decisions de sortie** : sauvegarder les 37 features de sortie, la decision ML et l'etat courant (`HOLD` ou `FORCE_EXIT`).
 - [x] **Resultat final des trades** : enregistrer prix d'achat, prix de vente, PnL, PnL %, duree et raison de sortie quand le trade ferme.
 - [x] **Candidats refuses conserves** : enregistrer les refus ML comme `candidate_rejected_pending_replay` pour analyse future.
-- [x] **Labelliser les candidats refuses** : `scripts/analyze_ml_live_performance.py` cree `ml_rejected_replay_results` et rejoue les refus des que les bougies futures sont disponibles.
+- [x] **Labelliser les candidats refuses** : `scripts/analyze_ml_live_performance.py` cree `ml_rejected_replay_results` et rejoue les refus des que les bougies futures sont disponibles. ✅ Corrigé 2026-08-29 : le tri des refus à rejouer traitait les plus RÉCENTS d'abord (sans bougies futures -> 0 replay effectif, backlog de ~2900 vieux refus jamais atteint). Nouveau tri par âge : refus assez vieux (rejouables) d'abord, les trop récents repoussés aux runs suivants. Plafond `--max-replay` câblé sur `ML_LIVE_ANALYSIS_MAX_REPLAY` (défaut 500). 505 lignes orphelines (post-reset paper, features non reliées) purgées.
 - [x] **Comparer prediction vs resultat reel** : calibration par buckets `P_win` dans `ml_prediction_calibration`, avec Brier score, win rate live et PnL moyen dans `ml_analysis_runs`.
 - [x] **Detection de drift marche** : `ml_drift_alerts` signale `ok`, `warning` ou `insufficient_live_outcomes` selon les resultats live disponibles.
 - [x] **Automatisation periodique** : `run_ml_live_analysis_if_due()` lance `scripts/analyze_ml_live_performance.py` en arriere-plan selon `ML_LIVE_ANALYSIS_INTERVAL_SECONDS`.
@@ -138,7 +138,7 @@ Le prochain vrai gain n'est pas d'ajouter un nouveau verrou. Il faut enrichir ce
 - [x] **Walk-forward validation** : entraînement et test glissant sur fenêtres temporelles successives sans fuite d'information (`scripts/walk_forward_validation.py`).
 - [x] **Champion / challenger** : entraînement et comparaison entre Champion (`aegis_model.joblib`) et Challenger (`aegis_challenger.joblib`) dans le pipeline unifié `scripts/train_and_evaluate_ml_model.py`.
 - [x] **Objectif PnL net & Calibration** : optimisation de l'Accuracy, de la Precision et du PnL net sur données hors-échantillon.
-- [x] **Replay des erreurs & Refus rejoués** : réinjection des refus rejoués dans l'entraînement via `ml_rejected_replay_results` et `load_phase5_replay_samples()`.
+- [x] **Replay des erreurs & Refus rejoués** : réinjection des refus rejoués dans l'entraînement via `ml_rejected_replay_results` et `load_phase5_replay_samples()`. ✅ Corrigé 2026-08-29 : la fonction `load_phase5_replay_samples()` existait mais **n'était jamais appelée** (boucle rompue). Elle est désormais branchée dans `train_challenger_model()` : les refus rejoués (statut `replayed`, label `would_win`) sont ajoutés à `X_samples/y_labels` avec un poids modéré configurable (`ML_REPLAY_TRAIN_WEIGHT_WIN=1.2` / `LOSS=1.0`, plafond `ML_REPLAY_TRAIN_MAX_SAMPLES=2000`). Le split train/test de `train_model` a aussi été corrigé pour aligner `sample_weight` sur les lignes mélangées.
 - [x] **Promotion automatique contrôlée** : promotion sécurisée du Challenger vers Champion avec sauvegarde automatique `aegis_model_backup.joblib`.
 - [x] **Découplage hybride ML exit + garde-fous physiques** : conservation active du Trailing Stop et Breakeven Stop comme filet de sécurité plancher en temps réel (`HYBRID_PHYSICAL_SAFETY=true`).
 - [x] **Protection profit ML dynamique** : quand une position est déjà en profit net, le seuil de sortie devient plus défensif (`ML_EXIT_PROFIT_PROTECT_THRESHOLD`) afin d'éviter de laisser une fenêtre gagnante revenir sous l'entrée.
@@ -311,8 +311,7 @@ Objectif : aligner les frais utilisés partout dans le bot avec les frais réels
 
 - [x] **Auto-retraining bi-hebdomadaire** : réentraîner automatiquement avec les nouvelles données live toutes les 2 semaines. ✅ `ML_AUTO_RETRAIN_ENABLED=true`, intervalle 14 jours (`ML_AUTO_RETRAIN_INTERVAL_SECONDS=1209600`), promotion automatique via garde-fous.
 - [x] **Augmentation dataset** : objectif 15-20k samples atteint (**15346 samples**). ✅ Méthode retenue : extension de l'historique d'entraînement à **3 ans** (`ML_TRAINING_HISTORY_DAYS=1095`) via Coinbase, au lieu de la diversification des signaux d'entrée (testée puis abandonnée car elle dégradait la précision : 78.8% → 70.2%). Bonus : le dataset couvre désormais bear 2023-2024 + remontée + régime haussier actuel, ce qui rend le modèle robuste aux changements de régime.
-- [ ] **Feature importance monitoring** : tracker quelles features sont utiles, retirer celles qui contribuent < 0.5%.
-- [ ] **P_target model** : régresseur ML qui prédit le gain max atteignable pour fixer un take-profit intelligent.
+- [x] **P_target model** : régresseur ML qui prédit le gain max atteignable pour fixer un take-profit intelligent. ✅ `RandomForestRegressor` à 78 features intégré au champion (`target_model` dans `aegis_model.joblib`), prédiction clampée entre `ML_TARGET_MIN_PCT=0.8` et `ML_TARGET_MAX_PCT=12.0`, pose un take-profit à l'entrée via `predict_target()` + `_check_take_profit_target()` (`ML_TAKE_PROFIT_ENABLED=true`).
 
 ### Étape 2 — Apprentissage par Renforcement (1-3 mois)
 

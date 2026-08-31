@@ -444,6 +444,10 @@ class MlRejectedReplayResult(Base):
     exit_time: Mapped[str | None] = mapped_column(Text)
     exit_price: Mapped[float | None] = mapped_column(Float)
     pnl_pct: Mapped[float | None] = mapped_column(Float)
+    would_win: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str | None] = mapped_column(Text)
 
 
 class MlDriftAlert(Base):

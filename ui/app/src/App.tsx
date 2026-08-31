@@ -16,11 +16,10 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { asString } from '@/lib/formatters'
 import { useDashboardStore } from '@/store/dashboard-store'
-import type { DataViewMode, StatusPayload, MlStatus, View } from '@/types/dashboard'
+import type { StatusPayload, MlStatus, View } from '@/types/dashboard'
 
 // ─── Vues (refactorisées dans leur propre fichier) ────────────────────────
 import { LiveView } from '@/views/LiveView'
@@ -74,7 +73,6 @@ function App() {
     setView,
     status,
     viewMode,
-    setViewMode,
     ml,
     consoleData,
     config,
@@ -217,7 +215,7 @@ function App() {
       </aside>
 
       <main className="lg:pl-60">
-        <TopToolbar status={status} running={running} viewMode={viewMode} onViewModeChange={setViewMode} />
+        <TopToolbar status={status} running={running} />
 
         {/* Navigation mobile */}
         <div className="border-b border-border p-2 lg:hidden">
@@ -257,13 +255,9 @@ function App() {
 function TopToolbar({
   status,
   running,
-  viewMode,
-  onViewModeChange,
 }: {
   status: StatusPayload
   running: boolean
-  viewMode: DataViewMode
-  onViewModeChange: (mode: DataViewMode) => void
 }) {
   const bot = status.bot
   const liveSymbols = Object.keys(status.live?.symbols || {}).length
@@ -302,16 +296,9 @@ function TopToolbar({
               {asString(bot?.exchange, 'exchange')}
             </span>
           </div>
-          <Select value={viewMode} onValueChange={(value) => onViewModeChange(value as DataViewMode)}>
-            <SelectTrigger className="h-[30px] w-[118px] rounded-full border-border bg-secondary px-3 text-[11px] font-bold">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="end">
-              <SelectItem value="paper">Vue paper</SelectItem>
-              <SelectItem value="live">Vue live</SelectItem>
-              <SelectItem value="all">Vue tous</SelectItem>
-            </SelectContent>
-          </Select>
+          <span className="inline-flex h-[30px] items-center rounded-full border border-border bg-secondary px-3 text-[11px] font-bold text-emerald-400">
+            Vue live
+          </span>
         </div>
 
         <BotActions running={running} />

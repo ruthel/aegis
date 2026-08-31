@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.ml_engine import MLEngine
-from scripts.backtest_support_touch import detect_trade_signal, simulate_trade
+from scripts.trade_signals import detect_trade_signal, simulate_trade
 from scripts.train_and_evaluate_ml_model import build_training_bot_context, support_stats_from_history
 from utils.exit_engine import ExitDecisionEngine
 from utils.pattern_analyzer import PatternAnalyzer

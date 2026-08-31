@@ -528,6 +528,13 @@ class TradingMixin:
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
                     
                 self._close_buy_positions(symbol, exec_amount, exec_price)
+                
+                # Forcer sync Kraken après vente pour mettre à jour le frontend immédiatement
+                if hasattr(self, 'balance_manager') and not self.paper_trading:
+                    try:
+                        self.balance_manager._sync_exchange_ledger_if_due(force=True)
+                    except Exception as sync_err:
+                        print(f"⚠️ Sync ledger post-vente échoué: {sync_err}")
             
             return order
         except Exception as e:

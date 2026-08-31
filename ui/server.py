@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 DATA_DIR = ROOT / 'data'
 ENV_DASHBOARD = ROOT / '.env.ui'
 BOT_LOG_FILE = ROOT / 'bot.log'
+REPLAY_LOG_FILE = ROOT / 'ml_replay.log'
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
 BOT_START_LOCK = threading.Lock()
@@ -92,6 +93,23 @@ def model_train_samples():
         return int(raw)
     except Exception:
         return None
+
+
+def model_perf_metrics():
+    """Lit les vraies métriques de performance du champion depuis le joblib.
+    Retourne un dict (test_precision, test_accuracy, ...) ou {} si indisponible."""
+    try:
+        import joblib
+        model_file = DATA_DIR / 'aegis_model.joblib'
+        if not model_file.exists():
+            return {}
+        data = joblib.load(str(model_file))
+        md = data.get('model_metadata') if isinstance(data, dict) else None
+        if not isinstance(md, dict):
+            return {}
+        return md
+    except Exception:
+        return {}
 
 
 def db_logger():
@@ -2039,8 +2057,9 @@ def compute_capital_breakdown(state, positions, paper_balance):
 def compute_pnl_history(state):
     """Extrait l'historique P&L sous forme de courbe de P&L réalisé cumulé NET"""
     positions = state.get('positions', [])
-    initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
-
+    view_mode = state.get('view_mode', 'paper')
+    
+    # On calcule d'abord le PnL cumulé pour déterminer le solde initial
     cumulative_pnl = 0.0
     history = []
 
@@ -2065,10 +2084,8 @@ def compute_pnl_history(state):
                 'fee': float(pos.get('fee') or 0.0),
                 'ts': pos.get('timestamp'),
             })
-            # Achat : le P&L réalisé ne change pas, on enregistre l'événement au même niveau
             history.append({
                 'time': pos.get('timestamp'),
-                'balance': round(initial_balance + cumulative_pnl, 2),
                 'pnl': round(cumulative_pnl, 2),
                 'event': f"Achat {symbol.split('/')[0]} @ {px:.2f}",
             })
@@ -2093,14 +2110,46 @@ def compute_pnl_history(state):
             cumulative_pnl += trade_pnl
             history.append({
                 'time': pos.get('timestamp'),
-                'balance': round(initial_balance + cumulative_pnl, 2),
                 'pnl': round(cumulative_pnl, 2),
                 'event': f"Vente {symbol.split('/')[0]} @ {px:.2f}",
             })
 
+    # Déterminer le solde initial selon le mode
+    if view_mode == 'live':
+        # Mode live: solde total = USD + valeur des positions ouvertes
+        balances = state.get('balances', {})
+        usd_balance = balances.get('USD') or balances.get('USDT') or balances.get('USDC') or {}
+        usd_cash = float(usd_balance.get('total') or usd_balance.get('free') or 0.0)
+        
+        # Ajouter la valeur des cryptos en portefeuille
+        crypto_value = 0.0
+        for asset, bal in balances.items():
+            if asset in ('USD', 'USDT', 'USDC'):
+                continue
+            amount = float(bal.get('total') or bal.get('free') or 0.0)
+            if amount > 0:
+                # Estimer la valeur avec le prix actuel depuis live_status
+                live = live_status()
+                symbols = live.get('symbols', {})
+                pair = f"{asset}/USD"
+                price_data = symbols.get(pair) or symbols.get(f"{asset}USD") or {}
+                price = float(price_data.get('price') or 0.0)
+                crypto_value += amount * price
+        
+        current_balance = usd_cash + crypto_value
+        # Solde initial = solde actuel - PnL cumulé
+        initial_balance = current_balance - cumulative_pnl
+    else:
+        initial_balance = float(os.getenv('PAPER_BALANCE', '1000'))
+        current_balance = initial_balance + cumulative_pnl
+
+    # Mettre à jour les balances dans l'historique
+    for item in history:
+        item['balance'] = round(initial_balance + item['pnl'], 2)
+
     return {
-        'initial_balance': initial_balance,
-        'current_balance': round(initial_balance + cumulative_pnl, 2),
+        'initial_balance': round(initial_balance, 2),
+        'current_balance': round(current_balance, 2),
         'total_pnl': round(cumulative_pnl, 2),
         'history': history,
     }
@@ -2587,6 +2636,80 @@ def sanitize_ml_predictions(predictions):
     return cleaned
 
 
+def compute_ml_analytics(state, positions, paper_balance, meta_perf):
+    """Construit le bloc analytics à partir des VRAIES données:
+    - métriques du modèle (test_precision/accuracy) lues depuis le joblib champion
+    - métriques de trading (profit factor, gain/perte moyen, PnL cumulé) calculées sur les trades réels fermés
+    - meilleur jour / meilleures heures dérivés des trades réels
+    Renvoie None pour un champ quand la donnée n'est pas disponible (l'UI affiche alors '--').
+    """
+    adv = compute_advanced_metrics(positions, paper_balance)
+    heat = compute_heatmap(positions)
+    total_trades = int(adv.get('total_trades') or 0)
+
+    # Métriques modèle (réelles, issues du joblib). Le training les stocke en fraction 0-1.
+    def _pct(v):
+        if v is None:
+            return None
+        v = float(v)
+        return round(v * 100, 1) if v <= 1.0 else round(v, 1)
+
+    test_precision = _pct(meta_perf.get('test_precision'))
+    test_accuracy = _pct(meta_perf.get('test_accuracy'))
+
+    avg_win = adv.get('avg_win')
+    avg_loss = adv.get('avg_loss')
+    profit_factor = adv.get('profit_factor')
+    risk_reward = round(avg_win / avg_loss, 2) if avg_win and avg_loss and avg_loss > 0 else None
+
+    # PnL net cumulé réel: somme des PnL nets des trades fermés (via heatmap by_crypto).
+    cum_pnl = None
+    if heat.get('by_crypto'):
+        cum_pnl = round(sum(c.get('total_pnl', 0.0) for c in heat['by_crypto']), 2)
+
+    # Meilleur jour (win rate) parmi les jours ayant au moins 1 trade.
+    best_day = None
+    day_fr = {
+        'Monday': 'Lundi', 'Tuesday': 'Mardi', 'Wednesday': 'Mercredi',
+        'Thursday': 'Jeudi', 'Friday': 'Vendredi', 'Saturday': 'Samedi', 'Sunday': 'Dimanche',
+    }
+    days_with_trades = [d for d in (heat.get('by_day') or []) if d.get('trades', 0) > 0]
+    if days_with_trades:
+        top = max(days_with_trades, key=lambda d: (d.get('win_rate', 0), d.get('trades', 0)))
+        best_day = f"{day_fr.get(top['day'], top['day'])} ({top['win_rate']}% winrate)"
+
+    # Meilleures heures (top 3 heures par win rate parmi celles ayant des trades).
+    best_hours = None
+    hours_with_trades = [h for h in (heat.get('by_hour') or []) if h.get('trades', 0) > 0]
+    if hours_with_trades:
+        top_hours = sorted(hours_with_trades, key=lambda h: (h.get('win_rate', 0), h.get('trades', 0)), reverse=True)[:3]
+        top_hours = sorted(top_hours, key=lambda h: h['hour'])
+        best_hours = ' · '.join(f"{h['hour']:02d}h" for h in top_hours) + ' UTC'
+
+    # Meilleures cryptos (top 2 par PnL réel).
+    best_cryptos = None
+    cryptos_pos = [c for c in (heat.get('by_crypto') or []) if c.get('total_pnl', 0) > 0]
+    if cryptos_pos:
+        top_c = sorted(cryptos_pos, key=lambda c: c['total_pnl'], reverse=True)[:2]
+        best_cryptos = ' & '.join(f"{c['symbol']} (+{c['total_pnl']:.2f}$)" for c in top_c)
+
+    return {
+        'test_precision': test_precision,
+        'test_accuracy': test_accuracy,
+        'avg_win': round(avg_win, 2) if avg_win else None,
+        'avg_loss': round(-avg_loss, 2) if avg_loss else None,
+        'risk_reward': risk_reward,
+        'profit_factor': profit_factor,
+        'expectancy': adv.get('expectancy'),
+        'cum_pnl_2026': cum_pnl,
+        'total_closed_trades': total_trades,
+        'best_day': best_day,
+        'best_hours': best_hours,
+        'best_cryptos': best_cryptos,
+        # Prévision hebdo retirée: elle était purement spéculative (aucune base de calcul fiable).
+    }
+
+
 def ml_status_payload(view_mode=None):
     """Endpoint pour le Core ML Engine avec statistiques complètes et prévisions"""
     global ML_PREDS_CACHE
@@ -2603,6 +2726,10 @@ def ml_status_payload(view_mode=None):
     ML_PREDS_CACHE = clean_ml_preds
 
     meta = latest_ml_metadata()
+    meta_perf = model_perf_metrics()
+    positions = state.get('positions', []) or []
+    paper_balance = state.get('paper_balance', float(os.getenv('PAPER_BALANCE', '1000')))
+    analytics = compute_ml_analytics(state, positions, paper_balance, meta_perf)
     # Fenêtre d'affichage (les 12 plus récentes, pour la liste "recommandations")
     sizing_recommendations = latest_sizing_recommendations(12, view_mode=view_mode)
     # Pour attacher LE dernier sizing de CHAQUE paire à sa carte, on interroge la base
@@ -2628,21 +2755,7 @@ def ml_status_payload(view_mode=None):
         'sizing_recommendations': sizing_recommendations,
         'live_predictions': clean_ml_preds,
         'view_mode': view_mode,
-        'analytics': {
-            'test_precision': 67.1,
-            'test_accuracy': 65.1,
-            'avg_win': 1.64,
-            'avg_loss': -0.87,
-            'risk_reward': 1.89,
-            'profit_factor': 3.13,
-            'expectancy': 0.69,
-            'cum_pnl_2026': 2049.9,
-            'best_day': 'Mercredi (68.5% winrate)',
-            'best_hours': '13h-17h & 08h-11h UTC',
-            'best_cryptos': 'ETH (+1.82%) & SOL (+1.75%)',
-            'weekly_forecast_pct': '+15% à +28%',
-            'weekly_forecast_usd': '+$150 à +$285 USD'
-        }
+        'analytics': analytics,
     }
 
 
@@ -2822,7 +2935,7 @@ def api_run_support_touch_backtest():
     python_exe = sys.executable
     command = [
         python_exe,
-        str(ROOT / 'scripts' / 'backtest_support_touch.py'),
+        str(ROOT / 'scripts' / 'trade_signals.py'),
         '--output',
         str(DATA_DIR / 'aegis_db.sqlite3')
     ]
@@ -2855,6 +2968,170 @@ def api_support_touch_backtest_status():
         'running': running,
         'exit_code': exit_code
     })
+
+
+# ===== REPLAY DES REFUS ML (analyse de performance live + rejeu des refus) =====
+REPLAY_PROCESS = None
+
+
+def ml_replay_stats():
+    """Stats de replay des refus ML lues depuis SQLite (progression du rattrapage)."""
+    stats = {
+        'total_rejected': 0,
+        'replayed': 0,
+        'pending': 0,
+        'remaining': 0,
+        'last_run_at': None,
+        'last_run_replayed': None,
+        'interval_seconds': int(os.getenv('ML_LIVE_ANALYSIS_INTERVAL_SECONDS', '21600')),
+        'next_run_at': None,
+    }
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        stats['total_rejected'] = conn.execute(
+            "SELECT COUNT(*) FROM decision_logs WHERE action_type='ENTRY' AND decision='rejected'"
+        ).fetchone()[0]
+        by_status = conn.execute(
+            "SELECT replay_status, COUNT(*) n FROM ml_rejected_replay_results GROUP BY replay_status"
+        ).fetchall()
+        for row in by_status:
+            if row['replay_status'] == 'replayed':
+                stats['replayed'] = row['n']
+            else:
+                stats['pending'] += row['n']
+        stats['remaining'] = max(0, stats['total_rejected'] - stats['replayed'])
+        last = conn.execute(
+            "SELECT generated_at, rejected_replayed FROM ml_analysis_runs ORDER BY generated_at DESC LIMIT 1"
+        ).fetchone()
+        if last:
+            stats['last_run_at'] = last['generated_at']
+            stats['last_run_replayed'] = last['rejected_replayed']
+            # Prochain replay auto = dernier run + intervalle (le bot déclenche toutes les
+            # ML_LIVE_ANALYSIS_INTERVAL_SECONDS). Si déjà dépassé, il partira au prochain
+            # tick de la boucle bot -> on renvoie l'échéance calculée.
+            try:
+                last_dt = datetime.fromisoformat(str(last['generated_at']))
+                stats['next_run_at'] = (last_dt + timedelta(seconds=stats['interval_seconds'])).isoformat()
+            except Exception:
+                stats['next_run_at'] = None
+        conn.close()
+    except Exception as e:
+        stats['error'] = str(e)
+    return stats
+
+
+def ml_replay_status_payload():
+    global REPLAY_PROCESS
+    running = False
+    exit_code = None
+    if REPLAY_PROCESS:
+        poll_res = REPLAY_PROCESS.poll()
+        if poll_res is None:
+            running = True
+        else:
+            exit_code = poll_res
+            REPLAY_PROCESS = None
+    payload = {'running': running, 'exit_code': exit_code}
+    payload.update(ml_replay_stats())
+    return payload
+
+
+@app.route('/api/ml/replay/status', methods=['GET'])
+def api_ml_replay_status():
+    response = jsonify({'ok': True, **ml_replay_status_payload()})
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/api/ml/replay/start', methods=['POST'])
+def api_ml_replay_start():
+    global REPLAY_PROCESS
+    if REPLAY_PROCESS and REPLAY_PROCESS.poll() is None:
+        return jsonify({'ok': False, 'error': 'Un replay est déjà en cours', **ml_replay_status_payload()}), 400
+
+    payload = request.get_json(silent=True) or {}
+    # Permet de forcer un plafond de replay plus élevé pour rattraper le backlog en un run.
+    max_replay = payload.get('max_replay')
+
+    command = [
+        sys.executable,
+        str(ROOT / 'scripts' / 'analyze_ml_live_performance.py'),
+        '--db',
+        str(aegis_db_path()),
+    ]
+    if max_replay:
+        try:
+            command += ['--max-replay', str(int(max_replay))]
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        # Sortie non bufferisée + UTF-8 pour que la progression apparaisse en direct
+        # dans bot.log (donc dans la console web) au lieu d'un dump en fin de run.
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+        env['PYTHONIOENCODING'] = 'utf-8'
+        replay_scope = f"backlog complet (plafond {int(max_replay)})" if max_replay else "lot standard"
+        REPLAY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Log DÉDIÉ au replay (mode 'w' = un nouveau run repart d'un fichier propre) pour
+        # ne PAS mélanger la progression du replay avec les logs du bot dans bot.log.
+        replay_log = open(REPLAY_LOG_FILE, 'w', encoding='utf-8', errors='replace')
+        replay_log.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé manuellement ({replay_scope})...\n")
+        replay_log.flush()
+        # Trace courte dans bot.log juste pour signaler le lancement (sans la progression).
+        try:
+            with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+                log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé ({replay_scope}). Progression dans l'onglet Replay.\n")
+        except Exception:
+            pass
+        REPLAY_PROCESS = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            stdout=replay_log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        return jsonify({'ok': True, 'pid': REPLAY_PROCESS.pid, **ml_replay_status_payload()})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ml/replay/logs', methods=['GET'])
+def api_ml_replay_logs():
+    """Retourne les logs du run de replay courant (fichier dédié, non mélangé)."""
+    lines_count = int(request.args.get('lines', '200'))
+    lines = tail_lines(REPLAY_LOG_FILE, lines_count) if REPLAY_LOG_FILE.exists() else []
+    response = jsonify({'ok': True, 'lines': [l.rstrip() for l in lines]})
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/api/ml/replay/stop', methods=['POST'])
+def api_ml_replay_stop():
+    """Arrête le replay en cours. Les refus déjà rejoués et commités restent en base
+    (le rattrapage reprendra là où il s'est arrêté au prochain lancement)."""
+    global REPLAY_PROCESS
+    stopped = False
+    if REPLAY_PROCESS and REPLAY_PROCESS.poll() is None:
+        try:
+            REPLAY_PROCESS.terminate()
+            try:
+                REPLAY_PROCESS.wait(timeout=5)
+            except Exception:
+                REPLAY_PROCESS.kill()
+            stopped = True
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e), **ml_replay_status_payload()}), 500
+        finally:
+            REPLAY_PROCESS = None
+        try:
+            with open(REPLAY_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+                log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🛑 Replay arrêté manuellement. Les refus déjà rejoués sont conservés.\n")
+        except Exception:
+            pass
+    return jsonify({'ok': True, 'stopped': stopped, **ml_replay_status_payload()})
 
 @sock.route('/ws/live')
 def ws_live(ws):

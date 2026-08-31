@@ -346,7 +346,7 @@ Comportement actuel :
 | `scripts/train_and_evaluate_ml_model.py` | pipeline unifiée d'entraînement Entrée + Sortie, comparaison/promotion/rollback champion-challenger (Phase 10) |
 | `scripts/analyze_ml_live_performance.py` | analyse live, calibration, drift, replay refuses |
 | `scripts/walk_forward_validation.py` | validation temporelle sans fuite |
-| `scripts/backtest_support_touch.py` | backtest Support Touch vers SQLite |
+| `scripts/trade_signals.py` | détection signaux (support touch, breakout, pullback/cross EMA 15m) + simulate_trade + backtest Support Touch vers SQLite |
 | `scripts/backtest_ml_exit_comparison.py` | comparaison sorties ML |
 
 ## Flux d'une Decision d'Entree

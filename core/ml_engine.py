@@ -92,7 +92,24 @@ class MLEngine:
             'is_optimal_trading_time', 'trading_session_code',
             'minutes_to_session_close',
             'technical_action_code', 'technical_confidence',
-            'technical_confidence_edge'
+            'technical_confidence_edge',
+            # Features DIRECTIONNELLES ajoutées en fin de schéma (compat champion) pour que
+            # le P_exit distingue volatilité HAUSSIÈRE (continuer) de volatilité CHAOTIQUE
+            # (sortir), au lieu de se baser surtout sur la volatilité brute (atr/std).
+            'exit_short_tf_alignment', 'exit_multi_tf_trend_alignment',
+            'exit_ema20_breakout_15m', 'exit_momentum_accel_5m',
+            'exit_consecutive_green_5m',
+            # === VOLUME PROFILE (v2) ===
+            # Le volume précède le prix : accumulation = continuer, distribution = sortir
+            'volume_trend_5b',      # Volume 5 dernières bougies vs moyenne 20 (>1 = accumulation)
+            'buy_volume_ratio',     # % du volume sur bougies vertes (>50% = pression acheteuse)
+            'volume_price_confirm', # Volume ET prix montent ensemble (1 = confirmé, 0 = divergence)
+            # === NIVEAUX DYNAMIQUES (structure de prix) ===
+            # Position dans la structure: proche résistance = risque blocage, proche support = filet
+            'price_in_range_pct',       # Position dans le range 20 bougies (0=bas, 100=haut)
+            'dist_to_recent_high_pct',  # Distance au plus haut récent (négatif = en dessous)
+            'dist_to_recent_low_pct',   # Distance au plus bas récent (positif = au dessus)
+            'breakout_strength',        # Force du breakout si au-dessus du range (0 si dans le range)
         ]
         self.sizing_feature_names = list(self.feature_names)
         # Le modèle P_target réutilise les mêmes features d'entrée que P_win/sizing
@@ -723,9 +740,22 @@ class MLEngine:
             from sklearn.model_selection import train_test_split
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-            # Split train/test pour évaluer
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y if len(set(y)) > 1 else None)
-            
+            # Split train/test pour évaluer.
+            # IMPORTANT: train_test_split mélange les lignes. On splitte donc AUSSI
+            # sample_weight dans le même appel pour que chaque poids reste aligné sur
+            # sa ligne (l'ancien sample_weight[:len(X_train)] prenait les N premiers
+            # poids de l'ordre original -> désalignés avec X_train mélangé).
+            stratify = y if len(set(y)) > 1 else None
+            if sample_weight is not None:
+                X_train, X_test, y_train, y_test, sw_train, _sw_test = train_test_split(
+                    X, y, sample_weight, test_size=0.2, random_state=42, stratify=stratify
+                )
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.2, random_state=42, stratify=stratify
+                )
+                sw_train = None
+
             self.scaler = StandardScaler()
             X_train_scaled = self.scaler.fit_transform(X_train)
             X_test_scaled = self.scaler.transform(X_test)
@@ -739,7 +769,6 @@ class MLEngine:
                 n_jobs=-1,
                 oob_score=True
             )
-            sw_train = sample_weight[:len(X_train)] if sample_weight is not None else None
             self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
             self.is_trained = True
 
@@ -837,6 +866,89 @@ class MLEngine:
             price_change_5b = market_features[13]
             volatility_std = market_features[15]
             hour_of_day = market_features[16]
+
+            # Features DIRECTIONNELLES piochées dans le schéma 78 (indices fixes) pour
+            # que le P_exit sache si la volatilité va dans le BON sens (tendance/momentum
+            # haussier -> continuer) ou est CHAOTIQUE (sortir). Bornées à 0.0 si le vecteur
+            # marché est plus court (sécurité si schéma réduit).
+            def _mf(idx):
+                return float(market_features[idx]) if len(market_features) > idx else 0.0
+            exit_short_tf_alignment = _mf(76)       # short_tf_alignment
+            exit_multi_tf_trend_alignment = _mf(54)  # multi_tf_trend_alignment
+            exit_ema20_breakout_15m = _mf(68)        # ema20_breakout_15m
+            exit_momentum_accel_5m = _mf(73)         # momentum_accel_5m
+            exit_consecutive_green_5m = _mf(75)      # consecutive_green_5m
+
+            # === VOLUME PROFILE ===
+            # Le volume précède le prix : accumulation = continuer, distribution = sortir
+            closes = np.array([float(k['close']) for k in klines], dtype=np.float64)
+            opens = np.array([float(k['open']) for k in klines], dtype=np.float64)
+            volumes = np.array([float(k.get('volume', 0.0) or 0.0) for k in klines], dtype=np.float64)
+
+            # 1. volume_trend_5b: Volume récent (5 bougies) vs moyenne (20 bougies)
+            #    >1 = accumulation récente, <1 = distribution/calme
+            if len(volumes) >= 20:
+                avg_vol_20 = np.mean(volumes[-20:])
+                avg_vol_5 = np.mean(volumes[-5:]) if len(volumes) >= 5 else avg_vol_20
+                volume_trend_5b = avg_vol_5 / max(avg_vol_20, 1e-9)
+            else:
+                volume_trend_5b = 1.0
+
+            # 2. buy_volume_ratio: % du volume sur bougies vertes (close > open)
+            #    >50% = pression acheteuse dominante
+            if len(volumes) >= 10 and len(closes) >= 10 and len(opens) >= 10:
+                recent_closes = closes[-10:]
+                recent_opens = opens[-10:]
+                recent_vols = volumes[-10:]
+                green_mask = recent_closes > recent_opens
+                total_vol = np.sum(recent_vols)
+                buy_vol = np.sum(recent_vols[green_mask]) if np.any(green_mask) else 0.0
+                buy_volume_ratio = (buy_vol / max(total_vol, 1e-9)) * 100.0
+            else:
+                buy_volume_ratio = 50.0
+
+            # 3. volume_price_confirm: Volume ET prix montent ensemble ?
+            #    1 = tendance confirmée (hausse prix + hausse volume), 0 = divergence
+            if len(closes) >= 5 and len(volumes) >= 5:
+                price_up = closes[-1] > closes[-5]
+                vol_up = np.mean(volumes[-3:]) > np.mean(volumes[-6:-3]) if len(volumes) >= 6 else True
+                volume_price_confirm = 1.0 if (price_up and vol_up) else 0.0
+            else:
+                volume_price_confirm = 0.5
+
+            # === NIVEAUX DYNAMIQUES (structure de prix) ===
+            # Position dans la structure: proche résistance = risque blocage, proche support = filet
+            if len(closes) >= 20:
+                highs = np.array([float(k['high']) for k in klines[-20:]], dtype=np.float64)
+                lows = np.array([float(k['low']) for k in klines[-20:]], dtype=np.float64)
+                recent_high = np.max(highs)
+                recent_low = np.min(lows)
+                range_size = recent_high - recent_low
+
+                # 1. price_in_range_pct: Position dans le range (0=bas, 100=haut)
+                if range_size > 0:
+                    price_in_range_pct = ((current_price - recent_low) / range_size) * 100.0
+                else:
+                    price_in_range_pct = 50.0
+
+                # 2. dist_to_recent_high_pct: Distance au plus haut (négatif = en dessous)
+                dist_to_recent_high_pct = ((current_price - recent_high) / max(recent_high, 1e-9)) * 100.0
+
+                # 3. dist_to_recent_low_pct: Distance au plus bas (positif = au dessus)
+                dist_to_recent_low_pct = ((current_price - recent_low) / max(recent_low, 1e-9)) * 100.0
+
+                # 4. breakout_strength: Force du breakout si au-dessus du range
+                #    0 si dans le range, sinon % au-dessus du high
+                if current_price > recent_high:
+                    breakout_strength = ((current_price - recent_high) / max(recent_high, 1e-9)) * 100.0
+                else:
+                    breakout_strength = 0.0
+            else:
+                price_in_range_pct = 50.0
+                dist_to_recent_high_pct = 0.0
+                dist_to_recent_low_pct = 0.0
+                breakout_strength = 0.0
+
             bot_features = self._normalise_bot_context(bot_context, hour_of_day)
 
             return np.array([
@@ -860,7 +972,20 @@ class MLEngine:
                 bot_features['minutes_to_session_close'],
                 bot_features['technical_action_code'],
                 bot_features['technical_confidence'],
-                bot_features['technical_confidence_edge']
+                bot_features['technical_confidence_edge'],
+                # Features directionnelles (fin de schéma, compat champion)
+                exit_short_tf_alignment, exit_multi_tf_trend_alignment,
+                exit_ema20_breakout_15m, exit_momentum_accel_5m,
+                exit_consecutive_green_5m,
+                # === VOLUME PROFILE ===
+                volume_trend_5b,
+                buy_volume_ratio,
+                volume_price_confirm,
+                # === NIVEAUX DYNAMIQUES ===
+                price_in_range_pct,
+                dist_to_recent_high_pct,
+                dist_to_recent_low_pct,
+                breakout_strength,
             ], dtype=np.float64)
 
         except Exception as e:
@@ -877,11 +1002,19 @@ class MLEngine:
         try:
             self.exit_scaler = StandardScaler()
             X_scaled = self.exit_scaler.fit_transform(X)
+            # Le dataset de sortie est déséquilibré (bien plus de "sortir" que de "continuer").
+            # Sans pondération, le RF prédit "sortir" par défaut et rate les vrais "continuer"
+            # (les gagnants qu'on veut garder). class_weight pénalise plus fort les erreurs sur
+            # la classe minoritaire -> le modèle DÉTECTE PLUS DE GAGNANTS à la sortie.
+            # 'balanced_subsample' (défaut) | 'balanced' | 'none' via ML_EXIT_CLASS_WEIGHT.
+            cw_env = os.getenv('ML_EXIT_CLASS_WEIGHT', 'balanced_subsample').strip().lower()
+            class_weight = None if cw_env in ('none', '', 'off') else cw_env
             self.exit_model = RandomForestClassifier(
                 n_estimators=n_estimators,
                 max_depth=max_depth,
                 min_samples_split=min_samples_split,
                 criterion=criterion,
+                class_weight=class_weight,
                 random_state=43,
                 n_jobs=-1
             )

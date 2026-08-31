@@ -3,7 +3,7 @@
  */
 
 import { ChevronDown, RefreshCw, ScrollText } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -23,9 +23,16 @@ export function ConsoleView({
   const outputRef = useRef<HTMLDivElement>(null)
   const lines = cleared ? [] : data.lines || []
 
+  // Scroll to bottom instantly before paint
+  useLayoutEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight
+    }
+  }, [lines.length])
+
   useEffect(() => {
-    if (pinned) {
-      outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight, behavior: 'smooth' })
+    if (pinned && outputRef.current && lines.length > 0) {
+      outputRef.current.scrollTo({ top: outputRef.current.scrollHeight, behavior: 'smooth' })
     }
   }, [lines.length, pinned])
 

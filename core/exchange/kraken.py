@@ -1,4 +1,6 @@
 """Client Kraken - Implémentation de l'interface ExchangeBase"""
+import threading
+
 import ccxt
 from core.exchange.base import ExchangeBase
 
@@ -23,11 +25,24 @@ class KrakenClient(ExchangeBase):
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
+            # Nonce en microsecondes: granularité plus fine que les millisecondes
+            # par défaut, réduit fortement le risque de collision entre appels rapprochés.
+            'nonce': lambda: ccxt.Exchange.microseconds(),
         })
+        # Verrou global sérialisant TOUS les appels ccxt de cette instance.
+        # Kraken exige un nonce strictement croissant par clé API; sans ce verrou,
+        # deux threads (fetch klines, balance, ordres...) peuvent générer des nonces
+        # concurrents/dans le désordre -> "EAPI:Invalid nonce".
+        self._api_lock = threading.RLock()
         self._markets = {}
         # Kraken n'a pas de testnet public, on ignore le flag
         if testnet:
             print("⚠️ Kraken n'a pas de testnet - Mode live uniquement")
+
+    def _call(self, fn, *args, **kwargs):
+        """Exécute un appel ccxt sous verrou pour garantir un nonce strictement croissant."""
+        with self._api_lock:
+            return fn(*args, **kwargs)
 
     @property
     def name(self):
@@ -41,10 +56,10 @@ class KrakenClient(ExchangeBase):
         self.load_markets()
 
     def fetch_balance(self, params=None):
-        return self._exchange.fetch_balance(params or {})
+        return self._call(self._exchange.fetch_balance, params or {})
 
     def fetch_ticker(self, symbol):
-        return self._exchange.fetch_ticker(symbol)
+        return self._call(self._exchange.fetch_ticker, symbol)
 
     def fetch_ohlcv(self, symbol, timeframe='15m', limit=50):
         # Kraken supporte: 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w
@@ -53,43 +68,43 @@ class KrakenClient(ExchangeBase):
             # Mapper vers le timeframe supporté le plus proche
             tf_map = {'3m': '5m', '2h': '1h', '6h': '4h', '8h': '4h', '12h': '4h', '1M': '1w'}
             timeframe = tf_map.get(timeframe, '15m')
-        return self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        return self._call(self._exchange.fetch_ohlcv, symbol, timeframe, limit=limit)
 
     def create_market_buy_order(self, symbol, amount):
-        return self._exchange.create_market_buy_order(symbol, amount)
+        return self._call(self._exchange.create_market_buy_order, symbol, amount)
 
     def create_market_sell_order(self, symbol, amount):
-        return self._exchange.create_market_sell_order(symbol, amount)
+        return self._call(self._exchange.create_market_sell_order, symbol, amount)
 
     def create_limit_sell_order(self, symbol, amount, price):
-        return self._exchange.create_limit_sell_order(symbol, amount, price)
+        return self._call(self._exchange.create_limit_sell_order, symbol, amount, price)
 
     def fetch_open_orders(self, symbol=None):
-        return self._exchange.fetch_open_orders(symbol)
+        return self._call(self._exchange.fetch_open_orders, symbol)
 
     def fetch_order(self, order_id, symbol=None):
-        return self._exchange.fetch_order(order_id, symbol)
+        return self._call(self._exchange.fetch_order, order_id, symbol)
 
     def cancel_order(self, order_id, symbol=None):
-        return self._exchange.cancel_order(order_id, symbol)
+        return self._call(self._exchange.cancel_order, order_id, symbol)
 
     def fetch_my_trades(self, symbol, since=None, limit=100):
-        return self._exchange.fetch_my_trades(symbol, since=since, limit=limit)
+        return self._call(self._exchange.fetch_my_trades, symbol, since=since, limit=limit)
 
     def fetch_ledger(self, code=None, since=None, limit=100, params=None):
-        return self._exchange.fetch_ledger(code=code, since=since, limit=limit, params=params or {})
+        return self._call(self._exchange.fetch_ledger, code=code, since=since, limit=limit, params=params or {})
 
     def fetch_deposits(self, code=None, since=None, limit=100, params=None):
-        return self._exchange.fetch_deposits(code=code, since=since, limit=limit, params=params or {})
+        return self._call(self._exchange.fetch_deposits, code=code, since=since, limit=limit, params=params or {})
 
     def fetch_withdrawals(self, code=None, since=None, limit=100, params=None):
-        return self._exchange.fetch_withdrawals(code=code, since=since, limit=limit, params=params or {})
+        return self._call(self._exchange.fetch_withdrawals, code=code, since=since, limit=limit, params=params or {})
 
     def fetch_transactions(self, code=None, since=None, limit=100, params=None):
-        return self._exchange.fetch_transactions(code=code, since=since, limit=limit, params=params or {})
+        return self._call(self._exchange.fetch_transactions, code=code, since=since, limit=limit, params=params or {})
 
     def load_markets(self):
-        self._markets = self._exchange.load_markets() or {}
+        self._markets = self._call(self._exchange.load_markets) or {}
         return self._markets
 
     def fetch_trading_fees(self):
@@ -97,7 +112,7 @@ class KrakenClient(ExchangeBase):
         fees = {}
         try:
             if hasattr(self._exchange, 'fetch_trading_fees'):
-                raw_fees = self._exchange.fetch_trading_fees()
+                raw_fees = self._call(self._exchange.fetch_trading_fees)
                 if isinstance(raw_fees, dict) and raw_fees:
                     for symbol, item in raw_fees.items():
                         if not isinstance(item, dict):

@@ -64,14 +64,40 @@ function cleanDescription(value?: string | null): string {
   const raw = asString(value, '')
   if (!raw) return '--'
   try {
-    const parsed = JSON.parse(raw)
+    const parsed = JSON.parse(raw) as Record<string, unknown>
     if (parsed && typeof parsed === 'object') {
-      const type = asString((parsed as Record<string, unknown>).type, '')
-      const refid = asString((parsed as Record<string, unknown>).refid, '')
-      return [type, refid].filter(Boolean).join(' · ') || raw
+      const parts: string[] = []
+      
+      // Type d'opération
+      const exchangeType = asString(parsed.exchange_type || parsed.type, '')
+      if (exchangeType) {
+        const typeLabels: Record<string, string> = {
+          trade: 'Trade',
+          deposit: 'Dépôt',
+          withdrawal: 'Retrait',
+          fee: 'Frais',
+          transfer: 'Transfert',
+        }
+        parts.push(typeLabels[exchangeType.toLowerCase()] || exchangeType)
+      }
+      
+      // Direction (in/out)
+      const direction = asString(parsed.direction, '')
+      if (direction) {
+        parts.push(direction === 'in' ? '↓ Entrée' : direction === 'out' ? '↑ Sortie' : direction)
+      }
+      
+      // Référence courte
+      const refId = asString(parsed.reference_id || parsed.refid || parsed.ref, '')
+      if (refId) {
+        const shortRef = refId.length > 12 ? `${refId.slice(0, 6)}...${refId.slice(-4)}` : refId
+        parts.push(`Ref: ${shortRef}`)
+      }
+      
+      return parts.length > 0 ? parts.join(' · ') : '--'
     }
   } catch {
-    // Description texte normale.
+    // Description texte normale
   }
   return raw.replaceAll('_', ' ')
 }
@@ -265,7 +291,6 @@ export function LedgerView() {
                 {th('Actif', 'asset')}
                 {th('Montant', 'amount')}
                 {th('Solde apres', 'balance_after')}
-                <th className="px-3 py-2.5 font-semibold">Symbole</th>
                 {th('Source', 'source')}
                 <th className="px-3 py-2.5 font-semibold">Reference</th>
                 <th className="px-3 py-2.5 font-semibold">Description</th>
@@ -274,7 +299,7 @@ export function LedgerView() {
             <tbody className="divide-y divide-border/40">
               {paginatedEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center font-medium text-muted-foreground">Aucune ligne ledger trouvee</td>
+                  <td colSpan={9} className="py-8 text-center font-medium text-muted-foreground">Aucune ligne ledger trouvee</td>
                 </tr>
               ) : (
                 paginatedEntries.map((entry, index) => {
@@ -298,7 +323,6 @@ export function LedgerView() {
                         {formatAssetAmount(entry.amount, entry.asset)}
                       </td>
                       <td className="px-3 font-mono font-semibold text-foreground">{formatAssetAmount(entry.balance_after, entry.asset)}</td>
-                      <td className="px-3 font-semibold text-foreground">{asString(entry.symbol)}</td>
                       <td className="px-3 text-muted-foreground">{asString(entry.source).replaceAll('_', ' ')}</td>
                       <td className="max-w-[260px] truncate px-3 font-mono text-[12px] text-muted-foreground" title={reference}>{reference}</td>
                       <td className="max-w-[320px] truncate px-3 text-muted-foreground" title={asString(entry.description)}>{cleanDescription(entry.description)}</td>

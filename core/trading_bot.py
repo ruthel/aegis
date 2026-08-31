@@ -187,6 +187,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.ml_engine = MLEngine()
         self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
         self.ml_exit_entry_min_continue_prob = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
+        # Seuil de p_continue ADAPTATIF selon la confiance d'entrée (p_win):
+        # - si p_win élevé (>= ml_exit_high_pwin_threshold), on tolère un p_continue plus bas
+        #   (ml_exit_min_continue_high_pwin) car l'entrée est solide.
+        # - sinon (p_win moyen), on exige la marge de sortie standard (ml_exit_entry_min_continue_prob).
+        self.ml_exit_high_pwin_threshold = float(os.getenv('ML_EXIT_HIGH_PWIN_THRESHOLD', '65.0'))
+        self.ml_exit_min_continue_high_pwin = float(os.getenv('ML_EXIT_MIN_CONTINUE_HIGH_PWIN', '45.0'))
 
         # Notifications
         self.notifier = NotificationManager()
@@ -414,11 +420,30 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Erreur prévision ML sortie à l'entrée pour {symbol}: {e}")
             return None
 
-    def _should_reject_entry_for_ml_exit(self, ml_exit_forecast):
-        """Retourne True si la prévision de sortie ML juge l'entrée trop fragile."""
+    def _required_min_continue_prob(self, ml_win_prob):
+        """Seuil de p_continue requis, ADAPTATIF selon la confiance d'entrée p_win.
+
+        - p_win >= ml_exit_high_pwin_threshold (65%) -> seuil abaissé (45%): l'entrée est
+          solide, on tolère une marge de sortie plus faible.
+        - sinon -> seuil standard (ml_exit_entry_min_continue_prob, 50%).
+        """
+        try:
+            pw = float(ml_win_prob) if ml_win_prob is not None else 0.0
+        except (TypeError, ValueError):
+            pw = 0.0
+        if pw >= self.ml_exit_high_pwin_threshold:
+            return self.ml_exit_min_continue_high_pwin
+        return self.ml_exit_entry_min_continue_prob
+
+    def _should_reject_entry_for_ml_exit(self, ml_exit_forecast, ml_win_prob=None):
+        """Retourne True si la prévision de sortie ML juge l'entrée trop fragile.
+
+        Le seuil de p_continue requis est adaptatif selon p_win (voir _required_min_continue_prob).
+        """
         if not ml_exit_forecast or not ml_exit_forecast.get('ml_exit_available'):
             return False
-        return float(ml_exit_forecast.get('p_continue', 50.0)) < self.ml_exit_entry_min_continue_prob
+        required = self._required_min_continue_prob(ml_win_prob)
+        return float(ml_exit_forecast.get('p_continue', 50.0)) < required
 
     def _build_ml_entry_decision_metrics(self, current_price, ml_win_prob, ml_exit_forecast, ml_bot_context=None, extra=None):
         """Construit les métriques lisibles pour une décision finale ML d'entrée."""
@@ -433,7 +458,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 'p_win': ml_win_prob,
                 'min_p_win': self.ml_min_probability,
                 'p_continue': p_continue,
-                'min_p_continue': self.ml_exit_entry_min_continue_prob,
+                # Seuil de p_continue RÉELLEMENT appliqué (adaptatif selon p_win)
+                'min_p_continue': self._required_min_continue_prob(ml_win_prob),
                 'exit_recommendation': (ml_exit_forecast or {}).get('decision') if isinstance(ml_exit_forecast, dict) else None,
                 'exit_reason': (ml_exit_forecast or {}).get('reason') if isinstance(ml_exit_forecast, dict) else None,
             },
@@ -1030,7 +1056,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             dynamic_limit = self._get_dynamic_backtest_limit()
             command = [
                 sys.executable,
-                'scripts/backtest_support_touch.py',
+                'scripts/trade_signals.py',
                 '--dynamic-hold',
                 '--limit',
                 str(dynamic_limit),
@@ -1449,6 +1475,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self.state['exit_recommendations'][symbol] = result
             
             if str(result.get('decision') or '').upper() != 'HOLD':
+                # Extraire le vrai p_continue ML depuis ml_exit (pas le continuation_score règles)
+                ml_exit_data = result.get('ml_exit', {})
+                ml_p_continue = ml_exit_data.get('p_continue') if isinstance(ml_exit_data, dict) else None
                 self.record_decision(
                     symbol=symbol,
                     action="exit_decision",
@@ -1458,7 +1487,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         'decision': result['decision'],
                         'rule_decision': result.get('rule_decision'),
                         'continuation_score': result['continuation_score'],
-                        'ml_exit': result.get('ml_exit', {}),
+                        'p_continue': ml_p_continue,  # Vrai p_continue ML (prioritaire sur continuation_score)
+                        'ml_exit': ml_exit_data,
                         'net_pnl_pct': result['net_pnl_pct'],
                         'duration_minutes': result['duration_minutes']
                     },
@@ -2323,7 +2353,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     account_balance
                 )
 
-                if self._should_reject_entry_for_ml_exit(ml_exit_forecast):
+                if self._should_reject_entry_for_ml_exit(ml_exit_forecast, ml_win_prob):
                     reject_cooldown_seconds = self.get_ml_reject_cooldown_seconds(
                         ml_win_prob,
                         ml_exit_forecast,
@@ -2749,7 +2779,20 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if os.path.exists(script_path):
                     proc = getattr(self, '_ml_live_analysis_process', None)
                     if proc is None or proc.poll() is not None:
-                        self._ml_live_analysis_process = subprocess.Popen([sys.executable, script_path])
+                        # Rediriger la sortie vers un log DÉDIÉ (data/ml_replay.log) pour ne
+                        # PAS mélanger la progression du replay avec les logs du bot.
+                        replay_log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ml_replay.log')
+                        env = os.environ.copy()
+                        env['PYTHONUNBUFFERED'] = '1'
+                        env['PYTHONIOENCODING'] = 'utf-8'
+                        try:
+                            log_fh = open(replay_log_path, 'w', encoding='utf-8', errors='replace')
+                            self._ml_live_analysis_process = subprocess.Popen(
+                                [sys.executable, script_path],
+                                stdout=log_fh, stderr=subprocess.STDOUT, env=env,
+                            )
+                        except Exception:
+                            self._ml_live_analysis_process = subprocess.Popen([sys.executable, script_path])
         except Exception as e:
             print(f"⚠️ Erreur run_ml_live_analysis_if_due: {e}")
 

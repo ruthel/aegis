@@ -5,6 +5,7 @@
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getJson, postJson } from '@/lib/api'
@@ -12,9 +13,44 @@ import { asString } from '@/lib/formatters'
 import { cn } from '@/lib/utils'
 import type { ConfigField, ConfigPayload } from '@/types/dashboard'
 import axios from 'axios'
-import { Award, BrainCircuit, CheckCircle2, Database, Loader2, Play, Rocket, ShieldAlert, SlidersHorizontal, Sparkles, Zap } from 'lucide-react'
+import { Award, BrainCircuit, CheckCircle2, Database, Loader2, Play, RefreshCw, Rocket, ShieldAlert, SlidersHorizontal, Sparkles, Square, Zap } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
+
+type ReplayStatus = {
+  running?: boolean
+  exit_code?: number | null
+  total_rejected?: number
+  replayed?: number
+  pending?: number
+  remaining?: number
+  last_run_at?: string | null
+  last_run_replayed?: number | null
+  interval_seconds?: number
+  next_run_at?: string | null
+}
+
+function formatDateTime(iso?: string | null): string {
+  if (!iso) return '--'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '--'
+  return d.toLocaleString('fr-FR', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function formatCountdown(iso?: string | null): string {
+  if (!iso) return ''
+  const target = new Date(iso).getTime()
+  if (Number.isNaN(target)) return ''
+  const diffMs = target - Date.now()
+  if (diffMs <= 0) return 'imminent (au prochain cycle du bot)'
+  const mins = Math.round(diffMs / 60000)
+  if (mins < 60) return `dans ~${mins} min`
+  const hours = Math.floor(mins / 60)
+  const rem = mins % 60
+  return `dans ~${hours}h${rem > 0 ? String(rem).padStart(2, '0') : ''}`
+}
 
 export function ConfigView({
   config,
@@ -42,6 +78,9 @@ export function ConfigView({
   const [manualFast, setManualFast] = useState(values.ML_AUTO_RETRAIN_FAST === 'True')
   const [retrainBusy, setRetrainBusy] = useState(false)
   const [promoteBusy, setPromoteBusy] = useState(false)
+  const [replayBusy, setReplayBusy] = useState(false)
+  const [replayStatus, setReplayStatus] = useState<ReplayStatus>({})
+  const [replayLogs, setReplayLogs] = useState<string[]>([])
   const tradingFields = fields.filter((field) => ['Trading', 'Risque', 'Support Touch', 'Bear Mode', 'Scoring'].includes(field.section || ''))
   const mlFields = fields.filter((field) => field.section === 'ML Retraining')
 
@@ -57,6 +96,55 @@ export function ConfigView({
     }, 3000)
     return () => window.clearInterval(id)
   }, [config, retrainingRunning, setConfig])
+
+  // Charger le statut + les logs dédiés du replay au montage, puis poller.
+  useEffect(() => {
+    let active = true
+    const fetchStatus = async () => {
+      try {
+        const result = await getJson<ReplayStatus & { ok: boolean }>('/api/ml/replay/status')
+        if (active) setReplayStatus(result)
+      } catch {
+        // informatif
+      }
+      try {
+        const logs = await getJson<{ ok: boolean; lines: string[] }>('/api/ml/replay/logs?lines=200')
+        if (active) setReplayLogs(logs.lines || [])
+      } catch {
+        // informatif
+      }
+    }
+    void fetchStatus()
+    const id = window.setInterval(fetchStatus, 3000)
+    return () => {
+      active = false
+      window.clearInterval(id)
+    }
+  }, [])
+
+  const replayRunning = Boolean(replayStatus.running)
+
+  const startReplay = async (fullCatchup = false) => {
+    if (replayRunning) return
+    setReplayBusy(true)
+    try {
+      const body = fullCatchup ? { max_replay: 5000 } : {}
+      const result = await postJson<ReplayStatus & { ok: boolean; error?: string }>('/api/ml/replay/start', body)
+      setReplayStatus(result)
+    } finally {
+      setReplayBusy(false)
+    }
+  }
+
+  const stopReplay = async () => {
+    setReplayBusy(true)
+    try {
+      const result = await postJson<ReplayStatus & { ok: boolean }>('/api/ml/replay/stop', {})
+      setReplayStatus(result)
+    } finally {
+      setReplayBusy(false)
+    }
+  }
 
   const save = async () => {
     try {
@@ -343,6 +431,103 @@ export function ConfigView({
             </div>
             <p className="mt-3 text-[13px] leading-6 text-muted-foreground">
               La promotion manuelle lance le pipeline sans check-only: le Challenger est promu seulement si les garde-fous passent.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 text-primary" />
+                Replay des refus ML
+              </CardTitle>
+              <span
+                className={
+                  replayRunning
+                    ? 'rounded-full border border-emerald-500/50 bg-emerald-500/15 px-3 py-1 text-[13px] font-black text-emerald-200'
+                    : 'rounded-full border border-border bg-background px-3 py-1 text-[13px] font-black text-muted-foreground'
+                }
+              >
+                {replayRunning ? 'En cours' : 'Inactif'}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-lg border border-border/80 bg-background/70 p-3">
+                  <div className="text-[13px] font-bold uppercase text-muted-foreground">Refus total</div>
+                  <div className="mt-1 font-black">{asString(replayStatus.total_rejected ?? '--')}</div>
+                </div>
+                <div className="rounded-lg border border-border/80 bg-background/70 p-3">
+                  <div className="text-[13px] font-bold uppercase text-muted-foreground">Rejoués</div>
+                  <div className="mt-1 font-black text-emerald-400">{asString(replayStatus.replayed ?? '--')}</div>
+                </div>
+                <div className="rounded-lg border border-border/80 bg-background/70 p-3">
+                  <div className="text-[13px] font-bold uppercase text-muted-foreground">Restants</div>
+                  <div className="mt-1 font-black text-amber-300">{asString(replayStatus.remaining ?? '--')}</div>
+                </div>
+                <div className="rounded-lg border border-border/80 bg-background/70 p-3">
+                  <div className="text-[13px] font-bold uppercase text-muted-foreground">Prochain replay auto</div>
+                  <div className="mt-1 font-black">{formatDateTime(replayStatus.next_run_at)}</div>
+                  <div className="text-[11px] text-muted-foreground">{formatCountdown(replayStatus.next_run_at)}</div>
+                </div>
+              </div>
+              {replayRunning ? (
+                <Button className="min-w-44" variant="destructive" disabled={replayBusy} onClick={() => void stopReplay()}>
+                  {replayBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}
+                  Arrêter le replay
+                </Button>
+              ) : (
+                <Button className="min-w-44" disabled={replayBusy} onClick={() => void startReplay(false)}>
+                  {replayBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                  Lancer le replay
+                </Button>
+              )}
+              <Button className="min-w-52" variant="outline" disabled={replayRunning || replayBusy} onClick={() => void startReplay(true)}>
+                {replayRunning || replayBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                Rattraper tout le backlog
+              </Button>
+            </div>
+
+            {(() => {
+              const total = Number(replayStatus.total_rejected ?? 0)
+              const done = Number(replayStatus.replayed ?? 0)
+              const pctDone = total > 0 ? Math.min(100, (done / total) * 100) : 0
+              return (
+                <div className="mt-4">
+                  <div className="mb-1 flex items-center justify-between text-[12px] text-muted-foreground">
+                    <span>Progression du rattrapage</span>
+                    <span className="font-bold">{done} / {total} rejoués ({pctDone.toFixed(1)}%)</span>
+                  </div>
+                  <Progress value={pctDone} />
+                  {replayRunning && (
+                    <div className="mt-2 flex items-center gap-2 text-[12px] text-emerald-300">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Replay en cours...
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {replayLogs.length > 0 && (
+              <div className="mt-4">
+                <div className="mb-1 text-[12px] font-bold uppercase text-muted-foreground">Logs du replay</div>
+                <pre className="max-h-56 overflow-auto rounded-lg border border-border bg-black/40 p-3 font-mono text-[11px] leading-5 text-emerald-200/90">
+                  {replayLogs.join('\n')}
+                </pre>
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
+              <span>Dernier run : <strong className="text-foreground">{formatDateTime(replayStatus.last_run_at)}</strong>{replayStatus.last_run_replayed != null ? ` (+${replayStatus.last_run_replayed} rejoués)` : ''}</span>
+              <span>·</span>
+              <span>Prochain replay auto : <strong className="text-foreground">{formatDateTime(replayStatus.next_run_at)}</strong> {formatCountdown(replayStatus.next_run_at)}</span>
+            </div>
+            <p className="mt-3 text-[13px] leading-6 text-muted-foreground">
+              Le replay rejoue les refus ML passés avec les bougies futures réelles pour vérifier s'ils auraient été gagnants, puis les prépare pour le prochain réentraînement. « Lancer le replay » traite un lot (plafond configuré) ; « Rattraper tout le backlog » force un plafond élevé pour tout traiter en un run. La progression détaillée s'affiche ci-dessus (logs dédiés, non mélangés avec le bot). Le replay tourne aussi automatiquement selon l'intervalle configuré (par défaut toutes les 6h).
             </p>
           </CardContent>
         </Card>

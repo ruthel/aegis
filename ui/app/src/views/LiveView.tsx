@@ -2,7 +2,7 @@
  * views/LiveView.tsx — Vue principale "Live" du dashboard Aegis
  */
 
-import { Activity, CircleDollarSign, EllipsisVertical, ListChecks, Power, RefreshCw, WalletCards } from 'lucide-react'
+import { Activity, CircleDollarSign, EllipsisVertical, ListChecks, Power, RefreshCw, WalletCards, X } from 'lucide-react'
 import { useMemo, useEffect, useState } from 'react'
 import { useIntl } from 'react-intl'
 import { Badge } from '@/components/ui/badge'
@@ -63,8 +63,6 @@ export function LiveView({ status, ml }: { status: StatusPayload; ml: MlStatus }
 
 function MetricsStrip({ status }: { status: StatusPayload }) {
   const stats = status.stats || {}
-  const forecast = status.next_buy_forecast || {}
-  const candidate = (forecast.candidate as JsonMap | undefined) || {}
   const viewMode = asString(status.balance?.view_mode ?? status.bot?.view_mode ?? status.bot?.mode, 'paper')
   const balanceLabel = viewMode === 'live' ? 'Solde Live' : viewMode === 'all' ? 'Solde Total' : 'Solde Paper'
   const totalTrades = Number(stats.total_trades || 0)
@@ -80,7 +78,7 @@ function MetricsStrip({ status }: { status: StatusPayload }) {
   }
 
   return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
       <BalanceCard label={balanceLabel} status={status} />
       <MetricCard icon={CircleDollarSign} label="PnL Net Cumulé" value={formatUsd(net)} />
       <SplitMetricCard
@@ -98,13 +96,6 @@ function MetricsStrip({ status }: { status: StatusPayload }) {
         rightValue={`${perDay >= 0 ? '+' : ''}${num(perDay, 2)} $ / j`}
       />
       <MetricCard icon={CircleDollarSign} label="Rendement / Mise" value={pct(avgStake > 0 ? (net / avgStake) * 100 : 0, 2)} />
-      <SplitMetricCard
-        label="Prochain Achat Estimé"
-        leftLabel={asString(candidate.symbol, '--')}
-        leftValue={candidate.p_win != null ? `${pct(candidate.p_win, 1)}` : '--'}
-        rightLabel="État"
-        rightValue={Boolean(candidate.ready) ? 'Prêt' : 'En attente'}
-      />
     </div>
   )
 }
@@ -162,42 +153,75 @@ function BalanceCard({ label, status }: { label: string; status: StatusPayload }
         )}
       </div>
       <div className="mt-3 text-lg font-black leading-tight">{num(totalUsd || displayAvailable, 2)} USD</div>
-      <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
-        <div className="rounded-md border border-border bg-background/50 p-2">
-          <div className="uppercase text-muted-foreground">Disponible</div>
-          <strong className="text-emerald-400">{num(displayAvailable, 2)} USD</strong>
-        </div>
-        <div className="rounded-md border border-border bg-background/50 p-2">
-          <div className="uppercase text-muted-foreground">En position</div>
-          <strong className="text-amber-300">{num(totalUsd - displayAvailable, 2)} USD</strong>
-        </div>
-      </div>
 
       {showPanel && (
-        <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-lg border border-border bg-card p-3 shadow-xl">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase text-muted-foreground">Soldes Crypto</span>
-            <button onClick={() => setShowPanel(false)} className="text-muted-foreground hover:text-foreground text-xs">✕</button>
-          </div>
-          <div className="space-y-1.5">
-            {assetRows.map((row) => (
-              <div key={row.asset} className="flex items-center justify-between rounded-md border border-border/50 bg-background/30 px-2.5 py-1.5">
-                <div>
-                  <span className="text-[11px] font-bold">{row.asset}</span>
-                  <span className="ml-2 text-[10px] text-muted-foreground">{fullBalance(row.total, row.asset)}</span>
-                </div>
-                <div className="text-right">
-                  <span className="text-[11px] font-semibold">${num(row.usdValue, 2)}</span>
-                  {!usdAssets.has(row.asset) && row.price > 0 && (
-                    <span className="ml-1 text-[9px] text-muted-foreground">@{num(row.price, 2)}</span>
-                  )}
-                </div>
+        <div className="absolute left-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-white/10 bg-gradient-to-b from-slate-900/98 to-slate-950/98 shadow-2xl shadow-black/50 backdrop-blur-xl">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-4 py-3">
+            <div className="flex items-center gap-2">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-emerald-500/20 to-emerald-600/10 ring-1 ring-emerald-500/20">
+                <WalletCards className="h-3.5 w-3.5 text-emerald-400" />
               </div>
-            ))}
+              <span className="text-xs font-semibold tracking-wide text-white/90">Portefeuille</span>
+            </div>
+            <button 
+              onClick={() => setShowPanel(false)} 
+              className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-all hover:bg-white/5 hover:text-white/80"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
-          <div className="mt-2 flex justify-between border-t border-border pt-2 text-[10px] font-bold">
-            <span className="text-muted-foreground">TOTAL</span>
-            <span>{num(totalUsd, 2)} USD</span>
+          
+          {/* Assets List */}
+          <div className="max-h-64 overflow-y-auto p-2">
+            <div className="space-y-1">
+              {assetRows.map((row) => {
+                const isUsd = usdAssets.has(row.asset)
+                return (
+                  <div 
+                    key={row.asset} 
+                    className={cn(
+                      "group flex items-center justify-between rounded-lg px-3 py-2.5 transition-all",
+                      isUsd 
+                        ? "bg-emerald-500/5 ring-1 ring-emerald-500/10" 
+                        : "hover:bg-white/[0.03]"
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "flex h-8 w-8 items-center justify-center rounded-lg text-[10px] font-bold",
+                        isUsd 
+                          ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20"
+                          : "bg-white/5 text-white/70 ring-1 ring-white/10"
+                      )}>
+                        {row.asset.slice(0, 3)}
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-semibold text-white/90">{row.asset}</span>
+                        <span className="text-[10px] font-medium text-white/40">{fullBalance(row.total, row.asset)}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-[12px] font-bold tabular-nums text-white">${num(row.usdValue, 2)}</span>
+                      {!isUsd && row.price > 0 && (
+                        <span className="text-[9px] font-medium tabular-nums text-white/30">@{num(row.price, 2)}</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          
+          {/* Footer Total */}
+          <div className="border-t border-white/5 bg-white/[0.02] px-4 py-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-white/40">Total</span>
+              <div className="flex items-baseline gap-1">
+                <span className="text-base font-black tabular-nums text-white">{num(totalUsd, 2)}</span>
+                <span className="text-[10px] font-semibold text-white/50">USD</span>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -530,13 +554,44 @@ function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] })
             Analytics Quantitatives & Prévisions IA (Dataset 2026)
           </h3>
           <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
-            <MlAnalyticsTile label="Précision Hors-Échantillon" value={`${num(analytics.test_precision, 1)}% Test`} tone="good" />
-            <MlAnalyticsTile label="Gain / Perte Moyen Net" value={`+${num(analytics.avg_win, 2)}% / ${num(analytics.avg_loss, 2)}%`} />
-            <MlAnalyticsTile label="Risk-Reward & Profit Factor" value={`${num(analytics.risk_reward, 2)}x (PF ${num(analytics.profit_factor, 2)})`} tone="info" />
-            <MlAnalyticsTile label="Meilleur Jour Découvert" value={asString(analytics.best_day)} tone="warn" />
-            <MlAnalyticsTile label="Heures Idéales Trading" value={asString(analytics.best_hours)} />
-            <MlAnalyticsTile label="Prévision Hebdo" value={`${asString(analytics.weekly_forecast_pct)} · ${asString(analytics.weekly_forecast_usd)}`} tone="good" />
+            <MlAnalyticsTile
+              label="Précision Hors-Échantillon"
+              value={analytics.test_precision != null ? `${num(analytics.test_precision, 1)}% Test` : '--'}
+              tone="good"
+            />
+            <MlAnalyticsTile
+              label="Gain / Perte Moyen Net"
+              value={
+                analytics.avg_win != null || analytics.avg_loss != null
+                  ? `+${num(analytics.avg_win, 2)}% / -${num(analytics.avg_loss, 2)}%`
+                  : '--'
+              }
+            />
+            <MlAnalyticsTile
+              label="Risk-Reward & Profit Factor"
+              value={
+                analytics.risk_reward != null || analytics.profit_factor != null
+                  ? `${num(analytics.risk_reward, 2)}x (PF ${num(analytics.profit_factor, 2)})`
+                  : '--'
+              }
+              tone="info"
+            />
+            <MlAnalyticsTile
+              label="PnL Net Cumulé"
+              value={
+                analytics.cum_pnl_2026 != null
+                  ? `${Number(analytics.cum_pnl_2026) >= 0 ? '+' : ''}${num(analytics.cum_pnl_2026, 2)} $`
+                  : '--'
+              }
+            />
+            <MlAnalyticsTile label="Meilleur Jour Découvert" value={asString(analytics.best_day, '--')} tone="warn" />
+            <MlAnalyticsTile label="Heures Idéales Trading" value={asString(analytics.best_hours, '--')} />
           </div>
+          {Number(analytics.total_closed_trades ?? 0) < 30 && (
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Échantillon limité ({num(analytics.total_closed_trades, 0)} trades fermés) — ces métriques se stabiliseront avec plus de trades.
+            </p>
+          )}
         </div>
       </CardContent>
     </Card>
