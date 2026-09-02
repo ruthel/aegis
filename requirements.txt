@@ -11,5 +11,6 @@ joblib>=1.4.0
 websocket-client>=1.6.4
 python-telegram-bot>=20.7
 SQLAlchemy>=2.0.0
+matplotlib>=3.8.0
 
 flask-sock>=0.7

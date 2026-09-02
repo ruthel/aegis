@@ -4540,28 +4540,35 @@ class MLLiveLogger:
 
     def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None):
         """Enregistre un événement de gouvernance dans la table unifiée governance_logs."""
-        try:
-            now = now_iso()
-            gov_id = self._new_id('gov')
-            metrics_json = json.dumps(metrics, ensure_ascii=False) if isinstance(metrics, dict) else (str(metrics) if metrics else None)
-            with self._orm_session() as session:
-                session.add(GovernanceLog(
-                    gov_id=gov_id,
-                    timestamp=now,
-                    event_type=str(event_type),
-                    source_model=str(source_model) if source_model else None,
-                    target_model=str(target_model) if target_model else None,
-                    metrics_json=metrics_json,
-                    trigger_type=str(trigger_type),
-                    reason=str(reason) if reason else None,
-                    created_at=now,
-                    updated_at=now,
-                ))
-                session.commit()
-            return gov_id
-        except Exception as e:
-            print(f"⚠️ Erreur record_governance_event: {e}")
-            return None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                now = now_iso()
+                gov_id = self._new_id('gov')
+                metrics_json = json.dumps(metrics, ensure_ascii=False) if isinstance(metrics, dict) else (str(metrics) if metrics else None)
+                with self._orm_session() as session:
+                    session.add(GovernanceLog(
+                        gov_id=gov_id,
+                        timestamp=now,
+                        event_type=str(event_type),
+                        source_model=str(source_model) if source_model else None,
+                        target_model=str(target_model) if target_model else None,
+                        metrics_json=metrics_json,
+                        trigger_type=str(trigger_type),
+                        reason=str(reason) if reason else None,
+                        created_at=now,
+                        updated_at=now,
+                    ))
+                    session.commit()
+                return gov_id
+            except Exception as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                print(f"⚠️ Erreur record_governance_event: {e}")
+                return None
+        return None
 
     def _clean(self, value):
         if isinstance(value, dict):

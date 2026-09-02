@@ -2,8 +2,19 @@ import requests
 import os
 import time
 import threading
+import io
 from datetime import datetime, timedelta
 from config import BOT_NAME
+
+# Import matplotlib avec backend non-interactif
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
 
 class NotificationManager:
     def __init__(self):
@@ -91,16 +102,98 @@ class NotificationManager:
                         self.save_telegram_message_history(msg_id, text, msg_date, direction="incoming")
                     
                     if text.startswith('/'):
-                        command = text.split()[0].lower()
-                        self._handle_telegram_command(command)
+                        parts = text.split()
+                        command = parts[0].lower()
+                        args = parts[1:] if len(parts) > 1 else []
+                        self._handle_telegram_command(command, args)
                         
             except Exception as e:
                 # Éviter de saturer la boucle en cas d'erreur réseau
                 time.sleep(10)
 
-    def _handle_telegram_command(self, command):
+    def _handle_telegram_command(self, command, args=None):
         """Traite une commande reçue depuis Telegram"""
-        if command == '/events':
+        args = args or []
+        
+        # Afficher "en train d'écrire" pour toutes les commandes
+        self.send_typing_action()
+        
+        if command == '/pause':
+            try:
+                if not self.bot_ref:
+                    self.notify("⚠️ Bot non disponible", "")
+                    return
+                self.bot_ref.paused = True
+                self.notify("⏸️ <b>Bot en PAUSE</b>\n\nLe trading est suspendu. Les positions ouvertes restent surveillées.\nUtilisez /resume pour reprendre.", "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur pause : {e}", "")
+                
+        elif command == '/resume':
+            try:
+                if not self.bot_ref:
+                    self.notify("⚠️ Bot non disponible", "")
+                    return
+                self.bot_ref.paused = False
+                self.notify("▶️ <b>Bot ACTIF</b>\n\nLe trading a repris normalement.", "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur resume : {e}", "")
+                
+        elif command == '/balance':
+            try:
+                msg = self._build_balance_message()
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur balance : {e}", "")
+                
+        elif command == '/pnl':
+            try:
+                msg = self._build_pnl_message()
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur PnL : {e}", "")
+                
+        elif command == '/ml':
+            try:
+                msg = self._build_ml_status_message()
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur ML status : {e}", "")
+                
+        elif command == '/health':
+            try:
+                msg = self._build_health_message()
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur health : {e}", "")
+                
+        elif command == '/sell':
+            try:
+                if not args:
+                    self.notify("⚠️ Usage: /sell SYMBOL\nExemple: /sell ADA", "")
+                    return
+                symbol_arg = args[0].upper()
+                msg = self._execute_force_sell(symbol_arg)
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur sell : {e}", "")
+                
+        elif command == '/cooldown':
+            try:
+                if len(args) < 2:
+                    self.notify("⚠️ Usage: /cooldown SYMBOL MINUTES\nExemple: /cooldown ADA 30", "")
+                    return
+                symbol_arg = args[0].upper()
+                try:
+                    minutes = int(args[1])
+                except ValueError:
+                    self.notify("⚠️ Les minutes doivent être un nombre entier", "")
+                    return
+                msg = self._execute_add_cooldown(symbol_arg, minutes)
+                self.notify(msg, "")
+            except Exception as e:
+                self.notify(f"⚠️ Erreur cooldown : {e}", "")
+                
+        elif command == '/events':
             try:
                 from utils.event_manager import MacroEventManager
                 macro_mgr = MacroEventManager()
@@ -144,10 +237,29 @@ class NotificationManager:
                 
         elif command == '/status':
             try:
-                status_msg = self._build_status_message()
-                self.notify(status_msg, "")
+                # Générer le graphique PnL
+                pnl_chart = self._generate_pnl_chart(days=30)
+                
+                if pnl_chart:
+                    # Mode compact (caption max 1024 chars) + image
+                    status_msg = self._build_status_message(compact=True)
+                    
+                    # Envoyer en arrière-plan
+                    def send_status_with_chart():
+                        try:
+                            if not self.send_photo(pnl_chart, caption=status_msg):
+                                # Fallback : texte seul si envoi échoue
+                                self.notify(status_msg, "")
+                        except Exception:
+                            self.notify(status_msg, "")
+                    
+                    threading.Thread(target=send_status_with_chart, daemon=True).start()
+                else:
+                    # Pas d'image : message complet
+                    status_msg = self._build_status_message(compact=False)
+                    self.notify(status_msg, "")
             except Exception as e:
-                self.notify(f"⚠️ Erreur lors de la génération du statut : {e}", "")
+                self.notify(f"⚠️ Erreur status : {e}", "")
                 
         elif command == '/restart':
             try:
@@ -193,12 +305,22 @@ class NotificationManager:
                 
         elif command == '/help' or command == '/start':
             msg = "🤖 <b>COMMANDES DISPONIBLES</b>\n\n"
-            msg += "• /positions - Positions ouvertes en attente de vente\n"
-            msg += "• /history (ou /trades) - Historique des derniers trades fermés\n"
-            msg += "• /status - Voir l'état du bot et du portefeuille\n"
-            msg += "• /events - Événements macroéconomiques répertoriés\n"
-            msg += "• /restart - Redémarrer le bot à distance\n"
-            msg += "• /help - Afficher ce message d'aide"
+            msg += "<b>📊 Informations</b>\n"
+            msg += "• /status - État du bot et portefeuille\n"
+            msg += "• /balance - Solde détaillé (USD + cryptos)\n"
+            msg += "• /positions - Positions ouvertes\n"
+            msg += "• /history - Derniers trades fermés\n"
+            msg += "• /pnl - PnL jour/semaine/mois\n"
+            msg += "• /events - Événements macro\n\n"
+            msg += "<b>🧠 ML & Santé</b>\n"
+            msg += "• /ml - Statut modèle ML\n"
+            msg += "• /health - Santé du bot\n\n"
+            msg += "<b>⚙️ Contrôle</b>\n"
+            msg += "• /pause - Suspendre le trading\n"
+            msg += "• /resume - Reprendre le trading\n"
+            msg += "• /sell &lt;SYM&gt; - Forcer vente (ex: /sell ADA)\n"
+            msg += "• /cooldown &lt;SYM&gt; &lt;min&gt; - Cooldown manuel\n"
+            msg += "• /restart - Redémarrer le bot"
             self.notify(msg, "")
         
     def save_telegram_message_history(self, message_id, text, timestamp=None, direction="outgoing"):
@@ -213,6 +335,522 @@ class NotificationManager:
                 )
         except Exception as e:
             print(f"⚠️ Erreur enregistrement historique Telegram: {e}")
+
+    def _build_balance_message(self):
+        """Construit le message de solde détaillé"""
+        if not self.bot_ref:
+            return "⚠️ Bot non disponible"
+        
+        bot = self.bot_ref
+        balance = bot.balance_manager.get_balance()
+        usd_free = balance.get('USD', {}).get('free', 0)
+        
+        msg = "💰 <b>SOLDE DÉTAILLÉ</b>\n\n"
+        msg += f"💵 <b>USD</b>: {usd_free:.2f} $\n\n"
+        
+        total_crypto_value = 0
+        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        
+        for pair in pairs:
+            pair = pair.strip()
+            if '/' in pair:
+                symbol = pair
+            elif pair.endswith('USD'):
+                symbol = f"{pair[:-3]}/{pair[-3:]}"
+            else:
+                symbol = f"{pair[:3]}/{pair[3:]}"
+            
+            crypto = symbol.split('/')[0]
+            amount = balance.get(crypto, {}).get('free', 0)
+            
+            if amount > 0.000001:
+                price = bot.get_price(symbol)
+                value = amount * price
+                total_crypto_value += value
+                msg += f"🪙 <b>{crypto}</b>: {amount:.6f} (~{value:.2f} $)\n"
+        
+        total = usd_free + total_crypto_value
+        msg += f"\n📊 <b>TOTAL</b>: {total:.2f} $"
+        
+        return msg
+    
+    def _build_pnl_message(self):
+        """Construit le message PnL jour/semaine/mois"""
+        if not self.bot_ref:
+            return "⚠️ Bot non disponible"
+        
+        try:
+            from ui.server import compute_trade_history, load_accounting_state
+            state = load_accounting_state({'positions': []}, view_mode='live')
+            positions = state.get('positions', [])
+            trades = compute_trade_history(positions)
+        except Exception:
+            trades = []
+        
+        now = datetime.now()
+        today = now.date()
+        week_ago = today - timedelta(days=7)
+        month_ago = today - timedelta(days=30)
+        
+        pnl_day = 0
+        pnl_week = 0
+        pnl_month = 0
+        trades_day = 0
+        trades_week = 0
+        trades_month = 0
+        
+        for t in trades:
+            try:
+                closed_at = t.get('closed_at') or t.get('sell_time')
+                if not closed_at:
+                    continue
+                if isinstance(closed_at, str):
+                    trade_date = datetime.fromisoformat(closed_at.replace('Z', '')).date()
+                else:
+                    trade_date = closed_at.date() if hasattr(closed_at, 'date') else today
+                
+                pnl = float(t.get('pnl_net') or t.get('pnl') or 0)
+                
+                if trade_date == today:
+                    pnl_day += pnl
+                    trades_day += 1
+                if trade_date >= week_ago:
+                    pnl_week += pnl
+                    trades_week += 1
+                if trade_date >= month_ago:
+                    pnl_month += pnl
+                    trades_month += 1
+            except Exception:
+                continue
+        
+        def fmt_pnl(pnl):
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            return f"{emoji} {pnl:+.2f} $"
+        
+        msg = "📈 <b>PERFORMANCE P&L</b>\n\n"
+        msg += f"📅 <b>Aujourd'hui</b>\n"
+        msg += f"   {fmt_pnl(pnl_day)} ({trades_day} trades)\n\n"
+        msg += f"📆 <b>7 derniers jours</b>\n"
+        msg += f"   {fmt_pnl(pnl_week)} ({trades_week} trades)\n\n"
+        msg += f"🗓️ <b>30 derniers jours</b>\n"
+        msg += f"   {fmt_pnl(pnl_month)} ({trades_month} trades)"
+        
+        return msg
+    
+    def _build_ml_status_message(self):
+        """Construit le message de statut ML"""
+        if not self.bot_ref:
+            return "⚠️ Bot non disponible"
+        
+        bot = self.bot_ref
+        ml_engine = getattr(bot, 'ml_engine', None)
+        
+        msg = "🧠 <b>STATUT ML</b>\n\n"
+        
+        if not ml_engine:
+            msg += "⚠️ ML Engine non disponible"
+            return msg
+        
+        # Modèle entry
+        has_entry = ml_engine.model is not None
+        msg += f"📥 <b>Entry Model</b>: {'✅ Actif' if has_entry else '❌ Absent'}\n"
+        
+        # Modèle exit
+        has_exit = ml_engine.exit_model is not None
+        msg += f"📤 <b>Exit Model</b>: {'✅ Actif' if has_exit else '❌ Absent'}\n"
+        
+        # Modèle sizing
+        has_sizing = ml_engine.sizing_model is not None
+        msg += f"📊 <b>Sizing Model</b>: {'✅ Actif' if has_sizing else '❌ Absent'}\n"
+        
+        # Modèle target
+        has_target = ml_engine.target_model is not None
+        msg += f"🎯 <b>Target Model</b>: {'✅ Actif' if has_target else '❌ Absent'}\n\n"
+        
+        # Dernières prédictions
+        try:
+            logger = getattr(bot, 'ml_live_logger', None)
+            if logger:
+                from sqlalchemy import select, desc
+                from core.db_orm import DecisionLog
+                with logger._orm_session() as session:
+                    last_decision = session.scalars(
+                        select(DecisionLog)
+                        .where(DecisionLog.mode == ('live' if not bot.paper_trading else 'paper'))
+                        .order_by(desc(DecisionLog.created_at))
+                        .limit(1)
+                    ).first()
+                    
+                    if last_decision:
+                        msg += f"<b>Dernière décision</b>\n"
+                        msg += f"├─ Symbole: {last_decision.symbol}\n"
+                        msg += f"├─ Décision: {last_decision.decision}\n"
+                        if last_decision.p_win:
+                            msg += f"├─ P_win: {float(last_decision.p_win):.1f}%\n"
+                        msg += f"└─ {last_decision.created_at[:16]}"
+        except Exception:
+            pass
+        
+        return msg
+    
+    def _build_health_message(self):
+        """Construit le message de santé du bot"""
+        if not self.bot_ref:
+            return "⚠️ Bot non disponible"
+        
+        bot = self.bot_ref
+        health_mgr = getattr(bot, 'health_manager', None)
+        
+        if not health_mgr:
+            return "⚠️ HealthManager non disponible"
+        
+        try:
+            results = health_mgr.run_checks()
+            summary = health_mgr.get_summary_text(results)
+            return summary
+        except Exception as e:
+            return f"⚠️ Erreur health check : {e}"
+    
+    def _execute_force_sell(self, symbol_arg):
+        """Force la vente d'une position"""
+        if not self.bot_ref:
+            return "⚠️ Bot non disponible"
+        
+        bot = self.bot_ref
+        
+        # Trouver le symbole complet
+        symbol = None
+        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        for pair in pairs:
+            pair = pair.strip()
+            if '/' in pair:
+                s = pair
+            elif pair.endswith('USD'):
+                s = f"{pair[:-3]}/{pair[-3:]}"
+            else:
+                s = f"{pair[:3]}/{pair[3:]}"
+            
+            if s.startswith(symbol_arg + '/') or s.split('/')[0] == symbol_arg:
+                symbol = s
+                break
+        
+        if not symbol:
+            return f"⚠️ Symbole {symbol_arg} non trouvé dans les paires tradées"
+        
+        # Vérifier qu'il y a une position ouverte
+        positions = getattr(bot, 'state', {}).get('positions', [])
+        position = None
+        for p in positions:
+            if p.get('symbol') == symbol and p.get('status') == 'open':
+                position = p
+                break
+        
+        if not position:
+            return f"⚠️ Aucune position ouverte sur {symbol_arg}"
+        
+        # Exécuter la vente
+        try:
+            amount = position.get('amount', 0)
+            price = bot.get_price(symbol)
+            
+            if bot.paper_trading:
+                # Vente paper
+                result = bot.sell_market(symbol, amount, reason='telegram_force_sell')
+            else:
+                # Vente live
+                result = bot.sell_market(symbol, amount, reason='telegram_force_sell')
+            
+            if result:
+                return f"✅ <b>VENTE FORCÉE</b>\n\n🪙 {symbol_arg}\n💰 {amount:.6f}\n💵 ~{amount * price:.2f} $\n\n<i>Ordre envoyé avec succès</i>"
+            else:
+                return f"⚠️ Échec de la vente de {symbol_arg}"
+        except Exception as e:
+            return f"⚠️ Erreur vente : {e}"
+    
+    def _execute_add_cooldown(self, symbol_arg, minutes):
+        """Ajoute un cooldown manuel sur un symbole"""
+        if not self.bot_ref:
+            return "⚠️ Bot non disponible"
+        
+        bot = self.bot_ref
+        
+        # Trouver le symbole complet
+        symbol = None
+        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        for pair in pairs:
+            pair = pair.strip()
+            if '/' in pair:
+                s = pair
+            elif pair.endswith('USD'):
+                s = f"{pair[:-3]}/{pair[-3:]}"
+            else:
+                s = f"{pair[:3]}/{pair[3:]}"
+            
+            if s.startswith(symbol_arg + '/') or s.split('/')[0] == symbol_arg:
+                symbol = s
+                break
+        
+        if not symbol:
+            return f"⚠️ Symbole {symbol_arg} non trouvé dans les paires tradées"
+        
+        # Ajouter le cooldown
+        try:
+            cooldown_until = time.time() + (minutes * 60)
+            
+            # Utiliser le système de cooldown existant
+            if hasattr(bot, 'cooldowns'):
+                bot.cooldowns[symbol] = cooldown_until
+            elif hasattr(bot, 'state') and 'cooldowns' in bot.state:
+                bot.state['cooldowns'][symbol] = cooldown_until
+            else:
+                return f"⚠️ Système de cooldown non disponible"
+            
+            end_time = datetime.fromtimestamp(cooldown_until).strftime('%H:%M:%S')
+            return f"⏳ <b>COOLDOWN AJOUTÉ</b>\n\n🪙 {symbol_arg}\n⏰ Durée: {minutes} min\n🔚 Fin: {end_time}"
+        except Exception as e:
+            return f"⚠️ Erreur cooldown : {e}"
+
+    def _generate_pnl_chart(self, days=30):
+        """Génère un graphique du PnL NET cumulé sur X jours"""
+        if not MATPLOTLIB_AVAILABLE:
+            return None
+        
+        try:
+            from ui.server import compute_trade_history, load_accounting_state
+            state = load_accounting_state({'positions': []}, view_mode='live')
+            positions = state.get('positions', [])
+            trades = compute_trade_history(positions)
+        except Exception:
+            return None
+        
+        if not trades:
+            return None
+        
+        # Filtrer les trades des X derniers jours
+        cutoff = datetime.now() - timedelta(days=days)
+        daily_pnl = {}
+        
+        for t in trades:
+            try:
+                closed_at = t.get('closed_at') or t.get('sell_time')
+                if not closed_at:
+                    continue
+                if isinstance(closed_at, str):
+                    trade_dt = datetime.fromisoformat(closed_at.replace('Z', ''))
+                else:
+                    trade_dt = closed_at
+                
+                if trade_dt < cutoff:
+                    continue
+                
+                trade_date = trade_dt.date()
+                # Utiliser pnl_net (après frais) en priorité
+                pnl = float(t.get('pnl_net') or t.get('pnl') or 0)
+                daily_pnl[trade_date] = daily_pnl.get(trade_date, 0) + pnl
+            except Exception:
+                continue
+        
+        if not daily_pnl:
+            return None
+        
+        # Trier par date et calculer le cumulé
+        sorted_dates = sorted(daily_pnl.keys())
+        cumulative = []
+        total = 0
+        for d in sorted_dates:
+            total += daily_pnl[d]
+            cumulative.append(total)
+        
+        # Créer le graphique
+        fig, ax = plt.subplots(figsize=(8, 4), facecolor='#1a1a2e')
+        ax.set_facecolor('#1a1a2e')
+        
+        # Couleur selon PnL final
+        color = '#00d26a' if total >= 0 else '#ff4757'
+        
+        ax.plot(sorted_dates, cumulative, color=color, linewidth=2.5, marker='o', markersize=4)
+        ax.fill_between(sorted_dates, cumulative, alpha=0.3, color=color)
+        
+        # Ligne zéro
+        ax.axhline(y=0, color='#ffffff', linewidth=0.5, alpha=0.3, linestyle='--')
+        
+        # Style - Titre clarifié (PnL NET)
+        ax.set_title(f'PnL Net Cumulé ({days}j)', color='white', fontsize=14, fontweight='bold', pad=10)
+        ax.set_xlabel('', color='#888888', fontsize=10)  # Pas de label X
+        ax.set_ylabel('PnL Net (USD)', color='#888888', fontsize=10)
+        ax.tick_params(colors='#888888', labelsize=9)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#333333')
+        ax.spines['left'].set_color('#333333')
+        ax.grid(True, alpha=0.1, color='white')
+        
+        # Format des dates - Max 4 ticks, pas de rotation
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=4))
+        plt.xticks(rotation=0)  # Pas d'inclinaison
+        
+        # Annotation du total
+        ax.annotate(f'{total:+.2f} $', xy=(sorted_dates[-1], cumulative[-1]), 
+                    xytext=(10, 0), textcoords='offset points',
+                    color=color, fontsize=12, fontweight='bold')
+        
+        plt.tight_layout()
+        
+        # Sauvegarder en buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a2e', edgecolor='none')
+        buf.seek(0)
+        plt.close(fig)
+        
+        return buf
+    
+    def _generate_portfolio_chart(self):
+        """Génère un pie chart de répartition du portfolio"""
+        if not MATPLOTLIB_AVAILABLE or not self.bot_ref:
+            return None
+        
+        bot = self.bot_ref
+        balance = bot.balance_manager.get_balance()
+        usd = balance.get('USD', {}).get('free', 0)
+        
+        labels = ['USD']
+        sizes = [usd]
+        colors = ['#4ecdc4']
+        
+        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        color_map = {'BTC': '#f7931a', 'ETH': '#627eea', 'SOL': '#00ffa3', 'ADA': '#0033ad'}
+        
+        for pair in pairs:
+            pair = pair.strip()
+            if '/' in pair:
+                symbol = pair
+            elif pair.endswith('USD'):
+                symbol = f"{pair[:-3]}/{pair[-3:]}"
+            else:
+                symbol = f"{pair[:3]}/{pair[3:]}"
+            
+            crypto = symbol.split('/')[0]
+            amount = balance.get(crypto, {}).get('free', 0) + balance.get(crypto, {}).get('used', 0)
+            
+            if amount > 0.000001:
+                price = bot.get_price(symbol)
+                value = amount * price
+                if value >= 0.5:  # Minimum 0.5$ pour apparaître
+                    labels.append(crypto)
+                    sizes.append(value)
+                    colors.append(color_map.get(crypto, '#888888'))
+        
+        if sum(sizes) < 1:
+            return None
+        
+        # Créer le graphique
+        fig, ax = plt.subplots(figsize=(6, 6), facecolor='#1a1a2e')
+        
+        wedges, texts, autotexts = ax.pie(
+            sizes, 
+            labels=labels, 
+            autopct=lambda pct: f'{pct:.1f}%' if pct > 5 else '',
+            colors=colors,
+            startangle=90,
+            wedgeprops=dict(width=0.6, edgecolor='#1a1a2e', linewidth=2),
+            textprops={'color': 'white', 'fontsize': 10}
+        )
+        
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+        
+        # Total au centre
+        total = sum(sizes)
+        ax.text(0, 0, f'{total:.2f}$', ha='center', va='center', 
+                fontsize=16, fontweight='bold', color='white')
+        
+        ax.set_title('Répartition Portfolio', color='white', fontsize=14, fontweight='bold', pad=10)
+        
+        plt.tight_layout()
+        
+        # Sauvegarder en buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a2e', edgecolor='none')
+        buf.seek(0)
+        plt.close(fig)
+        
+        return buf
+    
+    def send_photo(self, photo_buffer, caption=""):
+        """Envoie une photo via Telegram"""
+        if not self.enabled or not photo_buffer:
+            return False
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto"
+            files = {'photo': ('chart.png', photo_buffer, 'image/png')}
+            data = {'chat_id': self.chat_id}
+            if caption:
+                data['caption'] = caption
+                data['parse_mode'] = 'HTML'
+            
+            response = requests.post(url, files=files, data=data, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"⚠️ Erreur envoi photo Telegram: {e}")
+            return False
+
+    def send_media_group(self, images, caption=""):
+        """Envoie plusieurs images groupées avec un caption sur la première"""
+        if not self.enabled or not images:
+            return False
+        
+        try:
+            import json as json_module
+            url = f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup"
+            
+            files = {}
+            media = []
+            
+            for i, img_buffer in enumerate(images):
+                if img_buffer is None:
+                    continue
+                attach_name = f"photo{i}"
+                files[attach_name] = (f'chart{i}.png', img_buffer, 'image/png')
+                
+                media_item = {
+                    "type": "photo",
+                    "media": f"attach://{attach_name}"
+                }
+                # Caption seulement sur la première image
+                if i == 0 and caption:
+                    media_item["caption"] = caption
+                    media_item["parse_mode"] = "HTML"
+                
+                media.append(media_item)
+            
+            if not media:
+                return False
+            
+            data = {
+                'chat_id': self.chat_id,
+                'media': json_module.dumps(media)
+            }
+            
+            response = requests.post(url, data=data, files=files, timeout=15)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"⚠️ Erreur envoi media group Telegram: {e}")
+            return False
+
+    def send_typing_action(self):
+        """Envoie l'indicateur 'en train d'écrire' à Telegram"""
+        if not self.enabled:
+            return False
+        try:
+            url = f"https://api.telegram.org/bot{self.telegram_token}/sendChatAction"
+            data = {'chat_id': self.chat_id, 'action': 'typing'}
+            requests.post(url, data=data, timeout=3)
+            return True
+        except Exception:
+            return False
 
     def notify(self, message, emoji="🤖"):
         full_text = f"{emoji} {message}".strip() if emoji else message
@@ -347,7 +985,7 @@ class NotificationManager:
         crypto = symbol.split('/')[0]
         msg = f"⚠️ POSITION BLOQUÉE\n\n"
         msg += f"🪙 Crypto: {crypto}\n"
-        msg += f"💸 Perte: {loss_pct:.1f}% ({loss_amount:.2f} USD)\n"
+        msg += f"💸 Perte: {loss_pct:.2f}% ({loss_amount:.2f} USD)\n"
         msg += f"⏳ Durée: {duration}\n\n"
         msg += f"🎯 Action: {action}\n\n"
         msg += f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
@@ -635,28 +1273,31 @@ class NotificationManager:
             return False
             
     def _get_historical_performance(self):
-        """Calcule les statistiques de performance réelles basées sur l'historique des positions du bot"""
+        """Calcule les statistiques de performance réelles basées sur l'équité Kraken (comme le web)"""
         try:
-            from ui.server import trade_stats, load_bot_state
-            if self.bot_ref and hasattr(self.bot_ref, 'state'):
-                positions = self.bot_ref.state.get('positions', [])
-            else:
-                state = load_bot_state({'positions': []})
-                positions = state.get('positions', [])
+            from ui.server import trade_stats, load_accounting_state, apply_live_balance_pnl, get_live_market_data
+            # Utiliser le mode live pour correspondre au web
+            state = load_accounting_state({'positions': []}, view_mode='live')
+            positions = state.get('positions', [])
             stats = trade_stats(positions)
-            if not stats or stats.get('total_trades', 0) == 0:
+            
+            # Appliquer le PnL basé sur l'équité Kraken (comme le web)
+            live = get_live_market_data()
+            adjusted_stats = apply_live_balance_pnl(stats, state, live)
+            
+            if not adjusted_stats:
                 return None
             return {
-                'total_pnl': stats.get('total_pnl_net', 0),
-                'total_trades': stats.get('total_trades', 0),
-                'winrate': stats.get('win_rate', 0),
-                'best_trade': stats.get('total_pnl_net', 0),
+                'total_pnl': adjusted_stats.get('total_pnl_net', 0),  # PnL NET basé sur équité Kraken
+                'total_trades': stats.get('total_trades', 0) if stats else 0,
+                'winrate': stats.get('win_rate', 0) if stats else 0,
+                'best_trade': stats.get('best_trade_net', 0) if stats else 0,
             }
         except Exception:
             return None
 
-    def _build_status_message(self):
-        """Construit message status ultra-compact"""
+    def _build_status_message(self, compact=False):
+        """Construit message status. compact=True pour caption image (max 1024 chars)"""
         
         def format_amount(amount, crypto):
             """Formate la quantité avec décimales adaptatives"""
@@ -688,13 +1329,19 @@ class NotificationManager:
                 price = bot.get_price(symbol)
                 value = total * price
                 if value >= bot.get_min_amount(symbol)['min_cost']:
-                    # Calculer P&L de la position
+                    # Calculer P&L NET de la position (avec frais estimés)
                     try:
                         avg_buy_price = bot.get_real_buy_price(symbol)
                         if avg_buy_price and avg_buy_price > 0:
-                            pnl_pct = ((price - avg_buy_price) / avg_buy_price) * 100
-                            pnl_usd = (price - avg_buy_price) * total
-                            pnl_display = f" • {pnl_pct:+.1f}% ({pnl_usd:+.1f} USD)"
+                            fee_rate = getattr(bot, 'trading_fee', 0.004)
+                            cost_basis = avg_buy_price * total
+                            buy_fee = cost_basis * fee_rate
+                            sell_fee = value * fee_rate
+                            total_fees = buy_fee + sell_fee
+                            pnl_brut = (price - avg_buy_price) * total
+                            pnl_net = pnl_brut - total_fees
+                            pnl_pct = (pnl_net / cost_basis) * 100 if cost_basis > 0 else 0
+                            pnl_display = f" • {pnl_pct:+.2f}% ({pnl_net:+.2f}$)"
                         else:
                             pnl_display = ""
                     except:
@@ -705,13 +1352,74 @@ class NotificationManager:
                         'symbol': symbol,
                         'amount': total,
                         'value': value,
+                        'price': price,
                         'pnl_display': pnl_display,
                         'has_orders': locked > 0
                     })
                     total_value += value
+
+        msg = f"🤖 {BOT_NAME} | {datetime.now().strftime('%d/%m %H:%M')}\n\n"
+        msg += f"💼 <b>Portfolio</b> ({total_value:.2f}$)\n"
+        msg += f"┆\n├─ USD: <code>{usd:.2f}$</code>\n"
         
-        # Macro Security section
-        macro_text = ""
+        for i, item in enumerate(portfolio_items):
+            is_last = (i == len(portfolio_items) - 1)
+            # prefix = "└─" if is_last else "├─"
+            prefix = "├─"
+            # Crypto et valeur sur la première ligne, PnL sur la deuxième
+            line1 = f"{prefix} {item['crypto']}: {format_amount(item['amount'], item['crypto'])} • {item['value']:.2f}$"
+            msg += f"{line1}\n"
+            if item['pnl_display']:
+                pnl_text = item['pnl_display'].strip(' •')
+                pnl_icon = "🟢" if '+' in pnl_text else "◉"
+                msg += f"{"└─" if is_last else "├─"}{pnl_icon} {pnl_text}"
+            msg += f"\n{""if is_last else "┆"}\n"
+        
+        if not portfolio_items:
+            msg += "└─ Aucune crypto\n"
+        
+        msg += f"\n📈 <b>Performance</b>\n"
+        stats = self._get_historical_performance()
+        if stats:
+            msg += f"├─ P&L: {stats['total_pnl']:+.2f}$\n"
+            msg += f"├─ Trades: {stats['total_trades']} ({stats['winrate']:.0f}% win)\n"
+            msg += f"└─ Best: {stats['best_trade']:+.2f}$"
+        else:
+            msg += f"├─ P&L: +0.00$\n"
+            msg += f"├─ Trades: 0\n"
+            msg += f"└─ Aucun trade"
+        
+        # Mode compact : on s'arrête là (~400-500 chars)
+        if compact:
+            return msg
+        
+        # Mode complet : ajouter les détails des ordres et macro events
+        msg += "\n"
+        
+        # Détail des ordres limite (si présents)
+        for item in portfolio_items:
+            if item['has_orders']:
+                try:
+                    open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USD")
+                    if open_orders:
+                        msg += f"\n📋 Ordres {item['crypto']}\n"
+                        for j, order in enumerate(open_orders):
+                            order_price = float(order['price'])
+                            try:
+                                avg_buy_price = bot.get_real_buy_price(item['symbol'])
+                                if avg_buy_price and avg_buy_price > 0:
+                                    profit_pct = ((order_price - avg_buy_price) / avg_buy_price) * 100 - 0.2
+                                else:
+                                    profit_pct = 0
+                            except:
+                                profit_pct = 0
+                            
+                            prefix = "└─" if j == len(open_orders) - 1 else "├─"
+                            msg += f"{prefix} Limite @ {order_price:.2f}$ (+{profit_pct:.2f}%)\n"
+                except:
+                    pass
+        
+        # Section Macro Event actif
         try:
             if hasattr(bot, 'market_analyzer') and bot.market_analyzer is not None:
                 macro_mgr = bot.market_analyzer._get_macro_manager()
@@ -721,130 +1429,40 @@ class NotificationManager:
                 
             if macro_mgr and macro_mgr.current_event:
                 event_type = macro_mgr.current_event
-                event_name = "Réunion FED" if event_type == "FED_MEETING" else "CPI Inflation" if event_type == "INFLATION_DATA" else "Incertitude Marché" if event_type == "MARKET_UNCERTAINTY" else event_type
+                event_name = "FED" if event_type == "FED_MEETING" else "CPI" if event_type == "INFLATION_DATA" else "Incertitude"
                 info = macro_mgr.current_event_info or {}
-                desc = info.get('description', '')
                 elapsed = (time.time() - macro_mgr.event_start_time) / 3600 if macro_mgr.event_start_time else 0
                 duration = info.get('duration_hours', 24)
                 remaining = max(0, duration - elapsed)
-                bonus = info.get('score_bonus', 0)
-                reduction = info.get('threshold_reduction', 0)
                 
-                macro_text = f"🤖 🔴 <b>Macro-Securité : {event_name}</b>\n"
-                macro_text += f"──────────────────────────\n"
-                if desc:
-                    macro_text += f"{desc}\n\n"
-                macro_text += f"⏱️ <b>Temps restant</b> : {remaining:.1f}h / {duration}h\n"
-                macro_text += f"⚖️ <b>Ajustements appliqués</b> :\n"
-                macro_text += f"   • Bonus de Score : +{bonus}\n"
-                macro_text += f"   • Seuil d'Entrée : -{reduction}\n"
-                macro_text += f"──────────────────────────\n\n"
-        except Exception as e:
+                msg += f"\n🔴 <b>Macro: {event_name}</b> ({remaining:.1f}h restant)\n"
+        except:
             pass
-
-        msg = f"🤖 {BOT_NAME} | STATUS {datetime.now().strftime('%H:%M')}\n\n"
-        msg += macro_text
-        msg += f"💼 Portfolio ({total_value:.2f} USD)\n"
-        msg += f"├─ USD: {usd:.2f}\n"
         
-        # Afficher chaque crypto avec détail des ordres
-        for i, item in enumerate(portfolio_items):
-            is_last = (i == len(portfolio_items) - 1)
-            prefix = "└─" if is_last else "├─"
-            
-            msg += f"{prefix} {item['crypto']}: {format_amount(item['amount'], item['crypto'])} • {item['value']:.2f} USD{item['pnl_display']}\n"
-            
-            # Détail des ordres pour cette crypto
-            if item['has_orders']:
-                try:
-                    open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USD")
-                    if open_orders:
-                        for j, order in enumerate(open_orders):
-                            is_last_order = (j == len(open_orders) - 1)
-                            order_prefix = "     └─" if (is_last and is_last_order) else "   ├─" if is_last else "│  └─" if is_last_order else "│  ├─"
-                            
-                            order_price = float(order['price'])
-                            try:
-                                avg_buy_price = bot.get_real_buy_price(item['symbol'])
-                                if avg_buy_price and avg_buy_price > 0:
-                                    gross_profit_pct = ((order_price - avg_buy_price) / avg_buy_price) * 100
-                                    profit_pct = gross_profit_pct - 0.2
-                                else:
-                                    current_price = bot.get_price(item['symbol'])
-                                    profit_pct = ((order_price - current_price) / current_price) * 100
-                            except:
-                                current_price = bot.get_price(item['symbol'])
-                                profit_pct = ((order_price - current_price) / current_price) * 100
-                            
-                            order_time = datetime.fromtimestamp(order['timestamp'] / 1000)
-                            time_diff = datetime.now(order_time.tzinfo) - order_time if order_time.tzinfo else datetime.now() - order_time
-                            
-                            if time_diff.days > 0:
-                                hours = time_diff.seconds // 3600
-                                time_display = f"{time_diff.days}j {hours}h"
-                            elif time_diff.seconds >= 3600:
-                                hours = time_diff.seconds // 3600
-                                minutes = (time_diff.seconds % 3600) // 60
-                                time_display = f"{hours}h {minutes}min"
-                            else:
-                                time_display = f"{time_diff.seconds // 60}min"
-                            
-                            msg += f"{order_prefix} Limite: {format_amount(float(order['amount']), item['crypto'])} @ {order_price:.2f}\n"
-                            detail_prefix = "     │  ├─" if (is_last and not is_last_order) else "        ├─" if is_last else "│  │  ├─" if not is_last_order else "│     ├─"
-                            msg += f"{detail_prefix} Profit: +{profit_pct:.1f}%\n"
-                            detail_prefix2 = "     │  └─" if (is_last and not is_last_order) else "        └─" if is_last else "│  │  └─" if not is_last_order else "│     └─"
-                            msg += f"{detail_prefix2} Durée: {time_display}\n"
-                    else:
-                        order_prefix = "   └─" if is_last else "│  └─"
-                        msg += f"{order_prefix} 🤖 Ordre actif (détails indisponibles)\n"
-                except Exception as e:
-                    order_prefix = "   └─" if is_last else "│  └─"
-                    msg += f"{order_prefix} 🤖 Ordre actif\n"
-        
-        msg += f"\n"
-        msg += f"📈 Performance\n"
-        
-        stats = self._get_historical_performance()
-        if stats:
-            msg += f"├─ P&L: {stats['total_pnl']:+.2f} USD\n"
-            msg += f"├─ Trades: {stats['total_trades']} ({stats['winrate']:.0f}% win)\n"
-            if stats['best_trade'] > 0 or stats['total_trades'] > 0:
-                msg += f"└─ Meilleur: {stats['best_trade']:+.2f} USD\n\n"
-            else:
-                msg += f"└─ Aucun trade\n\n"
-        else:
-            msg += f"├─ P&L: +0.00 USD\n"
-            msg += f"├─ Trades: 0 (0% win)\n"
-            msg += f"└─ Aucun trade\n\n"
-            
-        # Section Prochains Événements Macro
+        # Prochains événements macro
         try:
             from utils.event_manager import MacroEventManager
+            from datetime import timezone
             macro_mgr = MacroEventManager()
             now = time.time()
             upcoming = []
-            from datetime import timezone
             
             for item in macro_mgr.macro_calendar_2026:
                 event_dt = datetime.fromisoformat(item['date']).replace(tzinfo=timezone.utc)
                 event_ts = event_dt.timestamp()
                 if event_ts > now:
                     local_dt = datetime.fromtimestamp(event_ts)
-                    event_name = "FED" if item['event'] == "FED_MEETING" else "CPI Inflation" if item['event'] == "INFLATION_DATA" else "Incertitude Marché"
-                    date_display = local_dt.strftime("%d/%m à %H:%M")
-                    upcoming.append((event_ts, f"{event_name} : {date_display}"))
+                    event_name = "FED" if item['event'] == "FED_MEETING" else "CPI"
+                    date_display = local_dt.strftime("%d/%m %H:%M")
+                    upcoming.append((event_ts, f"{event_name} {date_display}"))
             
             upcoming.sort(key=lambda x: x[0])
-            next_events = upcoming[:2]
-            
-            msg += f"📅 <b>Événements Macro à venir</b>\n"
-            if next_events:
-                for i, (_, text) in enumerate(next_events):
-                    prefix = "├─" if i < len(next_events) - 1 else "└─"
+            if upcoming[:2]:
+                msg += f"\n📅 <b>À venir</b>\n"
+                for i, (_, text) in enumerate(upcoming[:2]):
+                    prefix = "└─" if i == 1 else "├─"
                     msg += f"{prefix} {text}\n"
-            else:
-                msg += "└─ Aucun événement à venir\n"
-        except Exception as e:
+        except:
             pass
         
         return msg

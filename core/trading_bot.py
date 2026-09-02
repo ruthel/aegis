@@ -68,6 +68,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # Configuration état selon le mode
         self.paper_trading = os.getenv('PAPER_TRADING', 'True') == 'True'
+        self.paused = False  # Pause trading via Telegram sans arrêter le bot
         self._state_save_lock = threading.Lock()
         self.paper_balance = float(os.getenv('PAPER_BALANCE', '1000'))
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSS', '100'))
@@ -2630,10 +2631,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
             should_notify = (
                 status in ('WARN', 'CRITICAL')
-                and (
-                    status_changed
-                    or now - self._last_health_notify >= max(300, self.health_notify_interval)
-                )
+                and status_changed  # Notifier seulement sur changement de status, pas périodiquement
             )
 
             if getattr(self, 'ml_live_logger', None) and (status_changed or status in ('WARN', 'CRITICAL')):
@@ -3136,6 +3134,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     
     def execute_buy(self, symbol, position_data, current_price, reason, ml_entry_learning_id=None):
         """Exécute l'achat avec exécution intelligente et microstructure de marché (Phase 7)."""
+        # Vérifier si le bot est en pause (via Telegram)
+        if getattr(self, 'paused', False):
+            return False
+        
         if hasattr(self, 'execution_manager') and self.execution_manager:
             return self.execution_manager.execute_smart_buy(
                 symbol, position_data, current_price, reason, ml_entry_learning_id

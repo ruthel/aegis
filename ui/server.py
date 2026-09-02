@@ -1201,6 +1201,8 @@ def trade_stats(positions):
     total_pnl = sum(trades)
     win_rate = (wins / total * 100) if total else 0
     avg_stake = (sum(stakes) / len(stakes)) if stakes else float(os.getenv('TRADE_AMOUNT', '5'))
+    best_trade_net = max(trades) if trades else 0
+    worst_trade_net = min(trades) if trades else 0
 
     # Compute trading duration in days from first to last trade
     days_active = 0
@@ -1219,6 +1221,8 @@ def trade_stats(positions):
         'total_fees': round(fees_total, 4),
         'total_pnl_net': round(total_pnl, 4),
         'total_pnl': round(total_pnl, 4),
+        'best_trade_net': round(best_trade_net, 4),
+        'worst_trade_net': round(worst_trade_net, 4),
         'days_active': round(days_active, 4),
         'avg_stake': round(avg_stake, 2),
     }
