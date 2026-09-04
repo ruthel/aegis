@@ -394,35 +394,62 @@ def _timeframe_ms(timeframe):
         return 15 * 60_000  # défaut 15m
 
 
-def _cache_path(symbol, timeframe):
-    """Chemin du fichier cache OHLCV pour un (symbole, timeframe)."""
+def _cache_path(symbol, timeframe, prefer_parquet=True):
+    """Chemin du fichier cache (Parquet prioritaire, 10x plus rapide)."""
     cache_dir = os.getenv('ML_OHLCV_CACHE_DIR', os.path.join('data', 'ohlcv_cache'))
     os.makedirs(cache_dir, exist_ok=True)
     safe_symbol = symbol.replace('/', '-')
-    return os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.json.gz")
+    
+    parquet_path = os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.parquet")
+    json_path = os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.json.gz")
+    
+    if prefer_parquet and os.path.exists(parquet_path):
+        return parquet_path
+    return json_path
 
 
 def _load_cache(symbol, timeframe):
-    """Charge les bougies en cache (liste triée par timestamp), ou [] si absent/corrompu."""
+    """Charge les bougies (Parquet ou JSON.gz)."""
     import gzip
     path = _cache_path(symbol, timeframe)
     if not os.path.exists(path):
         return []
     try:
+        if path.endswith('.parquet'):
+            import pandas as pd
+            df = pd.read_parquet(path)
+            return df.to_dict('records')
+        
         with gzip.open(path, 'rt', encoding='utf-8') as f:
             data = json.load(f)
-        if isinstance(data, list):
-            return data
-        return []
+        return data if isinstance(data, list) else []
     except Exception as e:
         print(f"      ⚠️ Cache illisible {symbol} {timeframe} ({e}) → refetch complet")
         return []
 
 
 def _save_cache(symbol, timeframe, klines):
-    """Sauvegarde les bougies en cache (gzip JSON, écriture atomique)."""
+    """Sauvegarde en Parquet (rapide) avec fallback JSON.gz."""
     import gzip
-    path = _cache_path(symbol, timeframe)
+    cache_dir = os.getenv('ML_OHLCV_CACHE_DIR', os.path.join('data', 'ohlcv_cache'))
+    safe_symbol = symbol.replace('/', '-')
+    
+    # Essayer Parquet d'abord
+    try:
+        import pandas as pd
+        path = os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.parquet")
+        df = pd.DataFrame(klines)
+        df.to_parquet(path, compression='snappy', index=False)
+        # Supprimer ancien JSON si existe
+        json_path = os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.json.gz")
+        if os.path.exists(json_path):
+            os.remove(json_path)
+        return
+    except Exception:
+        pass
+    
+    # Fallback JSON.gz
+    path = os.path.join(cache_dir, f"{safe_symbol}_{timeframe}.json.gz")
     tmp = path + '.tmp'
     try:
         with gzip.open(tmp, 'wt', encoding='utf-8') as f:
@@ -430,11 +457,6 @@ def _save_cache(symbol, timeframe, klines):
         os.replace(tmp, path)
     except Exception as e:
         print(f"      ⚠️ Échec sauvegarde cache {symbol} {timeframe}: {e}")
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
 
 
 def _fetch_one_window(cb, symbol, timeframe, win_since, limit=300, max_retries=5):

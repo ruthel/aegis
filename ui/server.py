@@ -2769,7 +2769,6 @@ def api_ml_status():
     response.headers['Cache-Control'] = 'no-store'
     return response
 
-
 @app.route('/api/analytics/scores')
 def api_analytics_scores():
     """Retourne l'historique des scores crypto pour une paire"""

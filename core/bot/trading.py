@@ -524,6 +524,13 @@ class TradingMixin:
                         order=order
                     )
 
+                # === DL SHADOW: Enregistrer le résultat réel ===
+                if hasattr(self, '_dl_record_outcome') and pnl is not None:
+                    try:
+                        self._dl_record_outcome(symbol, pnl)
+                    except Exception:
+                        pass  # Shadow mode - silencieux
+
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
                     

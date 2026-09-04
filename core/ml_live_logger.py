@@ -4569,6 +4569,8 @@ class MLLiveLogger:
                 print(f"⚠️ Erreur record_governance_event: {e}")
                 return None
         return None
+        """DEPRECATED - Shadow RL Agent supprimé."""
+        return None
 
     def _clean(self, value):
         if isinstance(value, dict):

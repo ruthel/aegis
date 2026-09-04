@@ -1693,6 +1693,8 @@ class MarketAnalyzer:
     
     def rank_cryptos(self, bot, trading_pairs, stuck_positions):
         """Classe toutes les cryptos et retourne les meilleures"""
+        from concurrent.futures import ThreadPoolExecutor
+        
         # Calculer limites dynamiques selon capital
         balance = bot.balance_manager.get_balance()
         total_capital = balance.get('USD', balance.get('USD', {})).get('free', 0)
@@ -1711,49 +1713,62 @@ class MarketAnalyzer:
         volatilities = []
         volume_ratios = []
         
-        for pair in trading_pairs:
+        def analyze_pair(pair):
+            """Analyse un symbole en parallèle"""
             symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             base_currency = symbol.split('/')[0]
             
             min_cost = bot.get_min_amount(symbol)['min_cost']
             
             if usd_available < min_cost:
-                continue
+                return None
             
             crypto_balance = balance.get(base_currency, {}).get('free', 0)
             if crypto_balance > 0.00001:
                 price = bot.get_price(symbol)
                 if (crypto_balance * price) < min_cost:
-                    continue
+                    return None
             
             optimal_timeframe = self.analyzer.get_main_timeframe(symbol, MarketAnalyzer.get_volatility(bot, symbol))
             
             klines = bot.get_klines(symbol, 20, optimal_timeframe)
             
             if not klines or len(klines) < 10:
-                continue
+                return None
             
             volatility = self.calculate_volatility(klines, symbol)
-            volatilities.append(volatility)
             
+            vol_ratio = 1.0
             if len(klines) >= 5:
                 current_vol = klines[-1]['volume']
                 avg_vol = sum(k['volume'] for k in klines[:-1]) / (len(klines) - 1)
                 vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
-                volume_ratios.append(vol_ratio)
             
             websocket_manager = getattr(bot, 'websocket', None)
             score = self.score_crypto(bot, symbol, stuck_positions, websocket_manager)
             if score > 0:
                 details = self.get_score_details(bot, symbol, stuck_positions, websocket_manager)
                 if details:
-                    scores.append({
+                    return {
                         'symbol': symbol,
                         'score': score,
                         'volatility': details['volatility'],
                         'volume': details['volume'],
-                        'min_cost': min_cost
-                    })
+                        'min_cost': min_cost,
+                        '_volatility': volatility,
+                        '_vol_ratio': vol_ratio
+                    }
+            return None
+        
+        # Analyser tous les symboles en parallèle
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(analyze_pair, trading_pairs))
+        
+        for r in results:
+            if r:
+                scores.append(r)
+                volatilities.append(r.pop('_volatility', 2.0))
+                volume_ratios.append(r.pop('_vol_ratio', 1.0))
         
         scores.sort(key=lambda x: x['score'], reverse=True)
         

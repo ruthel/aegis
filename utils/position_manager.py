@@ -143,6 +143,13 @@ class PositionManager:
         
         # Exécuter l'action
         if strategy['action'] == 'buy_more':
+            # Vérifier si le nombre de positions par crypto permet le moyennage
+            can_average = self._can_average_position(bot, symbol)
+            
+            if not can_average:
+                print(f"⚠️ Moyennage refusé: limite de positions par crypto atteinte pour {symbol}")
+                return False
+            
             # Moyenner à la baisse
             import os
             base_amount = float(os.getenv('TRADE_AMOUNT', '8'))
@@ -150,7 +157,7 @@ class PositionManager:
             
             print(f"🔄 Moyenner: Achat {average_amount:.2f} USD")
             trade_amount = average_amount / current_price
-            result = bot.buy_market(symbol, trade_amount)
+            result = bot.buy_market(symbol, trade_amount, allow_averaging=True)
             
             if result:
                 stuck_data['recovery_attempts'] += 1
@@ -191,6 +198,47 @@ class PositionManager:
                 print(f"⏳ Attente rebond: {current_price:.6f} → {sell_target:.6f}")
         
         return False
+    
+    def _can_average_position(self, bot, symbol):
+        """
+        Vérifie si on peut moyenner une position selon la limite max de positions par crypto.
+        Retourne True si le nombre actuel de positions sur ce symbole < max autorisé.
+        """
+        try:
+            import os
+            
+            # Récupérer le nombre max de positions par crypto
+            account_balance = bot.get_account_balance() if hasattr(bot, 'get_account_balance') else 100
+            limits = MarketAnalyzer.get_position_limits(account_balance)
+            max_per_crypto = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', limits.get('max_positions_per_crypto', 2)))
+            
+            # Compter les positions ouvertes sur ce symbole
+            current_positions = 0
+            target_sym = symbol.replace('/', '').upper()
+            
+            for p in bot.state.get('positions', []):
+                if not isinstance(p, dict):
+                    continue
+                p_sym = str(p.get('symbol', '')).replace('/', '').upper()
+                if p_sym == target_sym and p.get('side') == 'buy':
+                    # Position non fermée
+                    if not p.get('closed_at') and not p.get('exit_price'):
+                        current_positions += 1
+            
+            # Autoriser le moyennage si on n'a pas atteint la limite
+            can_average = current_positions < max_per_crypto
+            
+            if not can_average:
+                print(f"📊 {symbol}: {current_positions}/{max_per_crypto} positions (limite atteinte)")
+            else:
+                print(f"📊 {symbol}: {current_positions}/{max_per_crypto} positions (moyennage autorisé)")
+            
+            return can_average
+            
+        except Exception as e:
+            print(f"⚠️ Erreur vérification moyennage: {e}")
+            # En cas d'erreur, refuser le moyennage par sécurité
+            return False
     
     def get_stuck_summary(self):
         """Résumé des positions bloquées"""

@@ -483,6 +483,181 @@ class GovernanceLog(Base):
     updated_at: Mapped[str | None] = mapped_column(Text)
 
 
+# =============================================================================
+# DEEP LEARNING TABLES
+# =============================================================================
+
+class DLShadowPrediction(Base):
+    """Prédictions du modèle Deep Learning en mode shadow"""
+    __tablename__ = 'dl_shadow_predictions'
+
+    prediction_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text)
+    
+    # Prédictions des 3 heads
+    win_probability: Mapped[float | None] = mapped_column(Float)
+    continue_probability: Mapped[float | None] = mapped_column(Float)
+    optimal_sizing: Mapped[float | None] = mapped_column(Float)
+    
+    # Confiance et signal
+    confidence: Mapped[float | None] = mapped_column(Float)
+    signal: Mapped[str | None] = mapped_column(Text)  # strong_buy, buy, hold, sell, strong_sell
+    
+    # Contexte
+    current_price: Mapped[float | None] = mapped_column(Float)
+    btc_price: Mapped[float | None] = mapped_column(Float)
+    
+    # Résultat réel (rempli plus tard)
+    actual_outcome: Mapped[float | None] = mapped_column(Float)  # PnL réel
+    outcome_recorded_at: Mapped[str | None] = mapped_column(Text)
+    
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
+class DLRFComparison(Base):
+    """Comparaisons entre prédictions DL et RF"""
+    __tablename__ = 'dl_rf_comparisons'
+
+    comparison_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text)
+    
+    # Prédiction RF
+    rf_signal: Mapped[str | None] = mapped_column(Text)
+    rf_confidence: Mapped[float | None] = mapped_column(Float)
+    rf_p_win: Mapped[float | None] = mapped_column(Float)
+    
+    # Prédiction DL
+    dl_signal: Mapped[str | None] = mapped_column(Text)
+    dl_confidence: Mapped[float | None] = mapped_column(Float)
+    dl_win_probability: Mapped[float | None] = mapped_column(Float)
+    
+    # Accord/désaccord
+    signals_agree: Mapped[int | None] = mapped_column(Integer)  # 1 ou 0
+    signals_conflict: Mapped[int | None] = mapped_column(Integer)  # 1 ou 0
+    
+    # Résultats (remplis après le trade)
+    actual_pnl: Mapped[float | None] = mapped_column(Float)
+    rf_correct: Mapped[int | None] = mapped_column(Integer)  # 1 ou 0
+    dl_correct: Mapped[int | None] = mapped_column(Integer)  # 1 ou 0
+    
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
+class DLTrainingHistory(Base):
+    """Historique des entraînements du modèle DL"""
+    __tablename__ = 'dl_training_history'
+
+    training_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[str] = mapped_column(Text)
+    completed_at: Mapped[str | None] = mapped_column(Text)
+    
+    # Type d'entraînement
+    training_type: Mapped[str] = mapped_column(Text)  # initial, evolution, retrain
+    
+    # Configuration
+    epochs_completed: Mapped[int | None] = mapped_column(Integer)
+    total_epochs: Mapped[int | None] = mapped_column(Integer)
+    batch_size: Mapped[int | None] = mapped_column(Integer)
+    learning_rate: Mapped[float | None] = mapped_column(Float)
+    
+    # Données
+    train_samples: Mapped[int | None] = mapped_column(Integer)
+    val_samples: Mapped[int | None] = mapped_column(Integer)
+    test_samples: Mapped[int | None] = mapped_column(Integer)
+    
+    # Métriques finales
+    train_loss: Mapped[float | None] = mapped_column(Float)
+    val_loss: Mapped[float | None] = mapped_column(Float)
+    test_loss: Mapped[float | None] = mapped_column(Float)
+    val_accuracy: Mapped[float | None] = mapped_column(Float)
+    val_win_rate: Mapped[float | None] = mapped_column(Float)
+    val_auc: Mapped[float | None] = mapped_column(Float)
+    
+    # Chemin du modèle
+    model_path: Mapped[str | None] = mapped_column(Text)
+    checkpoint_path: Mapped[str | None] = mapped_column(Text)
+    
+    # Statut
+    status: Mapped[str] = mapped_column(Text)  # running, completed, failed
+    error_message: Mapped[str | None] = mapped_column(Text)
+    
+    created_at: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str | None] = mapped_column(Text)
+
+
+class DLEvolutionMetrics(Base):
+    """Métriques de l'évolution continue du modèle DL"""
+    __tablename__ = 'dl_evolution_metrics'
+
+    metric_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    
+    # Update info
+    update_count: Mapped[int | None] = mapped_column(Integer)
+    samples_processed: Mapped[int | None] = mapped_column(Integer)
+    
+    # Losses
+    total_loss: Mapped[float | None] = mapped_column(Float)
+    base_loss: Mapped[float | None] = mapped_column(Float)
+    replay_loss: Mapped[float | None] = mapped_column(Float)
+    ewc_loss: Mapped[float | None] = mapped_column(Float)
+    
+    # Drift detection
+    drift_detected: Mapped[int | None] = mapped_column(Integer)  # 1 ou 0
+    drift_score: Mapped[float | None] = mapped_column(Float)
+    drift_type: Mapped[str | None] = mapped_column(Text)
+    
+    # Adaptation
+    adaptation_rate: Mapped[float | None] = mapped_column(Float)
+    learning_rate: Mapped[float | None] = mapped_column(Float)
+    
+    # Buffer stats
+    replay_buffer_size: Mapped[int | None] = mapped_column(Integer)
+    replay_buffer_fill_ratio: Mapped[float | None] = mapped_column(Float)
+    
+    # Performance
+    rolling_win_rate: Mapped[float | None] = mapped_column(Float)
+    rolling_pnl: Mapped[float | None] = mapped_column(Float)
+    
+    created_at: Mapped[str | None] = mapped_column(Text)
+
+
+class DLModelCheckpoint(Base):
+    """Checkpoints du modèle DL"""
+    __tablename__ = 'dl_model_checkpoints'
+
+    checkpoint_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    
+    # Identification
+    model_version: Mapped[str | None] = mapped_column(Text)
+    checkpoint_type: Mapped[str] = mapped_column(Text)  # best, periodic, evolution
+    
+    # Chemin
+    file_path: Mapped[str] = mapped_column(Text)
+    file_size_mb: Mapped[float | None] = mapped_column(Float)
+    
+    # Métriques au moment du checkpoint
+    val_loss: Mapped[float | None] = mapped_column(Float)
+    val_win_rate: Mapped[float | None] = mapped_column(Float)
+    shadow_win_rate: Mapped[float | None] = mapped_column(Float)
+    
+    # Évolution
+    update_count: Mapped[int | None] = mapped_column(Integer)
+    n_tasks_learned: Mapped[int | None] = mapped_column(Integer)
+    
+    # Statut
+    is_active: Mapped[int | None] = mapped_column(Integer)  # 1 si c'est le modèle actif
+    
+    created_at: Mapped[str | None] = mapped_column(Text)
+
+
 Index('idx_sys_audit_type_time', SysAudit.event_type, SysAudit.timestamp)
 Index('idx_decision_logs_type_symbol_time', DecisionLog.action_type, DecisionLog.symbol, DecisionLog.timestamp)
 Index('idx_ml_feature_name', MlFeatureValue.feature_name)
@@ -499,6 +674,14 @@ Index('idx_ledger_account_asset_time', LedgerEntry.account_id, LedgerEntry.asset
 Index('idx_governance_type_time', GovernanceLog.event_type, GovernanceLog.timestamp)
 Index('idx_ml_exit_recommendations_symbol', MlExitRecommendation.mode, MlExitRecommendation.symbol)
 Index('idx_cryptos_symbol', Crypto.mode, Crypto.symbol)
+Index('idx_dl_shadow_symbol_time', DLShadowPrediction.symbol, DLShadowPrediction.timestamp)
+Index('idx_dl_shadow_signal', DLShadowPrediction.signal)
+Index('idx_dl_rf_comparison_symbol_time', DLRFComparison.symbol, DLRFComparison.timestamp)
+Index('idx_dl_rf_comparison_agree', DLRFComparison.signals_agree)
+Index('idx_dl_training_type_status', DLTrainingHistory.training_type, DLTrainingHistory.status)
+Index('idx_dl_evolution_time', DLEvolutionMetrics.timestamp)
+Index('idx_dl_evolution_drift', DLEvolutionMetrics.drift_detected)
+Index('idx_dl_checkpoint_active', DLModelCheckpoint.is_active)
 
 
 def sqlite_url(sqlite_file):

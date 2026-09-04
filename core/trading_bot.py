@@ -195,6 +195,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.ml_exit_high_pwin_threshold = float(os.getenv('ML_EXIT_HIGH_PWIN_THRESHOLD', '65.0'))
         self.ml_exit_min_continue_high_pwin = float(os.getenv('ML_EXIT_MIN_CONTINUE_HIGH_PWIN', '45.0'))
 
+        # === DEEP LEARNING SHADOW MODE ===
+        self.dl_shadow_enabled = os.getenv('DL_SHADOW_ENABLED', 'false').lower() == 'true'
+        self.dl_shadow_predictor = None
+        self.dl_rf_comparator = None
+        if self.dl_shadow_enabled:
+            self._init_dl_shadow()
+
         # Notifications
         self.notifier = NotificationManager()
         self.notifier.set_bot(self)
@@ -1692,8 +1699,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             position['highest_net_pnl_pct'] = net_pnl_pct
             highest_net_pnl = net_pnl_pct
 
-        # Seuil d'activation
-        activation_pct = float(os.getenv('BREAKEVEN_ACTIVATION_PCT', '0.35'))
+        # Seuil d'activation - doit être atteint avant que le breakeven lock ne s'active
+        # 0.50% net minimum pour éviter les faux positifs sur de petites fluctuations
+        activation_pct = float(os.getenv('BREAKEVEN_ACTIVATION_PCT', '0.50'))
         if highest_net_pnl < activation_pct:
             return False  # Pas encore assez de profit pour activer
 
@@ -1703,7 +1711,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         elif highest_net_pnl >= 0.80:
             floor_pct = highest_net_pnl * 0.50  # Verrouiller 50%
         else:
-            floor_pct = 0.0  # Juste protéger le breakeven
+            # Protection breakeven avec marge de sécurité pour éviter les faux positifs
+            # On protège à +0.20% net minimum pour garantir un vrai profit après frais et slippage
+            floor_pct = 0.20
 
         # Si le PnL actuel est sous le plancher → vente forcée
         if net_pnl_pct <= floor_pct:
@@ -1969,21 +1979,33 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if tradable_pairs:
                     self.show_dynamic_levels(tradable_pairs)  # Top 2 cryptos tradables
                 
-                # Prévisions de vente seulement pour cryptos tradables
+                # Prévisions de vente seulement pour cryptos tradables (en parallèle)
+                from concurrent.futures import ThreadPoolExecutor
                 sell_predictions = []
-                for symbol in tradable_pairs:
+                def get_sell_pred(symbol):
                     sell_pred = self.predict_next_sell_execution(symbol)
                     if sell_pred:
-                        sell_predictions.append((symbol, sell_pred))
+                        return (symbol, sell_pred)
+                    return None
+                
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    results = list(executor.map(get_sell_pred, tradable_pairs))
+                    sell_predictions = [r for r in results if r is not None]
                 self.show_sell_predictions(sell_predictions)
                 
-                # Prévisions d'achat seulement pour cryptos tradables
+                # Prévisions d'achat seulement pour cryptos tradables (en parallèle)
+                from concurrent.futures import ThreadPoolExecutor
                 buy_predictions = []
-                for symbol in tradable_pairs:
+                def get_buy_pred(symbol):
                     prediction = self.predict_next_buy_opportunity(symbol)
                     crypto = symbol.split('/')[0]
                     if prediction and prediction['status'] in ['READY', 'WAITING']:
-                        buy_predictions.append((crypto, prediction))
+                        return (crypto, prediction)
+                    return None
+                
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    results = list(executor.map(get_buy_pred, tradable_pairs))
+                    buy_predictions = [r for r in results if r is not None]
                 self.show_buy_predictions(buy_predictions)
                 
                 # Vérifier positions bloquées seulement pour cryptos tradables
@@ -2067,18 +2089,31 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def show_dynamic_levels(self, tradable_pairs):
         """Affiche les niveaux dynamiques pour les cryptos tradables uniquement"""
         try:
-            best_level_logs = []
-            # Utiliser directement la liste des cryptos tradables passée en paramètre
-            for symbol in tradable_pairs:
+            from concurrent.futures import ThreadPoolExecutor
+            
+            def get_level(symbol):
                 current_price = self.get_price(symbol)
                 entry_opportunities = self.pattern_analyzer.get_entry_levels(symbol, current_price)
-                
                 if entry_opportunities:
                     crypto = symbol.split('/')[0]
                     best_entry = entry_opportunities[0]
-                    best_level_logs.append(
-                        f"{crypto} {best_entry['price']:.2f} ({best_entry['type']}, {best_entry['distance']:.1f}%)"
-                    )
+                    return {
+                        'symbol': symbol,
+                        'crypto': crypto,
+                        'best_entry': best_entry,
+                        'log': f"{crypto} {best_entry['price']:.2f} ({best_entry['type']}, {best_entry['distance']:.1f}%)"
+                    }
+                return None
+            
+            best_level_logs = []
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(get_level, tradable_pairs))
+            
+            for r in results:
+                if r:
+                    best_level_logs.append(r['log'])
+                    best_entry = r['best_entry']
+                    symbol = r['symbol']
                     
                     # Envoyer notification si niveau très proche (< 2%) et pas déjà envoyée
                     if abs(best_entry['distance']) < 2.0 and hasattr(self, 'notifier'):
@@ -2273,6 +2308,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         ml_exit_forecast,
                         ml_bot_context
                     )
+                    # === DL SHADOW: Comparer même les rejets ===
+                    if self.dl_shadow_enabled and self.dl_shadow_predictor:
+                        try:
+                            self._dl_shadow_compare_with_rf(
+                                symbol=symbol,
+                                rf_decision='reject',
+                                rf_confidence=100.0 - ml_win_prob,
+                                rf_p_win=ml_win_prob
+                            )
+                        except Exception:
+                            pass
                     self.record_ml_entry_learning_sample(
                         symbol,
                         'rejected',
@@ -2435,6 +2481,18 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
+        
+        # === DL SHADOW: Comparer avec prédiction Deep Learning ===
+        if self.dl_shadow_enabled and self.dl_shadow_predictor:
+            try:
+                self._dl_shadow_compare_with_rf(
+                    symbol=symbol,
+                    rf_decision='buy',
+                    rf_confidence=global_signal.get('confidence', 0),
+                    rf_p_win=ml_win_prob
+                )
+            except Exception:
+                pass  # Shadow mode - silencieux
         
         # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
@@ -2706,9 +2764,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
             return False
 
-    def record_decision(self, symbol, action_type=None, confidence=None, p_win=None, reason="", features=None, mode='paper', throttle_seconds=0, **kwargs):
+    def record_decision(self, symbol, action_type=None, confidence=None, p_win=None, reason="", features=None, mode=None, throttle_seconds=0, **kwargs):
         """Journalise une décision (Achat, Vente, Refus ML, Trailing Stop) dans SQLite et governance_logs avec throttling."""
         try:
+            # Utiliser le mode du bot si non spécifié
+            if mode is None:
+                mode = 'paper' if getattr(self, 'paper_trading', True) else 'live'
+            
             action = kwargs.get('action', action_type)
             allowed = kwargs.get('allowed', confidence if isinstance(confidence, bool) else None)
             metrics = kwargs.get('metrics', features)
@@ -3283,8 +3345,249 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self._last_score_append[symbol] = now
             
             if getattr(self, 'ml_live_logger', None):
-                self.ml_live_logger.record_crypto_score(symbol, score, price)
+                self.ml_live_logger.record_crypto_score(symbol, price, score)
                 
         except Exception as e:
             print(f"⚠️ Erreur lors de l'historisation du score pour {symbol}: {e}")
+    
+    # =========================================================================
+    # DEEP LEARNING SHADOW MODE
+    # =========================================================================
+    
+    def _init_dl_shadow(self):
+        """Initialise le système Deep Learning en mode shadow"""
+        try:
+            from core.deep_learning.shadow.predictor import ShadowPredictor
+            from core.deep_learning.shadow.comparator import RFComparator
+            from core.deep_learning.config import DLConfig
+            from pathlib import Path
+            
+            model_path = Path('data/deep_learning/models/model_latest.pt')
+            
+            if not model_path.exists():
+                # Chercher un autre modèle
+                models_dir = Path('data/deep_learning/models')
+                if models_dir.exists():
+                    model_files = list(models_dir.glob('model_*.pt'))
+                    if model_files:
+                        model_path = sorted(model_files)[-1]
+            
+            if model_path.exists():
+                config = DLConfig()
+                self.dl_shadow_predictor = ShadowPredictor(
+                    model_path=model_path,
+                    config=config
+                )
+                self.dl_rf_comparator = RFComparator(
+                    min_comparisons=config.shadow.min_shadow_trades,
+                    outperformance_threshold=config.shadow.min_rf_outperformance,
+                    min_winrate=config.shadow.min_shadow_winrate
+                )
+                print("🧠 Deep Learning Shadow Mode initialisé")
+            else:
+                print("⚠️ DL Shadow: Aucun modèle trouvé, mode désactivé")
+                self.dl_shadow_enabled = False
+                
+        except ImportError as e:
+            print(f"⚠️ DL Shadow: PyTorch non installé ({e})")
+            self.dl_shadow_enabled = False
+        except Exception as e:
+            print(f"⚠️ DL Shadow: Erreur initialisation ({e})")
+            self.dl_shadow_enabled = False
+    
+    def _dl_shadow_update_buffer(self, symbol: str, candle: dict):
+        """Met à jour le buffer de features DL avec une nouvelle bougie"""
+        if not self.dl_shadow_enabled or not self.dl_shadow_predictor:
+            return
+        
+        try:
+            # Récupérer aussi les données BTC pour corrélations
+            btc_candle = None
+            if symbol != 'BTC/USD' and hasattr(self, 'websocket'):
+                btc_price = self.websocket.get_last_price('BTC/USD')
+                if btc_price:
+                    btc_candle = {'close': btc_price, 'timestamp': candle.get('timestamp')}
+            
+            self.dl_shadow_predictor.update_buffer(
+                symbol=symbol,
+                candle=candle,
+                btc_candle=btc_candle
+            )
+        except Exception as e:
+            pass  # Silently fail in shadow mode
+    
+    def _dl_shadow_predict(self, symbol: str, current_price: float) -> dict | None:
+        """Obtient une prédiction DL shadow pour un symbole"""
+        if not self.dl_shadow_enabled or not self.dl_shadow_predictor:
+            return None
+        
+        try:
+            current_state = {
+                'price': current_price,
+                'has_position': self.has_active_position(symbol)
+            }
+            
+            prediction = self.dl_shadow_predictor.predict(symbol, current_state)
+            
+            if prediction:
+                # Log la prédiction dans la DB
+                self._dl_log_prediction(symbol, prediction)
+            
+            return prediction
+            
+        except Exception as e:
+            return None
+    
+    def _dl_shadow_compare_with_rf(
+        self, 
+        symbol: str, 
+        rf_decision: str, 
+        rf_confidence: float,
+        rf_p_win: float | None = None
+    ):
+        """Compare une décision RF avec la prédiction DL et log le résultat"""
+        if not self.dl_shadow_enabled or not self.dl_rf_comparator:
+            return
+        
+        try:
+            # Obtenir la prédiction DL courante
+            current_price = self.get_price(symbol)
+            if current_price is None:
+                return
+            
+            dl_prediction = self._dl_shadow_predict(symbol, current_price)
+            if dl_prediction is None:
+                return
+            
+            # Construire les prédictions pour comparaison
+            rf_prediction = {
+                'decision': rf_decision,
+                'confidence': rf_confidence,
+                'p_win': rf_p_win
+            }
+            
+            # Ajouter la comparaison
+            comparison = self.dl_rf_comparator.add_comparison(
+                symbol=symbol,
+                rf_prediction=rf_prediction,
+                dl_prediction=dl_prediction
+            )
+            
+            # Log dans la DB
+            self._dl_log_comparison(symbol, comparison, dl_prediction)
+            
+            # Vérifier si DL devrait être promu
+            if self.dl_rf_comparator.stats['total_comparisons'] % 100 == 0:
+                should_promote, reason = self.dl_rf_comparator.should_promote_dl()
+                if should_promote:
+                    print(f"🧠 DL Shadow: Prêt pour promotion! {reason}")
+                    
+        except Exception as e:
+            pass
+    
+    def _dl_record_outcome(self, symbol: str, actual_pnl: float):
+        """Enregistre le résultat réel d'un trade pour les comparaisons DL"""
+        if not self.dl_shadow_enabled or not self.dl_rf_comparator:
+            return
+        
+        try:
+            # Chercher la dernière comparaison pour ce symbole
+            for i in range(len(self.dl_rf_comparator.comparisons) - 1, -1, -1):
+                comp = self.dl_rf_comparator.comparisons[i]
+                if comp.symbol == symbol and comp.actual_outcome is None:
+                    self.dl_rf_comparator.record_outcome(i, actual_pnl, 0, 0)
+                    break
+        except Exception:
+            pass
+    
+    def _dl_log_prediction(self, symbol: str, prediction: dict):
+        """Log une prédiction DL dans la base de données"""
+        try:
+            import uuid
+            from core.db_orm import DLShadowPrediction, create_session_factory, now_iso
+            from pathlib import Path
+            
+            db_path = 'data/aegis_db.sqlite3'
+            if not Path(db_path).exists():
+                return
+            
+            SessionFactory = create_session_factory(db_path)
+            
+            with SessionFactory() as session:
+                entry = DLShadowPrediction(
+                    prediction_id=str(uuid.uuid4())[:12],
+                    timestamp=prediction.get('timestamp', now_iso()),
+                    mode='paper' if self.paper_trading else 'live',
+                    symbol=symbol,
+                    win_probability=prediction.get('win_probability'),
+                    continue_probability=prediction.get('continue_probability'),
+                    optimal_sizing=prediction.get('optimal_sizing'),
+                    confidence=prediction.get('confidence'),
+                    signal=prediction.get('signal'),
+                    current_price=prediction.get('current_state', {}).get('price'),
+                    created_at=now_iso()
+                )
+                session.add(entry)
+                session.commit()
+                
+        except Exception:
+            pass
+    
+    def _dl_log_comparison(self, symbol: str, comparison, dl_prediction: dict):
+        """Log une comparaison RF/DL dans la base de données"""
+        try:
+            import uuid
+            from core.db_orm import DLRFComparison, create_session_factory, now_iso
+            from pathlib import Path
+            
+            db_path = 'data/aegis_db.sqlite3'
+            if not Path(db_path).exists():
+                return
+            
+            SessionFactory = create_session_factory(db_path)
+            
+            with SessionFactory() as session:
+                entry = DLRFComparison(
+                    comparison_id=str(uuid.uuid4())[:12],
+                    timestamp=comparison.timestamp,
+                    mode='paper' if self.paper_trading else 'live',
+                    symbol=symbol,
+                    rf_signal=comparison.rf_signal,
+                    rf_confidence=comparison.rf_confidence,
+                    dl_signal=comparison.dl_signal,
+                    dl_confidence=comparison.dl_confidence,
+                    dl_win_probability=dl_prediction.get('win_probability'),
+                    signals_agree=1 if (comparison.rf_signal in ['buy', 'strong_buy']) == (comparison.dl_signal in ['buy', 'strong_buy']) else 0,
+                    signals_conflict=1 if ((comparison.rf_signal in ['buy', 'strong_buy']) and (comparison.dl_signal in ['sell', 'strong_sell'])) or ((comparison.rf_signal in ['sell', 'strong_sell']) and (comparison.dl_signal in ['buy', 'strong_buy'])) else 0,
+                    created_at=now_iso()
+                )
+                session.add(entry)
+                session.commit()
+                
+        except Exception:
+            pass
+    
+    def get_dl_shadow_status(self) -> dict:
+        """Retourne le statut du mode shadow DL"""
+        if not self.dl_shadow_enabled:
+            return {'enabled': False}
+        
+        status = {
+            'enabled': True,
+            'model_loaded': self.dl_shadow_predictor is not None and self.dl_shadow_predictor.is_loaded,
+            'prediction_count': self.dl_shadow_predictor.prediction_count if self.dl_shadow_predictor else 0,
+        }
+        
+        if self.dl_rf_comparator:
+            metrics = self.dl_rf_comparator.get_performance_metrics()
+            status['comparisons'] = metrics.get('completed_comparisons', 0)
+            status['dl_winrate'] = metrics.get('dl_winrate', 0)
+            status['rf_winrate'] = metrics.get('rf_winrate', 0)
+            status['agreement_rate'] = metrics.get('agreement_rate', 0)
+            
+            should_promote, reason = self.dl_rf_comparator.should_promote_dl()
+            status['ready_for_promotion'] = should_promote
+            status['promotion_reason'] = reason
+        
+        return status
     

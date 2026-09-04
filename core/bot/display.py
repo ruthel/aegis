@@ -10,8 +10,9 @@ class DisplayMixin:
     
     def show_realtime_prices(self, trading_pairs):
         """Affiche les prix en temps réel avec analyse Support/Résistance"""
-        prices = []
-        for pair in trading_pairs:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def analyze_symbol(pair):
             symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             try:
                 price = self.get_price(symbol)
@@ -39,9 +40,16 @@ class DisplayMixin:
                     price_str = f"{price:.2f}"
                 else:
                     price_str = f"{price:.2f}"
-                prices.append(f"{crypto} {price_str}{sr_info}")
+                return f"{crypto} {price_str}{sr_info}"
             except:
-                prices.append(f"{symbol.split('/')[0]} ERR")
+                return f"{pair.split('/')[0] if '/' in pair else pair[:3]} ERR"
+        
+        # Fetch en parallèle
+        prices = []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(analyze_symbol, pair): pair for pair in trading_pairs}
+            for future in as_completed(futures):
+                prices.append(future.result())
         
         self.async_print(f"\n⚡ {datetime.now().strftime('%H:%M:%S')} | {' | '.join(prices)}")
     

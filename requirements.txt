@@ -4,6 +4,7 @@ python-dotenv>=1.0.0
 Flask>=3.0.0
 requests>=2.31.0
 numpy==2.1.3
+pandas>=2.0.0
 orjson>=3.10.0
 scipy==1.14.1
 scikit-learn>=1.5.0
@@ -14,3 +15,8 @@ SQLAlchemy>=2.0.0
 matplotlib>=3.8.0
 
 flask-sock>=0.7
+
+# Deep Learning (optionnel - pour le mode DL Shadow)
+# Sur Windows sans GPU CUDA, utiliser: pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Sur Linux/Mac avec GPU: pip install torch
+torch>=2.0.0

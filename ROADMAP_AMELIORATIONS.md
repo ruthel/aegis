@@ -1,6 +1,6 @@
 # Feuille de Route & Etat d'Avancement — Ameliorations Bot Aegis
 
-Derniere mise a jour : 2026-08-29
+Derniere mise a jour : 2026-08-28
 
 ---
 
@@ -21,7 +21,7 @@ Derniere mise a jour : 2026-08-29
 * **Phase 13 (Correction frais & coherence PnL)** : ✅ **Termine**
 * **Phase 14 (Nettoyage code mort)** : ✅ **Termine**
 * **Phase 15 (Amelioration ML exit & training)** : ✅ **Termine**
-* **Phase 16 (Vers l'autonomie complete)** : 🔜 **À venir**
+* **Phase 16 (Vers une IA Conversationnelle)** : 🟡 **En cours** (Étapes 1-2 terminées, Étape 3 à venir)
 
 ---
 
@@ -305,39 +305,77 @@ Objectif : aligner les frais utilisés partout dans le bot avec les frais réels
 
 ---
 
-## 🔜 Phase 16 : Vers l'Autonomie Complète (À venir)
+## � Phase 16 : Vers une IA Conversationnelle (6-12 mois)
 
-### Étape 1 — Consolidation (1 mois)
+L'objectif n'est plus seulement d'avoir un modèle ML qui prédit, mais une IA qui **comprend**, **explique**, **apprend de ses erreurs** et **dialogue**.
 
-- [x] **Auto-retraining bi-hebdomadaire** : réentraîner automatiquement avec les nouvelles données live toutes les 2 semaines. ✅ `ML_AUTO_RETRAIN_ENABLED=true`, intervalle 14 jours (`ML_AUTO_RETRAIN_INTERVAL_SECONDS=1209600`), promotion automatique via garde-fous.
-- [x] **Augmentation dataset** : objectif 15-20k samples atteint (**15346 samples**). ✅ Méthode retenue : extension de l'historique d'entraînement à **3 ans** (`ML_TRAINING_HISTORY_DAYS=1095`) via Coinbase, au lieu de la diversification des signaux d'entrée (testée puis abandonnée car elle dégradait la précision : 78.8% → 70.2%). Bonus : le dataset couvre désormais bear 2023-2024 + remontée + régime haussier actuel, ce qui rend le modèle robuste aux changements de régime.
-- [x] **P_target model** : régresseur ML qui prédit le gain max atteignable pour fixer un take-profit intelligent. ✅ `RandomForestRegressor` à 78 features intégré au champion (`target_model` dans `aegis_model.joblib`), prédiction clampée entre `ML_TARGET_MIN_PCT=0.8` et `ML_TARGET_MAX_PCT=12.0`, pose un take-profit à l'entrée via `predict_target()` + `_check_take_profit_target()` (`ML_TAKE_PROFIT_ENABLED=true`).
+### Étape 1 — Consolidation ✅ (Terminé)
 
-### Étape 2 — Apprentissage par Renforcement (1-3 mois)
+- [x] **Auto-retraining bi-hebdomadaire** : réentraîner automatiquement avec les nouvelles données live toutes les 2 semaines. ✅ `ML_AUTO_RETRAIN_ENABLED=true`, intervalle 14 jours.
+- [x] **Augmentation dataset** : 15346 samples, 3 ans d'historique couvrant bear + bull markets.
+- [x] **P_target model** : régresseur ML qui prédit le gain max atteignable pour fixer un take-profit intelligent.
 
-- [ ] **Agent DQN ou PPO** : remplace le RandomForest par un agent qui maximise le PnL cumulé (pas trade par trade).
-- [ ] **État complet** : l'agent voit positions ouvertes, capital, prix, indicateurs et choisit buy/sell/hold.
-- [ ] **Reward shaping** : récompense = PnL net réalisé + pénalité drawdown + bonus Sharpe.
-- [ ] **Self-play simulation** : entraînement sur simulateur avant déploiement live.
+### Étape 2 — Apprentissage par Renforcement ❌ (Abandonné)
 
-### Étape 3 — Modèles Séquentiels (3-6 mois)
+- [x] **Shadow RL Agent** : ❌ Abandonné après tests non concluants (WinRate 21%, PnL catastrophique).
+- **Leçon apprise** : le RL nécessite un environnement de simulation réaliste et beaucoup plus de données. Le RandomForest reste plus performant pour l'instant.
 
-- [ ] **LSTM / Transformer** : modèles qui traitent des séquences (30 derniers états) pour comprendre tendances et retournements.
-- [ ] **Attention mechanism** : le modèle apprend quelles bougies passées sont pertinentes pour la décision actuelle.
-- [ ] **Multi-horizon prediction** : prédire le prix à +15min, +1h, +4h simultanément.
+### Étape 3 — Mémoire + Explications (À venir - Mois 1)
 
-### Étape 4 — Multi-Agent Spécialisé (6-12 mois)
+**Intelligence :** RF actuel + features mémoire (5 dernières décisions par symbole)
+**Parole :** Explications templates générées automatiquement
 
-- [ ] **Market Regime Detector** : identifie bull/bear/range en temps réel.
-- [ ] **Entry Specialist** : trouve les points d'entrée optimaux.
-- [ ] **Position Manager** : gère sorties, trailing, sizing dynamique.
-- [ ] **Risk Controller** : override les agents si risque global trop élevé.
-- [ ] **Meta-Learner** : sélectionne quel agent écouter selon le contexte.
+- [ ] **Features mémoire** : ajouter au RF les 5 dernières décisions du bot sur chaque symbole (refus/achat, P_win, résultat si connu).
+- [ ] **Explications templates** : générer des phrases humaines à partir des métriques.
+  - "J'achète ADA (P_win 72%) : rebond support, momentum OK, BTC stable"
+  - "Je refuse SOL : P_win 58%, j'ai refusé il y a 2h et ça a continué à baisser"
+- [ ] **Affichage UI** : section "Pensée du bot" sur le dashboard.
+- [ ] **Telegram optionnel** : envoyer les explications importantes.
 
-### Étape 5 — Système Auto-Évolutif (12+ mois)
+### Étape 4 — Séquences + Explications LLM (À venir - Mois 2-3)
 
-- [ ] **Online learning** : mise à jour continue du modèle avec chaque trade.
-- [ ] **Détection de régime automatique** : switch de stratégie sans intervention humaine.
-- [ ] **Multi-exchange / multi-asset** : diversification automatique selon les opportunités.
-- [ ] **Self-monitoring** : le système détecte quand il perd sa calibration et se met en pause.
+**Intelligence :** LSTM léger qui voit les 20 derniers états
+**Parole :** Petit LLM local (Phi-3 / Llama 3.2 1B) qui verbalise
+
+- [ ] **LSTM shadow** : modèle séquentiel qui observe les 20 derniers ticks, en parallèle du RF.
+- [ ] **Comparaison RF vs LSTM** : tracker quand ils divergent et qui a raison.
+- [ ] **LLM local** : intégrer un petit modèle de langage pour transformer les métriques en phrases naturelles.
+  - "ADA forme un double bottom sur 4h, pattern historiquement gagnant"
+- [ ] **Explications des divergences** : le LLM explique pourquoi RF et LSTM ne sont pas d'accord.
+
+### Étape 5 — Apprentissage des erreurs + Réflexion (À venir - Mois 3-4)
+
+**Intelligence :** Modèle qui s'ajuste aux erreurs récentes
+**Parole :** Journal de réflexion post-trade
+
+- [ ] **Poids adaptatifs** : les samples récents où le modèle s'est trompé pèsent plus lourd.
+- [ ] **Journal de réflexion** : après chaque trade fermé, le LLM analyse ce qui a marché ou pas.
+  - "J'ai perdu sur SOL. Le momentum BTC était faible, j'aurais dû attendre."
+- [ ] **Contexte de réflexion** : les dernières réflexions sont injectées dans le prompt avant chaque décision.
+- [ ] **Table DB `ai_reflections`** : stocker les réflexions pour analyse future.
+
+### Étape 6 — Attention + Dialogue (À venir - Mois 4-6)
+
+**Intelligence :** Transformer léger avec attention multi-timeframe
+**Parole :** Dialogue interactif Telegram/UI
+
+- [ ] **Transformer shadow** : modèle avec mécanisme d'attention qui "regarde" où il veut dans l'historique.
+- [ ] **Corrélations cross-crypto** : l'attention peut lier BTC d'il y a 4h avec ADA maintenant.
+- [ ] **Dialogue Telegram** : répondre à des questions en langage naturel.
+  - User : "Pourquoi pas ETH ?"
+  - IA : "ETH bloque à 2450$ depuis 3h. P_win=63%, sous mon seuil. Si ça casse avec volume, je rentre."
+- [ ] **Override utilisateur** : accepter des instructions comme "achète quand même mais petit".
+
+### Étape 7 — Raisonnement autonome + Auto-correction (À venir - Mois 6-12)
+
+**Intelligence :** Chain-of-thought, l'IA "pense" avant d'agir
+**Parole :** Raisonnement à voix haute, auto-critique
+
+- [ ] **Thinking mode** : avant chaque décision, l'IA génère un raisonnement interne.
+  - "Voyons ADA... support touché, RSI 32, volume +40%... BTC monte... vendredi 22h, spreads larges... → Achat prudent (0.6x)"
+- [ ] **Auto-critique** : après erreur, l'IA identifie ce qu'elle aurait dû voir.
+  - "Je me suis trompé, j'aurais dû voir la divergence RSI."
+- [ ] **Auto-pause** : si série de pertes, l'IA peut se mettre en observation.
+  - "Je perds 3 trades de suite. Pause 2h pour analyser."
+- [ ] **Apprentissage continu** : mise à jour du modèle après chaque trade, pas juste bi-hebdo.
 - [ ] **Capital scaling** : augmentation automatique des positions quand la performance est stable.
