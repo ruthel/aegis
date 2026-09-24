@@ -39,4 +39,4 @@ jobs:
 
       - name: Unit and smoke tests
         run: |
-          python -m unittest discover -s tests -p "test_live_fixes.py" -v
+          python -m unittest discover -s tests -p "test_*.py" -v
