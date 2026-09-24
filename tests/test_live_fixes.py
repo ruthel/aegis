@@ -23,6 +23,7 @@ from scripts.promote_challenger import compute_shadow_comparison
 from core.bot.trading import TradingMixin
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from scripts.train_and_evaluate_ml_model import build_training_bot_context
+from scripts.walk_forward_validation import _historical_spread_pct
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -528,7 +529,7 @@ class LiveFixTests(unittest.TestCase):
             }
             self.assertTrue(engine.train_model(X, y, use_lightgbm=False))
             payload = joblib.load(engine.model_path)
-            self.assertEqual(payload['model_contract']['model_format_version'], 3)
+            self.assertEqual(payload['model_contract']['model_format_version'], 4)
             self.assertEqual(
                 payload['model_contract']['feature_schema_hash'],
                 engine.feature_schema_hash(),
@@ -551,6 +552,113 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn('predict_position_size_factor', source)
         self.assertIn('predict_target', source)
         self.assertIn('FULL_STRATEGY_ROUNDTRIP_SLIPPAGE_PCT', source)
+
+    def test_irreproducible_live_gates_are_not_ml_features(self):
+        engine = MLEngine(model_dir='data/nonexistent-feature-schema-test')
+        forbidden = {
+            'crypto_score',
+            'dynamic_min_score',
+            'score_vs_threshold',
+            'technical_action_code',
+            'technical_confidence',
+            'technical_min_confidence',
+            'technical_confidence_edge',
+        }
+        self.assertTrue(forbidden.isdisjoint(set(engine.feature_names)))
+        self.assertTrue({
+            'crypto_score',
+            'score_vs_threshold',
+            'technical_action_code',
+            'technical_confidence',
+            'technical_confidence_edge',
+        }.isdisjoint(set(engine.exit_feature_names)))
+
+    def test_sizing_and_target_have_temporal_oos_metrics(self):
+        rng = np.random.default_rng(222)
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {
+            'ML_SKIP_MODEL_METADATA': 'true',
+            'ML_STRICT_MODEL_SCHEMA': 'True',
+            'ML_TEMPORAL_TEST_RATIO': '0.20',
+        }, clear=False):
+            engine = MLEngine(model_dir=td)
+            X = rng.normal(size=(260, len(engine.feature_names)))
+            y_entry = (X[:, 0] > 0).astype(int)
+            self.assertTrue(engine.train_model(X, y_entry, use_lightgbm=False))
+
+            y_sizing = np.clip(0.75 + 0.15 * X[:, 0], 0.25, 1.25)
+            self.assertTrue(engine.train_sizing_model(X, y_sizing, use_lightgbm=False))
+            self.assertEqual(engine.model_metadata.get('sizing_validation_type'), 'temporal_holdout')
+            self.assertIn('sizing_test_mae', engine.model_metadata)
+            self.assertIn('sizing_test_rmse', engine.model_metadata)
+
+            y_target = np.clip(1.0 + 0.6 * X[:, 1], 0.0, 6.0)
+            self.assertTrue(engine.train_target_model(X, y_target, use_lightgbm=False))
+            self.assertEqual(engine.model_metadata.get('target_validation_type'), 'temporal_holdout')
+            self.assertIn('target_test_mae_pct', engine.model_metadata)
+            self.assertIn('target_test_rmse_pct', engine.model_metadata)
+
+    def test_exit_training_uses_live_continuation_score(self):
+        source = (ROOT / 'scripts/train_and_evaluate_ml_model.py').read_text(encoding='utf-8')
+        generator = source[
+            source.index('def generate_exit_training_samples'):
+            source.index('def train_challenger_model')
+        ]
+        self.assertIn('exit_engine.compute_continuation_score', generator)
+        self.assertNotIn('continuation_score=50.0', generator)
+
+    def test_partial_fill_accounting_keeps_order_open_until_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = os.path.join(td, 'partial.sqlite3')
+            logger = MLLiveLogger(data_dir=td, sqlite_file=db)
+            order_id = logger.record_order_transaction(
+                'BTC/USD', 'buy', 2.0, 100.0,
+                order_type='limit', status='open',
+                order_id='partial-test', mode='live',
+                source='test', recalculate_balances=False,
+            )
+            logger.record_fill_transaction(
+                order_id, 'BTC/USD', 'buy', 0.5, 100.0,
+                fee_amount=0.0, mode='live', source='test',
+                write_ledger=False, recalculate_balances=False,
+            )
+            conn = logger._get_conn()
+            account_id = logger._account_id('live')
+            row = conn.execute(
+                'SELECT status, filled_amount, avg_fill_price FROM orders WHERE account_id=? AND order_id=?',
+                (account_id, order_id),
+            ).fetchone()
+            self.assertEqual(row[0], 'partially_filled')
+            self.assertAlmostEqual(float(row[1]), 0.5)
+            self.assertAlmostEqual(float(row[2]), 100.0)
+
+            logger.record_fill_transaction(
+                order_id, 'BTC/USD', 'buy', 1.5, 102.0,
+                fee_amount=0.0, mode='live', source='test',
+                write_ledger=False, recalculate_balances=False,
+            )
+            row = conn.execute(
+                'SELECT status, filled_amount, avg_fill_price FROM orders WHERE account_id=? AND order_id=?',
+                (account_id, order_id),
+            ).fetchone()
+            self.assertEqual(row[0], 'filled')
+            self.assertAlmostEqual(float(row[1]), 2.0)
+            self.assertAlmostEqual(float(row[2]), 101.5)
+            logger.close()
+
+    def test_walk_forward_uses_archived_or_fallback_spread(self):
+        with patch.dict(os.environ, {'FULL_STRATEGY_FALLBACK_SPREAD_PCT': '0.04'}, clear=False):
+            self.assertAlmostEqual(_historical_spread_pct({'close': 100.0}), 0.04)
+        spread = _historical_spread_pct({'bid': 99.9, 'ask': 100.1})
+        self.assertGreater(spread, 0.19)
+        self.assertLess(spread, 0.21)
+
+    def test_promotion_has_schema_bootstrap_and_aux_oos_guard(self):
+        source = (ROOT / 'scripts/promote_challenger.py').read_text(encoding='utf-8')
+        self.assertIn('ML_ALLOW_SCHEMA_BOOTSTRAP_PROMOTION', source)
+        self.assertIn('bootstrap_heads_ready', source)
+        self.assertIn('aux_oos_validation', source)
+        self.assertIn("sizing_validation_type", source)
+        self.assertIn("target_validation_type", source)
 
     def test_unified_env_and_removed_dl_are_clean(self):
         targets = [
