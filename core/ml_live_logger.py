@@ -260,6 +260,8 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_sizing_recommendations', 'max_exposure_usd', 'REAL')
                 self._ensure_column(conn, 'ml_trade_outcomes', 'slippage_pct', 'REAL')
                 self._ensure_column(conn, 'ml_trade_outcomes', 'spread_pct', 'REAL')
+                self._ensure_column(conn, 'crypto_scores', 'mode', 'TEXT')
+                self._ensure_column(conn, 'execution_latency', 'mode', 'TEXT')
                 # Renommer la table ml_raw_events en sys_audit si besoin
                 try:
                     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
@@ -4178,8 +4180,9 @@ class MLLiveLogger:
         expected_price=None,
         executed_price=None,
         slippage_pct=None,
+        mode='paper',
     ):
-        """Persist monotonic execution-stage latencies for live attribution."""
+        """Persist monotonic execution-stage latencies inside one trading mode."""
         try:
             t = dict(trace or {})
             def _ms(a, b):
@@ -4199,6 +4202,7 @@ class MLLiveLogger:
             row = ExecutionLatency(
                 latency_id=self._new_id('latency'),
                 timestamp=now_iso(),
+                mode=str(mode or 'paper').lower(),
                 symbol=str(symbol or ''),
                 side=str(side or ''),
                 order_type=str(order_type or ''),
@@ -4415,7 +4419,7 @@ class MLLiveLogger:
                 pass
             return []
 
-    def record_crypto_score(self, symbol, score, price):
+    def record_crypto_score(self, symbol, score, price, mode='paper'):
         try:
             now = now_iso()
             score_id = self._new_id('score')
@@ -4423,6 +4427,7 @@ class MLLiveLogger:
                 session.add(CryptoScore(
                     score_id=score_id,
                     timestamp=now,
+                    mode=str(mode or 'paper').lower(),
                     symbol=symbol,
                     score=int(score),
                     price=self._clean(price),
@@ -4434,17 +4439,22 @@ class MLLiveLogger:
         except Exception:
             return None
 
-    def get_crypto_scores(self, symbol, since_iso=None, limit=2000):
+    def get_crypto_scores(self, symbol, since_iso=None, limit=2000, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                query = select(CryptoScore).where(CryptoScore.symbol == symbol)
+                query = (
+                    select(CryptoScore)
+                    .where(CryptoScore.mode == mode)
+                    .where(CryptoScore.symbol == symbol)
+                )
                 if since_iso:
                     query = query.where(CryptoScore.timestamp >= since_iso)
                 rows = session.scalars(
                     query.order_by(CryptoScore.timestamp.asc()).limit(int(limit))
                 ).all()
             return [
-                {'timestamp': r.timestamp, 'symbol': r.symbol, 'score': r.score, 'price': r.price}
+                {'timestamp': r.timestamp, 'mode': r.mode, 'symbol': r.symbol, 'score': r.score, 'price': r.price}
                 for r in rows
             ]
         except Exception:
