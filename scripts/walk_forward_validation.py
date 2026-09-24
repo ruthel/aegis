@@ -74,6 +74,26 @@ def _truncate_bundle(bundle, end_ts_sec):
     return out
 
 
+def _historical_spread_pct(candle):
+    """Use archived bid/ask when available, otherwise an explicit conservative fallback."""
+    candle = candle or {}
+    try:
+        value = float(candle.get('spread_pct') or candle.get('spread_percent') or 0.0)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    try:
+        bid = float(candle.get('bid') or 0.0)
+        ask = float(candle.get('ask') or 0.0)
+        mid = (bid + ask) / 2.0
+        if bid > 0 and ask > bid and mid > 0:
+            return ((ask - bid) / mid) * 100.0
+    except Exception:
+        pass
+    return max(0.0, float(os.getenv('FULL_STRATEGY_FALLBACK_SPREAD_PCT', '0.04')))
+
+
 def _simulate_full_strategy_trade(
     ml_engine,
     exit_engine,
@@ -100,11 +120,15 @@ def _simulate_full_strategy_trade(
     breakeven_lock = float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0'))
     max_hold = int(os.getenv('ML_EXIT_MAX_HOLD_CANDLES', '960'))
     slippage_pct = max(0.0, float(os.getenv('FULL_STRATEGY_ROUNDTRIP_SLIPPAGE_PCT', '0.06'))) / 2.0
+    entry_spread_pct = _historical_spread_pct(klines[index])
 
     entry_order_type = 'limit' if float(entry_p_win) < 80.0 else 'market'
     entry_fee = fee_rate * 0.9 if entry_order_type == 'limit' else fee_rate
     exit_fee = fee_rate
-    entry_exec = entry_raw * (1.0 + slippage_pct / 100.0)
+    # Maker entry assumes the posted limit is filled at the candidate price.
+    # Market entry pays half-spread + modeled slippage.
+    entry_drag_pct = 0.0 if entry_order_type == 'limit' else (entry_spread_pct / 2.0 + slippage_pct)
+    entry_exec = entry_raw * (1.0 + entry_drag_pct / 100.0)
 
     hard_stop = entry_raw * (1.0 - stop_pct / 100.0)
     support_price = float(signal.get('support_price') or 0.0)
@@ -209,7 +233,9 @@ def _simulate_full_strategy_trade(
             exit_reason = decision.get('reason') or 'p_exit'
             break
 
-    exit_exec = float(exit_price) * (1.0 - slippage_pct / 100.0)
+    exit_spread_pct = _historical_spread_pct(klines[exit_idx])
+    exit_drag_pct = exit_spread_pct / 2.0 + slippage_pct
+    exit_exec = float(exit_price) * (1.0 - exit_drag_pct / 100.0)
     net_pct = (
         (exit_exec * (1.0 - exit_fee) - entry_exec * (1.0 + entry_fee))
         / max(entry_exec, 1e-9)
@@ -220,6 +246,10 @@ def _simulate_full_strategy_trade(
         'exit_price': float(exit_price),
         'reason': exit_reason,
         'entry_order_type': entry_order_type,
+        'entry_spread_pct': round(float(entry_spread_pct), 5),
+        'exit_spread_pct': round(float(exit_spread_pct), 5),
+        'entry_execution_drag_pct': round(float(entry_drag_pct), 5),
+        'exit_execution_drag_pct': round(float(exit_drag_pct), 5),
     }
 
 
