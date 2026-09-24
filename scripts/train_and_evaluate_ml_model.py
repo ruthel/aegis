@@ -205,6 +205,19 @@ def _advance_cursor(klines_full, cursor, candle_ts):
     return cursor
 
 
+def _cursor_at_or_before(klines, candle_ts):
+    """Return the exclusive cursor after the last candle with timestamp <= candle_ts."""
+    rows = klines or []
+    lo, hi = 0, len(rows)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(rows[mid].get('timestamp', 0)) <= int(candle_ts):
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 def aggregate_ohlcv(klines, group_size):
     if not klines or group_size <= 1:
         return list(klines or [])
@@ -724,12 +737,13 @@ def generate_samples_from_klines(
             'planned_hold_minutes': planned_hold_minutes,
             'planned_exit_hour': float(planned_exit_dt.hour),
         }
+        btc_context_index = _cursor_at_or_before(btc_history, ts) if btc_history else None
         bot_context = build_training_bot_context(
             history,
             signal,
             ts,
             btc_history=btc_history,
-            index=index,
+            index=btc_context_index,
             support_stats=support_stats,
         )
         features = ml_engine.extract_features_from_klines(
