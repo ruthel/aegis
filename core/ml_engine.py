@@ -42,8 +42,12 @@ class MLEngine:
         
         self.model = None
         self.scaler = None
+        self.probability_calibrator = None
+        self.edge_model = None
+        self.edge_scaler = None
         self.exit_model = None
         self.exit_scaler = None
+        self.exit_calibrator = None
         self.sizing_model = None
         self.sizing_scaler = None
         self.target_model = None
@@ -134,6 +138,7 @@ class MLEngine:
         self.target_feature_names = list(self.feature_names)
         
         self.is_trained = False
+        self.is_edge_trained = False
         self.is_exit_trained = False
         self.is_sizing_trained = False
         self.is_target_trained = False
@@ -804,6 +809,103 @@ class MLEngine:
             X_train, X_test, y_train, y_test,
             sample_weight[:split_idx], sample_weight[split_idx:]
         )
+
+    def _fit_isotonic_calibrator(self, raw_probs: np.ndarray, y_true: np.ndarray):
+        """Fit a monotonic probability calibrator on a chronological holdout."""
+        try:
+            from sklearn.isotonic import IsotonicRegression
+            raw_probs = np.asarray(raw_probs, dtype=np.float64)
+            y_true = np.asarray(y_true, dtype=np.float64)
+            if len(raw_probs) < 40 or len(np.unique(y_true)) < 2:
+                return None
+            return IsotonicRegression(out_of_bounds='clip').fit(raw_probs, y_true)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _apply_calibrator(calibrator, probability: float) -> float:
+        try:
+            if calibrator is None:
+                return float(probability)
+            return float(calibrator.predict([float(probability)])[0])
+        except Exception:
+            return float(probability)
+
+    def predict_win_probability_from_features(self, features: np.ndarray) -> float:
+        """Predict calibrated P_win from an already-built feature vector."""
+        if not self.is_trained or self.model is None or features is None:
+            return 50.0
+        try:
+            aligned = self._align_features_for_loaded_model(np.asarray(features, dtype=np.float64))
+            X = aligned.reshape(1, -1)
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
+            probs = self.model.predict_proba(X)[0]
+            raw = float(probs[1]) if len(probs) > 1 else 0.5
+            calibrated = self._apply_calibrator(self.probability_calibrator, raw)
+            return round(max(0.0, min(1.0, calibrated)) * 100.0, 1)
+        except Exception as e:
+            self.logger.error(f"Erreur prédiction P_win depuis features: {e}")
+            return 50.0
+
+    def train_edge_model(self, X: np.ndarray, y_net_pnl: np.ndarray, sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
+        """Predict expected net PnL (%) for candidate entries using temporal validation."""
+        if not SKLEARN_AVAILABLE or len(X) < 30:
+            return False
+        try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error
+            X_train, X_test, y_train, y_test, sw_train, _ = self._temporal_holdout_split(
+                X, np.asarray(y_net_pnl, dtype=np.float64), sample_weight
+            )
+            self.edge_scaler = StandardScaler()
+            X_train_s = self.edge_scaler.fit_transform(X_train)
+            X_test_s = self.edge_scaler.transform(X_test)
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                self.edge_model = lgb.LGBMRegressor(
+                    n_estimators=180, max_depth=6, learning_rate=0.04,
+                    num_leaves=31, random_state=46, n_jobs=-1, verbose=-1
+                )
+            else:
+                self.edge_model = RandomForestRegressor(
+                    n_estimators=180, max_depth=8, min_samples_split=8,
+                    random_state=46, n_jobs=-1
+                )
+            self.edge_model.fit(X_train_s, y_train, sample_weight=sw_train)
+            pred = self.edge_model.predict(X_test_s)
+            mae = mean_absolute_error(y_test, pred)
+            rmse = mean_squared_error(y_test, pred) ** 0.5
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata['edge_test_mae_pct'] = round(float(mae), 4)
+            self.model_metadata['edge_test_rmse_pct'] = round(float(rmse), 4)
+            self.model_metadata['edge_validation_type'] = 'temporal_holdout'
+
+            self.edge_scaler = StandardScaler()
+            X_all = self.edge_scaler.fit_transform(X)
+            self.edge_model.fit(X_all, np.asarray(y_net_pnl, dtype=np.float64), sample_weight=sample_weight)
+            self.is_edge_trained = True
+            self.save_model()
+            return True
+        except Exception as e:
+            self.logger.error(f"Erreur entraînement expected PnL: {e}")
+            return False
+
+    def predict_expected_net_pnl(self, features: np.ndarray) -> Dict:
+        if not self.is_edge_trained or self.edge_model is None or features is None:
+            return {'ml_edge_available': False, 'expected_net_pnl_pct': None}
+        try:
+            aligned = self._align_features_for_loaded_model(np.asarray(features, dtype=np.float64))
+            X = aligned.reshape(1, -1)
+            if self.edge_scaler is not None:
+                X = self.edge_scaler.transform(X)
+            value = float(self.edge_model.predict(X)[0])
+            return {
+                'ml_edge_available': True,
+                'expected_net_pnl_pct': round(value, 4),
+                'reason': f'expected_net_pnl_{value:+.3f}%'
+            }
+        except Exception as e:
+            self.logger.error(f"Erreur prédiction expected PnL: {e}")
+            return {'ml_edge_available': False, 'expected_net_pnl_pct': None}
 
     def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini', sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
         """Entraîne LightGBM (défaut) ou Random Forest avec holdout chronologique."""
