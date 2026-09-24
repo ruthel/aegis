@@ -225,13 +225,13 @@ def aggregate_ohlcv(klines, group_size):
 
 def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl_pct=0.0):
     if not db_path or not os.path.exists(db_path):
-        return [], [], []
+        return [], [], [], []
 
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     rows = con.execute(
         """
-        SELECT entry_id, pnl_pct, would_win
+        SELECT entry_id, pnl_pct, would_win, timestamp
         FROM ml_rejected_replay_results
         WHERE replay_status = 'replayed'
           AND pnl_pct IS NOT NULL
@@ -263,7 +263,7 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
         'rsi_rebound_strength': 0.0,
         'rebound_stall_score': 0.0,
     }
-    samples, labels, weights = [], [], []
+    samples, labels, weights, timestamps = [], [], [], []
     for row in rows:
         pnl_pct = float(row['pnl_pct'])
         if abs(pnl_pct) < float(min_pnl_pct):
@@ -278,9 +278,20 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
         samples.append([float(values.get(name, neutral_defaults.get(name, 0.0)) or 0.0) for name in feature_names])
         labels.append(1 if int(row['would_win'] or 0) == 1 else 0)
         weights.append(1.5 if pnl_pct > 0 else 1.0)
+        raw_ts = row['timestamp']
+        try:
+            if isinstance(raw_ts, (int, float)):
+                ts_value = float(raw_ts)
+                if ts_value > 1e12:
+                    ts_value /= 1000.0
+            else:
+                ts_value = datetime.fromisoformat(str(raw_ts).replace('Z', '+00:00')).timestamp()
+        except Exception:
+            ts_value = time.time()
+        timestamps.append(ts_value)
 
     con.close()
-    return samples, labels, weights
+    return samples, labels, weights, timestamps
 
 
 def simple_regime(history):
@@ -644,10 +655,19 @@ def generate_samples_from_klines(
             continue
 
         support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
-        history_5m = (klines_by_tf or {}).get('5m') or klines_15m[max(0, index - 20):index]
-        history_1h = (klines_by_tf or {}).get('1h') or aggregate_ohlcv(history, 4)[-60:]
-        history_4h = (klines_by_tf or {}).get('4h') or aggregate_ohlcv(history, 16)[-60:]
-        history_1d = (klines_by_tf or {}).get('1d') or aggregate_ohlcv(history, 96)[-60:]
+
+        # Important: ne jamais laisser une feature multi-timeframe voir une bougie future.
+        def _history_until(key, fallback):
+            data = (klines_by_tf or {}).get(key) or []
+            if not data:
+                return fallback
+            past = [k for k in data if int(k.get('timestamp', 0)) <= int(ts)]
+            return past[-60:]
+
+        history_5m = _history_until('5m', klines_15m[max(0, index - 20):index])
+        history_1h = _history_until('1h', aggregate_ohlcv(history, 4)[-60:])
+        history_4h = _history_until('4h', aggregate_ohlcv(history, 16)[-60:])
+        history_1d = _history_until('1d', aggregate_ohlcv(history, 96)[-60:])
 
         planned_hold_minutes = 96 * 15.0
         planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
@@ -676,8 +696,12 @@ def generate_samples_from_klines(
             trade_context=trade_context,
             bot_context=bot_context,
         )
-        if not isinstance(features, dict):
+        if features is None:
             continue
+        feature_dict = {
+            name: float(value)
+            for name, value in zip(ml_engine.feature_names, np.asarray(features).reshape(-1))
+        }
 
         exit_index, exit_price, _ = simulate_trade(
             klines_15m,
@@ -694,7 +718,7 @@ def generate_samples_from_klines(
         )
         pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100.0
 
-        samples.append(features)
+        samples.append(feature_dict)
         labels.append(1 if pnl_percent > 0 else 0)
         metadata.append({'symbol': symbol, 'timestamp': ts, 'pnl_pct': pnl_percent})
         if signal.get('type') == 'support_touch':
@@ -705,7 +729,7 @@ def generate_samples_from_klines(
 
 
 def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use_grid_search=None, use_lightgbm=None):
-    """Entraîne le modèle Challenger d'Entrée sur 1 an de données et le sauvegarde dans aegis_challenger.joblib.
+    """Entraîne le modèle Challenger d'Entrée sur l'historique configuré et le sauvegarde dans aegis_challenger.joblib.
     
     Args:
         use_grid_search: Force Grid Search (None = utilise env ML_USE_GRID_SEARCH)
@@ -743,7 +767,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         btc_history = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='15m', start_date=start_date)
         btc_history_1h = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='1h', start_date=start_date)
 
-        X_samples, y_labels, sizing_targets, target_labels = [], [], [], []
+        X_samples, y_labels, sizing_targets, target_labels, sample_timestamps = [], [], [], [], []
         # Compteur de samples générés par TYPE de signal (diagnostic: voir combien
         # chaque déclencheur produit — support_touch, pattern_breakout, ema_pullback_15m,
         # ema_cross_15m). Permet de savoir si les signaux 15m génèrent réellement des samples.
@@ -865,6 +889,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                     y_labels.append(label)
                     sizing_targets.append(sizing_factor_target_from_pnl(pnl_percent))
                     target_labels.append(target_label)
+                    sample_timestamps.append(float(ts) / 1000.0 if float(ts) > 1e12 else float(ts))
                     signal_type_counts[_sig_type] = signal_type_counts.get(_sig_type, 0) + 1
                     if _sig_type == 'support_touch':
                         support_pnls.append(float(pnl_percent))
@@ -907,16 +932,16 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         replay_weight_win = float(os.getenv('ML_REPLAY_TRAIN_WEIGHT_WIN', '1.2'))
         replay_weight_loss = float(os.getenv('ML_REPLAY_TRAIN_WEIGHT_LOSS', '1.0'))
         try:
-            r_samples, r_labels, r_weights = load_phase5_replay_samples(
+            r_samples, r_labels, r_weights, r_timestamps = load_phase5_replay_samples(
                 replay_db, ml_engine.feature_names, max_samples=replay_max, min_pnl_pct=replay_min_pnl
             )
         except Exception as e:
             print(f"  ⚠️ Replay samples ignorés (erreur lecture): {e}")
-            r_samples, r_labels, r_weights = [], [], []
+            r_samples, r_labels, r_weights, r_timestamps = [], [], [], []
 
         n_replay = 0
         if r_samples:
-            for feat, lab, w in zip(r_samples, r_labels, r_weights):
+            for feat, lab, w, replay_ts in zip(r_samples, r_labels, r_weights, r_timestamps):
                 if len(feat) != len(ml_engine.feature_names):
                     continue  # sécurité: n'ajouter que des vecteurs alignés au schéma
                 X_samples.append(np.array(feat, dtype=np.float64))
@@ -926,6 +951,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 sample_weights.append(replay_weight_win if w and w > 1.0 else replay_weight_loss)
                 sizing_targets.append(0.40)   # sizing neutre-prudent pour un refus rejoué
                 target_labels.append(0.0)     # pas de cible de gain fiable pour un refus
+                sample_timestamps.append(float(replay_ts))
                 n_replay += 1
             print(f"  🔁 Refus rejoués réinjectés dans l'entraînement: {n_replay} samples")
         else:
@@ -935,6 +961,17 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         y_sizing = np.array(sizing_targets, dtype=np.float64)
         y_target = np.array(target_labels, dtype=np.float64)
         w_train = np.array(sample_weights, dtype=np.float64)
+        ts_train = np.array(sample_timestamps, dtype=np.float64)
+
+        # Trier globalement tous les symboles + replays par temps AVANT le split temporel.
+        # Sans cela, un holdout "dernier 20%" serait encore mélangé par symbole.
+        temporal_order = np.argsort(ts_train, kind='stable')
+        X = X[temporal_order]
+        y = y[temporal_order]
+        y_sizing = y_sizing[temporal_order]
+        y_target = y_target[temporal_order]
+        w_train = w_train[temporal_order]
+        ts_train = ts_train[temporal_order]
         
         # Stats du dataset d'entraînement
         n_wins = int(np.sum(y == 1))
@@ -1081,8 +1118,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
 
 
 def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type='auto', fast_mode=False):
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
+    load_dotenv('.env', override=True)
 
     db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
     logger = MLLiveLogger(data_dir=model_dir, sqlite_file=db_file)
