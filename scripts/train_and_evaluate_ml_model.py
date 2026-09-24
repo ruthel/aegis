@@ -226,7 +226,7 @@ def aggregate_ohlcv(klines, group_size):
 
 def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl_pct=0.0):
     if not db_path or not os.path.exists(db_path):
-        return [], [], [], []
+        return [], [], [], [], []
 
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -264,7 +264,7 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
         'rsi_rebound_strength': 0.0,
         'rebound_stall_score': 0.0,
     }
-    samples, labels, weights, timestamps = [], [], [], []
+    samples, labels, weights, timestamps, pnls = [], [], [], [], []
     for row in rows:
         pnl_pct = float(row['pnl_pct'])
         if abs(pnl_pct) < float(min_pnl_pct):
@@ -290,9 +290,10 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
         except Exception:
             ts_value = time.time()
         timestamps.append(ts_value)
+        pnls.append(pnl_pct)
 
     con.close()
-    return samples, labels, weights, timestamps
+    return samples, labels, weights, timestamps, pnls
 
 
 def simple_regime(history):
@@ -769,7 +770,8 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         btc_history = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='15m', start_date=start_date)
         btc_history_1h = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='1h', start_date=start_date)
 
-        X_samples, y_labels, sizing_targets, target_labels, sample_timestamps = [], [], [], [], []
+        X_samples, y_labels, sizing_targets, target_labels, pnl_targets, sample_timestamps = [], [], [], [], [], []
+        training_histories = {}
         # Compteur de samples générés par TYPE de signal (diagnostic: voir combien
         # chaque déclencheur produit — support_touch, pattern_breakout, ema_pullback_15m,
         # ema_cross_15m). Permet de savoir si les signaux 15m génèrent réellement des samples.
@@ -787,6 +789,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             klines_1d_full = fetch_symbol_history_2026(exchange, symbol, timeframe='1d', start_date=start_date)
             print(f"    (4h agrégé depuis 1h: {len(klines_4h_full)} bougies)")
             print(f"    15m: {len(klines_15m)} | 5m: {len(klines_5m_full)} | 1h: {len(klines_1h_full)} | 4h: {len(klines_4h_full)} | 1d: {len(klines_1d_full)}")
+            training_histories[symbol] = {
+                '15m': klines_15m,
+                '5m': klines_5m_full,
+                '1h': klines_1h_full,
+                '4h': klines_4h_full,
+                '1d': klines_1d_full,
+            }
 
             next_allowed_index = 0
             fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
@@ -878,19 +887,21 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                     pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
                     label = 1 if pnl_percent > 0 else 0
 
-                    # Label P_target: gain net max atteignable pendant le hold (max fav. excursion)
-                    highest_high = current_price
+                    # P_target apprend une cible robuste, pas le meilleur tick futur impossible à timer.
+                    # On prend un quantile configurable des gains nets atteints sur le chemin du trade.
+                    path_quantile = max(0.50, min(0.95, float(os.getenv('ML_TARGET_PATH_QUANTILE', '0.70'))))
+                    path_net_gains = []
                     for j in range(index + 1, min(exit_index + 1, len(klines_15m))):
-                        hj = float(klines_15m[j]['high'])
-                        if hj > highest_high:
-                            highest_high = hj
-                    max_net_gain_pct = ((highest_high * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
-                    target_label = max(0.0, max_net_gain_pct)
+                        reachable = float(klines_15m[j]['high'])
+                        net_gain = ((reachable * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
+                        path_net_gains.append(max(0.0, net_gain))
+                    target_label = float(np.quantile(path_net_gains, path_quantile)) if path_net_gains else 0.0
 
                     X_samples.append(features)
                     y_labels.append(label)
                     sizing_targets.append(sizing_factor_target_from_pnl(pnl_percent))
                     target_labels.append(target_label)
+                    pnl_targets.append(float(pnl_percent))
                     sample_timestamps.append(float(ts) / 1000.0 if float(ts) > 1e12 else float(ts))
                     signal_type_counts[_sig_type] = signal_type_counts.get(_sig_type, 0) + 1
                     if _sig_type == 'support_touch':
@@ -934,16 +945,16 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         replay_weight_win = float(os.getenv('ML_REPLAY_TRAIN_WEIGHT_WIN', '1.2'))
         replay_weight_loss = float(os.getenv('ML_REPLAY_TRAIN_WEIGHT_LOSS', '1.0'))
         try:
-            r_samples, r_labels, r_weights, r_timestamps = load_phase5_replay_samples(
+            r_samples, r_labels, r_weights, r_timestamps, r_pnls = load_phase5_replay_samples(
                 replay_db, ml_engine.feature_names, max_samples=replay_max, min_pnl_pct=replay_min_pnl
             )
         except Exception as e:
             print(f"  ⚠️ Replay samples ignorés (erreur lecture): {e}")
-            r_samples, r_labels, r_weights, r_timestamps = [], [], [], []
+            r_samples, r_labels, r_weights, r_timestamps, r_pnls = [], [], [], [], []
 
         n_replay = 0
         if r_samples:
-            for feat, lab, w, replay_ts in zip(r_samples, r_labels, r_weights, r_timestamps):
+            for feat, lab, w, replay_ts, replay_pnl in zip(r_samples, r_labels, r_weights, r_timestamps, r_pnls):
                 if len(feat) != len(ml_engine.feature_names):
                     continue  # sécurité: n'ajouter que des vecteurs alignés au schéma
                 X_samples.append(np.array(feat, dtype=np.float64))
@@ -953,6 +964,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 sample_weights.append(replay_weight_win if w and w > 1.0 else replay_weight_loss)
                 sizing_targets.append(0.40)   # sizing neutre-prudent pour un refus rejoué
                 target_labels.append(0.0)     # pas de cible de gain fiable pour un refus
+                pnl_targets.append(float(replay_pnl))
                 sample_timestamps.append(float(replay_ts))
                 n_replay += 1
             print(f"  🔁 Refus rejoués réinjectés dans l'entraînement: {n_replay} samples")
@@ -962,6 +974,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         X, y = np.array(X_samples), np.array(y_labels)
         y_sizing = np.array(sizing_targets, dtype=np.float64)
         y_target = np.array(target_labels, dtype=np.float64)
+        y_pnl = np.array(pnl_targets, dtype=np.float64)
         w_train = np.array(sample_weights, dtype=np.float64)
         ts_train = np.array(sample_timestamps, dtype=np.float64)
 
@@ -972,6 +985,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         y = y[temporal_order]
         y_sizing = y_sizing[temporal_order]
         y_target = y_target[temporal_order]
+        y_pnl = y_pnl[temporal_order]
         w_train = w_train[temporal_order]
         ts_train = ts_train[temporal_order]
         
@@ -988,6 +1002,12 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         else:
             success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5, sample_weight=w_train, use_lightgbm=use_lightgbm)
         if success:
+            try:
+                if ml_engine.train_edge_model(X, y_pnl, sample_weight=w_train, use_lightgbm=use_lightgbm):
+                    print("  ✅ Modèle Expected Net PnL entraîné avec holdout temporel")
+            except Exception as ex:
+                print(f"  ⚠️ Note entraînement expected PnL: {ex}")
+
             # Entraînement du modèle de Sortie avec les VRAIES features exit
             # Label DIRECTIONNEL close-to-close (Piste 2 v2): "après ce point, la TENDANCE
             # reste-t-elle haussière (un close futur dépasse le prix actuel d'un gain net
