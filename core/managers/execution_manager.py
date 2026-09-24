@@ -255,8 +255,9 @@ class ExecutionManager:
 
         # Ajouter trailing stop
         hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
-        if hasattr(self.bot, 'trailing_stop_manager') and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
-            self.bot.trailing_stop_manager.add_position(
+        trailing_manager = getattr(self.bot, 'trailing_stop_manager', None)
+        if trailing_manager and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
+            trailing_manager.add_position(
                 symbol, executed_price, 
                 trailing_percent=position_data.get('trailing_stop_percent'),
                 support_price=position_data.get('support_price'),
