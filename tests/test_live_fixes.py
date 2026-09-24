@@ -660,6 +660,48 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn("sizing_validation_type", source)
         self.assertIn("target_validation_type", source)
 
+    def test_extracted_feature_vectors_match_v4_schema(self):
+        engine = MLEngine(model_dir='data/nonexistent-vector-schema-test')
+        h15 = _trend_klines(120, 100.0, 0.05, 900_000)
+        h5 = _trend_klines(120, 100.0, 0.02, 300_000)
+        h1 = _trend_klines(80, 100.0, 0.15, 3_600_000)
+        h4 = _trend_klines(80, 100.0, 0.4, 14_400_000)
+        h1d = _trend_klines(80, 100.0, 1.0, 86_400_000)
+        entry = engine.extract_features_from_klines(
+            h15,
+            float(h15[-1]['close']),
+            klines_5m=h5,
+            klines_1h=h1,
+            klines_4h=h4,
+            klines_1d=h1d,
+            bot_context={
+                'symbol_regime': 'BULL',
+                'btc_regime': 'BULL',
+                'reversal_confirmed': True,
+            },
+        )
+        self.assertIsNotNone(entry)
+        self.assertEqual(len(entry), len(engine.feature_names))
+
+        exit_features = engine.extract_exit_features(
+            h15,
+            float(h15[-1]['close']),
+            {
+                'entry_price': 100.0,
+                'buy_price': 100.0,
+                'fee_rate': 0.004,
+                'duration_minutes': 60.0,
+                'stop_loss_price': 95.0,
+                'target_price': 105.0,
+            },
+            continuation_score=65.0,
+            entry_p_win=60.0,
+            btc_klines=h15[-30:],
+            bot_context={'symbol_regime': 'BULL', 'btc_regime': 'BULL'},
+        )
+        self.assertIsNotNone(exit_features)
+        self.assertEqual(len(exit_features), len(engine.exit_feature_names))
+
     def test_unified_env_and_removed_dl_are_clean(self):
         targets = [
             "start.py",
