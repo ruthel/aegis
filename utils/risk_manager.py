@@ -26,6 +26,12 @@ class RiskManager:
         self.last_optimization = 0
         self.base_multiplier = 1800  # 30min si check_interval=1s
 
+    def _active_mode(self):
+        bot = getattr(self, 'bot', None)
+        if bot is not None:
+            return 'paper' if getattr(bot, 'paper_trading', True) else 'live'
+        return 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
+
     def get_weekly_loss(self) -> float:
         """Calcule la perte cumulée sur les 7 derniers jours (Phase 10)."""
         try:
@@ -34,8 +40,9 @@ class RiskManager:
             row = conn.execute("""
                 SELECT COALESCE(SUM(total_loss), 0)
                 FROM bot_daily_stats
-                WHERE stat_date >= date('now', '-7 days')
-            """).fetchone()
+                WHERE mode=?
+                  AND stat_date >= date('now', '-7 days')
+            """, (self._active_mode(),)).fetchone()
             conn.close()
             return float(row[0] or 0.0) if row else 0.0
         except Exception:
@@ -153,13 +160,13 @@ class RiskManager:
         """Charge les statistiques du jour"""
         today = datetime.now().strftime('%Y-%m-%d')
         try:
-            stats = self.db_logger.load_daily_stats(today)
+            stats = self.db_logger.load_daily_stats(today, mode=self._active_mode())
             if stats and stats.get('date') == today:
                 return stats
         except Exception:
             pass
         stats = self.reset_daily_stats()
-        self.db_logger.save_daily_stats(stats)
+        self.db_logger.save_daily_stats(stats, mode=self._active_mode())
         return stats
 
     def _check_day_rollover(self):
@@ -183,7 +190,7 @@ class RiskManager:
     def save_daily_stats(self):
         """Sauvegarde les stats"""
         if hasattr(self, 'daily_stats') and self.daily_stats:
-            self.db_logger.save_daily_stats(self.daily_stats)
+            self.db_logger.save_daily_stats(self.daily_stats, mode=self._active_mode())
 
     def can_trade(self):
         """Vérifie si le trading est autorisé"""
@@ -202,7 +209,10 @@ class RiskManager:
             try:
                 import sqlite3
                 conn = sqlite3.connect(os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
-                row = conn.execute("SELECT paper_balance, initial_balance FROM bot_state WHERE mode='live'").fetchone()
+                row = conn.execute(
+                    "SELECT paper_balance, initial_balance FROM bot_state WHERE mode=?",
+                    (self._active_mode(),),
+                ).fetchone()
                 conn.close()
                 total_capital = float(row[1] if row and row[1] else row[0] if row else 0)
                 if total_capital <= 0:
