@@ -206,6 +206,7 @@ class Crypto(Base):
 class BotDailyStat(Base):
     __tablename__ = 'bot_daily_stats'
 
+    mode: Mapped[str] = mapped_column(Text, primary_key=True)
     stat_date: Mapped[str] = mapped_column(Text, primary_key=True)
     trades_count: Mapped[int | None] = mapped_column(Integer)
     winning_trades_count: Mapped[int | None] = mapped_column(Integer)
