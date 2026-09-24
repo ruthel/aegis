@@ -171,7 +171,7 @@ def main():
     parser.add_argument('--entry-pcontinue-min', type=float, default=float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0')))
     args = parser.parse_args()
 
-    exchange = ccxt.binance({'enableRateLimit': True})
+    exchange = ccxt.kraken({'enableRateLimit': True})
     ml_engine = MLEngine(model_dir='data')
     exit_engine = ExitDecisionEngine()
     analyzer = PatternAnalyzer(bot=None)

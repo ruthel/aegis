@@ -1422,6 +1422,24 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         try:
             position_data = self.trailing_stop_manager.positions[symbol]
+            
+            # Protection: ne pas évaluer sortie ML avant X minutes (défaut 15 = 1 bougie)
+            min_hold_before_exit = float(os.getenv('ML_EXIT_MIN_HOLD_MINUTES', '15'))
+            created_at_str = position_data.get('created_at') or position_data.get('buy_time')
+            if created_at_str and min_hold_before_exit > 0:
+                try:
+                    if 'T' in str(created_at_str):
+                        created_dt = datetime.fromisoformat(str(created_at_str).replace('Z', '+00:00'))
+                    else:
+                        created_dt = datetime.strptime(str(created_at_str), '%Y-%m-%d %H:%M:%S')
+                    now_for_delta = datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()
+                    duration_minutes = (now_for_delta - created_dt).total_seconds() / 60.0
+                    if duration_minutes < min_hold_before_exit:
+                        # Position trop récente, skip l'évaluation de sortie
+                        return None
+                except Exception:
+                    pass
+            
             tf = os.getenv('MAIN_TIMEFRAME', '15m')
             
             # Fetch klines en parallèle (symbol + BTC) pour réduire la latence
@@ -1555,6 +1573,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             order = self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}")
             if order:
                 self.trailing_stop_manager.remove_position(symbol)
+                # Nettoyer aussi le stuck_manager si présent
+                if hasattr(self, 'stuck_manager') and self.stuck_manager:
+                    if symbol in self.stuck_manager.stuck_positions:
+                        del self.stuck_manager.stuck_positions[symbol]
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason=f"ml_exit_{decision.lower()}")
                 self.record_decision(
@@ -1832,7 +1854,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 if hasattr(self, 'risk_manager') and pnl is not None:
                     self.risk_manager.record_trade(pnl)
                 
-                # Marquer les positions buy correspondantes comme closed (style Binance)
+                # Marquer les positions buy correspondantes comme fermées
                 self._close_buy_positions(symbol, amount, current_price)
                 
                 found = False
@@ -2739,29 +2761,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return None
 
     def connect(self):
-        """Initialise la connexion avec l'exchange configuré (Binance/Kraken)."""
+        """Initialise la connexion avec Kraken."""
         try:
-            exchange_name = os.getenv('EXCHANGE', 'binance').lower()
-            if exchange_name == 'kraken':
-                try:
-                    from core.exchange.kraken import KrakenClient
-                    self.exchange = KrakenClient(self.api_key, self.api_secret, self.testnet)
-                except Exception:
-                    from core.exchange.binance import BinanceClient
-                    self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
-            else:
-                from core.exchange.binance import BinanceClient
-                self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
-
+            from core.exchange.kraken import KrakenClient
+            self.exchange = KrakenClient(self.api_key, self.api_secret, self.testnet)
             if hasattr(self.exchange, 'connect'):
                 self.exchange.connect()
-            print(f"✅ Exchange {exchange_name.upper()} connecté avec succès.")
+            print("✅ Exchange KRAKEN connecté avec succès.")
             return True
         except Exception as e:
-            print(f"⚠️ Avertissement connexion exchange: {e}")
-            if not hasattr(self, 'exchange') or self.exchange is None:
-                from core.exchange.binance import BinanceClient
-                self.exchange = BinanceClient(self.api_key, self.api_secret, self.testnet)
+            print(f"⚠️ Erreur connexion Kraken: {e}")
             return False
 
     def record_decision(self, symbol, action_type=None, confidence=None, p_win=None, reason="", features=None, mode=None, throttle_seconds=0, **kwargs):

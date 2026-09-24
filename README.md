@@ -1,6 +1,6 @@
 # 🤖 Aegis Trading Bot v3
 
-Bot de trading spot multi-exchange avec **cerveau ML entrée/sortie/sizing**, 52 features d'entrée, features de sortie, sizing ML dédié, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
+Bot de trading spot Kraken avec **cerveau ML entrée/sortie/sizing**, 52 features d'entrée, features de sortie, sizing ML dédié, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -13,18 +13,16 @@ pip install -r requirements.txt
 
 ### 2. Configuration
 ```bash
-# Copier le template local non versionné
-copy .env.example .env.local
-copy .env.ui.example .env.ui
+# Copier le template
+copy .env.example .env
 
-# Modifier les clés API uniquement dans .env.local
-BINANCE_API_KEY=votre_cle_api_ici
-BINANCE_API_SECRET=votre_cle_secrete_ici
+# Renseigner les clés API Kraken dans .env
+KRAKEN_API_KEY=votre_cle_kraken_ici
+KRAKEN_API_SECRET=votre_secret_kraken_ici
 ```
 
-### 3. Validation & Lancement
+### 3. Lancement
 ```bash
-# Démarrer le bot
 python run.py
 ```
 

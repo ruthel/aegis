@@ -1,11 +1,12 @@
 """
 Core Machine Learning Engine (MLEngine) for Aegis Trading Bot
-Uses scikit-learn / Random Forest Classifier to evaluate trade win probability (P_win).
+Uses LightGBM (default) or Random Forest Classifier to evaluate trade win probability (P_win).
 Features:
-- 18 Technical Market Indicators (RSI, EMA Slopes, ATR Volatility, Volume Ratio, Support Proximity)
+- 18+ Technical Market Indicators (RSI, EMA Slopes, ATR Volatility, Volume Ratio, Support Proximity)
 - Model Persistence (joblib)
 - Sub-2ms Real-time Inference Speed
 - Decoupled & Transparent (Feature Importance Export)
+- LightGBM for better accuracy on tabular data
 """
 
 import os
@@ -22,6 +23,13 @@ try:
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
+
+# LightGBM - meilleur que RF sur données tabulaires
+try:
+    import lightgbm as lgb
+    LIGHTGBM_AVAILABLE = True
+except ImportError:
+    LIGHTGBM_AVAILABLE = False
 
 
 class MLEngine:
@@ -49,6 +57,8 @@ class MLEngine:
             # Nouveaux indicateurs Multi-Timeframe (5m & 1H)
             'rsi_5m', 'ema9_slope_5m', 'price_change_3b_5m', 'candle_body_pct_5m',
             'rsi_1h', 'ema20_slope_1h', 'ema50_slope_1h', 'price_change_3b_1h',
+            # Features 1h supplémentaires (haute importance constatée sur 1h)
+            'volume_ratio_1h', 'candle_body_pct_1h', 'rsi_divergence_1h',
             # Paramètre de trade connu au moment de l'entrée (les 4 autres retirés: importance nulle)
             'planned_exit_hour',
             # Contexte/verrous du bot exposés au ML
@@ -77,14 +87,17 @@ class MLEngine:
             'ema20_breakout_15m', 'ema9_cross_ema20_15m', 'breakout_high_20b', 'price_vs_vwap_pct',
             'ema9_cross_ema20_5m', 'momentum_accel_5m', 'volume_surge_5m', 'consecutive_green_5m',
             'short_tf_alignment', 'rsi_rising_5m_15m',
+            # Feature contextuelle (session de marché: 0=off-hours, 1=asia, 2=europe, 3=us, 4=europe+us overlap)
+            'market_session',
         ]
         self.exit_feature_names = [
             'entry_p_win', 'continuation_score', 'gross_pnl_pct', 'net_pnl_pct',
             'duration_minutes', 'fee_rate_bps', 'dist_to_stop_pct', 'dist_to_target_pct',
             'rsi_14', 'ema9_slope', 'ema20_slope', 'ema_cross_diff',
-            'atr_percent', 'volume_ratio', 'candle_body_pct', 'candle_wick_top',
+            'volatility_directional',  # REMPLACE atr_percent + volatility_std (volatilité × direction)
+            'volume_ratio', 'candle_body_pct', 'candle_wick_top',
             'candle_wick_bottom', 'price_change_3b', 'price_change_5b',
-            'volatility_std', 'hour_of_day', 'btc_momentum_3b',
+            'hour_of_day', 'btc_momentum_3b',
             'symbol_regime_code', 'btc_regime_code', 'bear_mode',
             'reversal_confirmed', 'falling_knife_active',
             'is_support_touch', 'support_confidence',
@@ -110,6 +123,11 @@ class MLEngine:
             'dist_to_recent_high_pct',  # Distance au plus haut récent (négatif = en dessous)
             'dist_to_recent_low_pct',   # Distance au plus bas récent (positif = au dessus)
             'breakout_strength',        # Force du breakout si au-dessus du range (0 si dans le range)
+            # === FEATURES DIRECTIONNELLES DEPUIS ENTRÉE (amélioration sortie v3) ===
+            # Contexte depuis l'entrée pour mieux décider si continuer ou sortir
+            'pnl_trend_3b',             # Tendance du PnL sur 3 dernières bougies (+1=monte, -1=descend)
+            'price_vs_entry_ema20',     # Prix actuel vs EMA20 depuis entrée (>0=au-dessus)
+            'momentum_since_entry',     # Momentum cumulé depuis entrée (positif=favorable)
         ]
         self.sizing_feature_names = list(self.feature_names)
         # Le modèle P_target réutilise les mêmes features d'entrée que P_win/sizing
@@ -532,6 +550,21 @@ class MLEngine:
             dt = datetime.fromtimestamp(ts / 1000.0)
             hour_of_day = float(dt.hour)
             day_of_week = float(dt.weekday())
+            
+            # Feature contextuelle: session de marché (heures UTC)
+            # 0 = off-hours (22-00 UTC), 1 = asia (00-08), 2 = europe (08-13), 
+            # 3 = us (17-22), 4 = europe+us overlap (13-17, meilleure liquidité)
+            if 13 <= dt.hour < 17:
+                market_session = 4.0  # Europe + US overlap (meilleure liquidité)
+            elif 17 <= dt.hour < 22:
+                market_session = 3.0  # US seul
+            elif 8 <= dt.hour < 13:
+                market_session = 2.0  # Europe seul
+            elif 0 <= dt.hour < 8:
+                market_session = 1.0  # Asia
+            else:
+                market_session = 0.0  # Off-hours (22-00)
+            
             trade_features = self._normalise_trade_context(trade_context, dt)
             bot_features = self._normalise_bot_context(bot_context, hour_of_day)
 
@@ -589,15 +622,42 @@ class MLEngine:
             # =========================================================================
             if klines_1h and len(klines_1h) >= 15:
                 closes_1h = np.array([float(k['close']) for k in klines_1h], dtype=np.float64)
+                opens_1h = np.array([float(k['open']) for k in klines_1h], dtype=np.float64)
+                highs_1h = np.array([float(k['high']) for k in klines_1h], dtype=np.float64)
+                lows_1h = np.array([float(k['low']) for k in klines_1h], dtype=np.float64)
+                volumes_1h = np.array([float(k.get('volume', 0.0) or 0.0) for k in klines_1h], dtype=np.float64)
+                
                 rsi_1h = self._calc_rsi(closes_1h, 14)
                 ema20_slope_1h = self._calc_ema_slope(closes_1h, 20)
                 ema50_slope_1h = self._calc_ema_slope(closes_1h, 50) if len(closes_1h) >= 50 else ema20_slope_1h
                 price_change_3b_1h = (closes_1h[-1] - closes_1h[-4]) / (closes_1h[-4] + 1e-9) * 100.0 if len(closes_1h) >= 4 else 0.0
+                
+                # Nouvelles features 1h (haute importance constatée)
+                avg_vol_1h = np.mean(volumes_1h[-20:]) if len(volumes_1h) >= 20 else (np.mean(volumes_1h) + 1e-9)
+                volume_ratio_1h = float(volumes_1h[-1] / (avg_vol_1h + 1e-9))
+                c_range_1h = highs_1h[-1] - lows_1h[-1] + 1e-9
+                candle_body_pct_1h = abs(closes_1h[-1] - opens_1h[-1]) / c_range_1h
+                # RSI divergence: prix monte mais RSI descend (ou inverse) = signal faiblesse
+                rsi_prev_1h = self._calc_rsi(closes_1h[:-1], 14) if len(closes_1h) >= 16 else rsi_1h
+                price_up_1h = closes_1h[-1] > closes_1h[-2] if len(closes_1h) >= 2 else False
+                rsi_up_1h = rsi_1h > rsi_prev_1h
+                # divergence: +1 si confirmé (prix et RSI même direction), -1 si divergence baissière, 0 neutre
+                if price_up_1h and rsi_up_1h:
+                    rsi_divergence_1h = 1.0  # Confirmé haussier
+                elif price_up_1h and not rsi_up_1h:
+                    rsi_divergence_1h = -1.0  # Divergence baissière (warning)
+                elif not price_up_1h and rsi_up_1h:
+                    rsi_divergence_1h = 0.5  # Divergence haussière cachée (potentiel)
+                else:
+                    rsi_divergence_1h = 0.0  # Confirmé baissier
             else:
                 rsi_1h = rsi
                 ema20_slope_1h = ema20_slope
                 ema50_slope_1h = ema20_slope * 0.8
                 price_change_3b_1h = price_change_3b * 2.0
+                volume_ratio_1h = volume_ratio
+                candle_body_pct_1h = candle_body_pct
+                rsi_divergence_1h = 0.0
 
             tf_4h = self._timeframe_snapshot(klines_4h, rsi_1h, ema20_slope_1h, price_change_3b_1h)
             tf_1d = self._timeframe_snapshot(klines_1d, rsi_1h, ema20_slope_1h, price_change_3b_1h)
@@ -674,6 +734,8 @@ class MLEngine:
                 # Multi-Timeframe 5m & 1H
                 rsi_5m, ema9_slope_5m, price_change_3b_5m, candle_body_pct_5m,
                 rsi_1h, ema20_slope_1h, ema50_slope_1h, price_change_3b_1h,
+                # Features 1h supplémentaires (haute importance)
+                volume_ratio_1h, candle_body_pct_1h, rsi_divergence_1h,
                 trade_features['planned_exit_hour'],
                 bot_features['symbol_regime_code'],
                 bot_features['btc_regime_code'],
@@ -718,6 +780,8 @@ class MLEngine:
                 ema9_cross_ema20_5m, momentum_accel_5m, volume_surge_5m, consecutive_green_5m,
                 # Groupe C: confirmation court terme (5m+15m)
                 short_tf_alignment, rsi_rising_5m_15m,
+                # Feature contextuelle (session de marché)
+                market_session,
             ], dtype=np.float64)
 
             return features
@@ -726,8 +790,8 @@ class MLEngine:
             self.logger.error(f"Erreur d'extraction des caractéristiques ML: {e}")
             return None
 
-    def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini', sample_weight: Optional[np.ndarray] = None) -> bool:
-        """Entraîne le classifieur Random Forest avec hyperparamètres configurables"""
+    def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini', sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
+        """Entraîne le classifieur LightGBM (défaut) ou Random Forest avec hyperparamètres configurables"""
         if not SKLEARN_AVAILABLE:
             self.logger.warning("scikit-learn n'est pas disponible pour l'entraînement ML.")
             return False
@@ -741,10 +805,6 @@ class MLEngine:
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
             # Split train/test pour évaluer.
-            # IMPORTANT: train_test_split mélange les lignes. On splitte donc AUSSI
-            # sample_weight dans le même appel pour que chaque poids reste aligné sur
-            # sa ligne (l'ancien sample_weight[:len(X_train)] prenait les N premiers
-            # poids de l'ordre original -> désalignés avec X_train mélangé).
             stratify = y if len(set(y)) > 1 else None
             if sample_weight is not None:
                 X_train, X_test, y_train, y_test, sw_train, _sw_test = train_test_split(
@@ -760,16 +820,34 @@ class MLEngine:
             X_train_scaled = self.scaler.fit_transform(X_train)
             X_test_scaled = self.scaler.transform(X_test)
 
-            self.model = RandomForestClassifier(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples_split=min_samples_split,
-                criterion=criterion,
-                random_state=42,
-                n_jobs=-1,
-                oob_score=True
-            )
-            self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
+            # Choisir LightGBM ou RandomForest
+            model_type = 'lightgbm'
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                self.model = lgb.LGBMClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth if max_depth else -1,
+                    min_child_samples=min_samples_split,
+                    learning_rate=0.05,
+                    num_leaves=31,
+                    random_state=42,
+                    n_jobs=-1,
+                    verbose=-1,
+                    importance_type='gain'
+                )
+                self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
+            else:
+                model_type = 'random_forest'
+                self.model = RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    min_samples_split=min_samples_split,
+                    criterion=criterion,
+                    random_state=42,
+                    n_jobs=-1,
+                    oob_score=True
+                )
+                self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
+            
             self.is_trained = True
 
             # Calculer et stocker les métriques
@@ -779,10 +857,11 @@ class MLEngine:
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
             test_f1 = f1_score(y_test, y_pred, zero_division=0) * 100
             train_acc = self.model.score(X_train_scaled, y_train) * 100
-            oob = self.model.oob_score_ * 100 if hasattr(self.model, 'oob_score_') else None
+            oob = self.model.oob_score_ * 100 if hasattr(self.model, 'oob_score_') and self.model.oob_score_ else None
 
             self.model_metadata = {
                 'trained_at': datetime.now().isoformat(),
+                'model_type': model_type,
                 'n_features': int(X.shape[1]),
                 'exit_n_features': len(self.exit_feature_names),
                 'train_samples': int(len(X)),
@@ -794,8 +873,126 @@ class MLEngine:
                 'train_accuracy': round(train_acc, 1),
                 'oob_score': round(oob, 1) if oob else None,
             }
+            
+            self.logger.info(f"Model trained: {model_type} | Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%")
 
             # Ré-entraîner sur toutes les données pour le modèle final
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X)
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                self.model.fit(X_scaled, y, sample_weight=sample_weight)
+            else:
+                self.model.fit(X_scaled, y, sample_weight=sample_weight)
+
+            self.save_model()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'entraînement ML: {e}")
+            return False
+
+    def train_model_with_grid_search(self, X: np.ndarray, y: np.ndarray, sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True, cv: int = 3) -> bool:
+        """Entraîne le modèle avec Grid Search pour trouver les meilleurs hyperparamètres."""
+        if not SKLEARN_AVAILABLE:
+            self.logger.warning("scikit-learn n'est pas disponible pour l'entraînement ML.")
+            return False
+
+        if len(X) < 100:
+            self.logger.warning("Grid Search nécessite au moins 100 samples. Fallback vers train_model standard.")
+            return self.train_model(X, y, sample_weight=sample_weight, use_lightgbm=use_lightgbm)
+
+        try:
+            from sklearn.model_selection import GridSearchCV, train_test_split
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, make_scorer
+
+            self.logger.info("Starting Grid Search for hyperparameter optimization...")
+
+            # Split train/test
+            stratify = y if len(set(y)) > 1 else None
+            if sample_weight is not None:
+                X_train, X_test, y_train, y_test, sw_train, _sw_test = train_test_split(
+                    X, y, sample_weight, test_size=0.2, random_state=42, stratify=stratify
+                )
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.2, random_state=42, stratify=stratify
+                )
+                sw_train = None
+
+            self.scaler = StandardScaler()
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
+
+            # Scorer optimisé pour Precision (éviter les faux positifs = trades perdants)
+            precision_scorer = make_scorer(precision_score, zero_division=0)
+
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                # Grid Search pour LightGBM
+                param_grid = {
+                    'n_estimators': [100, 200, 300],
+                    'max_depth': [4, 6, 8, -1],
+                    'learning_rate': [0.01, 0.05, 0.1],
+                    'num_leaves': [15, 31, 63],
+                    'min_child_samples': [5, 10, 20],
+                }
+                base_model = lgb.LGBMClassifier(random_state=42, n_jobs=-1, verbose=-1)
+                model_type = 'lightgbm'
+            else:
+                # Grid Search pour RandomForest
+                param_grid = {
+                    'n_estimators': [100, 200, 300],
+                    'max_depth': [4, 6, 8, None],
+                    'min_samples_split': [2, 5, 10],
+                    'min_samples_leaf': [1, 2, 4],
+                }
+                base_model = RandomForestClassifier(random_state=42, n_jobs=-1)
+                model_type = 'random_forest'
+
+            grid_search = GridSearchCV(
+                base_model,
+                param_grid,
+                cv=cv,
+                scoring=precision_scorer,
+                n_jobs=-1,
+                verbose=1
+            )
+            
+            grid_search.fit(X_train_scaled, y_train, sample_weight=sw_train)
+            
+            self.model = grid_search.best_estimator_
+            self.is_trained = True
+
+            # Log best params
+            self.logger.info(f"Best params: {grid_search.best_params_}")
+            self.logger.info(f"Best CV score: {grid_search.best_score_:.3f}")
+
+            # Évaluer sur test set
+            y_pred = self.model.predict(X_test_scaled)
+            test_acc = accuracy_score(y_test, y_pred) * 100
+            test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
+            test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
+            test_f1 = f1_score(y_test, y_pred, zero_division=0) * 100
+            train_acc = self.model.score(X_train_scaled, y_train) * 100
+
+            self.model_metadata = {
+                'trained_at': datetime.now().isoformat(),
+                'model_type': f'{model_type}_grid_search',
+                'n_features': int(X.shape[1]),
+                'exit_n_features': len(self.exit_feature_names),
+                'train_samples': int(len(X)),
+                'train_win_rate': f"{int(sum(y))/len(y)*100:.1f}%",
+                'test_accuracy': round(test_acc, 1),
+                'test_precision': round(test_prec, 1),
+                'test_recall': round(test_recall, 1),
+                'test_f1': round(test_f1, 1),
+                'train_accuracy': round(train_acc, 1),
+                'best_params': grid_search.best_params_,
+                'best_cv_score': round(grid_search.best_score_ * 100, 1),
+            }
+            
+            self.logger.info(f"Grid Search complete: {model_type} | Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%")
+
+            # Ré-entraîner le meilleur modèle sur toutes les données
             self.scaler = StandardScaler()
             X_scaled = self.scaler.fit_transform(X)
             self.model.fit(X_scaled, y, sample_weight=sample_weight)
@@ -804,8 +1001,9 @@ class MLEngine:
             return True
 
         except Exception as e:
-            self.logger.error(f"Erreur lors de l'entraînement ML: {e}")
-            return False
+            self.logger.error(f"Erreur lors du Grid Search ML: {e}")
+            # Fallback vers training standard
+            return self.train_model(X, y, sample_weight=sample_weight, use_lightgbm=use_lightgbm)
 
     def extract_exit_features(
         self,
@@ -866,6 +1064,42 @@ class MLEngine:
             price_change_5b = market_features[13]
             volatility_std = market_features[15]
             hour_of_day = market_features[16]
+            
+            # VOLATILITY_DIRECTIONAL: Mesure si la volatilité est "favorable" ou non
+            # CORRECTION: Ne PAS paniquer sur un pullback court terme !
+            # On utilise une combinaison de signaux pour déterminer si la tendance est intacte:
+            # 1. net_pnl_pct > 0 → position en profit = tendance probablement intacte
+            # 2. ema9_slope > 0 → EMA9 monte = momentum positif
+            # 3. price_change_5b > 0 → tendance 5 bougies (plus stable que 3)
+            # 4. multi_tf_trend_alignment > 0.5 → timeframes alignés haussier
+            
+            # Score de tendance: combien de signaux sont positifs ?
+            trend_signals = 0
+            if net_pnl_pct > 0.3:  # Position en profit > 0.3%
+                trend_signals += 2  # Poids double pour le profit
+            if ema9_slope > 0:
+                trend_signals += 1
+            if price_change_5b > 0:
+                trend_signals += 1
+            multi_tf_align = float(market_features[54]) if len(market_features) > 54 else 0.5
+            if multi_tf_align > 0.5:
+                trend_signals += 1
+            
+            # Direction: positive si majorité de signaux positifs (>= 2 sur 5)
+            # Neutre (pas négatif!) si tendance mixte
+            if trend_signals >= 3:
+                direction_factor = 1.0  # Tendance clairement haussière
+            elif trend_signals >= 2:
+                direction_factor = 0.5  # Tendance mixte mais pas alarmante
+            else:
+                direction_factor = -0.3  # Seulement légèrement négatif, pas panique
+            
+            # Volatilité brute (toujours positive)
+            volatility_raw = (atr_percent + volatility_std) / 2.0
+            
+            # volatility_directional: favorable si tendance intacte, défavorable sinon
+            # Mais JAMAIS aussi négatif que l'ancien calcul (qui multipliait par -1)
+            volatility_directional = volatility_raw * direction_factor
 
             # Features DIRECTIONNELLES piochées dans le schéma 78 (indices fixes) pour
             # que le P_exit sache si la volatilité va dans le BON sens (tendance/momentum
@@ -949,15 +1183,55 @@ class MLEngine:
                 dist_to_recent_low_pct = 0.0
                 breakout_strength = 0.0
 
+            # === FEATURES DIRECTIONNELLES DEPUIS ENTRÉE (amélioration sortie v3) ===
+            # Ces features donnent du contexte sur l'évolution DEPUIS l'entrée, pas juste l'état actuel
+            
+            # 1. pnl_trend_3b: Tendance du PnL sur les 3 dernières bougies
+            #    +1 = PnL monte (position s'améliore), -1 = PnL descend (position se dégrade)
+            if len(closes) >= 4:
+                pnl_3b_ago = ((closes[-4] - buy_price) / max(buy_price, 1e-9)) * 100.0
+                pnl_now = gross_pnl_pct
+                if pnl_now > pnl_3b_ago + 0.1:
+                    pnl_trend_3b = 1.0  # PnL monte
+                elif pnl_now < pnl_3b_ago - 0.1:
+                    pnl_trend_3b = -1.0  # PnL descend
+                else:
+                    pnl_trend_3b = 0.0  # Stable
+            else:
+                pnl_trend_3b = 0.0
+            
+            # 2. price_vs_entry_ema20: Prix actuel vs EMA20 au moment de l'évaluation
+            #    >0 = prix au-dessus de l'EMA20 (tendance favorable)
+            #    <0 = prix en dessous (tendance défavorable)
+            ema20_current = np.mean(closes[-20:]) if len(closes) >= 20 else closes[-1]
+            price_vs_entry_ema20 = ((current_price - ema20_current) / max(ema20_current, 1e-9)) * 100.0
+            
+            # 3. momentum_since_entry: Momentum cumulé depuis l'entrée
+            #    Basé sur le nombre de bougies haussières vs baissières depuis l'entrée
+            #    Simplifié: on utilise la durée pour estimer le nombre de bougies (15min)
+            candles_since_entry = max(1, int(duration_minutes / 15))
+            if len(closes) > candles_since_entry:
+                entry_idx = max(0, len(closes) - candles_since_entry - 1)
+                closes_since = closes[entry_idx:]
+                opens_since = opens[entry_idx:] if len(opens) > entry_idx else opens
+                if len(closes_since) >= 2 and len(opens_since) >= 2:
+                    green_count = sum(1 for c, o in zip(closes_since, opens_since) if c > o)
+                    red_count = len(closes_since) - green_count
+                    momentum_since_entry = (green_count - red_count) / max(len(closes_since), 1) * 100.0
+                else:
+                    momentum_since_entry = 0.0
+            else:
+                momentum_since_entry = 0.0
+
             bot_features = self._normalise_bot_context(bot_context, hour_of_day)
 
             return np.array([
                 float(entry_p_win), float(continuation_score), gross_pnl_pct, net_pnl_pct,
                 duration_minutes, fee_rate * 10000.0, dist_to_stop_pct, dist_to_target_pct,
                 rsi_14, ema9_slope, ema20_slope, ema_cross_diff,
-                atr_percent, volume_ratio, candle_body_pct, candle_wick_top,
+                volatility_directional, volume_ratio, candle_body_pct, candle_wick_top,
                 candle_wick_bottom, price_change_3b, price_change_5b,
-                volatility_std, hour_of_day, btc_momentum_3b,
+                hour_of_day, btc_momentum_3b,
                 bot_features['symbol_regime_code'],
                 bot_features['btc_regime_code'],
                 bot_features['bear_mode'],
@@ -986,14 +1260,18 @@ class MLEngine:
                 dist_to_recent_high_pct,
                 dist_to_recent_low_pct,
                 breakout_strength,
+                # === FEATURES DIRECTIONNELLES DEPUIS ENTRÉE (amélioration sortie v3) ===
+                pnl_trend_3b,
+                price_vs_entry_ema20,
+                momentum_since_entry,
             ], dtype=np.float64)
 
         except Exception as e:
             self.logger.error(f"Erreur extraction features ML sortie: {e}")
             return None
 
-    def train_exit_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 150, max_depth: int = 6, min_samples_split: int = 10, criterion: str = 'gini') -> bool:
-        """Entraîne le modèle ML de continuation/sortie."""
+    def train_exit_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 150, max_depth: int = 6, min_samples_split: int = 10, criterion: str = 'gini', use_lightgbm: bool = True) -> bool:
+        """Entraîne le modèle ML de continuation/sortie avec LightGBM ou RandomForest."""
         if not SKLEARN_AVAILABLE:
             return False
         if len(X) < 30:
@@ -1002,22 +1280,31 @@ class MLEngine:
         try:
             self.exit_scaler = StandardScaler()
             X_scaled = self.exit_scaler.fit_transform(X)
-            # Le dataset de sortie est déséquilibré (bien plus de "sortir" que de "continuer").
-            # Sans pondération, le RF prédit "sortir" par défaut et rate les vrais "continuer"
-            # (les gagnants qu'on veut garder). class_weight pénalise plus fort les erreurs sur
-            # la classe minoritaire -> le modèle DÉTECTE PLUS DE GAGNANTS à la sortie.
-            # 'balanced_subsample' (défaut) | 'balanced' | 'none' via ML_EXIT_CLASS_WEIGHT.
-            cw_env = os.getenv('ML_EXIT_CLASS_WEIGHT', 'balanced_subsample').strip().lower()
-            class_weight = None if cw_env in ('none', '', 'off') else cw_env
-            self.exit_model = RandomForestClassifier(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples_split=min_samples_split,
-                criterion=criterion,
-                class_weight=class_weight,
-                random_state=43,
-                n_jobs=-1
-            )
+            
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                # LightGBM gère mieux les classes déséquilibrées avec is_unbalance
+                self.exit_model = lgb.LGBMClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth if max_depth else -1,
+                    min_child_samples=min_samples_split,
+                    learning_rate=0.05,
+                    is_unbalance=True,  # Équilibre automatique des classes
+                    random_state=43,
+                    n_jobs=-1,
+                    verbose=-1
+                )
+            else:
+                cw_env = os.getenv('ML_EXIT_CLASS_WEIGHT', 'balanced_subsample').strip().lower()
+                class_weight = None if cw_env in ('none', '', 'off') else cw_env
+                self.exit_model = RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    min_samples_split=min_samples_split,
+                    criterion=criterion,
+                    class_weight=class_weight,
+                    random_state=43,
+                    n_jobs=-1
+                )
             self.exit_model.fit(X_scaled, y)
             self.is_exit_trained = True
             self.save_model()
@@ -1026,8 +1313,8 @@ class MLEngine:
             self.logger.error(f"Erreur entraînement ML sortie: {e}")
             return False
 
-    def train_sizing_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 6, min_samples_split: int = 10) -> bool:
-        """Entraîne le modèle ML de facteur de taille de position."""
+    def train_sizing_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 6, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
+        """Entraîne le modèle ML de facteur de taille de position avec LightGBM ou RandomForest."""
         if not SKLEARN_AVAILABLE:
             return False
         if len(X) < 30:
@@ -1036,13 +1323,25 @@ class MLEngine:
         try:
             self.sizing_scaler = StandardScaler()
             X_scaled = self.sizing_scaler.fit_transform(X)
-            self.sizing_model = RandomForestRegressor(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples_split=min_samples_split,
-                random_state=44,
-                n_jobs=-1
-            )
+            
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                self.sizing_model = lgb.LGBMRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth if max_depth else -1,
+                    min_child_samples=min_samples_split,
+                    learning_rate=0.05,
+                    random_state=44,
+                    n_jobs=-1,
+                    verbose=-1
+                )
+            else:
+                self.sizing_model = RandomForestRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    min_samples_split=min_samples_split,
+                    random_state=44,
+                    n_jobs=-1
+                )
             self.sizing_model.fit(X_scaled, y)
             self.is_sizing_trained = True
             self.save_model()
@@ -1051,7 +1350,7 @@ class MLEngine:
             self.logger.error(f"Erreur entraînement ML sizing: {e}")
             return False
 
-    def train_target_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 8, min_samples_split: int = 10) -> bool:
+    def train_target_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 8, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
         """Entraîne le modèle P_target: régresseur du gain maximum atteignable (%) d'un trade.
 
         y = pour chaque sample, le meilleur gain net % observé pendant le hold
@@ -1064,13 +1363,25 @@ class MLEngine:
         try:
             self.target_scaler = StandardScaler()
             X_scaled = self.target_scaler.fit_transform(X)
-            self.target_model = RandomForestRegressor(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples_split=min_samples_split,
-                random_state=45,
-                n_jobs=-1
-            )
+            
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                self.target_model = lgb.LGBMRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth if max_depth else -1,
+                    min_child_samples=min_samples_split,
+                    learning_rate=0.05,
+                    random_state=45,
+                    n_jobs=-1,
+                    verbose=-1
+                )
+            else:
+                self.target_model = RandomForestRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    min_samples_split=min_samples_split,
+                    random_state=45,
+                    n_jobs=-1
+                )
             self.target_model.fit(X_scaled, y)
             self.is_target_trained = True
             self.save_model()

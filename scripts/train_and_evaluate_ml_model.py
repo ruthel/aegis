@@ -704,8 +704,13 @@ def generate_samples_from_klines(
     return samples, labels, metadata
 
 
-def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
-    """Entraîne le modèle Challenger d'Entrée sur 1 an de données et le sauvegarde dans aegis_challenger.joblib."""
+def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use_grid_search=None, use_lightgbm=None):
+    """Entraîne le modèle Challenger d'Entrée sur 1 an de données et le sauvegarde dans aegis_challenger.joblib.
+    
+    Args:
+        use_grid_search: Force Grid Search (None = utilise env ML_USE_GRID_SEARCH)
+        use_lightgbm: Force LightGBM (None = utilise env ML_USE_LIGHTGBM, défaut True)
+    """
     try:
         challenger_path = os.path.join(output_dir, 'aegis_challenger.joblib')
         champion_path = os.path.join(output_dir, 'aegis_model.joblib')
@@ -713,6 +718,12 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
         if fast_mode and os.path.exists(champion_path):
             shutil.copy2(champion_path, challenger_path)
             return True
+
+        # Options ML
+        if use_grid_search is None:
+            use_grid_search = os.getenv('ML_USE_GRID_SEARCH', 'false').lower() == 'true'
+        if use_lightgbm is None:
+            use_lightgbm = os.getenv('ML_USE_LIGHTGBM', 'true').lower() == 'true'
 
         # Fetch historique via API REST Kraken directe (paires USD réelles), frais 0.4%
         exchange = None  # plus utilisé pour le fetch, on passe par requests
@@ -930,8 +941,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
         n_losses = int(np.sum(y == 0))
         print(f"\n  📊 Dataset Entrée: {len(X)} samples ({n_replay} refus rejoués) | Wins: {n_wins} ({n_wins/len(y)*100:.1f}%) | Losses: {n_losses} ({n_losses/len(y)*100:.1f}%)")
         print(f"  📊 Features: {X.shape[1]} | Fee rate: {fee_rate*100:.2f}%")
+        print(f"  📊 Model: {'LightGBM' if use_lightgbm else 'RandomForest'} | Grid Search: {'ON' if use_grid_search else 'OFF'}")
         
-        success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5, sample_weight=w_train)
+        # Entraînement avec Grid Search ou standard
+        if use_grid_search:
+            success = ml_engine.train_model_with_grid_search(X, y, sample_weight=w_train, use_lightgbm=use_lightgbm)
+        else:
+            success = ml_engine.train_model(X, y, n_estimators=100, max_depth=6, min_samples_split=5, sample_weight=w_train, use_lightgbm=use_lightgbm)
         if success:
             # Entraînement du modèle de Sortie avec les VRAIES features exit
             # Label DIRECTIONNEL close-to-close (Piste 2 v2): "après ce point, la TENDANCE
@@ -1025,25 +1041,25 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False):
                 if len(X_exit_samples) >= 30:
                     X_exit = np.array(X_exit_samples)
                     y_exit = np.array(y_exit_labels)
-                    ml_engine.train_exit_model(X_exit, y_exit, n_estimators=150, max_depth=6, min_samples_split=10)
+                    ml_engine.train_exit_model(X_exit, y_exit, n_estimators=150, max_depth=6, min_samples_split=10, use_lightgbm=use_lightgbm)
                     n_continue = sum(y_exit_labels)
                     n_exit = len(y_exit_labels) - n_continue
                     _tot = max(1, len(y_exit_labels))
-                    cw_used = os.getenv('ML_EXIT_CLASS_WEIGHT', 'balanced_subsample')
-                    print(f"  ✅ Modèle de Sortie entraîné avec {len(X_exit_samples)} samples "
-                          f"(continue:{n_continue} [{n_continue/_tot*100:.1f}%], exit:{n_exit} [{n_exit/_tot*100:.1f}%], class_weight={cw_used})")
+                    model_name = 'LightGBM' if use_lightgbm else 'RandomForest'
+                    print(f"  ✅ Modèle de Sortie entraîné ({model_name}) avec {len(X_exit_samples)} samples "
+                          f"(continue:{n_continue} [{n_continue/_tot*100:.1f}%], exit:{n_exit} [{n_exit/_tot*100:.1f}%])")
                 else:
                     print(f"  ⚠️ Pas assez de samples exit ({len(X_exit_samples)}), modèle sortie non entraîné")
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sortie: {ex}")
             try:
-                ml_engine.train_sizing_model(X, y_sizing, n_estimators=120, max_depth=6, min_samples_split=10)
+                ml_engine.train_sizing_model(X, y_sizing, n_estimators=120, max_depth=6, min_samples_split=10, use_lightgbm=use_lightgbm)
                 print(f"  ✅ Modèle de Sizing entraîné et fusionné dans Challenger")
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sizing: {ex}")
 
             try:
-                ml_engine.train_target_model(X, y_target, n_estimators=120, max_depth=8, min_samples_split=10)
+                ml_engine.train_target_model(X, y_target, n_estimators=120, max_depth=8, min_samples_split=10, use_lightgbm=use_lightgbm)
                 avg_target = float(np.mean(y_target)) if len(y_target) else 0.0
                 med_target = float(np.median(y_target)) if len(y_target) else 0.0
                 print(f"  ✅ Modèle P_target entraîné (gain cible moyen: {avg_target:.2f}%, médian: {med_target:.2f}%)")
@@ -1167,7 +1183,7 @@ def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type=
     require_calibration = os.getenv('ML_PROMOTION_REQUIRE_CALIBRATION', 'false').lower() == 'true'
     allowed_drift_statuses = {
         item.strip().lower()
-        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,insufficient_live_outcomes').split(',')
+        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,warning,insufficient_live_outcomes').split(',')
         if item.strip()
     }
 
@@ -1297,6 +1313,17 @@ if __name__ == '__main__':
     parser.add_argument('--check-only', action='store_true', help="Vérifie les garde-fous sans promouvoir")
     parser.add_argument('--trigger', default='manual', help="auto ou manual")
     parser.add_argument('--fast', action='store_true', help="Mode rapide de test")
+    parser.add_argument('--no-grid', action='store_true', help="Désactive Grid Search (activé par défaut)")
+    parser.add_argument('--no-lightgbm', action='store_true', help="Utilise RandomForest au lieu de LightGBM")
     args = parser.parse_args()
+
+    # Définir les options ML via variables d'environnement (utilisées par train_challenger_model)
+    if args.no_grid:
+        os.environ['ML_USE_GRID_SEARCH'] = 'false'
+    else:
+        os.environ['ML_USE_GRID_SEARCH'] = 'true'
+    
+    if args.no_lightgbm:
+        os.environ['ML_USE_LIGHTGBM'] = 'false'
 
     run_pipeline(model_dir=args.dir, db_file=args.db, check_only=args.check_only, trigger_type=args.trigger, fast_mode=args.fast)

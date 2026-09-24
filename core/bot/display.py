@@ -106,7 +106,7 @@ class DisplayMixin:
         
         self.async_print(f"\n📊 {pnl_display} | {total_trades} trades ({win_rate:.0f}% win){period_info}")
         
-        # Positions nettes paper trading (style Binance)
+        # Positions nettes paper trading
         if self.paper_trading:
             open_pos = self.get_open_positions()
             if not open_pos:
@@ -154,11 +154,13 @@ class DisplayMixin:
             
             buy_positions = [p for p in self.state['positions'] 
                            if p['symbol'] == symbol and p['side'] == 'buy' 
-                           and p.get('source') not in ['binance_history', 'exchange_history']]
+                           and p.get('source') not in ['exchange_history']
+                           and not p.get('closed_at') and p.get('status') != 'closed']
             
             if not buy_positions:
                 buy_positions = [p for p in self.state['positions'] 
-                               if p['symbol'] == symbol and p['side'] == 'buy']
+                               if p['symbol'] == symbol and p['side'] == 'buy'
+                               and not p.get('closed_at') and p.get('status') != 'closed']
             
             if not buy_positions:
                 continue

@@ -36,7 +36,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
     print(f"  • Pas glissant : {step_days} jours")
     print("=" * 70)
 
-    exchange = ccxt.binance({'enableRateLimit': True})
+    exchange = ccxt.kraken({'enableRateLimit': True})
     total_history_days = train_days + 180  # ~9 mois minimum
     start_date = (datetime.now(timezone.utc) - timedelta(days=total_history_days)).strftime("%Y-%m-%d")
 

@@ -6,11 +6,10 @@ __pycache__/
 .Python
 *.so
 
-# Environment
+# Environment — secrets (ne jamais committer)
 .env
-.env.local
-.env.ui
 .env.production
+# .env.example est intentionnellement versionné (template sans secrets)
 
 # IDE
 .vscode/

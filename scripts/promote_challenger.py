@@ -111,7 +111,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     require_calibration = os.getenv('ML_PROMOTION_REQUIRE_CALIBRATION', 'false').lower() == 'true'
     allowed_drift_statuses = {
         item.strip().lower()
-        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,insufficient_live_outcomes').split(',')
+        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,warning,insufficient_live_outcomes').split(',')
         if item.strip()
     }
 

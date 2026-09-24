@@ -1267,33 +1267,62 @@ class NotificationManager:
             return False
 
         try:
-            status = self._build_status_message()
-            return self.notify(status, "")
+            # Même format que /status : graphique PnL + message compact
+            pnl_chart = self._generate_pnl_chart(days=30)
+            
+            if pnl_chart:
+                status_msg = self._build_status_message(compact=True)
+                if not self.send_photo(pnl_chart, caption=status_msg):
+                    # Fallback : texte seul si envoi échoue
+                    return self.notify(status_msg, "")
+                return True
+            else:
+                status = self._build_status_message(compact=False)
+                return self.notify(status, "")
         except Exception:
             return False
             
     def _get_historical_performance(self):
         """Calcule les statistiques de performance réelles basées sur l'équité Kraken (comme le web)"""
         try:
-            from ui.server import trade_stats, load_accounting_state, apply_live_balance_pnl, get_live_market_data
-            # Utiliser le mode live pour correspondre au web
-            state = load_accounting_state({'positions': []}, view_mode='live')
+            from ui.server import trade_stats, load_accounting_state, apply_live_balance_pnl, get_live_market_data, active_trading_mode
+            # Utiliser le mode de trading actif (live ou paper)
+            trading_mode = active_trading_mode()
+            state = load_accounting_state({'positions': []}, view_mode=trading_mode)
             positions = state.get('positions', [])
+            
+            if not positions:
+                return {
+                    'total_pnl': 0,
+                    'total_trades': 0,
+                    'winrate': 0,
+                    'best_trade': 0,
+                }
+            
             stats = trade_stats(positions)
+            
+            if not stats or stats.get('total_trades', 0) == 0:
+                return {
+                    'total_pnl': 0,
+                    'total_trades': 0,
+                    'winrate': 0,
+                    'best_trade': 0,
+                }
             
             # Appliquer le PnL basé sur l'équité Kraken (comme le web)
             live = get_live_market_data()
             adjusted_stats = apply_live_balance_pnl(stats, state, live)
             
-            if not adjusted_stats:
-                return None
             return {
-                'total_pnl': adjusted_stats.get('total_pnl_net', 0),  # PnL NET basé sur équité Kraken
-                'total_trades': stats.get('total_trades', 0) if stats else 0,
-                'winrate': stats.get('win_rate', 0) if stats else 0,
-                'best_trade': stats.get('best_trade_net', 0) if stats else 0,
+                'total_pnl': adjusted_stats.get('total_pnl_net', stats.get('total_pnl_net', 0)) if adjusted_stats else stats.get('total_pnl_net', 0),
+                'total_trades': stats.get('total_trades', 0),
+                'winrate': stats.get('win_rate', 0),
+                'best_trade': stats.get('best_trade_net', 0),
             }
-        except Exception:
+        except Exception as e:
+            # Log l'erreur pour debug
+            import logging
+            logging.getLogger(__name__).warning(f"_get_historical_performance error: {e}")
             return None
 
     def _build_status_message(self, compact=False):

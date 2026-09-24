@@ -314,7 +314,7 @@ class WebSocketManager:
         try:
             status = {
                 'timestamp': datetime.now().isoformat(),
-                'exchange': os.getenv('EXCHANGE', 'binance').lower(),
+                'exchange': os.getenv('EXCHANGE', 'kraken').lower(),
                 'connected': self.is_connected(),
                 'running': self.running,
                 'mode': 'websocket' if self.is_connected() else 'rest_fallback',

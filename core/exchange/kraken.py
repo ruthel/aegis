@@ -217,7 +217,7 @@ class KrakenClient(ExchangeBase):
                 }
         except:
             pass
-        # Fallback Kraken (minimums plus bas que Binance)
+        # Fallback minimums Kraken
         fallback = {
             'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
             'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},

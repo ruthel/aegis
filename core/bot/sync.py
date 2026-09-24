@@ -81,7 +81,7 @@ class SyncMixin:
                             changed = True
             
             if changed:
-                history = [p for p in all_positions if p['side'] == 'sell' or p.get('source') in ['binance_history', 'exchange_history']]
+        history = [p for p in all_positions if p['side'] == 'sell' or p.get('source') == 'exchange_history']
                 self.state['positions'] = history + active_buy_positions
                 self.save_state()
         except Exception as e:
@@ -159,7 +159,7 @@ class SyncMixin:
     
     def get_last_buy_from_history(self, symbol):
         buys = [p for p in self.state.get('positions', []) 
-               if p['symbol'] == symbol and p['side'] == 'buy' and p.get('source') in ['binance_history', 'exchange_history']]
+               if p['symbol'] == symbol and p['side'] == 'buy' and p.get('source') == 'exchange_history']
         return buys[-1] if buys else None
     
     def manage_pending_orders(self):

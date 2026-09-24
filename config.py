@@ -2,27 +2,17 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv('.env.local', override=True)
-load_dotenv('.env.ui', override=True)
+load_dotenv('.env', override=True)
 
 # ===== EXCHANGE =====
-EXCHANGE = os.getenv('EXCHANGE', 'binance').lower()  # binance ou kraken
+EXCHANGE = os.getenv('EXCHANGE', 'kraken').lower()
 
 # ===== CLÉS API =====
-# Binance
-BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
-BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
-# Kraken
 KRAKEN_API_KEY = os.getenv('KRAKEN_API_KEY', '')
 KRAKEN_API_SECRET = os.getenv('KRAKEN_API_SECRET', '')
 
-# Clés actives selon exchange
-if EXCHANGE == 'kraken':
-    ACTIVE_API_KEY = KRAKEN_API_KEY
-    ACTIVE_API_SECRET = KRAKEN_API_SECRET
-else:
-    ACTIVE_API_KEY = BINANCE_API_KEY
-    ACTIVE_API_SECRET = BINANCE_API_SECRET
+ACTIVE_API_KEY = KRAKEN_API_KEY
+ACTIVE_API_SECRET = KRAKEN_API_SECRET
 
 TESTNET = os.getenv('TESTNET', 'True').lower() == 'true'
 
@@ -86,9 +76,4 @@ ML_LIVE_ANALYSIS_MAX_REPLAY = int(os.getenv('ML_LIVE_ANALYSIS_MAX_REPLAY', '250'
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 SAVE_LOGS = os.getenv('SAVE_LOGS', 'True').lower() == 'true'
 
-# ===== COMPATIBILITÉ (anciens noms) =====
-BINANCE_MAINNET_API_KEY = BINANCE_API_KEY
-BINANCE_MAINNET_API_SECRET = BINANCE_API_SECRET
-BINANCE_TESTNET_API_KEY = BINANCE_API_KEY
-BINANCE_TESTNET_API_SECRET = BINANCE_API_SECRET
 TRADING_PAIR = 'BTC/USD'

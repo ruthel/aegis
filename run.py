@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Point d'entrée principal pour le bot de trading Binance
+Point d'entrée principal pour le bot de trading Aegis (Kraken)
 Démarrage sécurisé avec vérifications et gestion d'erreurs
 """
 import sys
@@ -108,8 +108,7 @@ def main():
     })
     
     # Charger la configuration locale en dernier pour les secrets non versionnés.
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
+    load_dotenv('.env', override=True)
     
     # Import du bot (après vérification config)
     try:
@@ -120,15 +119,9 @@ def main():
         process_logger.close()
         sys.exit(1)
     
-    # Récupération configuration selon exchange
-    exchange = os.getenv('EXCHANGE', 'binance').lower()
-    
-    if exchange == 'kraken':
-        api_key = os.getenv('KRAKEN_API_KEY')
-        api_secret = os.getenv('KRAKEN_API_SECRET')
-    else:
-        api_key = os.getenv('BINANCE_API_KEY')
-        api_secret = os.getenv('BINANCE_API_SECRET')
+    # Récupération clés API Kraken
+    api_key = os.getenv('KRAKEN_API_KEY')
+    api_secret = os.getenv('KRAKEN_API_SECRET')
     
     testnet = os.getenv('TESTNET', 'False').lower() == 'true'
     

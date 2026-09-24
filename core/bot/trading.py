@@ -536,6 +536,11 @@ class TradingMixin:
                     
                 self._close_buy_positions(symbol, exec_amount, exec_price)
                 
+                # Nettoyer le stuck_manager si présent
+                if hasattr(self, 'stuck_manager') and self.stuck_manager:
+                    if symbol in self.stuck_manager.stuck_positions:
+                        del self.stuck_manager.stuck_positions[symbol]
+                
                 # Forcer sync Kraken après vente pour mettre à jour le frontend immédiatement
                 if hasattr(self, 'balance_manager') and not self.paper_trading:
                     try:
