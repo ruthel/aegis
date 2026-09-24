@@ -2967,12 +2967,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         env['PYTHONIOENCODING'] = 'utf-8'
                         try:
                             log_fh = open(replay_log_path, 'w', encoding='utf-8', errors='replace')
+                            active_mode = 'paper' if self.paper_trading else 'live'
                             self._ml_live_analysis_process = subprocess.Popen(
-                                [sys.executable, script_path],
+                                [sys.executable, script_path, '--mode', active_mode],
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env,
                             )
                         except Exception:
-                            self._ml_live_analysis_process = subprocess.Popen([sys.executable, script_path])
+                            active_mode = 'paper' if self.paper_trading else 'live'
+                            self._ml_live_analysis_process = subprocess.Popen(
+                                [sys.executable, script_path, '--mode', active_mode]
+                            )
         except Exception as e:
             print(f"⚠️ Erreur run_ml_live_analysis_if_due: {e}")
 
