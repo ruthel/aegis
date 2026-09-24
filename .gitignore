@@ -17,9 +17,13 @@ __pycache__/
 *.swp
 *.swo
 
-# Logs
+# Logs — ne jamais versionner les logs runtime
+bot.log
 *.log
+*.log.*
+*.log-*
 logs/
+**/logs/
 
 # Data & State
 data/
