@@ -189,6 +189,9 @@ def build_entry_context(ml_engine, symbol, bundle, btc_15m, index, signal, fee_r
     h1, _ = _slice_until(bundle["1h"], ts, 30)
     h4, _ = _slice_until(bundle["4h"], ts, 30)
     h1d, _ = _slice_until(bundle["1d"], ts, 30)
+    ctx_h1, _ = _slice_until(bundle["1h"], ts, 40)
+    ctx_h4, _ = _slice_until(bundle["4h"], ts, 80)
+    ctx_1d, _ = _slice_until(bundle["1d"], ts, 80)
     _, btc_idx = _slice_until(btc_15m, ts, 60)
     bot_context = build_training_bot_context(
         history,
@@ -197,9 +200,9 @@ def build_entry_context(ml_engine, symbol, bundle, btc_15m, index, signal, fee_r
         btc_history=btc_15m,
         index=btc_idx,
         support_stats=support_stats,
-        h1_history=h1,
-        h4_history=h4,
-        d1_history=h1d,
+        h1_history=ctx_h1,
+        h4_history=ctx_h4,
+        d1_history=ctx_1d,
     )
     trade_context = {
         "fee_rate": fee_rate,
