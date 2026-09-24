@@ -213,13 +213,28 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
 
     # Charger les métadonnées des deux modèles
     champ_engine = MLEngine(model_dir=model_dir)
-    if os.path.exists(champion_path):
+    champion_exists = os.path.exists(champion_path)
+    champion_compatible = False
+    if champion_exists:
         champ_engine.model_path = champion_path
-        champ_engine.load_model()
+        champion_compatible = bool(champ_engine.load_model())
 
     chall_engine = MLEngine(model_dir=model_dir)
     chall_engine.model_path = challenger_path
-    chall_engine.load_model()
+    challenger_compatible = bool(chall_engine.load_model())
+    if not challenger_compatible:
+        reason = "Challenger incompatible avec le schéma/runtime courant"
+        print(f"⛔ PROMOTION REFUSÉE : {reason}")
+        logger.record_governance_event(
+            'promotion_rejected',
+            source_model='challenger',
+            target_model='champion',
+            metrics={'challenger_compatible': False},
+            trigger_type=trigger_type,
+            reason=reason,
+        )
+        logger.close()
+        return False
 
     champ_meta = getattr(champ_engine, 'model_metadata', {}) or {}
     chall_meta = getattr(chall_engine, 'model_metadata', {}) or {}
@@ -291,6 +306,37 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     )
     g9 = (shadow_enough and shadow_better) if require_shadow else (not shadow_enough or shadow_better)
 
+    # Chaque tête auxiliaire doit être validée hors-échantillon avant promotion.
+    aux_validations = {
+        'entry': str(chall_meta.get('validation_type') or '').startswith('temporal_holdout'),
+        'edge': chall_meta.get('edge_validation_type') == 'temporal_holdout',
+        'exit': chall_meta.get('exit_validation_type') == 'temporal_holdout',
+        'sizing': chall_meta.get('sizing_validation_type') == 'temporal_holdout',
+        'target': chall_meta.get('target_validation_type') == 'temporal_holdout',
+    }
+    g10 = all(aux_validations.values())
+
+    # Migration de schéma : l'ancien champion strictement incompatible ne peut pas
+    # produire de shadow comparable. On autorise un bootstrap uniquement si le
+    # Challenger v4 est complet et validé temporellement.
+    schema_bootstrap = not champion_compatible
+    bootstrap_allowed = os.getenv('ML_ALLOW_SCHEMA_BOOTSTRAP_PROMOTION', 'true').lower() == 'true'
+    bootstrap_min_samples = int(os.getenv('ML_SCHEMA_BOOTSTRAP_MIN_TRAIN_SAMPLES', '200'))
+    bootstrap_heads_ready = all([
+        chall_engine.is_trained,
+        chall_engine.is_edge_trained,
+        chall_engine.is_exit_trained,
+        chall_engine.is_sizing_trained,
+        chall_engine.is_target_trained,
+    ])
+    bootstrap_ready = (
+        bootstrap_allowed
+        and challenger_compatible
+        and bootstrap_heads_ready
+        and g10
+        and int(chall_meta.get('train_samples') or 0) >= bootstrap_min_samples
+    )
+
     print("\n🛡️ GARDE-FOUS DE PROMOTION :")
     print(f"  [1] Trades fermés ({closed_trades_count}) >= {min_trades} : {'✅' if g1 else '❌'}")
     print(f"  [2] Jours actifs ({active_days}) >= {min_days} : {'✅' if g2 else '❌'}")
@@ -306,11 +352,21 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         f"Challenger PnL {chall_shadow['pnl_pct']:+.2f}% / DD {chall_shadow['max_drawdown_pct_points']:.2f} : "
         f"{'✅' if g9 else '❌'}"
     )
+    print(
+        f"  [10] Validation temporelle de toutes les têtes "
+        f"(entry/edge/exit/sizing/target): {'✅' if g10 else '❌'}"
+    )
+    if schema_bootstrap:
+        print(
+            f"  [BOOTSTRAP] Champion absent/incompatible, Challenger complet "
+            f"({chall_meta.get('train_samples', 0)} samples >= {bootstrap_min_samples}) : "
+            f"{'✅' if bootstrap_ready else '❌'}"
+        )
 
     guardrails = {
         'min_trades': g1, 'min_days': g2, 'better_perf': g3, 'drawdown': g4,
         'profit_factor': g5, 'net_pnl': g6, 'calibration': g7, 'drift': g8,
-        'same_opportunity_shadow': g9,
+        'same_opportunity_shadow': g9, 'aux_oos_validation': g10,
     }
     metrics_data = {
         'closed_trades_count': closed_trades_count,
@@ -318,10 +374,20 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         'champion_accuracy': champ_acc, 'challenger_accuracy': chall_acc,
         'profit_factor': profit_factor, 'net_pnl': net_pnl, 'max_drawdown_pct': max_dd,
         'shadow_comparison': shadow,
+        'champion_compatible': champion_compatible,
+        'challenger_compatible': challenger_compatible,
+        'schema_bootstrap': schema_bootstrap,
+        'bootstrap_ready': bootstrap_ready,
+        'aux_validations': aux_validations,
         'guardrails': guardrails,
     }
 
-    all_passed = all(guardrails.values())
+    if schema_bootstrap:
+        # Les garde-fous live/shadow d'un champion incompatible ne sont pas
+        # comparables. Le bootstrap repose donc sur la validation OOS complète.
+        all_passed = bootstrap_ready
+    else:
+        all_passed = all(guardrails.values())
 
     if force and not all_passed:
         failed = [name for name, passed in guardrails.items() if not passed]
