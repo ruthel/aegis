@@ -8,6 +8,7 @@ pandas>=2.0.0
 orjson>=3.10.0
 scipy==1.14.1
 scikit-learn>=1.5.0
+lightgbm>=4.5.0
 joblib>=1.4.0
 websocket-client>=1.6.4
 python-telegram-bot>=20.7
@@ -15,8 +16,3 @@ SQLAlchemy>=2.0.0
 matplotlib>=3.8.0
 
 flask-sock>=0.7
-
-# Deep Learning (optionnel - pour le mode DL Shadow)
-# Sur Windows sans GPU CUDA, utiliser: pip install torch --index-url https://download.pytorch.org/whl/cpu
-# Sur Linux/Mac avec GPU: pip install torch
-torch>=2.0.0
