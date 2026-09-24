@@ -3103,13 +3103,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 import sqlite3 as _sqlite3
                 conn = _sqlite3.connect(self.ml_live_logger.sqlite_file)
                 cur = conn.cursor()
+                active_mode = 'paper' if self.paper_trading else 'live'
                 rows = cur.execute("""
                     SELECT pnl
                     FROM ml_trade_outcomes
-                    WHERE pnl IS NOT NULL
+                    WHERE mode=? AND pnl IS NOT NULL
                     ORDER BY timestamp DESC
                     LIMIT 10
-                """).fetchall()
+                """, (active_mode,)).fetchall()
                 losses = 0
                 for (pnl,) in rows:
                     if float(pnl or 0.0) < 0:
@@ -3465,7 +3466,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self._last_score_append[symbol] = now
             
             if getattr(self, 'ml_live_logger', None):
-                self.ml_live_logger.record_crypto_score(symbol, price, score)
+                self.ml_live_logger.record_crypto_score(
+                    symbol,
+                    price,
+                    score,
+                    mode='paper' if self.paper_trading else 'live',
+                )
                 
         except Exception as e:
             print(f"⚠️ Erreur lors de l'historisation du score pour {symbol}: {e}")
