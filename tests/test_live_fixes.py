@@ -454,7 +454,6 @@ class LiveFixTests(unittest.TestCase):
         source = (ROOT / "scripts/train_and_evaluate_ml_model.py").read_text(encoding="utf-8")
         self.assertNotIn("signals_here = signal_engine.detect_all", source)
         self.assertIn("best_signal = signal_engine.detect_best", source)
-        self.assertIn("ML_TARGET_PATH_QUANTILE", source)
         self.assertIn("hold_advantage", source)
         self.assertIn("training_histories", source)
 
@@ -536,7 +535,7 @@ class LiveFixTests(unittest.TestCase):
             }
             self.assertTrue(engine.train_model(X, y, use_lightgbm=False))
             payload = joblib.load(engine.model_path)
-            self.assertEqual(payload['model_contract']['model_format_version'], 4)
+            self.assertEqual(payload['model_contract']['model_format_version'], 5)
             self.assertEqual(
                 payload['model_contract']['feature_schema_hash'],
                 engine.feature_schema_hash(),
@@ -553,11 +552,9 @@ class LiveFixTests(unittest.TestCase):
         source = (ROOT / 'scripts/walk_forward_validation.py').read_text(encoding='utf-8')
         self.assertIn('FULL_STRATEGY_WALK_FORWARD', source)
         self.assertIn('train_sizing_model', source)
-        self.assertIn('train_target_model', source)
         self.assertIn('generate_exit_training_samples', source)
         self.assertIn('predict_exit_decision', source)
         self.assertIn('predict_position_size_factor', source)
-        self.assertIn('predict_target', source)
         self.assertIn('FULL_STRATEGY_ROUNDTRIP_SLIPPAGE_PCT', source)
 
     def test_irreproducible_live_gates_are_not_ml_features(self):
@@ -580,7 +577,7 @@ class LiveFixTests(unittest.TestCase):
             'technical_confidence_edge',
         }.isdisjoint(set(engine.exit_feature_names)))
 
-    def test_sizing_and_target_have_temporal_oos_metrics(self):
+    def test_sizing_has_temporal_oos_metrics(self):
         rng = np.random.default_rng(222)
         with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {
             'ML_SKIP_MODEL_METADATA': 'true',
@@ -600,13 +597,20 @@ class LiveFixTests(unittest.TestCase):
             self.assertIn('sizing_baseline_mae', engine.model_metadata)
             self.assertIn('sizing_mae_skill', engine.model_metadata)
 
-            y_target = np.clip(1.0 + 0.6 * X[:, 1], 0.0, 6.0)
-            self.assertTrue(engine.train_target_model(X, y_target, use_lightgbm=False))
-            self.assertEqual(engine.model_metadata.get('target_validation_type'), 'temporal_holdout')
-            self.assertIn('target_test_mae_pct', engine.model_metadata)
-            self.assertIn('target_test_rmse_pct', engine.model_metadata)
-            self.assertIn('target_baseline_mae_pct', engine.model_metadata)
-            self.assertIn('target_mae_skill', engine.model_metadata)
+
+    def test_p_target_removed_from_runtime_and_training(self):
+        engine_source = (ROOT / 'core/ml_engine.py').read_text(encoding='utf-8')
+        training_source = (ROOT / 'scripts/train_and_evaluate_ml_model.py').read_text(encoding='utf-8')
+        live_source = (ROOT / 'core/trading_bot.py').read_text(encoding='utf-8')
+        walk_source = (ROOT / 'scripts/walk_forward_validation.py').read_text(encoding='utf-8')
+        env_source = (ROOT / '.env.example').read_text(encoding='utf-8')
+        for source in (engine_source, training_source, live_source, walk_source, env_source):
+            self.assertNotIn('P_target', source)
+            self.assertNotIn('ML_TARGET_', source)
+            self.assertNotIn('predict_target', source)
+            self.assertNotIn('train_target_model', source)
+        self.assertNotIn('target_model', engine_source)
+        self.assertNotIn('is_target_trained', engine_source)
 
     def test_exit_training_uses_live_continuation_score(self):
         source = (ROOT / 'scripts/train_and_evaluate_ml_model.py').read_text(encoding='utf-8')
