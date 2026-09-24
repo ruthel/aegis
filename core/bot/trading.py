@@ -39,17 +39,16 @@ class TradingMixin:
         return fee_rate
 
     def _paper_limit_fill_ratio(self, symbol):
-        """Estimate a first-touch paper partial-fill ratio from recorded live limit orders.
+        """Estimate paper partial fills from PAPER history only.
 
-        Falls back to the configured deterministic ratio until enough live executions
-        have accumulated. This lets paper execution gradually converge toward the
-        account's actual Kraken fill behavior without using future information.
+        Paper and live accounting are intentionally isolated; the simulator never reads
+        live orders to decide a paper fill ratio.
         """
         fallback = max(
             0.05,
             min(1.0, float(os.getenv('PAPER_LIMIT_PARTIAL_FILL_RATIO', '0.50'))),
         )
-        if os.getenv('PAPER_USE_LIVE_FILL_CALIBRATION', 'True').lower() != 'true':
+        if os.getenv('PAPER_USE_HISTORICAL_FILL_CALIBRATION', 'True').lower() != 'true':
             return fallback
         logger = getattr(self, 'ml_live_logger', None)
         if logger is None:
@@ -59,7 +58,7 @@ class TradingMixin:
             min_orders = max(1, int(os.getenv('PAPER_FILL_CALIBRATION_MIN_ORDERS', '10')))
             lookback = max(min_orders, int(os.getenv('PAPER_FILL_CALIBRATION_LOOKBACK', '100')))
             conn = logger._get_conn()
-            account_id = logger._account_id('live')
+            account_id = logger._account_id('paper')
             normalized_symbol = str(symbol or '').replace('-', '/')
             rows = conn.execute(
                 """
@@ -354,7 +353,11 @@ class TradingMixin:
         try:
             if hasattr(self, 'ml_live_logger') and self.ml_live_logger:
                 conn = self.ml_live_logger._get_conn()
-                rows = conn.execute("SELECT symbol, price, amount FROM ml_open_entries").fetchall()
+                mode = 'paper' if self.paper_trading else 'live'
+                rows = conn.execute(
+                    "SELECT symbol, price, amount FROM ml_open_entries WHERE mode=?",
+                    (mode,),
+                ).fetchall()
                 for r in rows:
                     sym = str(r[0])
                     qty = float(r[2] or 0.0)
@@ -944,14 +947,15 @@ class TradingMixin:
         try:
             if hasattr(self, 'ml_live_logger') and self.ml_live_logger:
                 conn = self.ml_live_logger._get_conn()
+                mode = 'paper' if self.paper_trading else 'live'
                 row = conn.execute(
-                    "SELECT entry_price FROM ml_trade_outcomes WHERE symbol=? ORDER BY exit_time DESC LIMIT 1",
-                    (symbol,)
+                    "SELECT buy_price FROM ml_trade_outcomes WHERE mode=? AND symbol=? ORDER BY timestamp DESC LIMIT 1",
+                    (mode, symbol)
                 ).fetchone()
                 if not row and symbol.endswith('/USD'):
                     row = conn.execute(
-                        "SELECT entry_price FROM ml_trade_outcomes WHERE symbol=? ORDER BY exit_time DESC LIMIT 1",
-                        (symbol.replace('/USD', '/USDT'),)
+                        "SELECT buy_price FROM ml_trade_outcomes WHERE mode=? AND symbol=? ORDER BY timestamp DESC LIMIT 1",
+                        (mode, symbol.replace('/USD', '/USDT'))
                     ).fetchone()
                 if row and row[0]:
                     return float(row[0])
