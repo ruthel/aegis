@@ -38,7 +38,7 @@ except ImportError:
 class MLEngine:
     """Moteur de Machine Learning dédié pour la prédiction de probabilité de gain"""
 
-    MODEL_FORMAT_VERSION = 3
+    MODEL_FORMAT_VERSION = 4
 
 
     def __init__(self, model_dir: str = 'data'):
@@ -77,11 +77,10 @@ class MLEngine:
             'is_support_touch', 'support_confidence', 'support_rebounds',
             'support_backtest_winrate', 'support_backtest_total_pnl',
             'support_backtest_avg_pnl',
-            'crypto_score', 'dynamic_min_score', 'score_vs_threshold',
+            # Les gates live non reconstructibles historiquement (crypto score,
+            # seuil dynamique et analyse technique globale) restent hors du ML.
             'is_optimal_trading_time', 'trading_session_code',
             'minutes_to_session_close',
-            'technical_action_code', 'technical_confidence',
-            'technical_min_confidence', 'technical_confidence_edge',
             # Phase 5: ajout uniquement en fin de schema pour compatibilite champion.
             'rsi_4h', 'ema20_slope_4h', 'ema50_slope_4h', 'price_change_3b_4h',
             'daily_recovery_score', 'multi_tf_reversal_score',
@@ -111,11 +110,8 @@ class MLEngine:
             'symbol_regime_code', 'btc_regime_code', 'bear_mode',
             'reversal_confirmed', 'falling_knife_active',
             'is_support_touch', 'support_confidence',
-            'crypto_score', 'score_vs_threshold',
             'is_optimal_trading_time', 'trading_session_code',
             'minutes_to_session_close',
-            'technical_action_code', 'technical_confidence',
-            'technical_confidence_edge',
             # Features DIRECTIONNELLES ajoutées en fin de schéma (compat champion) pour que
             # le P_exit distingue volatilité HAUSSIÈRE (continuer) de volatilité CHAOTIQUE
             # (sortir), au lieu de se baser surtout sur la volatilité brute (atr/std).
@@ -201,7 +197,7 @@ class MLEngine:
         metadata = dict(getattr(self, 'model_metadata', {}) or {})
         return {
             'model_format_version': int(self.MODEL_FORMAT_VERSION),
-            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '3')),
+            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '4')),
             'feature_schema_hash': self.feature_schema_hash(),
             'feature_schema': self._feature_schema_payload(),
             'git_sha': self._git_sha(),
@@ -256,6 +252,27 @@ class MLEngine:
                 return False
         return True
 
+
+    def _clear_loaded_model_state(self) -> None:
+        """Fail closed: no stale model object may survive a failed/incompatible load."""
+        self.model = None
+        self.scaler = None
+        self.probability_calibrator = None
+        self.edge_model = None
+        self.edge_scaler = None
+        self.exit_model = None
+        self.exit_scaler = None
+        self.exit_calibrator = None
+        self.sizing_model = None
+        self.sizing_scaler = None
+        self.target_model = None
+        self.target_scaler = None
+        self.is_trained = False
+        self.is_edge_trained = False
+        self.is_exit_trained = False
+        self.is_sizing_trained = False
+        self.is_target_trained = False
+        self.model_metadata = {}
 
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
         fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
@@ -866,16 +883,9 @@ class MLEngine:
                 bot_features['support_backtest_winrate'],
                 bot_features['support_backtest_total_pnl'],
                 bot_features['support_backtest_avg_pnl'],
-                bot_features['crypto_score'],
-                bot_features['dynamic_min_score'],
-                bot_features['score_vs_threshold'],
                 bot_features['is_optimal_trading_time'],
                 bot_features['trading_session_code'],
                 bot_features['minutes_to_session_close'],
-                bot_features['technical_action_code'],
-                bot_features['technical_confidence'],
-                bot_features['technical_min_confidence'],
-                bot_features['technical_confidence_edge'],
                 rsi_4h, ema20_slope_4h, ema50_slope_4h, price_change_3b_4h,
                 daily_recovery_score, multi_tf_reversal_score,
                 multi_tf_trend_alignment, volume_recovery_score,
@@ -1312,7 +1322,11 @@ class MLEngine:
                 trend_signals += 1
             if price_change_5b > 0:
                 trend_signals += 1
-            multi_tf_align = float(market_features[54]) if len(market_features) > 54 else 0.5
+            try:
+                _multi_tf_idx = self.feature_names.index('multi_tf_trend_alignment')
+                multi_tf_align = float(market_features[_multi_tf_idx]) if len(market_features) > _multi_tf_idx else 0.5
+            except ValueError:
+                multi_tf_align = 0.5
             if multi_tf_align > 0.5:
                 trend_signals += 1
             
@@ -1332,17 +1346,20 @@ class MLEngine:
             # Mais JAMAIS aussi négatif que l'ancien calcul (qui multipliait par -1)
             volatility_directional = volatility_raw * direction_factor
 
-            # Features DIRECTIONNELLES piochées dans le schéma 78 (indices fixes) pour
-            # que le P_exit sache si la volatilité va dans le BON sens (tendance/momentum
-            # haussier -> continuer) ou est CHAOTIQUE (sortir). Bornées à 0.0 si le vecteur
-            # marché est plus court (sécurité si schéma réduit).
-            def _mf(idx):
-                return float(market_features[idx]) if len(market_features) > idx else 0.0
-            exit_short_tf_alignment = _mf(76)       # short_tf_alignment
-            exit_multi_tf_trend_alignment = _mf(54)  # multi_tf_trend_alignment
-            exit_ema20_breakout_15m = _mf(68)        # ema20_breakout_15m
-            exit_momentum_accel_5m = _mf(73)         # momentum_accel_5m
-            exit_consecutive_green_5m = _mf(75)      # consecutive_green_5m
+            # Résolution par NOM de feature : les changements de schéma d'entrée ne
+            # peuvent plus décaler silencieusement les features directionnelles de P_exit.
+            def _entry_feature(name, default=0.0):
+                try:
+                    idx = self.feature_names.index(name)
+                    return float(market_features[idx]) if len(market_features) > idx else float(default)
+                except (ValueError, TypeError):
+                    return float(default)
+
+            exit_short_tf_alignment = _entry_feature('short_tf_alignment')
+            exit_multi_tf_trend_alignment = _entry_feature('multi_tf_trend_alignment')
+            exit_ema20_breakout_15m = _entry_feature('ema20_breakout_15m')
+            exit_momentum_accel_5m = _entry_feature('momentum_accel_5m')
+            exit_consecutive_green_5m = _entry_feature('consecutive_green_5m')
 
             # === VOLUME PROFILE ===
             # Le volume précède le prix : accumulation = continuer, distribution = sortir
@@ -1470,14 +1487,9 @@ class MLEngine:
                 bot_features['falling_knife_active'],
                 bot_features['is_support_touch'],
                 bot_features['support_confidence'],
-                bot_features['crypto_score'],
-                bot_features['score_vs_threshold'],
                 bot_features['is_optimal_trading_time'],
                 bot_features['trading_session_code'],
                 bot_features['minutes_to_session_close'],
-                bot_features['technical_action_code'],
-                bot_features['technical_confidence'],
-                bot_features['technical_confidence_edge'],
                 # Features directionnelles (fin de schéma, compat champion)
                 exit_short_tf_alignment, exit_multi_tf_trend_alignment,
                 exit_ema20_breakout_15m, exit_momentum_accel_5m,
@@ -1580,16 +1592,23 @@ class MLEngine:
             return False
 
     def train_sizing_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 6, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
-        """Entraîne le modèle ML de facteur de taille de position avec LightGBM ou RandomForest."""
+        """Entraîne le sizing avec holdout chronologique puis refit sur tout l'historique."""
         if not SKLEARN_AVAILABLE:
             return False
         if len(X) < 30:
             self.logger.warning("Données insuffisantes pour entraîner le modèle ML de sizing.")
             return False
         try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.float64)
+            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
+
             self.sizing_scaler = StandardScaler()
-            X_scaled = self.sizing_scaler.fit_transform(X)
-            
+            X_train_s = self.sizing_scaler.fit_transform(X_train)
+            X_test_s = self.sizing_scaler.transform(X_test)
+
             if use_lightgbm and LIGHTGBM_AVAILABLE:
                 self.sizing_model = lgb.LGBMRegressor(
                     n_estimators=n_estimators,
@@ -1608,7 +1627,25 @@ class MLEngine:
                     random_state=44,
                     n_jobs=-1
                 )
-            self.sizing_model.fit(X_scaled, y)
+
+            self.sizing_model.fit(X_train_s, y_train)
+            pred = np.asarray(self.sizing_model.predict(X_test_s), dtype=np.float64)
+            mae = float(mean_absolute_error(y_test, pred))
+            rmse = float(mean_squared_error(y_test, pred) ** 0.5)
+            r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
+
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata.update({
+                'sizing_validation_type': 'temporal_holdout',
+                'sizing_test_mae': round(mae, 5),
+                'sizing_test_rmse': round(rmse, 5),
+                'sizing_test_r2': round(r2, 5),
+                'sizing_samples': int(len(X_arr)),
+            })
+
+            self.sizing_scaler = StandardScaler()
+            X_all = self.sizing_scaler.fit_transform(X_arr)
+            self.sizing_model.fit(X_all, y_arr)
             self.is_sizing_trained = True
             self.save_model()
             return True
@@ -1617,19 +1654,23 @@ class MLEngine:
             return False
 
     def train_target_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 8, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
-        """Entraîne le modèle P_target: régresseur du gain maximum atteignable (%) d'un trade.
-
-        y = pour chaque sample, le meilleur gain net % observé pendant le hold
-        (max favorable excursion). Sert à poser un take-profit intelligent."""
+        """Entraîne P_target avec holdout chronologique puis refit sur tout l'historique."""
         if not SKLEARN_AVAILABLE:
             return False
         if len(X) < 30:
             self.logger.warning("Données insuffisantes pour entraîner le modèle ML P_target.")
             return False
         try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.float64)
+            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
+
             self.target_scaler = StandardScaler()
-            X_scaled = self.target_scaler.fit_transform(X)
-            
+            X_train_s = self.target_scaler.fit_transform(X_train)
+            X_test_s = self.target_scaler.transform(X_test)
+
             if use_lightgbm and LIGHTGBM_AVAILABLE:
                 self.target_model = lgb.LGBMRegressor(
                     n_estimators=n_estimators,
@@ -1648,7 +1689,25 @@ class MLEngine:
                     random_state=45,
                     n_jobs=-1
                 )
-            self.target_model.fit(X_scaled, y)
+
+            self.target_model.fit(X_train_s, y_train)
+            pred = np.asarray(self.target_model.predict(X_test_s), dtype=np.float64)
+            mae = float(mean_absolute_error(y_test, pred))
+            rmse = float(mean_squared_error(y_test, pred) ** 0.5)
+            r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
+
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata.update({
+                'target_validation_type': 'temporal_holdout',
+                'target_test_mae_pct': round(mae, 5),
+                'target_test_rmse_pct': round(rmse, 5),
+                'target_test_r2': round(r2, 5),
+                'target_samples': int(len(X_arr)),
+            })
+
+            self.target_scaler = StandardScaler()
+            X_all = self.target_scaler.fit_transform(X_arr)
+            self.target_model.fit(X_all, y_arr)
             self.is_target_trained = True
             self.save_model()
             return True
@@ -1989,13 +2048,13 @@ class MLEngine:
     def load_model(self) -> bool:
         """Charge le modèle ML depuis le disque si présent"""
         if not SKLEARN_AVAILABLE or not os.path.exists(self.model_path):
-            self.is_trained = False
+            self._clear_loaded_model_state()
             return False
 
         try:
             data = joblib.load(self.model_path)
             if not self._validate_loaded_contract(data):
-                self.is_trained = False
+                self._clear_loaded_model_state()
                 return False
             self.model = data.get('model')
             self.scaler = data.get('scaler')
@@ -2068,7 +2127,7 @@ class MLEngine:
             return self.is_trained
         except Exception as e:
             self.logger.error(f"Erreur de chargement du modèle ML: {e}")
-            self.is_trained = False
+            self._clear_loaded_model_state()
             return False
 
 

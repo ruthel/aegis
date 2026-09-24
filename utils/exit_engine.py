@@ -163,7 +163,7 @@ class ExitDecisionEngine:
         position metrics and forwards the ML exit decision.
         """
         buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
-        fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100))
+        fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100))
         
         # Calculate net PnL percentage
         breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))

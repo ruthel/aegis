@@ -33,6 +33,7 @@ from core.ml_engine import MLEngine
 from core.signal_engine import SignalEngine
 from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
+from utils.exit_engine import ExitDecisionEngine
 from scripts.trade_signals import simulate_trade
 
 
@@ -731,6 +732,10 @@ def generate_exit_training_samples(
     also truncate bundles at end_ts when strict walk-forward isolation is required.
     """
     X_exit_samples, y_exit_labels, exit_timestamps = [], [], []
+    exit_engine = ExitDecisionEngine(
+        fragile_max_net_pct=float(os.getenv('PROFIT_FRAGILE_MAX_NET_PCT', '0.40')),
+        time_stop_minutes=int(os.getenv('TIME_STOP_MINUTES', '12')),
+    )
     exit_min_edge = float(os.getenv('ML_EXIT_MIN_HOLD_EDGE_PCT', '0.05'))
     time_cost_per_day = float(os.getenv('ML_EXIT_HOLD_TIME_COST_PCT_PER_DAY', '0.02'))
     exit_max_hold = int(exit_max_hold or os.getenv('ML_EXIT_MAX_HOLD_CANDLES', '960'))
@@ -875,11 +880,18 @@ def generate_exit_training_samples(
                     h4_history=cp_h4,
                     d1_history=cp_d1,
                 )
+                continuation_score = exit_engine.compute_continuation_score(
+                    exit_symbol,
+                    cp_price,
+                    cp_history[-30:],
+                    btc_slice,
+                    position_data,
+                )
                 exit_features = ml_engine.extract_exit_features(
                     cp_history,
                     cp_price,
                     position_data,
-                    continuation_score=50.0,
+                    continuation_score=continuation_score,
                     entry_p_win=entry_p_win_train,
                     btc_klines=btc_slice,
                     bot_context=bot_ctx,
