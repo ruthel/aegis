@@ -1,6 +1,6 @@
 # 🤖 Aegis Trading Bot v3
 
-Bot de trading spot Kraken avec **cerveau ML entrée/sortie/sizing**, 52 features d'entrée, features de sortie, sizing ML dédié, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
+Bot de trading spot Kraken avec **cerveau ML entrée/sortie/sizing**, 82 features d'entrée, 51 features de sortie, sizing ML dédié, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -101,7 +101,7 @@ python start.py
 - **Live** : Flux WebSocket temps réel, positions ouvertes, volumes affichés en USD, cooldowns opérationnels, contexte d'entrée, décisions finales et alertes.
 - **UI** : cartes métriques principales, **Core ML Engine**, contexte d'entrée, marché live, positions et console d'alertes.
 - **Analytics** : Sharpe Ratio, Profit Factor, Max Drawdown, Kelly %, Expectancy, Avg Win/Loss, graphique PnL, historique des scores crypto par symbole/période, daily/hourly bar charts amCharts 5 et heatmap crypto.
-- **🧠 Core ML Engine** : modèle d'entrée RandomForest, modèle de sortie, modèle de sizing, P_win/P_continue temps réel, facteur de taille recommandé et décisions finales ML (`HOLD`/`FORCE_EXIT`).
+- **🧠 Core ML Engine** : modèle d'entrée LightGBM par défaut (RandomForest fallback), modèle de sortie, modèle de sizing, P_win/P_continue temps réel, facteur de taille recommandé et décisions finales ML (`HOLD`/`FORCE_EXIT`).
 - **Trades** : Historique des trades fermés + positions ouvertes affichées avec statut `OPEN`.
 - **Configuration** : Édition en ligne de tous les paramètres sans redémarrage manuel.
 - **Console** : Logs bot en temps réel avec autoscroll, limite de lignes et filtrage visuel.
@@ -110,11 +110,9 @@ python start.py
 
 ## ⚙️ Configuration Avancée
 
-### Gestion des Risques (`.env.local` / `.env.ui`)
+### Gestion des Risques (`.env`)
 
-Le runtime charge uniquement deux fichiers locaux :
-- `.env.local` : secrets, exchange, Telegram, paramètres techniques avancés.
-- `.env.ui` : réglages modifiables depuis le dashboard Config.
+Le runtime charge un seul fichier local `.env` pour les secrets et tous les paramètres modifiables depuis le dashboard Config.
 
 ```env
 # Trading Professionnel
@@ -174,7 +172,7 @@ EXECUTION_DELAY_MS=5            # Délai exécution (5ms)
 aegis/
 ├── core/                        # Cœur du bot (pattern Mixin)
 │   ├── trading_bot.py          # Bot principal — orchestration trading + décisions ML
-│   ├── ml_engine.py            # 🧠 Core ML Engine (RandomForest entrée + sortie + sizing)
+│   ├── ml_engine.py            # 🧠 Core ML Engine (LightGBM défaut / RandomForest fallback)
 │   ├── bot/trading.py          # TradingMixin - Ordres & exécution
 │   ├── bot/sync.py             # SyncMixin - Synchronisation exchange
 │   ├── bot/analysis.py         # AnalysisMixin - Analyses & prévisions
@@ -198,7 +196,7 @@ aegis/
 │   ├── aegis_model.joblib      # Champion ML actif
 │   ├── aegis_challenger.joblib # Challenger potentiel
 │   └── aegis_db.sqlite3        # DB SQLite: état bot, ML, UI, Telegram, analytics
-├── config.py                   # Configuration centralisée (.env.local + .env.ui)
+├── config.py                   # Configuration centralisée (.env)
 ├── run.py                      # Point d'entrée sécurisé
 ├── start.py                    # Lance ui + bot ensemble
 ├── ui/                         # Interface web Flask + SPA React
@@ -392,11 +390,10 @@ sudo yum install python3 python3-pip git -y
 git clone https://github.com/votre-repo/aegis.git
 cd aegis
 pip3 install -r requirements.txt
-cp .env.example .env.local
-cp .env.ui.example .env.ui
+cp .env.example .env
 
 # Configuration clés API
-nano .env.local  # Ajouter vos clés API
+nano .env  # Ajouter vos clés API
 
 # Démarrage
 python3 run.py
