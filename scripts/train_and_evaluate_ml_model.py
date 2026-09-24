@@ -570,6 +570,43 @@ def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=
     return fetched
 
 
+def _load_kraken_archive_for_training(symbol, timeframe, start_ms):
+    """Use the local Kraken-native archive only when it has enough fresh coverage."""
+    if os.getenv('ML_PREFER_KRAKEN_ARCHIVE', 'false').lower() != 'true':
+        return []
+    root = os.getenv('ML_KRAKEN_ARCHIVE_DIR', os.path.join('data', 'kraken_ohlcv'))
+    path = os.path.join(root, f"{symbol.replace('/', '-')}_{timeframe}.json.gz")
+    if not os.path.exists(path):
+        return []
+    try:
+        import gzip
+        with gzip.open(path, 'rt', encoding='utf-8') as fh:
+            rows = json.load(fh)
+        rows = [
+            row for row in (rows or [])
+            if int(row.get('timestamp', 0) or 0) >= int(start_ms)
+        ]
+        if not rows:
+            return []
+        rows.sort(key=lambda x: int(x.get('timestamp', 0) or 0))
+        coverage_days = (
+            int(rows[-1]['timestamp']) - int(rows[0]['timestamp'])
+        ) / 86_400_000.0
+        min_days = float(os.getenv('ML_KRAKEN_ARCHIVE_MIN_COVERAGE_DAYS', '90'))
+        tf_ms = _timeframe_ms(timeframe)
+        freshness_ms = int(os.getenv('ML_KRAKEN_ARCHIVE_MAX_STALENESS_CANDLES', '3')) * tf_ms
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if coverage_days < min_days or now_ms - int(rows[-1]['timestamp']) > freshness_ms:
+            return []
+        print(
+            f"      → {symbol} {timeframe}: {len(rows)} bougies Kraken archive "
+            f"({coverage_days:.1f} jours)"
+        )
+        return rows
+    except Exception:
+        return []
+
+
 def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None):
     """Récupère l'historique OHLCV via Coinbase avec CACHE INCRÉMENTAL sur disque.
 
@@ -587,6 +624,12 @@ def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None
     max_candles = int(os.getenv('ML_TRAINING_MAX_CANDLES', '330000'))
     cache_enabled = os.getenv('ML_OHLCV_CACHE_ENABLED', 'true').lower() == 'true'
 
+    kraken_archive = _load_kraken_archive_for_training(symbol, timeframe, window_start_ms)
+    if kraken_archive:
+        return kraken_archive[-max_candles:]
+
+    # Long-history fallback. Coinbase is used only when a sufficiently deep Kraken
+    # archive is not yet available; the local Kraken archive is built incrementally.
     cb = ccxt.coinbase({'enableRateLimit': True})
 
     cached = _load_cache(symbol, timeframe) if cache_enabled else []
