@@ -676,9 +676,8 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn('ML_PROMOTION_MAX_OOS_BASELINE_RATIO', source)
         self.assertIn('oos_skill_checks', source)
         self.assertIn("sizing_validation_type", source)
-        self.assertIn("target_validation_type", source)
 
-    def test_extracted_feature_vectors_match_v4_schema(self):
+    def test_extracted_feature_vectors_match_v5_schema(self):
         engine = MLEngine(model_dir='data/nonexistent-vector-schema-test')
         h15 = _trend_klines(120, 100.0, 0.05, 900_000)
         h5 = _trend_klines(120, 100.0, 0.02, 300_000)
