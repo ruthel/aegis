@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -37,20 +37,25 @@ BUCKETS = [
 ]
 
 
-def run_id():
-    return f"ml_analysis_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+def run_id(mode='paper'):
+    return f"ml_analysis_{str(mode or 'paper').lower()}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
 
-def load_entries(session):
+def load_entries(session, mode='paper'):
+    mode = str(mode or 'paper').lower()
     rows = session.execute(
         select(DecisionLog, MlTradeOutcome)
         .outerjoin(
             MlTradeOutcome,
-            or_(
-                MlTradeOutcome.entry_id == DecisionLog.event_id,
-                MlTradeOutcome.entry_id == DecisionLog.entry_id,
+            and_(
+                MlTradeOutcome.mode == mode,
+                or_(
+                    MlTradeOutcome.entry_id == DecisionLog.event_id,
+                    MlTradeOutcome.entry_id == DecisionLog.entry_id,
+                ),
             ),
         )
+        .where(DecisionLog.mode == mode)
         .where(DecisionLog.action_type == 'ENTRY')
         .order_by(DecisionLog.timestamp.asc())
     ).all()
@@ -61,6 +66,7 @@ def load_entries(session):
             linked_outcomes.add(outcome.event_id)
         entries.append({
             'event_id': entry.event_id,
+            'mode': mode,
             'timestamp': entry.timestamp,
             'symbol': entry.symbol,
             'decision': entry.decision,
@@ -77,6 +83,7 @@ def load_entries(session):
         })
     orphan_outcomes = session.execute(
         select(MlTradeOutcome)
+        .where(MlTradeOutcome.mode == mode)
         .where(MlTradeOutcome.pnl_pct.is_not(None))
         .order_by(MlTradeOutcome.timestamp.asc())
     ).scalars().all()
@@ -85,6 +92,7 @@ def load_entries(session):
             continue
         entries.append({
             'event_id': outcome.entry_id or outcome.event_id,
+            'mode': mode,
             'timestamp': outcome.timestamp,
             'symbol': outcome.symbol,
             'decision': 'accepted',
@@ -102,7 +110,7 @@ def load_entries(session):
     return entries
 
 
-def compute_calibration(session, analysis_id, entries):
+def compute_calibration(session, analysis_id, entries, mode='paper'):
     accepted = [row for row in entries if row['decision'] == 'accepted']
     closed = [row for row in accepted if row['pnl_pct'] is not None]
     bucket_rows = []
@@ -136,6 +144,7 @@ def compute_calibration(session, analysis_id, entries):
         bucket_rows.append({
             'run_id': analysis_id,
             'bucket_label': label,
+            'mode': str(mode or 'paper').lower(),
             'min_p_win': low,
             'max_p_win': high if high <= 100 else 100.0,
             'entries': len(bucket_entries),
@@ -464,11 +473,12 @@ def drift_status(metrics, rejected_count):
     return 'ok', 'Performance live suffisante pour le seuil actuel.'
 
 
-def write_run_summary(session, analysis_id, metrics, rejected_count, rejected_replayed):
+def write_run_summary(session, analysis_id, metrics, rejected_count, rejected_replayed, mode='paper'):
     status, message = drift_status(metrics, rejected_count)
     now = datetime.now().isoformat()
     session.merge(MlAnalysisRun(
         run_id=analysis_id,
+        mode=str(mode or 'paper').lower(),
         generated_at=now,
         accepted_entries=metrics['accepted_entries'],
         closed_entries=metrics['closed_entries'],
@@ -486,6 +496,7 @@ def write_run_summary(session, analysis_id, metrics, rejected_count, rejected_re
     session.merge(MlDriftAlert(
         alert_id=f"drift_{analysis_id}",
         run_id=analysis_id,
+        mode=str(mode or 'paper').lower(),
         generated_at=now,
         status=status,
         message=message,
@@ -505,6 +516,11 @@ def main():
     load_dotenv('.env', override=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+    parser.add_argument(
+        '--mode',
+        choices=('paper', 'live'),
+        default='paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live',
+    )
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken'))
     parser.add_argument('--timeframe', default=os.getenv('MAIN_TIMEFRAME', '15m'))
     parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96')))
@@ -525,18 +541,25 @@ def main():
     logger = MLLiveLogger(data_dir=os.path.dirname(args.db) or 'data', sqlite_file=args.db)
     logger.close()
 
-    analysis_id = run_id()
+    analysis_id = run_id(args.mode)
     Session = create_session_factory(args.db)
     session = Session()
-    entries = load_entries(session)
-    metrics = compute_calibration(session, analysis_id, entries)
+    entries = load_entries(session, mode=args.mode)
+    metrics = compute_calibration(session, analysis_id, entries, mode=args.mode)
     rejected_count = len([row for row in entries if row['decision'] == 'rejected'])
     rejected_replayed = replay_rejected(session, analysis_id, entries, args)
-    status, message = write_run_summary(session, analysis_id, metrics, rejected_count, rejected_replayed)
+    status, message = write_run_summary(
+        session,
+        analysis_id,
+        metrics,
+        rejected_count,
+        rejected_replayed,
+        mode=args.mode,
+    )
     session.commit()
     session.close()
 
-    print(f"Analysis: {analysis_id}")
+    print(f"Analysis: {analysis_id} | mode={args.mode}")
     print(f"Accepted: {metrics['accepted_entries']} | Closed: {metrics['closed_entries']}")
     print(f"Rejected: {rejected_count} | Replayed: {rejected_replayed}")
     print(f"Drift: {status} - {message}")
