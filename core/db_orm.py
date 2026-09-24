@@ -223,6 +223,7 @@ class CryptoScore(Base):
 
     score_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str] = mapped_column(Text)
     score: Mapped[int | None] = mapped_column(Integer)
     price: Mapped[float | None] = mapped_column(Float)
@@ -391,6 +392,7 @@ class ExecutionLatency(Base):
 
     latency_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str] = mapped_column(Text)
     side: Mapped[str | None] = mapped_column(Text)
     order_type: Mapped[str | None] = mapped_column(Text)
