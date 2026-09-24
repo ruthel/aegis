@@ -1299,7 +1299,7 @@ def weighted_positions(positions, trailing_stops=None, pending_orders=None, exit
             min_profit = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8')) / 100
             target_price = avg_entry * (1 + min_profit)
             
-        fee_pct = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) * 2
+        fee_pct = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) * 2
         entry_val = data['amount'] * avg_entry
         current_price = None
         if cryptos and isinstance(cryptos, dict):
