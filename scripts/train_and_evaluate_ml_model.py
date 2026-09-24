@@ -708,6 +708,193 @@ def generate_samples_from_klines(
     return samples, labels, metadata
 
 
+def generate_exit_training_samples(
+    ml_engine,
+    signal_engine,
+    training_histories,
+    btc_history,
+    fee_rate,
+    start_ts=None,
+    end_ts=None,
+    exit_max_hold=None,
+    max_samples=None,
+):
+    """Generate P_exit HOLD-vs-EXIT samples with the same historical context as live.
+
+    start_ts/end_ts are epoch seconds and constrain ENTRY timestamps. Callers should
+    also truncate bundles at end_ts when strict walk-forward isolation is required.
+    """
+    X_exit_samples, y_exit_labels, exit_timestamps = [], [], []
+    exit_min_edge = float(os.getenv('ML_EXIT_MIN_HOLD_EDGE_PCT', '0.05'))
+    time_cost_per_day = float(os.getenv('ML_EXIT_HOLD_TIME_COST_PCT_PER_DAY', '0.02'))
+    exit_max_hold = int(exit_max_hold or os.getenv('ML_EXIT_MAX_HOLD_CANDLES', '960'))
+    max_samples = int(max_samples or os.getenv('ML_EXIT_MAX_TRAIN_SAMPLES', '16000'))
+    exit_trend_enabled = os.getenv('ML_EXIT_TREND_EXIT', 'true').lower() == 'true'
+    exit_trend_confirm = int(os.getenv('ML_EXIT_TREND_CONFIRM_BARS', '2'))
+
+    def _slice_until(rows, ts_value, count=30):
+        rows = rows or []
+        cursor = _cursor_at_or_before(rows, ts_value)
+        return rows[max(0, cursor - count):cursor]
+
+    for exit_symbol, tf_bundle in (training_histories or {}).items():
+        symbol_15m = list(tf_bundle.get('15m') or [])
+        if len(symbol_15m) < 100:
+            continue
+
+        for index in range(50, len(symbol_15m) - 10):
+            if len(X_exit_samples) >= max_samples:
+                break
+
+            entry_ts_raw = float(symbol_15m[index]['timestamp'])
+            entry_ts_sec = entry_ts_raw / 1000.0 if entry_ts_raw > 1e12 else entry_ts_raw
+            if start_ts is not None and entry_ts_sec < float(start_ts):
+                continue
+            if end_ts is not None and entry_ts_sec >= float(end_ts):
+                break
+
+            entry_price = float(symbol_15m[index]['close'])
+            entry_ts = int(symbol_15m[index]['timestamp'])
+            history = symbol_15m[max(0, index - 200):index]
+            candidate = signal_engine.detect_best(history[-200:], entry_price)
+            if not candidate:
+                continue
+
+            entry_5m = _slice_until(tf_bundle.get('5m'), entry_ts, 30)
+            entry_1h = _slice_until(tf_bundle.get('1h'), entry_ts, 40)
+            entry_4h = _slice_until(tf_bundle.get('4h'), entry_ts, 80)
+            entry_1d = _slice_until(tf_bundle.get('1d'), entry_ts, 80)
+            btc_entry_idx = _cursor_at_or_before(btc_history, entry_ts) if btc_history else None
+            entry_bot_ctx = build_training_bot_context(
+                history,
+                candidate,
+                entry_ts,
+                btc_history=btc_history,
+                index=btc_entry_idx,
+                h1_history=entry_1h,
+                h4_history=entry_4h,
+                d1_history=entry_1d,
+            )
+            if (
+                os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+                and entry_bot_ctx.get('falling_knife_active')
+                and not entry_bot_ctx.get('reversal_confirmed')
+            ):
+                continue
+
+            entry_trade_ctx = {
+                'fee_rate': fee_rate,
+                'position_value_usd': 5.0,
+                'account_balance': 1000.0,
+                'planned_hold_minutes': 96 * 15.0,
+            }
+            entry_p_win_train = ml_engine.predict_win_probability(
+                history,
+                entry_price,
+                klines_5m=entry_5m,
+                klines_1h=entry_1h,
+                klines_4h=entry_4h,
+                klines_1d=entry_1d,
+                trade_context=entry_trade_ctx,
+                bot_context=entry_bot_ctx,
+            )
+
+            exit_index, final_exit_price, _ = simulate_trade(
+                symbol_15m,
+                index,
+                entry_price,
+                candidate.get('support_price'),
+                1.0,
+                exit_max_hold,
+                2.5,
+                breakeven_stop=True,
+                breakeven_trigger=1.5,
+                breakeven_lock=1.0,
+                fee_rate=fee_rate,
+                trend_exit=exit_trend_enabled,
+                trend_confirm_bars=exit_trend_confirm,
+            )
+
+            checkpoints = [
+                index + 4, index + 8, index + 16, index + 32,
+                index + 48, index + 96, index + 192, index + 384, index + 672,
+            ]
+            for cp in checkpoints:
+                if cp >= len(symbol_15m) or cp >= exit_index:
+                    break
+                cp_price = float(symbol_15m[cp]['close'])
+                cp_history = symbol_15m[max(0, cp - 200):cp]
+                if len(cp_history) < 20:
+                    continue
+
+                duration_minutes = (cp - index) * 15.0
+                remaining_days = max(0.0, (exit_index - cp) * 15.0 / 1440.0)
+                position_data = {
+                    'entry_price': entry_price,
+                    'buy_price': entry_price,
+                    'fee_rate': fee_rate,
+                    'duration_minutes': duration_minutes,
+                    'stop_price': entry_price * 0.99,
+                    'target_price': entry_price * 1.02,
+                }
+
+                exit_now_net = (
+                    (cp_price * (1 - fee_rate) - entry_price * (1 + fee_rate))
+                    / max(entry_price, 1e-9)
+                ) * 100.0
+                hold_final_net = (
+                    (float(final_exit_price) * (1 - fee_rate) - entry_price * (1 + fee_rate))
+                    / max(entry_price, 1e-9)
+                ) * 100.0
+                hold_advantage = hold_final_net - exit_now_net - (remaining_days * time_cost_per_day)
+                exit_label = 1 if hold_advantage >= exit_min_edge else 0
+
+                cp_ts = int(symbol_15m[cp]['timestamp'])
+                btc_idx = _cursor_at_or_before(btc_history, cp_ts) if btc_history else None
+                btc_slice = (
+                    btc_history[max(0, btc_idx - 30):btc_idx]
+                    if btc_history and btc_idx is not None
+                    else None
+                )
+                cp_h1 = _slice_until(tf_bundle.get('1h'), cp_ts, 40)
+                cp_h4 = _slice_until(tf_bundle.get('4h'), cp_ts, 80)
+                cp_d1 = _slice_until(tf_bundle.get('1d'), cp_ts, 80)
+                bot_ctx = build_training_bot_context(
+                    cp_history,
+                    None,
+                    cp_ts,
+                    btc_history=btc_history,
+                    index=btc_idx,
+                    h1_history=cp_h1,
+                    h4_history=cp_h4,
+                    d1_history=cp_d1,
+                )
+                exit_features = ml_engine.extract_exit_features(
+                    cp_history,
+                    cp_price,
+                    position_data,
+                    continuation_score=50.0,
+                    entry_p_win=entry_p_win_train,
+                    btc_klines=btc_slice,
+                    bot_context=bot_ctx,
+                )
+                if exit_features is not None:
+                    X_exit_samples.append(exit_features)
+                    y_exit_labels.append(exit_label)
+                    exit_timestamps.append(
+                        cp_ts / 1000.0 if cp_ts > 1e12 else float(cp_ts)
+                    )
+
+        if len(X_exit_samples) >= max_samples:
+            break
+
+    return (
+        np.asarray(X_exit_samples, dtype=np.float64),
+        np.asarray(y_exit_labels, dtype=np.int64),
+        np.asarray(exit_timestamps, dtype=np.float64),
+    )
+
+
 def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use_grid_search=None, use_lightgbm=None):
     """Entraîne le modèle Challenger d'Entrée sur l'historique configuré et le sauvegarde dans aegis_challenger.joblib.
     
