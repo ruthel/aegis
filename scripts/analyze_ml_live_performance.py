@@ -502,8 +502,7 @@ def write_run_summary(session, analysis_id, metrics, rejected_count, rejected_re
 
 
 def main():
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
+    load_dotenv('.env', override=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken'))
