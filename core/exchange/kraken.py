@@ -1,5 +1,6 @@
 """Client Kraken - Implémentation de l'interface ExchangeBase"""
 import threading
+import os
 
 import ccxt
 from core.exchange.base import ExchangeBase
@@ -110,6 +111,8 @@ class KrakenClient(ExchangeBase):
     def fetch_trading_fees(self):
         """Retourne les frais maker/taker par paire au format attendu par le bot."""
         fees = {}
+        configured_taker = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
+        configured_maker = configured_taker * 0.9
         try:
             if hasattr(self._exchange, 'fetch_trading_fees'):
                 raw_fees = self._call(self._exchange.fetch_trading_fees)
@@ -118,8 +121,8 @@ class KrakenClient(ExchangeBase):
                         if not isinstance(item, dict):
                             continue
                         fees[symbol] = {
-                            'maker': float(item.get('maker') if item.get('maker') is not None else 0.0016),
-                            'taker': float(item.get('taker') if item.get('taker') is not None else 0.0026),
+                            'maker': float(item.get('maker') if item.get('maker') is not None else configured_maker),
+                            'taker': float(item.get('taker') if item.get('taker') is not None else configured_taker),
                         }
                     if fees:
                         return fees
