@@ -12,6 +12,9 @@ Features:
 import os
 import time
 import logging
+import hashlib
+import json
+import subprocess
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -34,6 +37,9 @@ except ImportError:
 
 class MLEngine:
     """Moteur de Machine Learning dédié pour la prédiction de probabilité de gain"""
+
+    MODEL_FORMAT_VERSION = 3
+
 
     def __init__(self, model_dir: str = 'data'):
         self.logger = logging.getLogger(__name__)
@@ -136,6 +142,95 @@ class MLEngine:
         self.sizing_feature_names = list(self.feature_names)
         # Le modèle P_target réutilise les mêmes features d'entrée que P_win/sizing
         self.target_feature_names = list(self.feature_names)
+
+    def _feature_schema_payload(self) -> Dict:
+        return {
+            'entry': list(self.feature_names),
+            'exit': list(self.exit_feature_names),
+            'sizing': list(self.sizing_feature_names),
+            'target': list(self.target_feature_names),
+        }
+
+    def feature_schema_hash(self) -> str:
+        payload = json.dumps(
+            self._feature_schema_payload(),
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode('utf-8')
+        return hashlib.sha256(payload).hexdigest()
+
+    def _config_hash(self) -> str:
+        keys = [
+            'TRADING_FEE_PERCENT',
+            'ML_MIN_PROBABILITY',
+            'ML_MIN_EXPECTED_NET_PNL_PCT',
+            'ML_EXPECTED_SLIPPAGE_PCT',
+            'ML_EXIT_SELL_THRESHOLD',
+            'ML_EXIT_ENTRY_MIN_CONTINUE_PROB',
+            'ML_TARGET_PATH_QUANTILE',
+            'HARD_ANTI_FALLING_KNIFE',
+            'ML_USE_LIGHTGBM',
+        ]
+        payload = {key: os.getenv(key) for key in keys}
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        ).hexdigest()
+
+    @staticmethod
+    def _git_sha() -> str:
+        env_sha = os.getenv('GITHUB_SHA') or os.getenv('AEGIS_GIT_SHA')
+        if env_sha:
+            return str(env_sha)
+        try:
+            return subprocess.check_output(
+                ['git', 'rev-parse', 'HEAD'],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            ).strip()
+        except Exception:
+            return 'unknown'
+
+    def _model_contract(self) -> Dict:
+        metadata = dict(getattr(self, 'model_metadata', {}) or {})
+        return {
+            'model_format_version': int(self.MODEL_FORMAT_VERSION),
+            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '3')),
+            'feature_schema_hash': self.feature_schema_hash(),
+            'feature_schema': self._feature_schema_payload(),
+            'git_sha': self._git_sha(),
+            'config_hash': self._config_hash(),
+            'training_start': metadata.get('training_start'),
+            'training_end': metadata.get('training_end'),
+            'data_provider': metadata.get('data_provider'),
+            'fee_assumption_percent': float(os.getenv('TRADING_FEE_PERCENT', '0.4')),
+            'ml_min_probability': float(os.getenv('ML_MIN_PROBABILITY', '50.0')),
+        }
+
+    def _validate_loaded_contract(self, data: Dict) -> bool:
+        strict = os.getenv('ML_STRICT_MODEL_SCHEMA', 'True').lower() == 'true'
+        contract = data.get('model_contract') or {}
+        expected_hash = self.feature_schema_hash()
+        actual_hash = contract.get('feature_schema_hash')
+
+        if not strict:
+            return True
+        if int(contract.get('model_format_version') or 0) != int(self.MODEL_FORMAT_VERSION):
+            self.logger.error(
+                "Modèle refusé: format version %s != runtime %s",
+                contract.get('model_format_version'),
+                self.MODEL_FORMAT_VERSION,
+            )
+            return False
+        if not actual_hash or actual_hash != expected_hash:
+            self.logger.error(
+                "Modèle refusé: feature schema incompatible (%s != %s)",
+                actual_hash,
+                expected_hash,
+            )
+            return False
+        return True
+
         
         self.is_trained = False
         self.is_edge_trained = False
@@ -972,7 +1067,9 @@ class MLEngine:
             train_acc = self.model.score(X_train_scaled, y_train) * 100
             oob = self.model.oob_score_ * 100 if hasattr(self.model, 'oob_score_') and self.model.oob_score_ else None
 
+            _base_metadata = dict(getattr(self, 'model_metadata', {}) or {})
             self.model_metadata = {
+                **_base_metadata,
                 'trained_at': datetime.now().isoformat(),
                 'model_type': model_type,
                 'validation_type': 'temporal_holdout',
@@ -1082,7 +1179,9 @@ class MLEngine:
             test_f1 = f1_score(y_test, y_pred, zero_division=0) * 100
             train_acc = self.model.score(X_train_scaled, y_train) * 100
 
+            _base_metadata = dict(getattr(self, 'model_metadata', {}) or {})
             self.model_metadata = {
+                **_base_metadata,
                 'trained_at': datetime.now().isoformat(),
                 'model_type': f'{model_type}_grid_search',
                 'validation_type': 'temporal_holdout_timeseries_cv',
@@ -1799,7 +1898,13 @@ class MLEngine:
 
         try:
             os.makedirs(self.model_dir, exist_ok=True)
+            model_contract = self._model_contract()
+            self.model_metadata = {
+                **dict(getattr(self, 'model_metadata', {}) or {}),
+                **model_contract,
+            }
             joblib.dump({
+                'model_contract': model_contract,
                 'model': self.model,
                 'scaler': self.scaler,
                 'probability_calibrator': self.probability_calibrator,
@@ -1871,6 +1976,9 @@ class MLEngine:
 
         try:
             data = joblib.load(self.model_path)
+            if not self._validate_loaded_contract(data):
+                self.is_trained = False
+                return False
             self.model = data.get('model')
             self.scaler = data.get('scaler')
             self.probability_calibrator = data.get('probability_calibrator')
