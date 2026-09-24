@@ -1780,124 +1780,192 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Erreur update trailing live {symbol}: {e}")
     
     def _check_paper_orders_for_symbol(self, symbol, current_price):
-        """Vérifie et exécute les ordres paper pour un symbole au prix temps réel."""
-        executed = []
-        for order_id, order_data in self.pending_orders.items():
+        """Exécute les limites paper sur bid/ask réel avec partial fills déterministes."""
+        completed = []
+        changed = False
+
+        for order_id, order_data in list(self.pending_orders.items()):
             if order_data.get('symbol') != symbol:
                 continue
-            order = order_data['order']
+            order = order_data.get('order') or {}
             if order.get('type') != 'limit':
                 continue
-            
-            limit_price = order['price']
-            side = order['side']
-            amount = order['amount']
-            
-            if side == 'sell' and current_price >= limit_price:
-                if os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true':
-                    continue
-                # VENTE EXÉCUTÉE
-                buy_price = self.get_real_buy_price(symbol)
-                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                revenue = amount * current_price
-                if getattr(self, 'ml_live_logger', None):
-                    self.ml_live_logger.record_fill_transaction(
-                        order_id,
-                        symbol,
-                        'sell',
-                        amount,
-                        current_price,
-                        fee_amount=revenue * fee_rate,
-                        fee_asset='USD',
-                        mode='paper',
-                        source='paper_trade'
+
+            side = str(order.get('side') or '').lower()
+            if side == 'sell' and os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true':
+                continue
+
+            limit_price = float(order.get('price') or 0.0)
+            requested_amount = float(order.get('amount') or 0.0)
+            if limit_price <= 0 or requested_amount <= 0:
+                continue
+
+            snapshot = self._paper_execution_snapshot(
+                symbol,
+                side,
+                order_type='limit',
+                amount=requested_amount,
+                limit_price=limit_price,
+            )
+            bid = float(snapshot.get('bid') or current_price or 0.0)
+            ask = float(snapshot.get('ask') or current_price or 0.0)
+            touched = (side == 'buy' and ask <= limit_price) or (side == 'sell' and bid >= limit_price)
+            if not touched:
+                continue
+
+            fill_amount = min(requested_amount, float(snapshot.get('amount') or requested_amount))
+            if fill_amount <= 1e-12:
+                continue
+
+            exec_price = float(snapshot.get('price') or limit_price)
+            fee_rate = float(snapshot.get('fee_rate') or self._paper_fee_rate(symbol, 'limit'))
+            fee_amount = fill_amount * exec_price * fee_rate
+            remaining = max(0.0, requested_amount - fill_amount)
+            existing_filled = float(order.get('filled') or 0.0)
+            cumulative_filled = existing_filled + fill_amount
+
+            if side == 'buy':
+                debit = fill_amount * exec_price + fee_amount
+                if debit > self.paper_balance:
+                    print(
+                        f"⚠️ PAPER {symbol}: partial limit ignoré, fonds insuffisants "
+                        f"{debit:.2f} > {self.paper_balance:.2f}"
                     )
-                    self._refresh_paper_balance_from_accounting()
-                else:
-                    self.paper_balance += (revenue * (1 - fee_rate))
-                crypto = symbol.split('/')[0]
-                print(f"✅ PAPER VENTE EXÉCUTÉE: {amount:.6f} {crypto} @ {current_price:.2f} (cible: {limit_price:.2f})")
-                
-                pnl = self.calculate_pnl(symbol, 'sell', amount, current_price, buy_price=buy_price)
-                if hasattr(self, 'risk_manager') and pnl is not None:
-                    self.risk_manager.record_trade(pnl)
-                
-                # Marquer les positions buy correspondantes comme fermées
-                self._close_buy_positions(symbol, amount, current_price)
-                
-                found = False
-                fee_details = self._calculate_fee_details(amount, current_price, buy_price)
-                for p in reversed(self.state.get('positions', [])):
-                    if p.get('order_id') == order_id and p.get('status') == 'opened':
-                        p['status'] = 'executed'
-                        p['price'] = current_price
-                        p['avg_entry_price'] = buy_price
-                        p['position_size_crypto'] = amount
-                        p['position_size_usd'] = amount * current_price
-                        p.update(fee_details)
-                        found = True
-                        break
-                if not found:
-                    position = {
-                        'symbol': symbol, 'side': 'sell', 'amount': amount,
-                        'price': current_price, 'timestamp': datetime.now().isoformat(),
-                        'order_id': order_id, 'source': 'bot', 'paper': True,
-                        'avg_entry_price': buy_price, 'status': 'executed'
-                    }
-                    position.update(fee_details)
-                    self.state.setdefault('positions', []).append(position)
-                self.total_trades += 1
-                
-                if hasattr(self, 'trailing_stop_manager'):
-                    self.trailing_stop_manager.remove_position(symbol)
-                if hasattr(self, 'set_symbol_cooldown'):
-                    self.set_symbol_cooldown(symbol, reason='paper_sell_executed')
-                if hasattr(self, 'notifier'):
-                    self.notifier.notify_trade_sell(symbol, amount, current_price, revenue, buy_price or current_price, pnl or 0, "N/A")
-                
-                executed.append(order_id)
-            
-            elif side == 'buy' and current_price <= limit_price:
-                cost = amount * current_price
-                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                buy_fee = amount * current_price * fee_rate
+                    continue
+
                 if getattr(self, 'ml_live_logger', None):
                     self.ml_live_logger.record_fill_transaction(
                         order_id,
                         symbol,
                         'buy',
-                        amount,
-                        current_price,
-                        fee_amount=buy_fee,
+                        fill_amount,
+                        exec_price,
+                        fee_amount=fee_amount,
                         fee_asset='USD',
                         mode='paper',
-                        source='paper_trade'
+                        source='paper_limit_fill',
                     )
                     self._refresh_paper_balance_from_accounting()
                 else:
-                    self.paper_balance -= (cost * (1 + fee_rate))
+                    self.paper_balance -= debit
 
                 position = {
-                    'symbol': symbol, 'side': 'buy', 'amount': amount,
-                    'price': current_price, 'timestamp': datetime.now().isoformat(),
-                    'order_id': order_id, 'source': 'bot', 'paper': True, 'status': 'executed',
-                    'fee_rate': fee_rate, 'fee': buy_fee
+                    'symbol': symbol,
+                    'side': 'buy',
+                    'amount': fill_amount,
+                    'price': exec_price,
+                    'timestamp': datetime.now().isoformat(),
+                    'order_id': order_id,
+                    'source': 'bot',
+                    'paper': True,
+                    'status': 'executed',
+                    'fee_rate': fee_rate,
+                    'fee': fee_amount,
+                    'paper_fill_ratio': float(snapshot.get('fill_ratio') or 1.0),
+                    'paper_latency_ms': float(snapshot.get('latency_ms') or 0.0),
                 }
-                self.state['positions'].append(position)
+                self.state.setdefault('positions', []).append(position)
                 position['avg_entry_price'] = self.get_real_buy_price(symbol)
+
+            elif side == 'sell':
+                buy_price = self.get_real_buy_price(symbol)
+                revenue = fill_amount * exec_price
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_fill_transaction(
+                        order_id,
+                        symbol,
+                        'sell',
+                        fill_amount,
+                        exec_price,
+                        fee_amount=fee_amount,
+                        fee_asset='USD',
+                        mode='paper',
+                        source='paper_limit_fill',
+                    )
+                    self._refresh_paper_balance_from_accounting()
+                else:
+                    self.paper_balance += revenue - fee_amount
+
+                pnl = self.calculate_pnl(
+                    symbol,
+                    'sell',
+                    fill_amount,
+                    exec_price,
+                    buy_price=buy_price,
+                )
+                if hasattr(self, 'risk_manager') and pnl is not None:
+                    self.risk_manager.record_trade(pnl)
+                self._close_buy_positions(symbol, fill_amount, exec_price)
+
+                found = False
+                for p in reversed(self.state.get('positions', [])):
+                    if p.get('order_id') == order_id and p.get('side') == 'sell':
+                        p['filled_amount'] = float(p.get('filled_amount') or 0.0) + fill_amount
+                        p['remaining_amount'] = remaining
+                        p['price'] = exec_price
+                        p['avg_entry_price'] = buy_price
+                        p['status'] = 'executed' if remaining <= 1e-12 else 'partially_filled'
+                        p.update(self._calculate_fee_details(fill_amount, exec_price, buy_price))
+                        found = True
+                        break
+                if not found:
+                    position = {
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'amount': fill_amount,
+                        'filled_amount': fill_amount,
+                        'remaining_amount': remaining,
+                        'price': exec_price,
+                        'timestamp': datetime.now().isoformat(),
+                        'order_id': order_id,
+                        'source': 'bot',
+                        'paper': True,
+                        'avg_entry_price': buy_price,
+                        'status': 'executed' if remaining <= 1e-12 else 'partially_filled',
+                    }
+                    position.update(self._calculate_fee_details(fill_amount, exec_price, buy_price))
+                    self.state.setdefault('positions', []).append(position)
+
+                if hasattr(self, 'notifier'):
+                    self.notifier.notify_trade_sell(
+                        symbol,
+                        fill_amount,
+                        exec_price,
+                        revenue,
+                        buy_price or exec_price,
+                        pnl or 0,
+                        "N/A",
+                    )
+
+            order['filled'] = cumulative_filled
+            order['remaining'] = remaining
+            order['status'] = 'closed' if remaining <= 1e-12 else 'open'
+            changed = True
+
+            if remaining <= 1e-12:
+                completed.append(order_id)
+                self.total_trades += 1
+                if side == 'sell' and hasattr(self, 'trailing_stop_manager'):
+                    self.trailing_stop_manager.remove_position(symbol)
                 if hasattr(self, 'set_symbol_cooldown'):
-                    self.set_symbol_cooldown(symbol, reason='paper_buy_executed')
-                executed.append(order_id)
-        
-        for oid in executed:
-            del self.pending_orders[oid]
-        if executed:
+                    self.set_symbol_cooldown(symbol, reason=f'paper_{side}_executed')
+                print(
+                    f"✅ PAPER {side.upper()} LIMIT rempli: {cumulative_filled:.6f} {symbol} "
+                    f"@ {exec_price:.6f} | maker fee {fee_rate*100:.3f}%"
+                )
+            else:
+                order['amount'] = remaining
+                print(
+                    f"🟡 PAPER {side.upper()} LIMIT partial: {fill_amount:.6f}/{requested_amount:.6f} "
+                    f"{symbol} @ {exec_price:.6f} | reste {remaining:.6f}"
+                )
+
+        for order_id in completed:
+            self.pending_orders.pop(order_id, None)
+        if changed:
             self.save_state()
-    
+
+
     def check_and_recover_stuck_positions_filtered(self, tradable_pairs):
         """Vérifie les positions bloquées seulement pour les cryptos tradables"""
         balance = self.balance_manager.get_balance()
