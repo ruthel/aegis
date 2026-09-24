@@ -141,6 +141,9 @@ def simulate_ml_exit(
             continue
         current_price = float(candle["close"])
         btc_slice, btc_idx = _slice_until(btc_15m, ts, count=40)
+        h1, _ = _slice_until(bundle.get("1h"), ts, 40)
+        h4, _ = _slice_until(bundle.get("4h"), ts, 80)
+        h1d, _ = _slice_until(bundle.get("1d"), ts, 80)
         bot_context = build_training_bot_context(
             history,
             signal,
@@ -148,6 +151,9 @@ def simulate_ml_exit(
             btc_history=btc_15m,
             index=btc_idx,
             support_stats=support_stats,
+            h1_history=h1,
+            h4_history=h4,
+            d1_history=h1d,
         )
         position_data = {
             "entry_price": entry_price,
@@ -191,6 +197,9 @@ def build_entry_context(ml_engine, symbol, bundle, btc_15m, index, signal, fee_r
         btc_history=btc_15m,
         index=btc_idx,
         support_stats=support_stats,
+        h1_history=h1,
+        h4_history=h4,
+        d1_history=h1d,
     )
     trade_context = {
         "fee_rate": fee_rate,
