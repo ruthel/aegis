@@ -95,13 +95,14 @@ class MLLiveLogger:
         self.append_event(event)
         return decision_id
 
-    def mark_entry_opened(self, symbol, entry_id, order=None, price=None, amount=None):
+    def mark_entry_opened(self, symbol, entry_id, order=None, price=None, amount=None, mode='paper'):
         if not entry_id:
             return
         self.append_event({
             'event_id': self._new_id('entry_opened'),
             'event_type': 'entry_opened',
             'timestamp': datetime.now().isoformat(),
+            'mode': mode,
             'symbol': symbol,
             'entry_id': entry_id,
             'order_id': (order or {}).get('id') if isinstance(order, dict) else None,
@@ -124,7 +125,7 @@ class MLLiveLogger:
         reason=None,
         mode='paper',
     ):
-        open_entry = self.load_open_entries().get(symbol, {})
+        open_entry = self.load_open_entries(mode=mode).get(symbol, {})
         event = {
             'event_id': self._new_id('exit_decision'),
             'event_type': 'exit_decision',
@@ -158,7 +159,7 @@ class MLLiveLogger:
         order=None,
         mode='paper',
     ):
-        open_entries = self.load_open_entries()
+        open_entries = self.load_open_entries(mode=mode)
         open_entry = open_entries.pop(symbol, None)
 
         event = {
@@ -3261,7 +3262,9 @@ class MLLiveLogger:
                 ).all()
                 open_entry_rows = []
                 open_entry_rows = session.scalars(
-                    select(MlOpenEntry).order_by(MlOpenEntry.opened_at.asc())
+                    select(MlOpenEntry)
+                    .where(MlOpenEntry.mode == key)
+                    .order_by(MlOpenEntry.opened_at.asc())
                 ).all()
 
             state = {
@@ -3614,7 +3617,9 @@ class MLLiveLogger:
         return
 
     def _insert_open_entry(self, session, event):
+        mode = str(event.get('mode') or 'paper').lower()
         session.merge(MlOpenEntry(
+            mode=mode,
             symbol=event.get('symbol'),
             entry_id=event.get('entry_id'),
             opened_at=event.get('timestamp'),
@@ -3651,7 +3656,11 @@ class MLLiveLogger:
             entry_row = session.get(DecisionLog, event.get('entry_id'))
             if entry_row:
                 entry_row.label_status = 'closed'
-            session.execute(delete(MlOpenEntry).where(MlOpenEntry.symbol == event.get('symbol')))
+            session.execute(
+                delete(MlOpenEntry)
+                .where(MlOpenEntry.mode == str(event.get('mode') or 'paper').lower())
+                .where(MlOpenEntry.symbol == event.get('symbol'))
+            )
 
     def _resolve_outcome_entry_link(self, session, event):
         """Relie une sortie a la meilleure entree ML ouverte quand le lien direct manque."""
@@ -3661,7 +3670,8 @@ class MLLiveLogger:
         if not symbol:
             return
 
-        open_entry = session.get(MlOpenEntry, symbol)
+        mode = str(event.get('mode') or 'paper').lower()
+        open_entry = session.get(MlOpenEntry, (mode, symbol))
         if open_entry and open_entry.entry_id:
             event['entry_id'] = open_entry.entry_id
             event['label_status'] = 'closed'
@@ -3671,6 +3681,7 @@ class MLLiveLogger:
         candidates = session.scalars(
             select(DecisionLog)
             .where(DecisionLog.action_type == 'ENTRY')
+            .where(DecisionLog.mode == mode)
             .where(DecisionLog.symbol == symbol)
             .where(DecisionLog.decision == 'accepted')
             .where(~DecisionLog.event_id.in_(linked_outcomes))
@@ -4474,12 +4485,18 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def load_open_entries(self):
+    def load_open_entries(self, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                rows = session.scalars(select(MlOpenEntry).order_by(MlOpenEntry.symbol.asc())).all()
+                rows = session.scalars(
+                    select(MlOpenEntry)
+                    .where(MlOpenEntry.mode == mode)
+                    .order_by(MlOpenEntry.symbol.asc())
+                ).all()
             return {
                 row.symbol: {
+                    'mode': row.mode,
                     'entry_id': row.entry_id,
                     'symbol': row.symbol,
                     'opened_at': row.opened_at,
@@ -4492,11 +4509,12 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason):
-        """Enregistre les métriques de microstructure et d'exécution dans MlOpenEntry (Phase 7)."""
+    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason, mode='paper'):
+        """Enregistre les métriques d'exécution sur l'entrée ouverte du mode actif."""
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                row = session.get(MlOpenEntry, str(symbol))
+                row = session.get(MlOpenEntry, (mode, str(symbol)))
                 if row:
                     row.expected_price = self._clean(expected_price)
                     row.requested_price = self._clean(requested_price)
@@ -4560,12 +4578,18 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def load_open_entries(self):
+    def load_open_entries(self, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                rows = session.scalars(select(MlOpenEntry).order_by(MlOpenEntry.symbol.asc())).all()
+                rows = session.scalars(
+                    select(MlOpenEntry)
+                    .where(MlOpenEntry.mode == mode)
+                    .order_by(MlOpenEntry.symbol.asc())
+                ).all()
             return {
                 row.symbol: {
+                    'mode': row.mode,
                     'entry_id': row.entry_id,
                     'symbol': row.symbol,
                     'opened_at': row.opened_at,
@@ -4578,11 +4602,12 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason):
-        """Enregistre les métriques de microstructure et d'exécution dans MlOpenEntry (Phase 7)."""
+    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason, mode='paper'):
+        """Enregistre les métriques d'exécution sur l'entrée ouverte du mode actif."""
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                row = session.get(MlOpenEntry, str(symbol))
+                row = session.get(MlOpenEntry, (mode, str(symbol)))
                 if row:
                     row.expected_price = self._clean(expected_price)
                     row.requested_price = self._clean(requested_price)
