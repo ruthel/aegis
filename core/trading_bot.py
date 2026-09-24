@@ -47,6 +47,7 @@ from utils.exit_engine import ExitDecisionEngine
 from core.managers.execution_manager import ExecutionManager
 from core.managers.health_manager import HealthManager
 from core.ml_live_logger import MLLiveLogger
+from core.signal_engine import SignalEngine
 
 # Mixins
 from core.bot.trading import TradingMixin
@@ -184,6 +185,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40'))
         )
         self.pattern_analyzer = PatternAnalyzer(self)
+        self.signal_engine = SignalEngine(self.pattern_analyzer)
 
         from core.ml_engine import MLEngine
         self.ml_engine = MLEngine()
@@ -2249,6 +2251,43 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 {'price': current_price, 'error': str(e)}, throttle_seconds=120
             )
             return  # Silencieux - trop fréquent
+
+        # Les filtres affichés comme critères doivent réellement être des garde-fous.
+        if float(crypto_score or 0.0) < float(dynamic_min_score or 0.0):
+            self.record_decision(
+                symbol, 'buy', False, 'crypto_score_below_threshold',
+                {
+                    'price': current_price,
+                    'score': crypto_score,
+                    'min_score': dynamic_min_score,
+                },
+                throttle_seconds=60
+            )
+            return
+
+        if signal_action not in ('BUY', 'STRONG_BUY'):
+            self.record_decision(
+                symbol, 'buy', False, f'technical_action_{signal_action or "NONE"}',
+                {
+                    'price': current_price,
+                    'confidence': signal_confidence,
+                    'min_confidence': adaptive_threshold,
+                },
+                throttle_seconds=60
+            )
+            return
+
+        if float(signal_confidence or 0.0) < float(adaptive_threshold or 0.0):
+            self.record_decision(
+                symbol, 'buy', False, 'technical_confidence_below_threshold',
+                {
+                    'price': current_price,
+                    'confidence': signal_confidence,
+                    'min_confidence': adaptive_threshold,
+                },
+                throttle_seconds=60
+            )
+            return
         
         # 6. Calculer position sizing avant le ML pour que le modèle voie la valeur réelle prévue.
         signal_strength = self.get_signal_strength(symbol, current_price)
@@ -2295,6 +2334,27 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     klines_1h = fut_1h.result()
                     klines_4h = fut_4h.result()
                     klines_1d = fut_1d.result()
+
+                # Le live et le training doivent voir le même univers de candidats.
+                # On ne consulte le modèle que lorsqu'un signal canonique support/breakout/EMA existe.
+                signal_history = list(klines_15m[:-1] if len(klines_15m) > 1 else klines_15m)
+                candidate_signal = self.signal_engine.detect_best(signal_history[-200:], current_price)
+                if not candidate_signal:
+                    self.record_decision(
+                        symbol, 'buy', False, 'no_shared_candidate_signal',
+                        {
+                            'price': current_price,
+                            'score': crypto_score,
+                            'min_score': dynamic_min_score,
+                            'confidence': signal_confidence,
+                            'min_confidence': adaptive_threshold,
+                        },
+                        throttle_seconds=60
+                    )
+                    return
+                ml_bot_context['candidate_signal_type'] = candidate_signal.get('type')
+                ml_bot_context['candidate_signal_confidence'] = float(candidate_signal.get('confidence') or 0.0)
+
                 ml_trade_context = self._build_ml_trade_context(position_data, account_balance)
                 ml_entry_features = self.ml_engine.extract_features_from_klines(
                     klines_15m,
