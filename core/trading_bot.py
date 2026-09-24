@@ -3024,7 +3024,25 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 command.append('--fast')
 
             self._last_ml_auto_retrain = now
-            self._ml_auto_retrain_process = subprocess.Popen(command)
+            active_mode = 'paper' if self.paper_trading else 'live'
+            env = os.environ.copy()
+            env['ML_GOVERNANCE_MODE'] = active_mode
+            env['PYTHONUNBUFFERED'] = '1'
+            env['PYTHONIOENCODING'] = 'utf-8'
+            training_log_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                'ml_training.log',
+            )
+            try:
+                log_fh = open(training_log_path, 'a', encoding='utf-8', errors='replace')
+                self._ml_auto_retrain_process = subprocess.Popen(
+                    command,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            except Exception:
+                self._ml_auto_retrain_process = subprocess.Popen(command, env=env)
             if getattr(self, 'ml_live_logger', None):
                 self.ml_live_logger.record_governance_event(
                     event_type='auto_retraining_started',
