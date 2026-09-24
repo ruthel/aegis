@@ -1609,18 +1609,20 @@ def _enrich_trades_with_ml_confidence(trades):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
+        active_mode = active_trading_mode()
+
         def get_ml_buy_prob(symbol, ts_str):
             try:
                 if not ts_str:
                     return None
                 row = cursor.execute(
-                    "SELECT confidence FROM decision_logs WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
-                    (symbol, str(ts_str))
+                    "SELECT confidence FROM decision_logs WHERE mode=? AND action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
+                    (active_mode, symbol, str(ts_str))
                 ).fetchone()
                 if not row:
                     row = cursor.execute(
-                        "SELECT confidence FROM decision_logs WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
-                        (symbol, str(ts_str))
+                        "SELECT confidence FROM decision_logs WHERE mode=? AND action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
+                        (active_mode, symbol, str(ts_str))
                     ).fetchone()
                 return round(float(row[0]), 1) if row and row[0] is not None else None
             except Exception:
@@ -1635,22 +1637,24 @@ def _enrich_trades_with_ml_confidence(trades):
                 row = cursor.execute(
                     """
                     SELECT p_continue, confidence, reason FROM decision_logs
-                    WHERE UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
+                    WHERE mode=?
+                      AND UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
                       AND symbol IN (?, ?)
-                      AND (created_at <= ? OR timestamp <= ?)
-                    ORDER BY created_at DESC, timestamp DESC LIMIT 1
+                      AND timestamp <= ?
+                    ORDER BY timestamp DESC LIMIT 1
                     """,
-                    (sym_usd, sym_usdt, str(ts_str), str(ts_str))
+                    (active_mode, sym_usd, sym_usdt, str(ts_str))
                 ).fetchone()
                 if not row:
                     row = cursor.execute(
                         """
                         SELECT p_continue, confidence, reason FROM decision_logs
-                        WHERE UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
+                        WHERE mode=?
+                          AND UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
                           AND symbol IN (?, ?)
-                        ORDER BY created_at DESC, timestamp DESC LIMIT 1
+                        ORDER BY timestamp DESC LIMIT 1
                         """,
-                        (sym_usd, sym_usdt)
+                        (active_mode, sym_usd, sym_usdt)
                     ).fetchone()
                 if row:
                     p_cont, conf, reason = row
@@ -2234,20 +2238,14 @@ def compute_next_buy_forecast(state):
 
 
 def dashboard_status_payload(view_mode=None):
-    view_mode = view_mode or current_view_mode()
+    view_mode = active_trading_mode()
     state = load_accounting_state({'positions': []}, view_mode=view_mode)
-    mode_key = active_trading_mode() if view_mode == 'all' else view_mode
+    mode_key = view_mode
     live = live_status()
     with db_logger() as logger:
-        if view_mode == 'all':
-            raw_decisions = []
-            for item_mode in ('paper', 'live'):
-                raw_decisions.extend(logger.get_decision_journal(item_mode, 300))
-            raw_decisions.sort(key=lambda item: str(item.get('timestamp') or ''))
-        else:
-            raw_decisions = logger.get_decision_journal(mode_key, 300)
+        raw_decisions = logger.get_decision_journal(mode_key, 300)
         decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], 20)
-        total_decisions = sum(logger.count_decision_journal(item_mode) for item_mode in modes_for_view(view_mode))
+        total_decisions = logger.count_decision_journal(mode_key)
     positions = weighted_positions(
         state.get('positions', []),
         state.get('trailing_stops'),
@@ -2381,25 +2379,20 @@ def api_decisions():
         except ValueError:
             limit = 80
 
-    view_mode = current_view_mode()
-    mode_key = active_trading_mode() if view_mode == 'all' else view_mode
+    mode_key = active_trading_mode()
     with db_logger() as logger:
-        if view_mode == 'all':
-            raw_decisions = []
-            fetch_limit = limit if limit == 100000 else max(limit * 20, limit)
-            for item_mode in ('paper', 'live'):
-                raw_decisions.extend(logger.get_decision_journal(item_mode, fetch_limit))
-            raw_decisions.sort(key=lambda item: str(item.get('timestamp') or ''))
-        elif limit == 100000:
-            raw_decisions = logger.get_decision_journal(mode_key, limit)
-        else:
-            raw_decisions = logger.get_decision_journal(mode_key, max(limit * 20, limit))
-        decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], limit)
-        total_count = sum(logger.count_decision_journal(item_mode) for item_mode in modes_for_view(view_mode))
+        fetch_limit = limit if limit == 100000 else max(limit * 20, limit)
+        raw_decisions = logger.get_decision_journal(mode_key, fetch_limit)
+        decisions = compact_dashboard_decisions(
+            [entry for entry in raw_decisions if is_dashboard_decision(entry)],
+            limit,
+        )
+        total_count = logger.count_decision_journal(mode_key)
 
     return jsonify({
         'decisions': decisions,
-        'total_count': total_count
+        'total_count': total_count,
+        'mode': mode_key,
     })
 
 
@@ -2970,11 +2963,20 @@ def ml_replay_stats():
         import sqlite3
         conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
         conn.row_factory = sqlite3.Row
+        active_mode = active_trading_mode()
         stats['total_rejected'] = conn.execute(
-            "SELECT COUNT(*) FROM decision_logs WHERE action_type='ENTRY' AND decision='rejected'"
+            "SELECT COUNT(*) FROM decision_logs WHERE mode=? AND action_type='ENTRY' AND decision='rejected'",
+            (active_mode,),
         ).fetchone()[0]
         by_status = conn.execute(
-            "SELECT replay_status, COUNT(*) n FROM ml_rejected_replay_results GROUP BY replay_status"
+            """
+            SELECT r.replay_status, COUNT(*) n
+            FROM ml_rejected_replay_results r
+            JOIN decision_logs d ON d.event_id=r.entry_id
+            WHERE d.mode=?
+            GROUP BY r.replay_status
+            """,
+            (active_mode,),
         ).fetchall()
         for row in by_status:
             if row['replay_status'] == 'replayed':
@@ -3049,18 +3051,18 @@ def api_ml_replay_start():
 
     try:
         # Sortie non bufferisée + UTF-8 pour que la progression apparaisse en direct
-        # dans bot.log (donc dans la console web) au lieu d'un dump en fin de run.
+        # dans le log de replay dédié au lieu d'un dump en fin de run.
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
         env['PYTHONIOENCODING'] = 'utf-8'
         replay_scope = f"backlog complet (plafond {int(max_replay)})" if max_replay else "lot standard"
         REPLAY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         # Log DÉDIÉ au replay (mode 'w' = un nouveau run repart d'un fichier propre) pour
-        # ne PAS mélanger la progression du replay avec les logs du bot dans bot.log.
+        # ne PAS mélanger la progression du replay avec les logs du bot actif.
         replay_log = open(REPLAY_LOG_FILE, 'w', encoding='utf-8', errors='replace')
         replay_log.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé manuellement ({replay_scope})...\n")
         replay_log.flush()
-        # Trace courte dans bot.log juste pour signaler le lancement (sans la progression).
+        # Trace courte dans le log du mode actif juste pour signaler le lancement (sans la progression).
         try:
             with open(bot_log_file(), 'a', encoding='utf-8', errors='replace') as log:
                 log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé ({replay_scope}). Progression dans l'onglet Replay.\n")
