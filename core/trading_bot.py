@@ -2491,19 +2491,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
-        
-        # === DL SHADOW: Comparer avec prédiction Deep Learning ===
-        if self.dl_shadow_enabled and self.dl_shadow_predictor:
-            try:
-                self._dl_shadow_compare_with_rf(
-                    symbol=symbol,
-                    rf_decision='buy',
-                    rf_confidence=global_signal.get('confidence', 0),
-                    rf_p_win=ml_win_prob
-                )
-            except Exception:
-                pass  # Shadow mode - silencieux
-        
         # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
             optimal_order_type = self.capital_manager.optimize_order_type(symbol, 'normal')
