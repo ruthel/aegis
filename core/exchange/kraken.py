@@ -77,8 +77,23 @@ class KrakenClient(ExchangeBase):
     def create_market_sell_order(self, symbol, amount):
         return self._call(self._exchange.create_market_sell_order, symbol, amount)
 
-    def create_limit_sell_order(self, symbol, amount, price):
-        return self._call(self._exchange.create_limit_sell_order, symbol, amount, price)
+    def create_limit_buy_order(self, symbol, amount, price, params=None):
+        return self._call(
+            self._exchange.create_limit_buy_order,
+            symbol,
+            amount,
+            price,
+            params or {}
+        )
+
+    def create_limit_sell_order(self, symbol, amount, price, params=None):
+        return self._call(
+            self._exchange.create_limit_sell_order,
+            symbol,
+            amount,
+            price,
+            params or {}
+        )
 
     def fetch_open_orders(self, symbol=None):
         return self._call(self._exchange.fetch_open_orders, symbol)
