@@ -803,6 +803,19 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         signal_engine = SignalEngine(analyzer)
 
         pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
+        if os.getenv('ML_ARCHIVE_KRAKEN_BEFORE_TRAIN', 'true').lower() == 'true':
+            try:
+                from scripts.archive_kraken_ohlcv import archive_universe
+                archive_summary = archive_universe(
+                    pairs=pairs,
+                    timeframes=['5m', '15m', '1h', '4h', '1d'],
+                )
+                print(
+                    f"  🗄️ Archive Kraken: {archive_summary['updated']} flux mis à jour, "
+                    f"{archive_summary['failed']} échecs"
+                )
+            except Exception as exc:
+                print(f"  ⚠️ Archive Kraken indisponible, training continue: {exc}")
         history_days = int(os.getenv('ML_TRAINING_HISTORY_DAYS', '1095'))
         start_date = (datetime.now(timezone.utc) - timedelta(days=history_days)).strftime("%Y-%m-%d")
         # Durée de détention DYNAMIQUE (basée sur les conditions de marché) au lieu d'un
@@ -848,6 +861,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             # Curseurs multi-TF (lookup O(1) amorti au lieu de re-scanner toute la liste
             # à chaque itération). candle_ts est monotone croissant -> les curseurs avancent.
             cur_5m = cur_1h = cur_4h = cur_1d = 0
+            cur_btc_15m = 0
 
             # Progression de la génération des samples (barre qui se met à jour sur la même ligne)
             show_gen_progress = os.getenv('ML_FETCH_PROGRESS', 'true').lower() == 'true'
@@ -878,15 +892,16 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 current_price = klines_15m[index]['close']
                 ts = klines_15m[index]['timestamp']
 
-                # Détecte TOUS les signaux applicables à cet index (pas seulement le premier)
-                # -> chaque signal génère son propre sample, les signaux 15m ne sont plus
-                #    écrasés par support_touch.
-                signals_here = signal_engine.detect_all(history, current_price)
-                if not signals_here:
+                # Même univers que le live: une seule opportunité canonique par timestamp.
+                best_signal = signal_engine.detect_best(history, current_price)
+                if not best_signal:
                     continue
+                signals_here = [best_signal]
 
                 # Klines multi-TF (communes à tous les signaux de cet index)
                 candle_ts = klines_15m[index]['timestamp']
+                cur_btc_15m = _advance_cursor(btc_history, cur_btc_15m, candle_ts) if btc_history else 0
+                btc_context_index = cur_btc_15m if btc_history else None
                 cur_5m = _advance_cursor(klines_5m_full, cur_5m, candle_ts)
                 cur_1h = _advance_cursor(klines_1h_full, cur_1h, candle_ts)
                 cur_4h = _advance_cursor(klines_4h_full, cur_4h, candle_ts)
@@ -909,7 +924,14 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 for signal in signals_here:
                     _sig_type = signal.get('type', 'unknown')
                     support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
-                    bot_context = build_training_bot_context(history, signal, ts, btc_history=btc_history, index=index, support_stats=support_stats)
+                    bot_context = build_training_bot_context(
+                        history,
+                        signal,
+                        ts,
+                        btc_history=btc_history,
+                        index=btc_context_index,
+                        support_stats=support_stats,
+                    )
 
                     features = ml_engine.extract_features_from_klines(
                         history, current_price,
@@ -1260,229 +1282,37 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
 
 
 def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type='auto', fast_mode=False):
+    """Train the challenger, then delegate ALL promotion policy to promote_challenger.
+
+    Keeping a single promotion implementation prevents auto-retraining from bypassing
+    the same-opportunity shadow guardrails used by manual promotion.
+    """
     load_dotenv('.env', override=True)
-
     db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
-    logger = MLLiveLogger(data_dir=model_dir, sqlite_file=db_file)
-    logger.record_governance_event('train_started', trigger_type=trigger_type, reason='Pipeline unifiée démarrée')
 
     print("=" * 70)
-    print("🚀 PIPELINE UNIFIÉE ML : ENTRAÎNEMENT & GOUVERNANCE (PHASE 10)")
+    print("🚀 PIPELINE ML : TRAINING CHALLENGER + PROMOTION CENTRALISÉE")
     print("=" * 70)
 
-    # Step 1: Entraînement du Challenger
-    print("\n📦 1. Entraînement du modèle Challenger...")
-    challenger_path = os.path.join(model_dir, 'aegis_challenger.joblib')
-    champion_path = os.path.join(model_dir, 'aegis_model.joblib')
-    backup_path = os.path.join(model_dir, 'aegis_model_backup.joblib')
-
-    train_challenger_model(output_dir=model_dir, db_file=db_file, fast_mode=fast_mode)
-
-    if not os.path.exists(challenger_path) and os.path.exists(champion_path):
-        shutil.copy2(champion_path, challenger_path)
-
-    if not os.path.exists(challenger_path):
-        msg = "Échec de création du modèle Challenger."
-        print(f"❌ {msg}")
-        logger.record_governance_event('promotion_rejected', trigger_type=trigger_type, reason=msg)
-        logger.close()
+    ok = train_challenger_model(
+        output_dir=model_dir,
+        db_file=db_file,
+        fast_mode=fast_mode,
+    )
+    if not ok:
+        print("❌ Échec de l'entraînement Challenger.")
         return False
 
-    # Step 2: Évaluation Champion vs Challenger
-    print("\n⚔️ 2. Évaluation des garde-fous de promotion...")
-    
-    guardrail_metrics = compute_guardrail_metrics(db_file)
-    trade_rows = guardrail_metrics['trade_rows']
-    closed_trades_count = guardrail_metrics['closed_trades_count']
-    print(f"📊 Trades fermés réels dans le dataset : {closed_trades_count}")
-
-    champ_engine = MLEngine(model_dir=model_dir)
-    if os.path.exists(champion_path):
-        champ_engine.model_path = champion_path
-        champ_engine.load_model()
-
-    chall_engine = MLEngine(model_dir=model_dir)
-    chall_engine.model_path = challenger_path
-    chall_engine.load_model()
-
-    champ_meta = getattr(champ_engine, 'model_metadata', {}) or {}
-    chall_meta = getattr(chall_engine, 'model_metadata', {}) or {}
-
-    champ_prec = float(champ_meta.get('test_precision', 50.0))
-    chall_prec = float(chall_meta.get('test_precision', 50.0))
-
-    champ_acc = float(champ_meta.get('test_accuracy', 50.0))
-    chall_acc = float(chall_meta.get('test_accuracy', 50.0))
-
-    # Logs détaillés des modèles
-    print("\n" + "=" * 70)
-    print("📊 ÉVALUATION DÉTAILLÉE DES MODÈLES")
-    print("=" * 70)
-    print("\n  🏆 CHAMPION (modèle actuel en production):")
-    print(f"    Precision (test):     {champ_prec:.1f}%")
-    print(f"    Accuracy (test):      {champ_acc:.1f}%")
-    print(f"    Features entrée:      {champ_meta.get('n_features', 'n/a')}")
-    print(f"    Features sortie:      {champ_meta.get('exit_n_features', 'n/a')}")
-    print(f"    Entraîné le:          {champ_meta.get('trained_at', 'n/a')}")
-    print(f"    Samples entraînement: {champ_meta.get('train_samples', 'n/a')}")
-    print(f"    Win rate dataset:     {champ_meta.get('train_win_rate', 'n/a')}")
-    for key in ('test_recall', 'test_f1', 'train_accuracy', 'oob_score'):
-        val = champ_meta.get(key)
-        if val is not None:
-            print(f"    {key:22s}: {val}")
-
-    print(f"\n  ⚔️ CHALLENGER (nouveau modèle candidat):")
-    print(f"    Precision (test):     {chall_prec:.1f}%")
-    print(f"    Accuracy (test):      {chall_acc:.1f}%")
-    print(f"    Features entrée:      {chall_meta.get('n_features', 'n/a')}")
-    print(f"    Features sortie:      {chall_meta.get('exit_n_features', 'n/a')}")
-    print(f"    Entraîné le:          {chall_meta.get('trained_at', 'n/a')}")
-    print(f"    Samples entraînement: {chall_meta.get('train_samples', 'n/a')}")
-    print(f"    Win rate dataset:     {chall_meta.get('train_win_rate', 'n/a')}")
-    for key in ('test_recall', 'test_f1', 'train_accuracy', 'oob_score'):
-        val = chall_meta.get(key)
-        if val is not None:
-            print(f"    {key:22s}: {val}")
-
-    print(f"\n  📈 COMPARAISON:")
-    prec_delta = chall_prec - champ_prec
-    acc_delta = chall_acc - champ_acc
-    print(f"    Precision delta:      {prec_delta:+.1f}% {'✅' if prec_delta >= -0.5 else '❌'}")
-    print(f"    Accuracy delta:       {acc_delta:+.1f}% {'✅' if acc_delta >= -1.0 else '❌'}")
-    print("=" * 70)
-
-    min_trades = int(os.getenv('ML_PROMOTION_MIN_CLOSED_TRADES', '30'))
-    min_days = int(os.getenv('ML_PROMOTION_MIN_ACTIVE_DAYS', '3'))
-    max_drawdown_pct = float(os.getenv('ML_PROMOTION_MAX_DRAWDOWN_PCT', '8.0'))
-    min_profit_factor = float(os.getenv('ML_PROMOTION_MIN_PROFIT_FACTOR', '1.10'))
-    min_precision_delta = float(os.getenv('ML_PROMOTION_MIN_PRECISION_DELTA', '-0.5'))
-    min_accuracy_delta = float(os.getenv('ML_PROMOTION_MIN_ACCURACY_DELTA', '-1.0'))
-    max_calibration_mae = float(os.getenv('ML_PROMOTION_MAX_CALIBRATION_MAE', '20.0'))
-    require_calibration = os.getenv('ML_PROMOTION_REQUIRE_CALIBRATION', 'false').lower() == 'true'
-    allowed_drift_statuses = {
-        item.strip().lower()
-        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,warning,insufficient_live_outcomes').split(',')
-        if item.strip()
-    }
-
-    profit_factor = float(guardrail_metrics['profit_factor'])
-    active_days = int(guardrail_metrics['active_days'])
-    net_pnl = float(guardrail_metrics['net_pnl'])
-    max_dd = float(guardrail_metrics['max_drawdown_pct'])
-    calibration_mae = guardrail_metrics.get('latest_calibration_mae')
-    drift_status_value = str(guardrail_metrics.get('latest_drift_status') or 'unknown').lower()
-
-    g1_min_trades = closed_trades_count >= min_trades
-    g2_min_days = active_days >= min_days
-    g3_better_perf = (chall_prec >= champ_prec + min_precision_delta) and (chall_acc >= champ_acc + min_accuracy_delta)
-    g4_drawdown = max_dd <= max_drawdown_pct
-    g5_profit_factor = profit_factor >= min_profit_factor
-    g6_net_pnl = net_pnl > 0
-    g7_calibration = (
-        calibration_mae is not None and float(calibration_mae) <= max_calibration_mae
-    ) if require_calibration else (
-        calibration_mae is None or float(calibration_mae) <= max_calibration_mae
+    from scripts.promote_challenger import promote
+    return bool(
+        promote(
+            model_dir=model_dir,
+            db_file=db_file,
+            check_only=check_only,
+            force=False,
+            trigger_type=trigger_type,
+        )
     )
-    g8_drift = drift_status_value in allowed_drift_statuses
-
-    print("\n🛡️ GARDE-FOUS DE PROMOTION :")
-    print(f"  [1] Trades fermés ({closed_trades_count}) >= {min_trades} : {'✅' if g1_min_trades else '❌'}")
-    print(f"  [2] Jours actifs ({active_days}) >= {min_days} : {'✅' if g2_min_days else '❌'}")
-    print(f"  [3] Challenger Precision/Accuracy vs Champion : {'✅' if g3_better_perf else '❌'}")
-    print(f"  [4] Max Drawdown ({max_dd:.2f}%) <= {max_drawdown_pct:.2f}% : {'✅' if g4_drawdown else '❌'}")
-    print(f"  [5] Profit Factor ({profit_factor:.2f}) >= {min_profit_factor:.2f} : {'✅' if g5_profit_factor else '❌'}")
-    print(f"  [6] PnL net ({net_pnl:.2f} USD) > 0 : {'✅' if g6_net_pnl else '❌'}")
-    print(f"  [7] Calibration MAE ({calibration_mae if calibration_mae is not None else 'n/a'}) <= {max_calibration_mae:.1f} : {'✅' if g7_calibration else '❌'}")
-    print(f"  [8] Drift status ({drift_status_value}) autorisé : {'✅' if g8_drift else '❌'}")
-
-    all_passed = all([
-        g1_min_trades,
-        g2_min_days,
-        g3_better_perf,
-        g4_drawdown,
-        g5_profit_factor,
-        g6_net_pnl,
-        g7_calibration,
-        g8_drift,
-    ])
-    metrics_data = {
-        'closed_trades_count': closed_trades_count,
-        'active_days': active_days,
-        'champion_precision': champ_prec,
-        'challenger_precision': chall_prec,
-        'champion_accuracy': champ_acc,
-        'challenger_accuracy': chall_acc,
-        'profit_factor': profit_factor,
-        'net_pnl': net_pnl,
-        'max_drawdown_pct': max_dd,
-        'calibration_mae': calibration_mae,
-        'drift_status': drift_status_value,
-        'guardrails': {
-            'min_trades': g1_min_trades,
-            'min_days': g2_min_days,
-            'better_perf': g3_better_perf,
-            'drawdown': g4_drawdown,
-            'profit_factor': g5_profit_factor,
-            'net_pnl': g6_net_pnl,
-            'calibration': g7_calibration,
-            'drift': g8_drift,
-        },
-        'all_guardrails_passed': all_passed
-    }
-    logger.record_governance_event(
-        'promotion_guardrails_evaluated',
-        source_model='challenger',
-        target_model='champion',
-        metrics=metrics_data,
-        trigger_type=trigger_type,
-        reason='Evaluation complete des garde-fous de promotion'
-    )
-
-    if not all_passed:
-        failed = [name for name, passed in metrics_data['guardrails'].items() if not passed]
-        reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
-        print(f"\n⛔ PROMOTION REFUSÉE : {reason}")
-        logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
-        logger.close()
-        return False
-
-    if check_only:
-        print("\n🔍 Mode --check-only : Promotion validée mais non appliquée.")
-        logger.record_governance_event('promotion_checked', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason="Validation sans promotion")
-        logger.close()
-        return True
-
-    # Step 3: Promotion
-    print("\n🏆 PROMOTION DU CHALLENGER EN CHAMPION !")
-    if os.path.exists(champion_path):
-        backups_dir = os.path.join(model_dir, 'backups')
-        os.makedirs(backups_dir, exist_ok=True)
-        ts_backup_path = os.path.join(backups_dir, f"aegis_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.joblib")
-        shutil.copy2(champion_path, ts_backup_path)
-        print(f"  📦 Archive horodatée créée dans backups/ : {ts_backup_path}")
-        _prune_model_backups(backups_dir, keep=10)
-        # Pas de backup redondant dans data/: l'archive horodatée fait foi
-        if os.path.exists(backup_path):
-            try:
-                os.remove(backup_path)
-            except Exception:
-                pass
-
-    shutil.copy2(challenger_path, champion_path)
-    print(f"  ✅ NOUVEAU CHAMPION PROMU AVEC SUCCÈS : {champion_path}")
-
-    reason = f"Promotion validée (Precision {chall_prec:.1f}%, Acc {chall_acc:.1f}%)"
-    logger.record_governance_event('promotion', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
-
-    try:
-        notifier = NotificationManager()
-        notifier.notify(f"🏆 **NOUVEAU CHAMPION ML PROMU**\n\nPrecision: {chall_prec:.1f}%\nAccuracy: {chall_acc:.1f}%\nBackup créé: OK")
-    except Exception:
-        pass
-
-    logger.close()
-    return True
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Pipeline unifiée ML Aegis")
