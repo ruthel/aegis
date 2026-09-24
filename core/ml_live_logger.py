@@ -635,7 +635,7 @@ class MLLiveLogger:
             price = float(price or 0.0)
             if amount <= 0 or price <= 0 or side not in {'buy', 'sell'}:
                 return None
-            fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+            fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
             fee_amount = float(fee_amount if fee_amount is not None else amount * price * fee_rate)
             fee_asset = str(fee_asset or quote).upper()
             order_id = str(order_id or f"{source}_{side}_{symbol.replace('/', '')}_{uuid.uuid4().hex[:12]}")
@@ -849,7 +849,7 @@ class MLLiveLogger:
                 status_text = str(status or '').lower()
                 amount = float(amount or 0.0)
                 price = float(price or 0.0)
-                fee_rate = float(fee_rate if fee_rate is not None else (float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0))
+                fee_rate = float(fee_rate if fee_rate is not None else (float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0))
                 order_id = f"{raw_order_id or 'position'}_{idx}"
                 order_status = 'open' if status_text == 'opened' else 'filled' if status_text in {'executed', 'filled'} else status_text or 'unknown'
                 order_type = 'limit' if side == 'sell' and status_text == 'opened' else 'market'

@@ -31,7 +31,7 @@ STOP_LOSS_PERCENT = float(os.getenv('STOP_LOSS_PERCENT', '5'))
 TRAILING_STOP_PERCENT = float(os.getenv('TRAILING_STOP_PERCENT', '3'))
 MAX_DAILY_TRADES = int(os.getenv('MAX_DAILY_TRADES', '100'))
 EMERGENCY_STOP_LOSS = float(os.getenv('EMERGENCY_STOP_LOSS', '500'))
-TRADING_FEE_PERCENT = float(os.getenv('TRADING_FEE_PERCENT', '0.1'))
+TRADING_FEE_PERCENT = float(os.getenv('TRADING_FEE_PERCENT', '0.4'))
 MIN_PROFIT_THRESHOLD = float(os.getenv('MIN_PROFIT_THRESHOLD', '0.8'))
 RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '2'))
 
@@ -50,7 +50,7 @@ PROFIT_FRAGILE_MAX_NET_PCT = float(os.getenv('PROFIT_FRAGILE_MAX_NET_PCT', '0.40
 TIME_STOP_MINUTES = int(os.getenv('TIME_STOP_MINUTES', '12'))
 
 # ===== CORE ML ENGINE =====
-ML_MIN_PROBABILITY = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
+ML_MIN_PROBABILITY = float(os.getenv('ML_MIN_PROBABILITY', '50.0'))
 
 # ===== PAPER TRADING =====
 PAPER_TRADING = os.getenv('PAPER_TRADING', 'False').lower() == 'true'

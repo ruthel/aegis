@@ -3,7 +3,7 @@ ExecutionManager - Phase 7 : Exécution Intelligente & Microstructure de Marché
 Gère l'exécution optimale des ordres chez Kraken :
 1. Spread-aware execution : pause si spread > MAX_EXECUTION_SPREAD_PCT (ex: 0.08%)
 2. Dynamic volume / depth check : ajustement selon liquidité live
-3. Adaptive orders : market si high confidence (P_win >= 0.80), limit Maker si standard (P_win < 0.80)
+3. Adaptive orders : market si high confidence (P_win >= 80%), limit Maker si standard (P_win < 80%)
 4. Clean retry & anti-duplicate checks
 5. Slippage tracking & persistence des métriques d'exécution dans SQLite (execution_logs)
 """
@@ -23,10 +23,10 @@ class ExecutionManager:
         """Récupère le spread, bid/ask et la profondeur du carnet live."""
         try:
             bid, ask = None, None
-            # 1. Tenter via WebSocket si disponible
-            if hasattr(self.bot, 'ws_client') and self.bot.ws_client:
-                clean_sym = symbol.replace('/', '')
-                ticker = self.bot.ws_client.get_ticker(clean_sym)
+            # 1. Tenter via le WebSocket Kraken du bot si disponible
+            websocket = getattr(self.bot, 'websocket', None)
+            if websocket and websocket.is_connected():
+                ticker = websocket.get_ticker(symbol)
                 if ticker:
                     bid = ticker.get('bid')
                     ask = ticker.get('ask')
@@ -109,12 +109,12 @@ class ExecutionManager:
             return False
 
         # 4. Adaptive Order Selection (Market Taker vs Limit Maker)
-        ml_buy_prob = position_data.get('ml_buy_prob', 0.65) or 0.65
+        ml_buy_prob = float(position_data.get('ml_buy_prob', 50.0) or 50.0)
         order_type = 'market'
         
-        # Si confiance ML très élevée (>= 0.80) ou mode urgent -> Market
+        # Si confiance ML très élevée (>= 80%) ou mode urgent -> Market
         # Sinon si adaptive maker activé -> Tenter Limit Maker au Bid
-        if self.adaptive_maker_orders and ml_buy_prob < 0.80 and not self.bot.paper_trading:
+        if self.adaptive_maker_orders and ml_buy_prob < 80.0 and not self.bot.paper_trading:
             order_type = 'limit'
 
         # 5. Exécution de l'ordre
@@ -122,7 +122,7 @@ class ExecutionManager:
         
         if order_type == 'limit' and not self.bot.paper_trading:
             limit_price = micro['bid']  # Poser au Bid pour frais Maker
-            print(f"⚡ {symbol}: Ordre LIMIT MAKER au Bid {limit_price:.2f} USD (Confiance ML: {ml_buy_prob*100:.1f}%)")
+            print(f"⚡ {symbol}: Ordre LIMIT MAKER au Bid {limit_price:.2f} USD (Confiance ML: {ml_buy_prob:.1f}%)")
             try:
                 order = self.bot.exchange.create_limit_buy_order(symbol, size_crypto, limit_price)
                 fill_start = time.time()
@@ -255,8 +255,9 @@ class ExecutionManager:
 
         # Ajouter trailing stop
         hybrid_safety = os.getenv('HYBRID_PHYSICAL_SAFETY', 'true').lower() == 'true'
-        if hasattr(self.bot, 'trailing_stop_manager') and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
-            self.bot.trailing_stop_manager.add_position(
+        trailing_manager = getattr(self.bot, 'trailing_stop_manager', None)
+        if trailing_manager and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
+            trailing_manager.add_position(
                 symbol, executed_price, 
                 trailing_percent=position_data.get('trailing_stop_percent'),
                 support_price=position_data.get('support_price'),

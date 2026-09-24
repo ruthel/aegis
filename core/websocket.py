@@ -422,11 +422,19 @@ class WebSocketManager:
         return self.prices.get(ws_symbol, None)
     
     def get_ticker(self, symbol):
-        """Récupère les données ticker depuis WebSocket"""
-        current_price = self.get_price(symbol)
+        """Récupère le ticker Kraken WebSocket avec bid/ask réels."""
+        ws_symbol = self._normalize_symbol(symbol)
+        current_price = self.get_price(ws_symbol)
+        meta = self.market_meta.get(ws_symbol, {}) if isinstance(self.market_meta, dict) else {}
         if current_price:
+            bid = meta.get('bid')
+            ask = meta.get('ask')
             return {
                 'last': current_price,
+                'bid': float(bid) if bid is not None else None,
+                'ask': float(ask) if ask is not None else None,
+                'spread': meta.get('spread'),
+                'spread_percent': meta.get('spread_percent'),
                 'percentage': 0,
                 'symbol': symbol
             }
@@ -462,16 +470,23 @@ class WebSocketManager:
         with ThreadPoolExecutor(max_workers=len(self.symbols)) as executor:
             executor.map(fetch_symbol, self.symbols)
 
-    def get_klines(self, symbol, count=50):
-        """Récupère les dernières bougies"""
-        ws_symbol = symbol.replace('/', '')
+    def get_klines(self, symbol, count=50, timeframe='1m'):
+        """Récupère uniquement les bougies correspondant réellement au cache WebSocket.
+
+        Le flux Kraken maintient actuellement des OHLC 1 minute. Pour tout autre
+        timeframe, retourner une liste vide force TradingBot.get_klines() à utiliser
+        Kraken REST avec le timeframe demandé, au lieu de réutiliser par erreur du 1m.
+        """
+        if str(timeframe or '1m').lower() != '1m':
+            return []
+        ws_symbol = self._normalize_symbol(symbol)
         klines = list(self.klines.get(ws_symbol, []))
         return klines[-count:] if len(klines) >= count else klines
     
     def is_connected(self):
         """Vérifie si WebSocket est connecté"""
         ws_thread_alive = getattr(self, 'ws_thread', None) and self.ws_thread.is_alive()
-        return bool(self.running and self.ws is not None and ws_thread_alive)
+        return bool(self.running and self.is_ws_connected and self.ws is not None and ws_thread_alive)
     
     def stop(self):
         """Arrête la connexion WebSocket"""

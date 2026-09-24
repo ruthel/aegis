@@ -3,7 +3,7 @@
 Réutilise le modèle challenger existant (data/aegis_challenger.joblib) SANS
 re-télécharger les données ni ré-entraîner. Évalue les mêmes garde-fous de
 promotion que la pipeline principale (train_and_evaluate_ml_model.py) en
-utilisant les seuils définis dans .env.local, puis effectue le backup du
+utilisant les seuils définis dans .env, puis effectue le backup du
 Champion et la copie challenger -> champion.
 
 Usage:
@@ -45,8 +45,7 @@ def _prune_model_backups(backups_dir, keep=10):
 
 
 def promote(model_dir='data', db_file=None, check_only=False, force=False, trigger_type='manual'):
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
+    load_dotenv('.env', override=True)
 
     db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
 
@@ -165,7 +164,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         failed = [name for name, passed in guardrails.items() if not passed]
         reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
         print(f"\n⛔ PROMOTION REFUSÉE : {reason}")
-        print("   Astuce: relance avec --force, ou ajuste ML_PROMOTION_MIN_*_DELTA dans .env.local")
+        print("   Astuce: relance avec --force, ou ajuste ML_PROMOTION_MIN_*_DELTA dans .env")
         logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
         logger.close()
         return False

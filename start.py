@@ -12,8 +12,7 @@ warnings.filterwarnings(
 )
 
 from dotenv import load_dotenv
-load_dotenv('.env.local', override=True)
-load_dotenv('.env.ui', override=True)
+load_dotenv('.env', override=True)
 
 port = int(os.getenv('DASHBOARD_PORT', '8080'))
 auto_start = os.getenv('AUTO_START_BOT', 'True').lower() in ('true', '1', 'yes', 'y')

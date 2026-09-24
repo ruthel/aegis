@@ -108,6 +108,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.bear_mode_min_confidence_bonus = float(os.getenv('BEAR_MODE_MIN_CONFIDENCE_BONUS', '20'))
         self.market_context_cache_seconds = int(os.getenv('MARKET_CONTEXT_CACHE_SECONDS', '300'))
         self.market_context_cache = {}
+        self._rest_kline_cache = {}
         self.support_touch_adaptive_filter = os.getenv('SUPPORT_TOUCH_ADAPTIVE_FILTER', 'True').lower() == 'true'
         self.support_touch_backtest_interval = 5 * 60
         self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_SOURCE', 'data/aegis_db.sqlite3')
@@ -186,7 +187,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         from core.ml_engine import MLEngine
         self.ml_engine = MLEngine()
-        self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
+        self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '50.0'))
         self.ml_exit_entry_min_continue_prob = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
         # Seuil de p_continue ADAPTATIF selon la confiance d'entrée (p_win):
         # - si p_win élevé (>= ml_exit_high_pwin_threshold), on tolère un p_continue plus bas
@@ -194,13 +195,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         # - sinon (p_win moyen), on exige la marge de sortie standard (ml_exit_entry_min_continue_prob).
         self.ml_exit_high_pwin_threshold = float(os.getenv('ML_EXIT_HIGH_PWIN_THRESHOLD', '65.0'))
         self.ml_exit_min_continue_high_pwin = float(os.getenv('ML_EXIT_MIN_CONTINUE_HIGH_PWIN', '45.0'))
-
-        # === DEEP LEARNING SHADOW MODE ===
-        self.dl_shadow_enabled = os.getenv('DL_SHADOW_ENABLED', 'false').lower() == 'true'
-        self.dl_shadow_predictor = None
-        self.dl_rf_comparator = None
-        if self.dl_shadow_enabled:
-            self._init_dl_shadow()
 
         # Notifications
         self.notifier = NotificationManager()
@@ -230,8 +224,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             except Exception as e:
                 print(f"⚠️ Erreur sync initiale: {e}")
         
-        # Sync frais exchange
+        # Sync frais exchange : les frais Kraken en ligne priment, la valeur .env sert de fallback.
+        self.fee_sync_interval = int(os.getenv('FEE_SYNC_INTERVAL_SECONDS', '3600'))
+        self._last_fee_sync = 0.0
         self.capital_manager.sync_fees_to_bot()
+        self._last_fee_sync = time.time()
         
         # Calculer win rate global 30 jours au démarrage
         if not self.paper_trading:
@@ -1278,14 +1275,24 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 timeframe = os.getenv('MAIN_TIMEFRAME', '15m')
         
         if self.websocket.is_connected():
-            klines = self.websocket.get_klines(symbol, count)
+            klines = self.websocket.get_klines(symbol, count, timeframe=timeframe)
             if len(klines) >= count:
                 return klines
+
+        # Cache REST très court par symbole/timeframe: conserve la correction des
+        # timeframes sans refaire 5 appels réseau à chaque tick.
+        cache_ttl = max(0.0, float(os.getenv('KLINE_REST_CACHE_TTL_SECONDS', '10')))
+        cache_key = (str(symbol), str(timeframe), int(count))
+        cached = self._rest_kline_cache.get(cache_key)
+        if cached and (time.time() - cached.get('timestamp', 0.0)) <= cache_ttl:
+            return list(cached.get('klines') or [])
         
         # TOUJOURS utiliser les vraies données exchange (même en paper trading)
         try:
             ohlcv = self.safe_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit=count)
-            return [{'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]} for c in ohlcv]
+            result = [{'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]} for c in ohlcv]
+            self._rest_kline_cache[cache_key] = {'timestamp': time.time(), 'klines': result}
+            return result
         except Exception as e:
             print(f"Erreur récupération klines {symbol}: {e}")
             # Fallback seulement en cas d'erreur critique
@@ -2064,6 +2071,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # NOUVEAU: Optimisations quotidiennes automatiques
                 self.run_daily_optimizations()
+                if time.time() - getattr(self, '_last_fee_sync', 0.0) >= getattr(self, 'fee_sync_interval', 3600):
+                    if self.capital_manager.sync_fees_to_bot():
+                        self._last_fee_sync = time.time()
                 self.run_ml_live_analysis_if_due()
                 self.run_health_checks_if_due()
                 self.run_ml_auto_retraining_if_due()
@@ -2323,24 +2333,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 }
                 self.save_state()
 
-                if ml_win_prob < 50.0:
+                if ml_win_prob < self.ml_min_probability:
                     # REJECT_RISK : ML dit NON — bloquer
                     reject_cooldown_seconds = self.get_ml_reject_cooldown_seconds(
                         ml_win_prob,
                         ml_exit_forecast,
                         ml_bot_context
                     )
-                    # === DL SHADOW: Comparer même les rejets ===
-                    if self.dl_shadow_enabled and self.dl_shadow_predictor:
-                        try:
-                            self._dl_shadow_compare_with_rf(
-                                symbol=symbol,
-                                rf_decision='reject',
-                                rf_confidence=100.0 - ml_win_prob,
-                                rf_p_win=ml_win_prob
-                            )
-                        except Exception:
-                            pass
                     self.record_ml_entry_learning_sample(
                         symbol,
                         'rejected',
@@ -2503,19 +2502,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # ✅ TOUS LES CRITÈRES PASSÉS - LOG CRITIQUE (SYNC)
         print(f"✅ {crypto}: VALIDATION COMPLÈTE - Score {crypto_score}/100 ≥ {dynamic_min_score} | Signal {global_signal['confidence']:.0f}% ≥ {adaptive_threshold:.0f}%")
-        
-        # === DL SHADOW: Comparer avec prédiction Deep Learning ===
-        if self.dl_shadow_enabled and self.dl_shadow_predictor:
-            try:
-                self._dl_shadow_compare_with_rf(
-                    symbol=symbol,
-                    rf_decision='buy',
-                    rf_confidence=global_signal.get('confidence', 0),
-                    rf_p_win=ml_win_prob
-                )
-            except Exception:
-                pass  # Shadow mode - silencieux
-        
         # 7. NOUVEAU: Optimiser type d'ordre pour frais
         try:
             optimal_order_type = self.capital_manager.optimize_order_type(symbol, 'normal')
@@ -3358,245 +3344,3 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
         except Exception as e:
             print(f"⚠️ Erreur lors de l'historisation du score pour {symbol}: {e}")
-    
-    # =========================================================================
-    # DEEP LEARNING SHADOW MODE
-    # =========================================================================
-    
-    def _init_dl_shadow(self):
-        """Initialise le système Deep Learning en mode shadow"""
-        try:
-            from core.deep_learning.shadow.predictor import ShadowPredictor
-            from core.deep_learning.shadow.comparator import RFComparator
-            from core.deep_learning.config import DLConfig
-            from pathlib import Path
-            
-            model_path = Path('data/deep_learning/models/model_latest.pt')
-            
-            if not model_path.exists():
-                # Chercher un autre modèle
-                models_dir = Path('data/deep_learning/models')
-                if models_dir.exists():
-                    model_files = list(models_dir.glob('model_*.pt'))
-                    if model_files:
-                        model_path = sorted(model_files)[-1]
-            
-            if model_path.exists():
-                config = DLConfig()
-                self.dl_shadow_predictor = ShadowPredictor(
-                    model_path=model_path,
-                    config=config
-                )
-                self.dl_rf_comparator = RFComparator(
-                    min_comparisons=config.shadow.min_shadow_trades,
-                    outperformance_threshold=config.shadow.min_rf_outperformance,
-                    min_winrate=config.shadow.min_shadow_winrate
-                )
-                print("🧠 Deep Learning Shadow Mode initialisé")
-            else:
-                print("⚠️ DL Shadow: Aucun modèle trouvé, mode désactivé")
-                self.dl_shadow_enabled = False
-                
-        except ImportError as e:
-            print(f"⚠️ DL Shadow: PyTorch non installé ({e})")
-            self.dl_shadow_enabled = False
-        except Exception as e:
-            print(f"⚠️ DL Shadow: Erreur initialisation ({e})")
-            self.dl_shadow_enabled = False
-    
-    def _dl_shadow_update_buffer(self, symbol: str, candle: dict):
-        """Met à jour le buffer de features DL avec une nouvelle bougie"""
-        if not self.dl_shadow_enabled or not self.dl_shadow_predictor:
-            return
-        
-        try:
-            # Récupérer aussi les données BTC pour corrélations
-            btc_candle = None
-            if symbol != 'BTC/USD' and hasattr(self, 'websocket'):
-                btc_price = self.websocket.get_last_price('BTC/USD')
-                if btc_price:
-                    btc_candle = {'close': btc_price, 'timestamp': candle.get('timestamp')}
-            
-            self.dl_shadow_predictor.update_buffer(
-                symbol=symbol,
-                candle=candle,
-                btc_candle=btc_candle
-            )
-        except Exception as e:
-            pass  # Silently fail in shadow mode
-    
-    def _dl_shadow_predict(self, symbol: str, current_price: float) -> dict | None:
-        """Obtient une prédiction DL shadow pour un symbole"""
-        if not self.dl_shadow_enabled or not self.dl_shadow_predictor:
-            return None
-        
-        try:
-            current_state = {
-                'price': current_price,
-                'has_position': self.has_active_position(symbol)
-            }
-            
-            prediction = self.dl_shadow_predictor.predict(symbol, current_state)
-            
-            if prediction:
-                # Log la prédiction dans la DB
-                self._dl_log_prediction(symbol, prediction)
-            
-            return prediction
-            
-        except Exception as e:
-            return None
-    
-    def _dl_shadow_compare_with_rf(
-        self, 
-        symbol: str, 
-        rf_decision: str, 
-        rf_confidence: float,
-        rf_p_win: float | None = None
-    ):
-        """Compare une décision RF avec la prédiction DL et log le résultat"""
-        if not self.dl_shadow_enabled or not self.dl_rf_comparator:
-            return
-        
-        try:
-            # Obtenir la prédiction DL courante
-            current_price = self.get_price(symbol)
-            if current_price is None:
-                return
-            
-            dl_prediction = self._dl_shadow_predict(symbol, current_price)
-            if dl_prediction is None:
-                return
-            
-            # Construire les prédictions pour comparaison
-            rf_prediction = {
-                'decision': rf_decision,
-                'confidence': rf_confidence,
-                'p_win': rf_p_win
-            }
-            
-            # Ajouter la comparaison
-            comparison = self.dl_rf_comparator.add_comparison(
-                symbol=symbol,
-                rf_prediction=rf_prediction,
-                dl_prediction=dl_prediction
-            )
-            
-            # Log dans la DB
-            self._dl_log_comparison(symbol, comparison, dl_prediction)
-            
-            # Vérifier si DL devrait être promu
-            if self.dl_rf_comparator.stats['total_comparisons'] % 100 == 0:
-                should_promote, reason = self.dl_rf_comparator.should_promote_dl()
-                if should_promote:
-                    print(f"🧠 DL Shadow: Prêt pour promotion! {reason}")
-                    
-        except Exception as e:
-            pass
-    
-    def _dl_record_outcome(self, symbol: str, actual_pnl: float):
-        """Enregistre le résultat réel d'un trade pour les comparaisons DL"""
-        if not self.dl_shadow_enabled or not self.dl_rf_comparator:
-            return
-        
-        try:
-            # Chercher la dernière comparaison pour ce symbole
-            for i in range(len(self.dl_rf_comparator.comparisons) - 1, -1, -1):
-                comp = self.dl_rf_comparator.comparisons[i]
-                if comp.symbol == symbol and comp.actual_outcome is None:
-                    self.dl_rf_comparator.record_outcome(i, actual_pnl, 0, 0)
-                    break
-        except Exception:
-            pass
-    
-    def _dl_log_prediction(self, symbol: str, prediction: dict):
-        """Log une prédiction DL dans la base de données"""
-        try:
-            import uuid
-            from core.db_orm import DLShadowPrediction, create_session_factory, now_iso
-            from pathlib import Path
-            
-            db_path = 'data/aegis_db.sqlite3'
-            if not Path(db_path).exists():
-                return
-            
-            SessionFactory = create_session_factory(db_path)
-            
-            with SessionFactory() as session:
-                entry = DLShadowPrediction(
-                    prediction_id=str(uuid.uuid4())[:12],
-                    timestamp=prediction.get('timestamp', now_iso()),
-                    mode='paper' if self.paper_trading else 'live',
-                    symbol=symbol,
-                    win_probability=prediction.get('win_probability'),
-                    continue_probability=prediction.get('continue_probability'),
-                    optimal_sizing=prediction.get('optimal_sizing'),
-                    confidence=prediction.get('confidence'),
-                    signal=prediction.get('signal'),
-                    current_price=prediction.get('current_state', {}).get('price'),
-                    created_at=now_iso()
-                )
-                session.add(entry)
-                session.commit()
-                
-        except Exception:
-            pass
-    
-    def _dl_log_comparison(self, symbol: str, comparison, dl_prediction: dict):
-        """Log une comparaison RF/DL dans la base de données"""
-        try:
-            import uuid
-            from core.db_orm import DLRFComparison, create_session_factory, now_iso
-            from pathlib import Path
-            
-            db_path = 'data/aegis_db.sqlite3'
-            if not Path(db_path).exists():
-                return
-            
-            SessionFactory = create_session_factory(db_path)
-            
-            with SessionFactory() as session:
-                entry = DLRFComparison(
-                    comparison_id=str(uuid.uuid4())[:12],
-                    timestamp=comparison.timestamp,
-                    mode='paper' if self.paper_trading else 'live',
-                    symbol=symbol,
-                    rf_signal=comparison.rf_signal,
-                    rf_confidence=comparison.rf_confidence,
-                    dl_signal=comparison.dl_signal,
-                    dl_confidence=comparison.dl_confidence,
-                    dl_win_probability=dl_prediction.get('win_probability'),
-                    signals_agree=1 if (comparison.rf_signal in ['buy', 'strong_buy']) == (comparison.dl_signal in ['buy', 'strong_buy']) else 0,
-                    signals_conflict=1 if ((comparison.rf_signal in ['buy', 'strong_buy']) and (comparison.dl_signal in ['sell', 'strong_sell'])) or ((comparison.rf_signal in ['sell', 'strong_sell']) and (comparison.dl_signal in ['buy', 'strong_buy'])) else 0,
-                    created_at=now_iso()
-                )
-                session.add(entry)
-                session.commit()
-                
-        except Exception:
-            pass
-    
-    def get_dl_shadow_status(self) -> dict:
-        """Retourne le statut du mode shadow DL"""
-        if not self.dl_shadow_enabled:
-            return {'enabled': False}
-        
-        status = {
-            'enabled': True,
-            'model_loaded': self.dl_shadow_predictor is not None and self.dl_shadow_predictor.is_loaded,
-            'prediction_count': self.dl_shadow_predictor.prediction_count if self.dl_shadow_predictor else 0,
-        }
-        
-        if self.dl_rf_comparator:
-            metrics = self.dl_rf_comparator.get_performance_metrics()
-            status['comparisons'] = metrics.get('completed_comparisons', 0)
-            status['dl_winrate'] = metrics.get('dl_winrate', 0)
-            status['rf_winrate'] = metrics.get('rf_winrate', 0)
-            status['agreement_rate'] = metrics.get('agreement_rate', 0)
-            
-            should_promote, reason = self.dl_rf_comparator.should_promote_dl()
-            status['ready_for_promotion'] = should_promote
-            status['promotion_reason'] = reason
-        
-        return status
-    

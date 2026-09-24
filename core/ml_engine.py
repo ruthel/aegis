@@ -790,37 +790,44 @@ class MLEngine:
             self.logger.error(f"Erreur d'extraction des caractéristiques ML: {e}")
             return None
 
+    def _temporal_holdout_split(self, X, y, sample_weight=None):
+        """Split chronologique: le passé entraîne, la période la plus récente valide."""
+        ratio = float(os.getenv('ML_TEMPORAL_TEST_RATIO', '0.20'))
+        ratio = max(0.10, min(0.40, ratio))
+        split_idx = int(len(X) * (1.0 - ratio))
+        split_idx = max(20, min(len(X) - 10, split_idx))
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+        if sample_weight is None:
+            return X_train, X_test, y_train, y_test, None, None
+        return (
+            X_train, X_test, y_train, y_test,
+            sample_weight[:split_idx], sample_weight[split_idx:]
+        )
+
     def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini', sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
-        """Entraîne le classifieur LightGBM (défaut) ou Random Forest avec hyperparamètres configurables"""
+        """Entraîne LightGBM (défaut) ou Random Forest avec holdout chronologique."""
         if not SKLEARN_AVAILABLE:
             self.logger.warning("scikit-learn n'est pas disponible pour l'entraînement ML.")
             return False
-
         if len(X) < 30:
             self.logger.warning("Données insuffisantes pour l'entraînement ML (minimum 30 exemples requis).")
             return False
 
         try:
-            from sklearn.model_selection import train_test_split
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-            # Split train/test pour évaluer.
-            stratify = y if len(set(y)) > 1 else None
-            if sample_weight is not None:
-                X_train, X_test, y_train, y_test, sw_train, _sw_test = train_test_split(
-                    X, y, sample_weight, test_size=0.2, random_state=42, stratify=stratify
-                )
-            else:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42, stratify=stratify
-                )
-                sw_train = None
+            X_train, X_test, y_train, y_test, sw_train, _sw_test = self._temporal_holdout_split(
+                X, y, sample_weight
+            )
+            if len(np.unique(y_train)) < 2:
+                self.logger.warning("Holdout temporel invalide: une seule classe dans la fenêtre d'entraînement.")
+                return False
 
             self.scaler = StandardScaler()
             X_train_scaled = self.scaler.fit_transform(X_train)
             X_test_scaled = self.scaler.transform(X_test)
 
-            # Choisir LightGBM ou RandomForest
             model_type = 'lightgbm'
             if use_lightgbm and LIGHTGBM_AVAILABLE:
                 self.model = lgb.LGBMClassifier(
@@ -834,7 +841,6 @@ class MLEngine:
                     verbose=-1,
                     importance_type='gain'
                 )
-                self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
             else:
                 model_type = 'random_forest'
                 self.model = RandomForestClassifier(
@@ -846,11 +852,10 @@ class MLEngine:
                     n_jobs=-1,
                     oob_score=True
                 )
-                self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
-            
+
+            self.model.fit(X_train_scaled, y_train, sample_weight=sw_train)
             self.is_trained = True
 
-            # Calculer et stocker les métriques
             y_pred = self.model.predict(X_test_scaled)
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
@@ -862,6 +867,8 @@ class MLEngine:
             self.model_metadata = {
                 'trained_at': datetime.now().isoformat(),
                 'model_type': model_type,
+                'validation_type': 'temporal_holdout',
+                'temporal_test_ratio': round(len(X_test) / max(1, len(X)), 4),
                 'n_features': int(X.shape[1]),
                 'exit_n_features': len(self.exit_feature_names),
                 'train_samples': int(len(X)),
@@ -873,17 +880,17 @@ class MLEngine:
                 'train_accuracy': round(train_acc, 1),
                 'oob_score': round(oob, 1) if oob else None,
             }
-            
-            self.logger.info(f"Model trained: {model_type} | Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%")
 
-            # Ré-entraîner sur toutes les données pour le modèle final
+            self.logger.info(
+                f"Model trained: {model_type} | temporal holdout | "
+                f"Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%"
+            )
+
+            # Une fois les métriques hors-échantillon figées, réentraîner le champion
+            # candidat sur toutes les données disponibles.
             self.scaler = StandardScaler()
             X_scaled = self.scaler.fit_transform(X)
-            if use_lightgbm and LIGHTGBM_AVAILABLE:
-                self.model.fit(X_scaled, y, sample_weight=sample_weight)
-            else:
-                self.model.fit(X_scaled, y, sample_weight=sample_weight)
-
+            self.model.fit(X_scaled, y, sample_weight=sample_weight)
             self.save_model()
             return True
 
@@ -892,42 +899,31 @@ class MLEngine:
             return False
 
     def train_model_with_grid_search(self, X: np.ndarray, y: np.ndarray, sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True, cv: int = 3) -> bool:
-        """Entraîne le modèle avec Grid Search pour trouver les meilleurs hyperparamètres."""
+        """Grid Search temporel: TimeSeriesSplit sur le passé, holdout final sur le futur."""
         if not SKLEARN_AVAILABLE:
             self.logger.warning("scikit-learn n'est pas disponible pour l'entraînement ML.")
             return False
-
         if len(X) < 100:
             self.logger.warning("Grid Search nécessite au moins 100 samples. Fallback vers train_model standard.")
             return self.train_model(X, y, sample_weight=sample_weight, use_lightgbm=use_lightgbm)
 
         try:
-            from sklearn.model_selection import GridSearchCV, train_test_split
+            from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, make_scorer
 
-            self.logger.info("Starting Grid Search for hyperparameter optimization...")
-
-            # Split train/test
-            stratify = y if len(set(y)) > 1 else None
-            if sample_weight is not None:
-                X_train, X_test, y_train, y_test, sw_train, _sw_test = train_test_split(
-                    X, y, sample_weight, test_size=0.2, random_state=42, stratify=stratify
-                )
-            else:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42, stratify=stratify
-                )
-                sw_train = None
+            X_train, X_test, y_train, y_test, sw_train, _sw_test = self._temporal_holdout_split(
+                X, y, sample_weight
+            )
+            if len(np.unique(y_train)) < 2:
+                self.logger.warning("Grid Search temporel invalide: une seule classe dans la fenêtre d'entraînement.")
+                return False
 
             self.scaler = StandardScaler()
             X_train_scaled = self.scaler.fit_transform(X_train)
             X_test_scaled = self.scaler.transform(X_test)
 
-            # Scorer optimisé pour Precision (éviter les faux positifs = trades perdants)
             precision_scorer = make_scorer(precision_score, zero_division=0)
-
             if use_lightgbm and LIGHTGBM_AVAILABLE:
-                # Grid Search pour LightGBM
                 param_grid = {
                     'n_estimators': [100, 200, 300],
                     'max_depth': [4, 6, 8, -1],
@@ -938,7 +934,6 @@ class MLEngine:
                 base_model = lgb.LGBMClassifier(random_state=42, n_jobs=-1, verbose=-1)
                 model_type = 'lightgbm'
             else:
-                # Grid Search pour RandomForest
                 param_grid = {
                     'n_estimators': [100, 200, 300],
                     'max_depth': [4, 6, 8, None],
@@ -948,25 +943,22 @@ class MLEngine:
                 base_model = RandomForestClassifier(random_state=42, n_jobs=-1)
                 model_type = 'random_forest'
 
+            requested_cv = int(os.getenv('ML_CV_SPLITS', str(cv)))
+            max_splits = max(2, min(requested_cv, max(2, len(X_train) // 50)))
+            tscv = TimeSeriesSplit(n_splits=max_splits)
             grid_search = GridSearchCV(
                 base_model,
                 param_grid,
-                cv=cv,
+                cv=tscv,
                 scoring=precision_scorer,
                 n_jobs=-1,
                 verbose=1
             )
-            
             grid_search.fit(X_train_scaled, y_train, sample_weight=sw_train)
-            
+
             self.model = grid_search.best_estimator_
             self.is_trained = True
 
-            # Log best params
-            self.logger.info(f"Best params: {grid_search.best_params_}")
-            self.logger.info(f"Best CV score: {grid_search.best_score_:.3f}")
-
-            # Évaluer sur test set
             y_pred = self.model.predict(X_test_scaled)
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
@@ -977,6 +969,8 @@ class MLEngine:
             self.model_metadata = {
                 'trained_at': datetime.now().isoformat(),
                 'model_type': f'{model_type}_grid_search',
+                'validation_type': 'temporal_holdout_timeseries_cv',
+                'temporal_test_ratio': round(len(X_test) / max(1, len(X)), 4),
                 'n_features': int(X.shape[1]),
                 'exit_n_features': len(self.exit_feature_names),
                 'train_samples': int(len(X)),
@@ -988,21 +982,23 @@ class MLEngine:
                 'train_accuracy': round(train_acc, 1),
                 'best_params': grid_search.best_params_,
                 'best_cv_score': round(grid_search.best_score_ * 100, 1),
+                'cv_type': 'TimeSeriesSplit',
+                'cv_splits': max_splits,
             }
-            
-            self.logger.info(f"Grid Search complete: {model_type} | Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%")
 
-            # Ré-entraîner le meilleur modèle sur toutes les données
+            self.logger.info(
+                f"Grid Search complete: {model_type} | TimeSeriesSplit | "
+                f"Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%"
+            )
+
             self.scaler = StandardScaler()
             X_scaled = self.scaler.fit_transform(X)
             self.model.fit(X_scaled, y, sample_weight=sample_weight)
-
             self.save_model()
             return True
 
         except Exception as e:
             self.logger.error(f"Erreur lors du Grid Search ML: {e}")
-            # Fallback vers training standard
             return self.train_model(X, y, sample_weight=sample_weight, use_lightgbm=use_lightgbm)
 
     def extract_exit_features(
@@ -1025,7 +1021,7 @@ class MLEngine:
                 return None
 
             buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
-            fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0))
+            fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0))
             breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
             gross_pnl_pct = ((current_price - buy_price) / max(buy_price, 1e-9)) * 100.0
             net_pnl_pct = ((current_price - breakeven_price) / max(buy_price, 1e-9)) * 100.0
@@ -1565,7 +1561,7 @@ class MLEngine:
             p_continue = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
 
             buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
-            fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0))
+            fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0))
             breakeven_price = buy_price * (1 + fee_rate) / max(0.000001, (1 - fee_rate))
             net_pnl_pct = ((current_price - breakeven_price) / max(buy_price, 1e-9)) * 100.0
 

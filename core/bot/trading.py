@@ -50,7 +50,7 @@ class TradingMixin:
                 execution = self._extract_execution_details(order, amount, price)
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
                 fee_amount = execution.get('fee_amount')
                 if fee_amount is None:
                     fee_amount = float(amount or 0.0) * float(price or 0.0) * fee_rate
@@ -328,7 +328,7 @@ class TradingMixin:
                     
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
                 buy_fee = cost * fee_rate
                 order_id = f'paper_{time.time_ns()}'
                 if getattr(self, 'ml_live_logger', None):
@@ -359,7 +359,7 @@ class TradingMixin:
                 exec_amount = float(execution['amount'] or amount)
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
                 buy_fee = float(execution.get('fee_amount') or (exec_amount * exec_price * fee_rate))
                 self._record_live_order_accounting(symbol, 'buy', exec_amount, exec_price, order, order_type='market', filled=True)
 
@@ -408,7 +408,7 @@ class TradingMixin:
             if self.paper_trading:
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
                 revenue = amount * price
                 sell_fee = revenue * fee_rate
                 order_id = f'paper_{time.time_ns()}'
@@ -523,13 +523,6 @@ class TradingMixin:
                         reason='market_sell',
                         order=order
                     )
-
-                # === DL SHADOW: Enregistrer le résultat réel ===
-                if hasattr(self, '_dl_record_outcome') and pnl is not None:
-                    try:
-                        self._dl_record_outcome(symbol, pnl)
-                    except Exception:
-                        pass  # Shadow mode - silencieux
 
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
