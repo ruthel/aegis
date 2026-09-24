@@ -253,6 +253,27 @@ class MLEngine:
         return True
 
 
+    def _clear_loaded_model_state(self) -> None:
+        """Fail closed: no stale model object may survive a failed/incompatible load."""
+        self.model = None
+        self.scaler = None
+        self.probability_calibrator = None
+        self.edge_model = None
+        self.edge_scaler = None
+        self.exit_model = None
+        self.exit_scaler = None
+        self.exit_calibrator = None
+        self.sizing_model = None
+        self.sizing_scaler = None
+        self.target_model = None
+        self.target_scaler = None
+        self.is_trained = False
+        self.is_edge_trained = False
+        self.is_exit_trained = False
+        self.is_sizing_trained = False
+        self.is_target_trained = False
+        self.model_metadata = {}
+
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
         fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
         max_hold_candles = int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96'))
@@ -2027,13 +2048,13 @@ class MLEngine:
     def load_model(self) -> bool:
         """Charge le modèle ML depuis le disque si présent"""
         if not SKLEARN_AVAILABLE or not os.path.exists(self.model_path):
-            self.is_trained = False
+            self._clear_loaded_model_state()
             return False
 
         try:
             data = joblib.load(self.model_path)
             if not self._validate_loaded_contract(data):
-                self.is_trained = False
+                self._clear_loaded_model_state()
                 return False
             self.model = data.get('model')
             self.scaler = data.get('scaler')
@@ -2106,7 +2127,7 @@ class MLEngine:
             return self.is_trained
         except Exception as e:
             self.logger.error(f"Erreur de chargement du modèle ML: {e}")
-            self.is_trained = False
+            self._clear_loaded_model_state()
             return False
 
 
