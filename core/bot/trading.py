@@ -23,6 +23,83 @@ class TradingMixin:
         except Exception:
             pass
 
+    def _paper_fee_rate(self, symbol, order_type='market'):
+        """Use the same online Kraken fee source in paper mode when available."""
+        try:
+            manager = getattr(self, 'capital_manager', None)
+            if manager is not None and hasattr(manager, 'get_fee_for_trade'):
+                return float(manager.get_fee_for_trade(symbol, order_type))
+        except Exception:
+            pass
+        fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
+        if fee_rate <= 0:
+            fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
+        if order_type == 'limit':
+            return fee_rate * 0.9
+        return fee_rate
+
+    def _paper_execution_snapshot(self, symbol, side, order_type='market', amount=0.0, limit_price=None):
+        """Build a deterministic paper execution from live bid/ask and configured latency/slippage.
+
+        The simulator does not invent future prices. Market orders use current bid/ask,
+        while limit orders use the requested limit when touched. Partial limit fills are
+        deterministic at first touch and complete once price penetrates the limit.
+        """
+        ticker = self.get_ticker(symbol) or {}
+        last = float(ticker.get('last') or self.get_price(symbol) or 0.0)
+        bid = float(ticker.get('bid') or last)
+        ask = float(ticker.get('ask') or last)
+        if bid <= 0:
+            bid = last
+        if ask <= 0:
+            ask = last
+        spread_pct = ((ask - bid) / ((ask + bid) / 2.0) * 100.0) if ask > 0 and bid > 0 else 0.0
+
+        side = str(side or '').lower()
+        order_type = str(order_type or 'market').lower()
+        slippage_pct = 0.0
+        fill_ratio = 1.0
+        if order_type == 'market':
+            base = ask if side == 'buy' else bid
+            configured = max(0.0, float(os.getenv('PAPER_MARKET_SLIPPAGE_PCT', '0.03')))
+            spread_component = max(0.0, spread_pct * float(os.getenv('PAPER_SPREAD_SLIPPAGE_FACTOR', '0.25')))
+            slippage_pct = configured + spread_component
+            if side == 'buy':
+                price = base * (1.0 + slippage_pct / 100.0)
+            else:
+                price = base * (1.0 - slippage_pct / 100.0)
+            latency_ms = max(0.0, float(os.getenv('PAPER_MARKET_LATENCY_MS', '150')))
+        else:
+            price = float(limit_price or (bid if side == 'buy' else ask) or last)
+            latency_ms = max(0.0, float(os.getenv('PAPER_LIMIT_LATENCY_MS', '500')))
+            if os.getenv('PAPER_SIMULATE_PARTIAL_FILLS', 'True').lower() == 'true':
+                partial_ratio = max(0.05, min(1.0, float(os.getenv('PAPER_LIMIT_PARTIAL_FILL_RATIO', '0.50'))))
+                penetration_pct = max(0.0, float(os.getenv('PAPER_LIMIT_FULL_FILL_PENETRATION_PCT', '0.05')))
+                if side == 'buy':
+                    penetration = ((price - ask) / price * 100.0) if price > 0 else 0.0
+                else:
+                    penetration = ((bid - price) / price * 100.0) if price > 0 else 0.0
+                fill_ratio = 1.0 if penetration >= penetration_pct else partial_ratio
+
+        if os.getenv('PAPER_SIMULATE_LATENCY_SLEEP', 'False').lower() == 'true' and latency_ms > 0:
+            time.sleep(latency_ms / 1000.0)
+
+        fee_rate = self._paper_fee_rate(symbol, order_type)
+        filled_amount = max(0.0, float(amount or 0.0)) * fill_ratio
+        return {
+            'price': float(price),
+            'amount': float(filled_amount),
+            'requested_amount': float(amount or 0.0),
+            'fill_ratio': float(fill_ratio),
+            'fee_rate': float(fee_rate),
+            'latency_ms': float(latency_ms),
+            'spread_pct': float(spread_pct),
+            'slippage_pct': float(slippage_pct),
+            'bid': float(bid),
+            'ask': float(ask),
+            'order_type': order_type,
+        }
+
     def _elapsed_since_iso(self, timestamp):
         created_at = datetime.fromisoformat(str(timestamp or '').replace('Z', '+00:00'))
         now_for_delta = datetime.now(created_at.tzinfo) if created_at.tzinfo else datetime.now()
