@@ -443,6 +443,7 @@ class MlAnalysisRun(Base):
     __tablename__ = 'ml_analysis_runs'
 
     run_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    mode: Mapped[str | None] = mapped_column(Text)
     generated_at: Mapped[str] = mapped_column(Text)
     accepted_entries: Mapped[int] = mapped_column(Integer)
     closed_entries: Mapped[int] = mapped_column(Integer)
@@ -463,6 +464,7 @@ class MlPredictionCalibration(Base):
 
     run_id: Mapped[str] = mapped_column(Text, primary_key=True)
     bucket_label: Mapped[str] = mapped_column(Text, primary_key=True)
+    mode: Mapped[str | None] = mapped_column(Text)
     min_p_win: Mapped[float] = mapped_column(Float)
     max_p_win: Mapped[float] = mapped_column(Float)
     entries: Mapped[int] = mapped_column(Integer)
@@ -499,6 +501,7 @@ class MlDriftAlert(Base):
 
     alert_id: Mapped[str] = mapped_column(Text, primary_key=True)
     run_id: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     generated_at: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text)
     message: Mapped[str] = mapped_column(Text)
