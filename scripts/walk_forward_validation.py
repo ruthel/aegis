@@ -101,11 +101,10 @@ def _simulate_full_strategy_trade(
     btc_history,
     metadata,
     entry_p_win,
-    target_gain_pct,
     fee_rate,
     test_end_ts,
 ):
-    """Replay P_target + P_exit + physical safety on unseen candles."""
+    """Replay P_exit + physical safety on unseen candles."""
     klines = list((bundle or {}).get('15m') or [])
     index = int(metadata.get('entry_index', -1))
     if index < 0 or index >= len(klines) - 1:
@@ -136,12 +135,6 @@ def _simulate_full_strategy_trade(
         hard_stop = max(hard_stop, support_price * (1.0 - stop_pct / 100.0))
     current_stop = hard_stop
     highest = entry_raw
-    target_price = (
-        entry_raw * (1.0 + float(target_gain_pct) / 100.0)
-        if target_gain_pct is not None
-        else None
-    )
-
     last_idx = min(len(klines) - 1, index + max_hold)
     exit_price = float(klines[last_idx]['close'])
     exit_reason = 'timeout'
@@ -165,12 +158,6 @@ def _simulate_full_strategy_trade(
             exit_idx = cp
             exit_price = current_stop
             exit_reason = 'stop'
-            break
-
-        if target_price is not None and high >= target_price:
-            exit_idx = cp
-            exit_price = target_price
-            exit_reason = 'p_target'
             break
 
         if high > highest:
@@ -209,7 +196,7 @@ def _simulate_full_strategy_trade(
             'duration_minutes': (cp - index) * 15.0,
             'stop_price': current_stop,
             'stop_loss_price': current_stop,
-            'target_price': target_price or entry_raw * 1.02,
+            'target_price': entry_raw * 1.02,
         }
         continuation_score = exit_engine.compute_continuation_score(
             metadata.get('symbol'),
@@ -400,18 +387,9 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
                     [float(meta.get('sizing_target', 1.0)) for meta in meta_train],
                     dtype=np.float64,
                 )
-                target_targets = np.asarray(
-                    [float(meta.get('target_gain_pct', 0.0)) for meta in meta_train],
-                    dtype=np.float64,
-                )
                 temp_engine.train_sizing_model(
                     X_train,
                     sizing_targets,
-                    use_lightgbm=use_lightgbm,
-                )
-                temp_engine.train_target_model(
-                    X_train,
-                    target_targets,
                     use_lightgbm=use_lightgbm,
                 )
 
@@ -479,12 +457,6 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
 
                 sizing_info = temp_engine.predict_position_size_factor(features=features)
                 sizing_factor = float(sizing_info.get('sizing_factor') or 1.0)
-                target_info = temp_engine.predict_target(features=features)
-                target_gain = (
-                    float(target_info.get('target_gain_pct'))
-                    if target_info.get('ml_target_available') and target_info.get('target_gain_pct') is not None
-                    else None
-                )
                 replay = _simulate_full_strategy_trade(
                     ml_engine=temp_engine,
                     exit_engine=exit_engine,
@@ -492,7 +464,6 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
                     btc_history=btc_history,
                     metadata=meta,
                     entry_p_win=float(probs[test_pos]),
-                    target_gain_pct=target_gain,
                     fee_rate=fee_rate,
                     test_end_ts=test_end,
                 )
