@@ -44,6 +44,7 @@ from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
+from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from core.managers.execution_manager import ExecutionManager
 from core.managers.health_manager import HealthManager
 from core.ml_live_logger import MLLiveLogger
@@ -293,7 +294,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         curr_price,
                         trade_context=trade_context
                     )
-                    rec = 'BUY_HIGH_CONFIDENCE' if prob >= getattr(self, 'ml_min_probability', 65.0) else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
+                    rec = 'BUY_HIGH_CONFIDENCE' if prob >= getattr(self, 'ml_min_probability', 50.0) else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
 
                     ml_preds[symbol] = {
                         'symbol': symbol,
@@ -316,7 +317,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
-                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
 
             if account_balance is None:
                 account_balance = self.get_account_balance()
@@ -408,7 +409,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
-                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
 
             preview_position = dict(position_data or {})
             preview_position.setdefault('buy_price', current_price)
@@ -799,7 +800,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             min_cost = float((limits or {}).get('min_cost') or 0.0)
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
-                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
 
             min_trade_usd = max(min_cost, min_amount * current_price * (1 + fee_rate))
             if min_trade_usd <= 0:
@@ -840,98 +841,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return ((new_price - old_price) / old_price) * 100
 
     def _detect_falling_knife(self, symbol):
-        """Détecte une chute structurelle pour éviter d'acheter juste parce que le prix est bas."""
+        """Détecte la même structure de chute qu'en training historique."""
         try:
             daily = self.get_klines(symbol, 80, '1d')
             h4 = self.get_klines(symbol, 80, '4h')
-            if len(daily) < 50 or len(h4) < 30:
-                return {
-                    'is_falling': False,
-                    'reason': 'insufficient_data',
-                    'daily_momentum_7d': 0,
-                    'h4_momentum_24h': 0
-                }
-
-            daily_closes = [float(k['close']) for k in daily]
-            h4_closes = [float(k['close']) for k in h4]
-            daily_ema20 = self.calculate_ema(daily_closes, 20)
-            daily_ema50 = self.calculate_ema(daily_closes, 50)
-            h4_ema20 = self.calculate_ema(h4_closes, 20)
-            h4_ema50 = self.calculate_ema(h4_closes, 50)
-            current_daily = daily_closes[-1]
-            current_h4 = h4_closes[-1]
-
-            daily_momentum_7d = self._calculate_momentum_pct(daily, 7)
-            h4_momentum_24h = self._calculate_momentum_pct(h4, 6)
-            recent_lows = [float(k['low']) for k in daily[-8:]]
-            lower_low = min(recent_lows[-3:]) < min(recent_lows[:5])
-
-            ema_downtrend = current_daily < daily_ema20 < daily_ema50 and current_h4 < h4_ema20 < h4_ema50
-            momentum_down = daily_momentum_7d <= -3 or h4_momentum_24h <= -2
-            is_falling = ema_downtrend and (momentum_down or lower_low)
-
-            reasons = []
-            if ema_downtrend:
-                reasons.append('ema_downtrend_1d_4h')
-            if momentum_down:
-                reasons.append('negative_momentum')
-            if lower_low:
-                reasons.append('lower_lows')
-
-            return {
-                'is_falling': is_falling,
-                'reason': ','.join(reasons) if reasons else 'not_falling',
-                'daily_momentum_7d': daily_momentum_7d,
-                'h4_momentum_24h': h4_momentum_24h,
-                'daily_ema20': daily_ema20,
-                'daily_ema50': daily_ema50,
-                'h4_ema20': h4_ema20,
-                'h4_ema50': h4_ema50
-            }
+            return detect_falling_knife(daily, h4)
         except Exception as e:
             return {'is_falling': False, 'reason': f'error:{e}'}
 
     def _has_reversal_confirmation(self, symbol):
-        """Confirmation simple de stabilisation avant achat en bear mode."""
+        """Utilise exactement le même détecteur pur que le training."""
         try:
             h1 = self.get_klines(symbol, 40, '1h')
-            if len(h1) < 21:
-                return {'confirmed': False, 'reason': 'insufficient_data'}
-
-            closes = [float(k['close']) for k in h1]
-            lows = [float(k['low']) for k in h1]
-            volumes = [float(k['volume']) for k in h1]
-            ema9 = self.calculate_ema(closes, 9)
-            ema21 = self.calculate_ema(closes, 21)
-            recent_momentum = self._calculate_momentum_pct(h1, 3)
-            higher_low = min(lows[-3:]) > min(lows[-8:-3])
-            avg_volume = sum(volumes[-12:-1]) / max(1, len(volumes[-12:-1]))
-            volume_ok = volumes[-1] >= avg_volume * 1.05 if avg_volume > 0 else False
-            price_above_fast_ema = closes[-1] > ema9
-            ema_reclaim = ema9 >= ema21 * 0.998
-
-            confirmed = price_above_fast_ema and recent_momentum > 0 and (higher_low or volume_ok or ema_reclaim)
-            reasons = []
-            if price_above_fast_ema:
-                reasons.append('price_above_ema9')
-            if recent_momentum > 0:
-                reasons.append('positive_1h_momentum')
-            if higher_low:
-                reasons.append('higher_low')
-            if volume_ok:
-                reasons.append('volume_confirmed')
-            if ema_reclaim:
-                reasons.append('ema9_reclaim')
-
-            return {
-                'confirmed': confirmed,
-                'reason': ','.join(reasons) if reasons else 'no_reversal_confirmation',
-                'momentum_3h': recent_momentum,
-                'ema9': ema9,
-                'ema21': ema21,
-                'higher_low': higher_low,
-                'volume_ok': volume_ok
-            }
+            return detect_reversal_confirmation(h1)
         except Exception as e:
             return {'confirmed': False, 'reason': f'error:{e}'}
 
@@ -1858,124 +1780,192 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Erreur update trailing live {symbol}: {e}")
     
     def _check_paper_orders_for_symbol(self, symbol, current_price):
-        """Vérifie et exécute les ordres paper pour un symbole au prix temps réel."""
-        executed = []
-        for order_id, order_data in self.pending_orders.items():
+        """Exécute les limites paper sur bid/ask réel avec partial fills déterministes."""
+        completed = []
+        changed = False
+
+        for order_id, order_data in list(self.pending_orders.items()):
             if order_data.get('symbol') != symbol:
                 continue
-            order = order_data['order']
+            order = order_data.get('order') or {}
             if order.get('type') != 'limit':
                 continue
-            
-            limit_price = order['price']
-            side = order['side']
-            amount = order['amount']
-            
-            if side == 'sell' and current_price >= limit_price:
-                if os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true':
-                    continue
-                # VENTE EXÉCUTÉE
-                buy_price = self.get_real_buy_price(symbol)
-                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                revenue = amount * current_price
-                if getattr(self, 'ml_live_logger', None):
-                    self.ml_live_logger.record_fill_transaction(
-                        order_id,
-                        symbol,
-                        'sell',
-                        amount,
-                        current_price,
-                        fee_amount=revenue * fee_rate,
-                        fee_asset='USD',
-                        mode='paper',
-                        source='paper_trade'
+
+            side = str(order.get('side') or '').lower()
+            if side == 'sell' and os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true':
+                continue
+
+            limit_price = float(order.get('price') or 0.0)
+            requested_amount = float(order.get('amount') or 0.0)
+            if limit_price <= 0 or requested_amount <= 0:
+                continue
+
+            snapshot = self._paper_execution_snapshot(
+                symbol,
+                side,
+                order_type='limit',
+                amount=requested_amount,
+                limit_price=limit_price,
+            )
+            bid = float(snapshot.get('bid') or current_price or 0.0)
+            ask = float(snapshot.get('ask') or current_price or 0.0)
+            touched = (side == 'buy' and ask <= limit_price) or (side == 'sell' and bid >= limit_price)
+            if not touched:
+                continue
+
+            fill_amount = min(requested_amount, float(snapshot.get('amount') or requested_amount))
+            if fill_amount <= 1e-12:
+                continue
+
+            exec_price = float(snapshot.get('price') or limit_price)
+            fee_rate = float(snapshot.get('fee_rate') or self._paper_fee_rate(symbol, 'limit'))
+            fee_amount = fill_amount * exec_price * fee_rate
+            remaining = max(0.0, requested_amount - fill_amount)
+            existing_filled = float(order.get('filled') or 0.0)
+            cumulative_filled = existing_filled + fill_amount
+
+            if side == 'buy':
+                debit = fill_amount * exec_price + fee_amount
+                if debit > self.paper_balance:
+                    print(
+                        f"⚠️ PAPER {symbol}: partial limit ignoré, fonds insuffisants "
+                        f"{debit:.2f} > {self.paper_balance:.2f}"
                     )
-                    self._refresh_paper_balance_from_accounting()
-                else:
-                    self.paper_balance += (revenue * (1 - fee_rate))
-                crypto = symbol.split('/')[0]
-                print(f"✅ PAPER VENTE EXÉCUTÉE: {amount:.6f} {crypto} @ {current_price:.2f} (cible: {limit_price:.2f})")
-                
-                pnl = self.calculate_pnl(symbol, 'sell', amount, current_price, buy_price=buy_price)
-                if hasattr(self, 'risk_manager') and pnl is not None:
-                    self.risk_manager.record_trade(pnl)
-                
-                # Marquer les positions buy correspondantes comme fermées
-                self._close_buy_positions(symbol, amount, current_price)
-                
-                found = False
-                fee_details = self._calculate_fee_details(amount, current_price, buy_price)
-                for p in reversed(self.state.get('positions', [])):
-                    if p.get('order_id') == order_id and p.get('status') == 'opened':
-                        p['status'] = 'executed'
-                        p['price'] = current_price
-                        p['avg_entry_price'] = buy_price
-                        p['position_size_crypto'] = amount
-                        p['position_size_usd'] = amount * current_price
-                        p.update(fee_details)
-                        found = True
-                        break
-                if not found:
-                    position = {
-                        'symbol': symbol, 'side': 'sell', 'amount': amount,
-                        'price': current_price, 'timestamp': datetime.now().isoformat(),
-                        'order_id': order_id, 'source': 'bot', 'paper': True,
-                        'avg_entry_price': buy_price, 'status': 'executed'
-                    }
-                    position.update(fee_details)
-                    self.state.setdefault('positions', []).append(position)
-                self.total_trades += 1
-                
-                if hasattr(self, 'trailing_stop_manager'):
-                    self.trailing_stop_manager.remove_position(symbol)
-                if hasattr(self, 'set_symbol_cooldown'):
-                    self.set_symbol_cooldown(symbol, reason='paper_sell_executed')
-                if hasattr(self, 'notifier'):
-                    self.notifier.notify_trade_sell(symbol, amount, current_price, revenue, buy_price or current_price, pnl or 0, "N/A")
-                
-                executed.append(order_id)
-            
-            elif side == 'buy' and current_price <= limit_price:
-                cost = amount * current_price
-                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
-                buy_fee = amount * current_price * fee_rate
+                    continue
+
                 if getattr(self, 'ml_live_logger', None):
                     self.ml_live_logger.record_fill_transaction(
                         order_id,
                         symbol,
                         'buy',
-                        amount,
-                        current_price,
-                        fee_amount=buy_fee,
+                        fill_amount,
+                        exec_price,
+                        fee_amount=fee_amount,
                         fee_asset='USD',
                         mode='paper',
-                        source='paper_trade'
+                        source='paper_limit_fill',
                     )
                     self._refresh_paper_balance_from_accounting()
                 else:
-                    self.paper_balance -= (cost * (1 + fee_rate))
+                    self.paper_balance -= debit
 
                 position = {
-                    'symbol': symbol, 'side': 'buy', 'amount': amount,
-                    'price': current_price, 'timestamp': datetime.now().isoformat(),
-                    'order_id': order_id, 'source': 'bot', 'paper': True, 'status': 'executed',
-                    'fee_rate': fee_rate, 'fee': buy_fee
+                    'symbol': symbol,
+                    'side': 'buy',
+                    'amount': fill_amount,
+                    'price': exec_price,
+                    'timestamp': datetime.now().isoformat(),
+                    'order_id': order_id,
+                    'source': 'bot',
+                    'paper': True,
+                    'status': 'executed',
+                    'fee_rate': fee_rate,
+                    'fee': fee_amount,
+                    'paper_fill_ratio': float(snapshot.get('fill_ratio') or 1.0),
+                    'paper_latency_ms': float(snapshot.get('latency_ms') or 0.0),
                 }
-                self.state['positions'].append(position)
+                self.state.setdefault('positions', []).append(position)
                 position['avg_entry_price'] = self.get_real_buy_price(symbol)
+
+            elif side == 'sell':
+                buy_price = self.get_real_buy_price(symbol)
+                revenue = fill_amount * exec_price
+                if getattr(self, 'ml_live_logger', None):
+                    self.ml_live_logger.record_fill_transaction(
+                        order_id,
+                        symbol,
+                        'sell',
+                        fill_amount,
+                        exec_price,
+                        fee_amount=fee_amount,
+                        fee_asset='USD',
+                        mode='paper',
+                        source='paper_limit_fill',
+                    )
+                    self._refresh_paper_balance_from_accounting()
+                else:
+                    self.paper_balance += revenue - fee_amount
+
+                pnl = self.calculate_pnl(
+                    symbol,
+                    'sell',
+                    fill_amount,
+                    exec_price,
+                    buy_price=buy_price,
+                )
+                if hasattr(self, 'risk_manager') and pnl is not None:
+                    self.risk_manager.record_trade(pnl)
+                self._close_buy_positions(symbol, fill_amount, exec_price)
+
+                found = False
+                for p in reversed(self.state.get('positions', [])):
+                    if p.get('order_id') == order_id and p.get('side') == 'sell':
+                        p['filled_amount'] = float(p.get('filled_amount') or 0.0) + fill_amount
+                        p['remaining_amount'] = remaining
+                        p['price'] = exec_price
+                        p['avg_entry_price'] = buy_price
+                        p['status'] = 'executed' if remaining <= 1e-12 else 'partially_filled'
+                        p.update(self._calculate_fee_details(fill_amount, exec_price, buy_price))
+                        found = True
+                        break
+                if not found:
+                    position = {
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'amount': fill_amount,
+                        'filled_amount': fill_amount,
+                        'remaining_amount': remaining,
+                        'price': exec_price,
+                        'timestamp': datetime.now().isoformat(),
+                        'order_id': order_id,
+                        'source': 'bot',
+                        'paper': True,
+                        'avg_entry_price': buy_price,
+                        'status': 'executed' if remaining <= 1e-12 else 'partially_filled',
+                    }
+                    position.update(self._calculate_fee_details(fill_amount, exec_price, buy_price))
+                    self.state.setdefault('positions', []).append(position)
+
+                if hasattr(self, 'notifier'):
+                    self.notifier.notify_trade_sell(
+                        symbol,
+                        fill_amount,
+                        exec_price,
+                        revenue,
+                        buy_price or exec_price,
+                        pnl or 0,
+                        "N/A",
+                    )
+
+            order['filled'] = cumulative_filled
+            order['remaining'] = remaining
+            order['status'] = 'closed' if remaining <= 1e-12 else 'open'
+            changed = True
+
+            if remaining <= 1e-12:
+                completed.append(order_id)
+                self.total_trades += 1
+                if side == 'sell' and hasattr(self, 'trailing_stop_manager'):
+                    self.trailing_stop_manager.remove_position(symbol)
                 if hasattr(self, 'set_symbol_cooldown'):
-                    self.set_symbol_cooldown(symbol, reason='paper_buy_executed')
-                executed.append(order_id)
-        
-        for oid in executed:
-            del self.pending_orders[oid]
-        if executed:
+                    self.set_symbol_cooldown(symbol, reason=f'paper_{side}_executed')
+                print(
+                    f"✅ PAPER {side.upper()} LIMIT rempli: {cumulative_filled:.6f} {symbol} "
+                    f"@ {exec_price:.6f} | maker fee {fee_rate*100:.3f}%"
+                )
+            else:
+                order['amount'] = remaining
+                print(
+                    f"🟡 PAPER {side.upper()} LIMIT partial: {fill_amount:.6f}/{requested_amount:.6f} "
+                    f"{symbol} @ {exec_price:.6f} | reste {remaining:.6f}"
+                )
+
+        for order_id in completed:
+            self.pending_orders.pop(order_id, None)
+        if changed:
             self.save_state()
-    
+
+
     def check_and_recover_stuck_positions_filtered(self, tradable_pairs):
         """Vérifie les positions bloquées seulement pour les cryptos tradables"""
         balance = self.balance_manager.get_balance()
@@ -2256,8 +2246,36 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # 1. VÉRIFICATIONS ABSOLUES DE SÉCURITÉ (CAPITAL / BEAR CONTEXT)
 
-        # 1A. Détection Couteau qui tombe: feature ML uniquement, pas verrou dur.
-        falling_knife = self._detect_falling_knife(symbol)
+        # 1A. Hard gate anti-falling-knife : une chute structurelle active ne peut
+        # être achetée qu'après confirmation explicite de retournement.
+        falling_knife = (
+            market_context.get('falling_knife')
+            if isinstance(market_context.get('falling_knife'), dict)
+            else self._detect_falling_knife(symbol)
+        )
+        reversal = (
+            market_context.get('reversal')
+            if isinstance(market_context.get('reversal'), dict)
+            else self._has_reversal_confirmation(symbol)
+        )
+        if (
+            os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+            and bool(falling_knife.get('is_falling'))
+            and not bool(reversal.get('confirmed'))
+        ):
+            self.record_decision(
+                symbol,
+                'buy',
+                False,
+                'falling_knife_without_reversal',
+                {
+                    'price': current_price,
+                    'falling_knife': falling_knife,
+                    'reversal': reversal,
+                },
+                throttle_seconds=120,
+            )
+            return
 
         # 1B. Vérifier position existante et capital
         if not self.can_open_position(symbol):
@@ -2362,6 +2380,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             technical_confidence=global_signal.get('confidence'),
             technical_min_confidence=adaptive_threshold
         )
+        if (
+            getattr(self, 'ml_engine', None) is not None
+            and not getattr(self.ml_engine, 'is_trained', False)
+            and os.getenv('ALLOW_UNTRAINED_ML_ENTRIES', 'False').lower() != 'true'
+        ):
+            self.record_decision(
+                symbol,
+                'buy',
+                False,
+                'ml_model_unavailable_or_incompatible',
+                {'price': current_price},
+                throttle_seconds=300,
+            )
+            return
+
         if hasattr(self, 'ml_engine') and self.ml_engine is not None:
             try:
                 from concurrent.futures import ThreadPoolExecutor

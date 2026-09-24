@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.ml_engine import MLEngine
 from core.signal_engine import SignalEngine
 from utils.pattern_analyzer import PatternAnalyzer
+from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from scripts.trade_signals import simulate_trade
 
 
@@ -199,7 +200,7 @@ def sizing_factor_target_from_pnl(pnl_percent):
     return 1.25
 
 
-def build_training_bot_context(history, signal, ts, btc_history=None, index=None, support_stats=None):
+def build_training_bot_context(history, signal, ts, btc_history=None, index=None, support_stats=None, h1_history=None, h4_history=None, d1_history=None):
     symbol_regime = simple_regime(history)
     btc_regime = None
     if btc_history is not None and index is not None:
@@ -215,12 +216,14 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
     support_stats = support_stats or {}
     technical_action = 'BUY' if signal else 'HOLD'
     technical_min_confidence = dynamic_min_score
+    falling = detect_falling_knife(d1_history or [], h4_history or [])
+    reversal = detect_reversal_confirmation(h1_history or [])
     return {
         'symbol_regime': symbol_regime,
         'btc_regime': btc_regime,
         'bear_mode': symbol_regime in ('BEAR', 'SIDEWAYS_DOWN') or btc_regime in ('BEAR', 'SIDEWAYS_DOWN'),
-        'reversal_confirmed': False,
-        'falling_knife_active': False,
+        'reversal_confirmed': bool(reversal.get('confirmed')),
+        'falling_knife_active': bool(falling.get('is_falling')),
         'is_support_touch': (signal or {}).get('type') == 'support_touch',
         'support_confidence': confidence if (signal or {}).get('type') == 'support_touch' else 0.0,
         'support_rebounds': float((signal or {}).get('rebounds') or 0.0),
@@ -409,6 +412,7 @@ def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=
 
 
 _KRAKEN_ARCHIVE_READY_CACHE = {}
+_TRAINING_DATA_PROVIDERS = set()
 
 
 def _kraken_archive_symbol_ready(symbol, start_ms):
@@ -520,6 +524,7 @@ def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None
 
     kraken_archive = _load_kraken_archive_for_training(symbol, timeframe, window_start_ms)
     if kraken_archive:
+        _TRAINING_DATA_PROVIDERS.add('kraken_archive')
         return kraken_archive[-max_candles:]
 
     # Long-history fallback. Coinbase is used only when a sufficiently deep Kraken
@@ -555,6 +560,7 @@ def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None
     if cache_enabled:
         _save_cache(symbol, timeframe, all_klines)
 
+    _TRAINING_DATA_PROVIDERS.add('coinbase')
     if cached_count:
         print(f"      → {symbol} {timeframe}: {len(all_klines)} bougies (cache: {cached_count}, delta: {len(delta)})")
     else:
@@ -627,7 +633,17 @@ def generate_samples_from_klines(
             btc_history=btc_history,
             index=btc_context_index,
             support_stats=support_stats,
+            h1_history=history_1h,
+            h4_history=history_4h,
+            d1_history=history_1d,
         )
+        if (
+            os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+            and bot_context.get('falling_knife_active')
+            and not bot_context.get('reversal_confirmed')
+        ):
+            continue  # historical_falling_knife_reject: same hard gate as live
+
         features = ml_engine.extract_features_from_klines(
             history,
             current_price,
@@ -660,14 +676,223 @@ def generate_samples_from_klines(
         )
         pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100.0
 
+        path_quantile = max(0.50, min(0.95, float(os.getenv('ML_TARGET_PATH_QUANTILE', '0.70'))))
+        path_net_gains = []
+        for future_idx in range(index + 1, min(exit_index + 1, len(klines_15m))):
+            reachable = float(klines_15m[future_idx]['high'])
+            net_gain = (
+                (reachable * (1 - fee_rate) - current_price * (1 + fee_rate))
+                / max(current_price, 1e-9)
+            ) * 100.0
+            path_net_gains.append(max(0.0, net_gain))
+        target_gain_pct = float(np.quantile(path_net_gains, path_quantile)) if path_net_gains else 0.0
+
         samples.append(feature_dict)
         labels.append(1 if pnl_percent > 0 else 0)
-        metadata.append({'symbol': symbol, 'timestamp': ts, 'pnl_pct': pnl_percent})
+        metadata.append({
+            'symbol': symbol,
+            'timestamp': ts,
+            'pnl_pct': pnl_percent,
+            'entry_index': index,
+            'entry_price': current_price,
+            'exit_index': exit_index,
+            'exit_price': exit_price,
+            'signal': dict(signal),
+            'sizing_target': sizing_factor_target_from_pnl(pnl_percent),
+            'target_gain_pct': target_gain_pct,
+        })
         if signal.get('type') == 'support_touch':
             support_pnls.append(float(pnl_percent))
         next_allowed_index = exit_index + 4
 
     return samples, labels, metadata
+
+
+def generate_exit_training_samples(
+    ml_engine,
+    signal_engine,
+    training_histories,
+    btc_history,
+    fee_rate,
+    start_ts=None,
+    end_ts=None,
+    exit_max_hold=None,
+    max_samples=None,
+):
+    """Generate P_exit HOLD-vs-EXIT samples with the same historical context as live.
+
+    start_ts/end_ts are epoch seconds and constrain ENTRY timestamps. Callers should
+    also truncate bundles at end_ts when strict walk-forward isolation is required.
+    """
+    X_exit_samples, y_exit_labels, exit_timestamps = [], [], []
+    exit_min_edge = float(os.getenv('ML_EXIT_MIN_HOLD_EDGE_PCT', '0.05'))
+    time_cost_per_day = float(os.getenv('ML_EXIT_HOLD_TIME_COST_PCT_PER_DAY', '0.02'))
+    exit_max_hold = int(exit_max_hold or os.getenv('ML_EXIT_MAX_HOLD_CANDLES', '960'))
+    max_samples = int(max_samples or os.getenv('ML_EXIT_MAX_TRAIN_SAMPLES', '16000'))
+    exit_trend_enabled = os.getenv('ML_EXIT_TREND_EXIT', 'true').lower() == 'true'
+    exit_trend_confirm = int(os.getenv('ML_EXIT_TREND_CONFIRM_BARS', '2'))
+
+    def _slice_until(rows, ts_value, count=30):
+        rows = rows or []
+        cursor = _cursor_at_or_before(rows, ts_value)
+        return rows[max(0, cursor - count):cursor]
+
+    for exit_symbol, tf_bundle in (training_histories or {}).items():
+        symbol_15m = list(tf_bundle.get('15m') or [])
+        if len(symbol_15m) < 100:
+            continue
+
+        for index in range(50, len(symbol_15m) - 10):
+            if len(X_exit_samples) >= max_samples:
+                break
+
+            entry_ts_raw = float(symbol_15m[index]['timestamp'])
+            entry_ts_sec = entry_ts_raw / 1000.0 if entry_ts_raw > 1e12 else entry_ts_raw
+            if start_ts is not None and entry_ts_sec < float(start_ts):
+                continue
+            if end_ts is not None and entry_ts_sec >= float(end_ts):
+                break
+
+            entry_price = float(symbol_15m[index]['close'])
+            entry_ts = int(symbol_15m[index]['timestamp'])
+            history = symbol_15m[max(0, index - 200):index]
+            candidate = signal_engine.detect_best(history[-200:], entry_price)
+            if not candidate:
+                continue
+
+            entry_5m = _slice_until(tf_bundle.get('5m'), entry_ts, 30)
+            entry_1h = _slice_until(tf_bundle.get('1h'), entry_ts, 40)
+            entry_4h = _slice_until(tf_bundle.get('4h'), entry_ts, 80)
+            entry_1d = _slice_until(tf_bundle.get('1d'), entry_ts, 80)
+            btc_entry_idx = _cursor_at_or_before(btc_history, entry_ts) if btc_history else None
+            entry_bot_ctx = build_training_bot_context(
+                history,
+                candidate,
+                entry_ts,
+                btc_history=btc_history,
+                index=btc_entry_idx,
+                h1_history=entry_1h,
+                h4_history=entry_4h,
+                d1_history=entry_1d,
+            )
+            if (
+                os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+                and entry_bot_ctx.get('falling_knife_active')
+                and not entry_bot_ctx.get('reversal_confirmed')
+            ):
+                continue
+
+            entry_trade_ctx = {
+                'fee_rate': fee_rate,
+                'position_value_usd': 5.0,
+                'account_balance': 1000.0,
+                'planned_hold_minutes': 96 * 15.0,
+            }
+            entry_p_win_train = ml_engine.predict_win_probability(
+                history,
+                entry_price,
+                klines_5m=entry_5m,
+                klines_1h=entry_1h,
+                klines_4h=entry_4h,
+                klines_1d=entry_1d,
+                trade_context=entry_trade_ctx,
+                bot_context=entry_bot_ctx,
+            )
+
+            exit_index, final_exit_price, _ = simulate_trade(
+                symbol_15m,
+                index,
+                entry_price,
+                candidate.get('support_price'),
+                1.0,
+                exit_max_hold,
+                2.5,
+                breakeven_stop=True,
+                breakeven_trigger=1.5,
+                breakeven_lock=1.0,
+                fee_rate=fee_rate,
+                trend_exit=exit_trend_enabled,
+                trend_confirm_bars=exit_trend_confirm,
+            )
+
+            checkpoints = [
+                index + 4, index + 8, index + 16, index + 32,
+                index + 48, index + 96, index + 192, index + 384, index + 672,
+            ]
+            for cp in checkpoints:
+                if cp >= len(symbol_15m) or cp >= exit_index:
+                    break
+                cp_price = float(symbol_15m[cp]['close'])
+                cp_history = symbol_15m[max(0, cp - 200):cp]
+                if len(cp_history) < 20:
+                    continue
+
+                duration_minutes = (cp - index) * 15.0
+                remaining_days = max(0.0, (exit_index - cp) * 15.0 / 1440.0)
+                position_data = {
+                    'entry_price': entry_price,
+                    'buy_price': entry_price,
+                    'fee_rate': fee_rate,
+                    'duration_minutes': duration_minutes,
+                    'stop_price': entry_price * 0.99,
+                    'target_price': entry_price * 1.02,
+                }
+
+                exit_now_net = (
+                    (cp_price * (1 - fee_rate) - entry_price * (1 + fee_rate))
+                    / max(entry_price, 1e-9)
+                ) * 100.0
+                hold_final_net = (
+                    (float(final_exit_price) * (1 - fee_rate) - entry_price * (1 + fee_rate))
+                    / max(entry_price, 1e-9)
+                ) * 100.0
+                hold_advantage = hold_final_net - exit_now_net - (remaining_days * time_cost_per_day)
+                exit_label = 1 if hold_advantage >= exit_min_edge else 0
+
+                cp_ts = int(symbol_15m[cp]['timestamp'])
+                btc_idx = _cursor_at_or_before(btc_history, cp_ts) if btc_history else None
+                btc_slice = (
+                    btc_history[max(0, btc_idx - 30):btc_idx]
+                    if btc_history and btc_idx is not None
+                    else None
+                )
+                cp_h1 = _slice_until(tf_bundle.get('1h'), cp_ts, 40)
+                cp_h4 = _slice_until(tf_bundle.get('4h'), cp_ts, 80)
+                cp_d1 = _slice_until(tf_bundle.get('1d'), cp_ts, 80)
+                bot_ctx = build_training_bot_context(
+                    cp_history,
+                    None,
+                    cp_ts,
+                    btc_history=btc_history,
+                    index=btc_idx,
+                    h1_history=cp_h1,
+                    h4_history=cp_h4,
+                    d1_history=cp_d1,
+                )
+                exit_features = ml_engine.extract_exit_features(
+                    cp_history,
+                    cp_price,
+                    position_data,
+                    continuation_score=50.0,
+                    entry_p_win=entry_p_win_train,
+                    btc_klines=btc_slice,
+                    bot_context=bot_ctx,
+                )
+                if exit_features is not None:
+                    X_exit_samples.append(exit_features)
+                    y_exit_labels.append(exit_label)
+                    exit_timestamps.append(
+                        cp_ts / 1000.0 if cp_ts > 1e12 else float(cp_ts)
+                    )
+
+        if len(X_exit_samples) >= max_samples:
+            break
+
+    return (
+        np.asarray(X_exit_samples, dtype=np.float64),
+        np.asarray(y_exit_labels, dtype=np.int64),
+        np.asarray(exit_timestamps, dtype=np.float64),
+    )
 
 
 def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use_grid_search=None, use_lightgbm=None):
@@ -827,7 +1052,17 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                         btc_history=btc_history,
                         index=btc_context_index,
                         support_stats=support_stats,
+                        h1_history=history_1h,
+                        h4_history=history_4h,
+                        d1_history=history_1d,
                     )
+
+                    if (
+                        os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+                        and bot_context.get('falling_knife_active')
+                        and not bot_context.get('reversal_confirmed')
+                    ):
+                        continue
 
                     features = ml_engine.extract_features_from_klines(
                         history, current_price,
@@ -951,6 +1186,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         w_train = w_train[temporal_order]
         ts_train = ts_train[temporal_order]
         
+        ml_engine.model_metadata = {
+            **dict(getattr(ml_engine, 'model_metadata', {}) or {}),
+            'training_start': datetime.fromtimestamp(float(np.min(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
+            'training_end': datetime.fromtimestamp(float(np.max(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
+            'data_provider': '+'.join(sorted(_TRAINING_DATA_PROVIDERS)) if _TRAINING_DATA_PROVIDERS else 'unknown',
+        }
+
         # Stats du dataset d'entraînement
         n_wins = int(np.sum(y == 1))
         n_losses = int(np.sum(y == 0))
@@ -970,162 +1212,18 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement expected PnL: {ex}")
 
-            # Entraînement P_exit multi-symboles. Le label répond à la question économique :
-            # "HOLD maintenant vaut-il mieux que EXIT NOW ?" après frais et coût temporel.
+            # Entraînement P_exit via le générateur partagé avec le walk-forward.
             try:
-                X_exit_samples, y_exit_labels, exit_timestamps = [], [], []
-                exit_min_edge = float(os.getenv('ML_EXIT_MIN_HOLD_EDGE_PCT', '0.05'))
-                time_cost_per_day = float(os.getenv('ML_EXIT_HOLD_TIME_COST_PCT_PER_DAY', '0.02'))
-                max_exit_samples = int(os.getenv('ML_EXIT_MAX_TRAIN_SAMPLES', '16000'))
-
-                for exit_symbol, tf_bundle in training_histories.items():
-                    symbol_15m = list(tf_bundle.get('15m') or [])
-                    if len(symbol_15m) < 100:
-                        continue
-
-                    def _slice_until(rows, ts_value, count=30):
-                        rows = rows or []
-                        lo, hi = 0, len(rows)
-                        while lo < hi:
-                            mid = (lo + hi) // 2
-                            if int(rows[mid].get('timestamp', 0)) <= int(ts_value):
-                                lo = mid + 1
-                            else:
-                                hi = mid
-                        return rows[max(0, lo - count):lo]
-
-                    for index in range(50, len(symbol_15m) - 10):
-                        if len(X_exit_samples) >= max_exit_samples:
-                            break
-
-                        entry_price = float(symbol_15m[index]['close'])
-                        entry_ts = int(symbol_15m[index]['timestamp'])
-                        history = symbol_15m[:index]
-                        candidate = signal_engine.detect_best(history[-200:], entry_price)
-                        if not candidate:
-                            continue
-
-                        entry_5m = _slice_until(tf_bundle.get('5m'), entry_ts, 30)
-                        entry_1h = _slice_until(tf_bundle.get('1h'), entry_ts, 30)
-                        entry_4h = _slice_until(tf_bundle.get('4h'), entry_ts, 30)
-                        entry_1d = _slice_until(tf_bundle.get('1d'), entry_ts, 30)
-                        btc_entry_idx = 0
-                        if btc_history:
-                            lo, hi = 0, len(btc_history)
-                            while lo < hi:
-                                mid = (lo + hi) // 2
-                                if int(btc_history[mid]['timestamp']) <= entry_ts:
-                                    lo = mid + 1
-                                else:
-                                    hi = mid
-                            btc_entry_idx = max(0, lo)
-
-                        entry_bot_ctx = build_training_bot_context(
-                            history,
-                            candidate,
-                            entry_ts,
-                            btc_history=btc_history,
-                            index=btc_entry_idx if btc_history else None,
-                        )
-                        entry_trade_ctx = {
-                            'fee_rate': fee_rate,
-                            'position_value_usd': 5.0,
-                            'account_balance': 1000.0,
-                            'planned_hold_minutes': 96 * 15.0,
-                        }
-                        entry_p_win_train = ml_engine.predict_win_probability(
-                            history,
-                            entry_price,
-                            klines_5m=entry_5m,
-                            klines_1h=entry_1h,
-                            klines_4h=entry_4h,
-                            klines_1d=entry_1d,
-                            trade_context=entry_trade_ctx,
-                            bot_context=entry_bot_ctx,
-                        )
-
-                        exit_index, final_exit_price, _ = simulate_trade(
-                            symbol_15m, index, entry_price, candidate.get('support_price'), 1.0, exit_max_hold, 2.5,
-                            breakeven_stop=True, breakeven_trigger=1.5, breakeven_lock=1.0,
-                            fee_rate=fee_rate, trend_exit=exit_trend_enabled,
-                            trend_confirm_bars=exit_trend_confirm
-                        )
-
-                        checkpoints = [
-                            index + 4, index + 8, index + 16, index + 32,
-                            index + 48, index + 96, index + 192, index + 384, index + 672
-                        ]
-                        for cp in checkpoints:
-                            if cp >= len(symbol_15m) or cp >= exit_index:
-                                break
-                            cp_price = float(symbol_15m[cp]['close'])
-                            cp_history = symbol_15m[:cp]
-                            if len(cp_history) < 20:
-                                continue
-
-                            duration_minutes = (cp - index) * 15.0
-                            remaining_days = max(0.0, (exit_index - cp) * 15.0 / 1440.0)
-                            position_data = {
-                                'entry_price': entry_price,
-                                'buy_price': entry_price,
-                                'fee_rate': fee_rate,
-                                'duration_minutes': duration_minutes,
-                                'stop_price': entry_price * 0.99,
-                                'target_price': entry_price * 1.02,
-                            }
-
-                            exit_now_net = (
-                                (cp_price * (1 - fee_rate) - entry_price * (1 + fee_rate))
-                                / max(entry_price, 1e-9)
-                            ) * 100.0
-                            hold_final_net = (
-                                (float(final_exit_price) * (1 - fee_rate) - entry_price * (1 + fee_rate))
-                                / max(entry_price, 1e-9)
-                            ) * 100.0
-                            hold_advantage = hold_final_net - exit_now_net - (remaining_days * time_cost_per_day)
-                            exit_label = 1 if hold_advantage >= exit_min_edge else 0
-
-                            cp_ts = int(symbol_15m[cp]['timestamp'])
-                            btc_idx = 0
-                            if btc_history:
-                                # positionner BTC sur la dernière bougie connue au checkpoint, sans futur.
-                                lo, hi = 0, len(btc_history)
-                                while lo < hi:
-                                    mid = (lo + hi) // 2
-                                    if int(btc_history[mid]['timestamp']) <= cp_ts:
-                                        lo = mid + 1
-                                    else:
-                                        hi = mid
-                                btc_idx = max(0, lo)
-                            btc_slice = btc_history[max(0, btc_idx - 30):btc_idx] if btc_history else None
-                            bot_ctx = build_training_bot_context(
-                                cp_history,
-                                None,
-                                cp_ts,
-                                btc_history=btc_history,
-                                index=btc_idx if btc_history else None
-                            )
-                            exit_features = ml_engine.extract_exit_features(
-                                cp_history,
-                                cp_price,
-                                position_data,
-                                continuation_score=50.0,
-                                entry_p_win=entry_p_win_train,
-                                btc_klines=btc_slice,
-                                bot_context=bot_ctx
-                            )
-                            if exit_features is not None:
-                                X_exit_samples.append(exit_features)
-                                y_exit_labels.append(exit_label)
-                                exit_timestamps.append(cp_ts / 1000.0 if cp_ts > 1e12 else float(cp_ts))
-
-                    if len(X_exit_samples) >= max_exit_samples:
-                        break
-
-                if len(X_exit_samples) >= 30:
-                    X_exit = np.array(X_exit_samples, dtype=np.float64)
-                    y_exit = np.array(y_exit_labels, dtype=np.int64)
-                    ts_exit = np.array(exit_timestamps, dtype=np.float64)
+                X_exit, y_exit, ts_exit = generate_exit_training_samples(
+                    ml_engine=ml_engine,
+                    signal_engine=signal_engine,
+                    training_histories=training_histories,
+                    btc_history=btc_history,
+                    fee_rate=fee_rate,
+                    exit_max_hold=exit_max_hold,
+                    max_samples=int(os.getenv('ML_EXIT_MAX_TRAIN_SAMPLES', '16000')),
+                )
+                if len(X_exit) >= 30:
                     ml_engine.train_exit_model(
                         X_exit,
                         y_exit,
@@ -1133,19 +1231,19 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                         n_estimators=150,
                         max_depth=6,
                         min_samples_split=10,
-                        use_lightgbm=use_lightgbm
+                        use_lightgbm=use_lightgbm,
                     )
                     n_continue = int(np.sum(y_exit == 1))
                     n_exit = int(len(y_exit) - n_continue)
-                    _tot = max(1, len(y_exit))
+                    total_exit = max(1, len(y_exit))
                     model_name = 'LightGBM' if use_lightgbm else 'RandomForest'
                     print(
-                        f"  ✅ P_exit multi-symboles ({model_name}) : {len(X_exit_samples)} samples "
-                        f"(continue:{n_continue} [{n_continue/_tot*100:.1f}%], "
-                        f"exit:{n_exit} [{n_exit/_tot*100:.1f}%])"
+                        f"  ✅ P_exit multi-symboles ({model_name}) : {len(X_exit)} samples "
+                        f"(continue:{n_continue} [{n_continue/total_exit*100:.1f}%], "
+                        f"exit:{n_exit} [{n_exit/total_exit*100:.1f}%])"
                     )
                 else:
-                    print(f"  ⚠️ Pas assez de samples exit ({len(X_exit_samples)}), modèle sortie non entraîné")
+                    print(f"  ⚠️ Pas assez de samples exit ({len(X_exit)}), modèle sortie non entraîné")
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sortie: {ex}")
 

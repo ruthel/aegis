@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import joblib
 
 from core.websocket import WebSocketManager
 from core.managers.execution_manager import ExecutionManager
@@ -19,6 +20,9 @@ from utils.pattern_analyzer import PatternAnalyzer
 from core.exchange.kraken import KrakenClient
 from core.ml_live_logger import MLLiveLogger
 from scripts.promote_challenger import compute_shadow_comparison
+from core.bot.trading import TradingMixin
+from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
+from scripts.train_and_evaluate_ml_model import build_training_bot_context
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +182,39 @@ class NativeTimeframeBot:
             {"timestamp": i, "open": i, "high": i + 1, "low": i - 1, "close": i + 0.5, "volume": 1}
             for i in range(limit)
         ]
+
+
+class PaperFeeManager:
+    def get_fee_for_trade(self, symbol, order_type='market'):
+        return 0.0015 if order_type == 'limit' else 0.0025
+
+
+class PaperSimulationHarness(TradingMixin):
+    def __init__(self):
+        self.paper_trading = True
+        self.trading_fee = 0.004
+        self.capital_manager = PaperFeeManager()
+
+    def get_ticker(self, symbol):
+        return {'bid': 99.9, 'ask': 100.1, 'last': 100.0, 'symbol': symbol}
+
+    def get_price(self, symbol):
+        return 100.0
+
+
+def _trend_klines(count, start, step, timeframe_ms):
+    rows = []
+    for i in range(count):
+        close = start + step * i
+        rows.append({
+            'timestamp': i * timeframe_ms,
+            'open': close - step * 0.2,
+            'high': close + abs(step) * 0.3 + 0.1,
+            'low': close - abs(step) * 0.3 - 0.1,
+            'close': close,
+            'volume': 100.0 + i,
+        })
+    return rows
 
 
 class LiveFixTests(unittest.TestCase):
@@ -421,6 +458,99 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn("no_shared_candidate_signal", source)
         self.assertIn("ml_expected_net_edge_below_threshold", source)
         self.assertIn("ML_SHADOW_CHALLENGER_ENABLED", source)
+
+    def test_shared_falling_knife_features_match_training_context(self):
+        daily = _trend_klines(80, 200.0, -1.0, 86_400_000)
+        h4 = _trend_klines(80, 150.0, -0.5, 14_400_000)
+        h1 = _trend_klines(40, 120.0, -0.2, 3_600_000)
+        falling = detect_falling_knife(daily, h4)
+        reversal = detect_reversal_confirmation(h1)
+        self.assertTrue(falling['is_falling'])
+        self.assertFalse(reversal['confirmed'])
+
+        context = build_training_bot_context(
+            history=_trend_klines(80, 100.0, -0.1, 900_000),
+            signal={'type': 'ema_pullback_15m', 'confidence': 70.0},
+            ts=daily[-1]['timestamp'],
+            h1_history=h1,
+            h4_history=h4,
+            d1_history=daily,
+        )
+        self.assertTrue(context['falling_knife_active'])
+        self.assertFalse(context['reversal_confirmed'])
+
+    def test_live_has_hard_anti_falling_knife_gate(self):
+        source = (ROOT / 'core/trading_bot.py').read_text(encoding='utf-8')
+        self.assertIn('falling_knife_without_reversal', source)
+        self.assertIn('HARD_ANTI_FALLING_KNIFE', source)
+
+    def test_paper_market_execution_uses_bid_ask_slippage_and_online_fee(self):
+        bot = PaperSimulationHarness()
+        with patch.dict(os.environ, {
+            'PAPER_MARKET_SLIPPAGE_PCT': '0.03',
+            'PAPER_SPREAD_SLIPPAGE_FACTOR': '0.25',
+            'PAPER_MARKET_LATENCY_MS': '150',
+        }, clear=False):
+            snap = bot._paper_execution_snapshot('BTC/USD', 'buy', 'market', amount=1.0)
+        self.assertGreater(snap['price'], 100.1)
+        self.assertAlmostEqual(snap['fee_rate'], 0.0025)
+        self.assertEqual(snap['latency_ms'], 150.0)
+        self.assertGreater(snap['spread_pct'], 0.0)
+
+    def test_paper_limit_execution_simulates_partial_maker_fill(self):
+        bot = PaperSimulationHarness()
+        with patch.dict(os.environ, {
+            'PAPER_SIMULATE_PARTIAL_FILLS': 'True',
+            'PAPER_LIMIT_PARTIAL_FILL_RATIO': '0.50',
+            'PAPER_LIMIT_FULL_FILL_PENETRATION_PCT': '0.05',
+        }, clear=False):
+            snap = bot._paper_execution_snapshot(
+                'BTC/USD', 'buy', 'limit', amount=2.0, limit_price=100.1
+            )
+        self.assertAlmostEqual(snap['amount'], 1.0)
+        self.assertAlmostEqual(snap['fill_ratio'], 0.5)
+        self.assertAlmostEqual(snap['fee_rate'], 0.0015)
+
+    def test_model_contract_is_persisted_and_schema_mismatch_is_rejected(self):
+        rng = np.random.default_rng(123)
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {
+            'ML_SKIP_MODEL_METADATA': 'true',
+            'ML_STRICT_MODEL_SCHEMA': 'True',
+            'ML_TEMPORAL_TEST_RATIO': '0.20',
+        }, clear=False):
+            engine = MLEngine(model_dir=td)
+            X = rng.normal(size=(260, len(engine.feature_names)))
+            y = (X[:, 0] > 0).astype(int)
+            engine.model_metadata = {
+                'training_start': '2026-01-01T00:00:00+00:00',
+                'training_end': '2026-09-01T00:00:00+00:00',
+                'data_provider': 'test',
+            }
+            self.assertTrue(engine.train_model(X, y, use_lightgbm=False))
+            payload = joblib.load(engine.model_path)
+            self.assertEqual(payload['model_contract']['model_format_version'], 3)
+            self.assertEqual(
+                payload['model_contract']['feature_schema_hash'],
+                engine.feature_schema_hash(),
+            )
+            reloaded = MLEngine(model_dir=td)
+            self.assertTrue(reloaded.is_trained)
+
+            payload['model_contract']['feature_schema_hash'] = 'bad-schema'
+            joblib.dump(payload, engine.model_path)
+            rejected = MLEngine(model_dir=td)
+            self.assertFalse(rejected.is_trained)
+
+    def test_full_strategy_walk_forward_covers_all_ml_heads(self):
+        source = (ROOT / 'scripts/walk_forward_validation.py').read_text(encoding='utf-8')
+        self.assertIn('FULL_STRATEGY_WALK_FORWARD', source)
+        self.assertIn('train_sizing_model', source)
+        self.assertIn('train_target_model', source)
+        self.assertIn('generate_exit_training_samples', source)
+        self.assertIn('predict_exit_decision', source)
+        self.assertIn('predict_position_size_factor', source)
+        self.assertIn('predict_target', source)
+        self.assertIn('FULL_STRATEGY_ROUNDTRIP_SLIPPAGE_PCT', source)
 
     def test_unified_env_and_removed_dl_are_clean(self):
         targets = [
