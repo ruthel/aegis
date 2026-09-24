@@ -629,7 +629,7 @@ class RiskManager:
             if volatility >= 4.0:
                 return '4h'
             elif volatility >= 2.0:
-                return '12h'
+                return '4h'
             else:
                 return '1d'
         elif analysis_type == 'correlation':
