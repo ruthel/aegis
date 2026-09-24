@@ -384,6 +384,29 @@ class MlSizingRecommendation(Base):
     updated_at: Mapped[str | None] = mapped_column(Text)
 
 
+class ExecutionLatency(Base):
+    __tablename__ = 'execution_latency'
+
+    latency_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    order_type: Mapped[str | None] = mapped_column(Text)
+    signal_to_market_data_ms: Mapped[float | None] = mapped_column(Float)
+    market_data_to_features_ms: Mapped[float | None] = mapped_column(Float)
+    features_to_prediction_ms: Mapped[float | None] = mapped_column(Float)
+    prediction_to_send_ms: Mapped[float | None] = mapped_column(Float)
+    send_to_ack_ms: Mapped[float | None] = mapped_column(Float)
+    ack_to_first_fill_ms: Mapped[float | None] = mapped_column(Float)
+    first_to_final_fill_ms: Mapped[float | None] = mapped_column(Float)
+    total_ms: Mapped[float | None] = mapped_column(Float)
+    expected_price: Mapped[float | None] = mapped_column(Float)
+    executed_price: Mapped[float | None] = mapped_column(Float)
+    slippage_pct: Mapped[float | None] = mapped_column(Float)
+    success: Mapped[int | None] = mapped_column(Integer)
+    trace_json: Mapped[str | None] = mapped_column(Text)
+
+
 class Notification(Base):
     __tablename__ = 'notifications'
 
@@ -488,6 +511,7 @@ Index('idx_decision_logs_type_symbol_time', DecisionLog.action_type, DecisionLog
 Index('idx_ml_feature_name', MlFeatureValue.feature_name)
 Index('idx_ml_outcome_entry', MlTradeOutcome.entry_id)
 Index('idx_ml_sizing_symbol_time', MlSizingRecommendation.symbol, MlSizingRecommendation.timestamp)
+Index('idx_execution_latency_symbol_time', ExecutionLatency.symbol, ExecutionLatency.timestamp)
 Index('idx_notifications_time', Notification.timestamp)
 Index('idx_notifications_direction', Notification.direction)
 Index('idx_crypto_scores_symbol_time', CryptoScore.symbol, CryptoScore.timestamp)
