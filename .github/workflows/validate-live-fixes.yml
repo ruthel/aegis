@@ -1,0 +1,42 @@
+name: Validate live execution fixes
+
+on:
+  push:
+    branches:
+      - fix/live-execution-ml-pipeline-20260924
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PAPER_TRADING: "True"
+      ML_MIN_PROBABILITY: "50.0"
+      TRADING_FEE_PERCENT: "0.4"
+      ML_USE_LIGHTGBM: "True"
+      ML_USE_GRID_SEARCH: "False"
+      ADAPTIVE_MAKER_ORDERS: "True"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax validation
+        run: |
+          python -m compileall -q core scripts ui utils config.py start.py run.py
+
+      - name: Unit and smoke tests
+        run: |
+          python -m unittest discover -s tests -p "test_live_fixes.py" -v
