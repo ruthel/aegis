@@ -95,6 +95,17 @@ class ExecutionManager:
 
         # 2. Spread-Aware Execution
         micro = self.wait_for_tight_spread(symbol, max_wait=self.spread_pause_timeout)
+        if float(micro.get('spread_pct') or 0.0) > self.max_allowed_spread_pct:
+            print(
+                f"⛔ {symbol}: spread toujours trop large "
+                f"({micro['spread_pct']:.3f}% > {self.max_allowed_spread_pct:.3f}%)"
+            )
+            self._log_execution(
+                symbol, 'buy', 'none', current_price, micro.get('ask'),
+                None, None, micro.get('spread_pct'), position_data.get('position_size_crypto', 0),
+                (time.time() - start_time) * 1000.0, False, 'spread_still_too_wide'
+            )
+            return False
         expected_price = current_price
         requested_price = micro['ask']
 
@@ -186,6 +197,9 @@ class ExecutionManager:
                         market_exec = self.bot._resolve_exchange_execution(
                             symbol, market_order, remaining, current_price, side='buy'
                         )
+                        if latency_trace.get('first_fill_ns') is None:
+                            latency_trace['first_fill_ns'] = time.perf_counter_ns()
+                        latency_trace['final_fill_ns'] = time.perf_counter_ns()
                         market_amount = float(market_exec.get('amount') or remaining)
                         market_px = float(market_exec.get('price') or current_price)
                         self.bot._record_live_order_accounting(
@@ -254,7 +268,7 @@ class ExecutionManager:
         slippage_pct = ((executed_price - expected_price) / expected_price * 100.0) if expected_price > 0 else 0.0
         exec_duration_ms = (time.time() - start_time) * 1000.0
 
-        if order_type in ('limit', 'hybrid') and not self.bot.paper_trading:
+        if (order_type in ('limit', 'hybrid') or composite_accounted) and not self.bot.paper_trading:
             if not composite_accounted:
                 self.bot._record_live_order_accounting(
                     symbol,
@@ -318,7 +332,7 @@ class ExecutionManager:
         )
 
         # Notification Telegram (le chemin limit maker ne passe pas par buy_market qui notifie déjà)
-        if order_type in ('limit', 'hybrid') and not self.bot.paper_trading and hasattr(self.bot, 'notifier'):
+        if (order_type in ('limit', 'hybrid') or composite_accounted) and not self.bot.paper_trading and hasattr(self.bot, 'notifier'):
             try:
                 analysis = self.bot.get_cached_analysis(symbol, executed_price)
                 signal_data = {
