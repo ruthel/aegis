@@ -2,8 +2,8 @@
 
 Réutilise le modèle challenger existant (data/aegis_challenger.joblib) SANS
 re-télécharger les données ni ré-entraîner. Évalue les mêmes garde-fous de
-promotion que la pipeline principale (train_and_evaluate_ml_model.py) en
-utilisant les seuils définis dans .env, puis effectue le backup du
+promotion canonique utilisée aussi par train_and_evaluate_ml_model.py. Tous les
+seuils viennent de .env, puis le script effectue le backup du
 Champion et la copie challenger -> champion.
 
 Usage:
@@ -25,7 +25,90 @@ from dotenv import load_dotenv
 from core.ml_engine import MLEngine
 from core.ml_live_logger import MLLiveLogger
 from core.managers.notification import NotificationManager
-from scripts.train_and_evaluate_ml_model import compute_guardrail_metrics
+
+
+def compute_guardrail_metrics(db_file):
+    """Compute live guardrail metrics used by the single promotion policy."""
+    metrics = {
+        'closed_trades_count': 0,
+        'active_days': 0,
+        'profit_factor': 1.0,
+        'net_pnl': 0.0,
+        'net_pnl_pct_sum': 0.0,
+        'max_drawdown_pct': 0.0,
+        'latest_calibration_mae': None,
+        'latest_live_win_rate': None,
+        'latest_drift_status': None,
+        'trade_rows': [],
+    }
+    if not db_file or not os.path.exists(db_file):
+        return metrics
+
+    conn = sqlite3.connect(db_file)
+    try:
+        cur = conn.cursor()
+        trade_rows = cur.execute(
+            """
+            SELECT
+                t.symbol,
+                COALESCE(e.price, t.buy_price) AS entry_price,
+                COALESCE(e.confidence, e.p_win) AS p_win,
+                t.pnl_pct,
+                t.pnl,
+                t.timestamp
+            FROM ml_trade_outcomes t
+            LEFT JOIN decision_logs e
+              ON e.action_type IN ('ENTRY', 'BUY')
+             AND (e.event_id = t.entry_id OR e.entry_id = t.entry_id)
+            WHERE t.pnl_pct IS NOT NULL
+            ORDER BY t.timestamp ASC
+            """
+        ).fetchall()
+        metrics['trade_rows'] = trade_rows
+        metrics['closed_trades_count'] = len(trade_rows)
+
+        if trade_rows:
+            dates, pnls, pnl_pcts = [], [], []
+            for row in trade_rows:
+                pnl_pcts.append(float(row[3] or 0.0))
+                pnls.append(float(row[4] or 0.0))
+                try:
+                    dates.append(datetime.fromisoformat(str(row[5]).replace('Z', '+00:00')).date())
+                except Exception:
+                    pass
+            metrics['active_days'] = len(set(dates)) if dates else 1
+            wins = [p for p in pnl_pcts if p > 0]
+            losses = [abs(p) for p in pnl_pcts if p < 0]
+            metrics['profit_factor'] = (
+                sum(wins) / sum(losses)
+                if losses and sum(losses) > 0
+                else (2.0 if wins else 1.0)
+            )
+            metrics['net_pnl'] = sum(pnls)
+            metrics['net_pnl_pct_sum'] = sum(pnl_pcts)
+
+            equity = peak = max_dd = 0.0
+            for pct in pnl_pcts:
+                equity += pct
+                peak = max(peak, equity)
+                max_dd = max(max_dd, peak - equity)
+            metrics['max_drawdown_pct'] = max_dd
+
+        latest_analysis = cur.execute(
+            """
+            SELECT calibration_mae, live_win_rate, drift_status
+            FROM ml_analysis_runs
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if latest_analysis:
+            metrics['latest_calibration_mae'] = latest_analysis[0]
+            metrics['latest_live_win_rate'] = latest_analysis[1]
+            metrics['latest_drift_status'] = latest_analysis[2]
+    finally:
+        conn.close()
+    return metrics
 
 
 def _prune_model_backups(backups_dir, keep=10):
