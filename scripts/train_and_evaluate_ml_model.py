@@ -1065,6 +1065,17 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                     if len(symbol_15m) < 100:
                         continue
 
+                    def _slice_until(rows, ts_value, count=30):
+                        rows = rows or []
+                        lo, hi = 0, len(rows)
+                        while lo < hi:
+                            mid = (lo + hi) // 2
+                            if int(rows[mid].get('timestamp', 0)) <= int(ts_value):
+                                lo = mid + 1
+                            else:
+                                hi = mid
+                        return rows[max(0, lo - count):lo]
+
                     for index in range(50, len(symbol_15m) - 10):
                         if len(X_exit_samples) >= max_exit_samples:
                             break
@@ -1072,9 +1083,51 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                         entry_price = float(symbol_15m[index]['close'])
                         entry_ts = int(symbol_15m[index]['timestamp'])
                         history = symbol_15m[:index]
+                        candidate = signal_engine.detect_best(history[-200:], entry_price)
+                        if not candidate:
+                            continue
+
+                        entry_5m = _slice_until(tf_bundle.get('5m'), entry_ts, 30)
+                        entry_1h = _slice_until(tf_bundle.get('1h'), entry_ts, 30)
+                        entry_4h = _slice_until(tf_bundle.get('4h'), entry_ts, 30)
+                        entry_1d = _slice_until(tf_bundle.get('1d'), entry_ts, 30)
+                        btc_entry_idx = 0
+                        if btc_history:
+                            lo, hi = 0, len(btc_history)
+                            while lo < hi:
+                                mid = (lo + hi) // 2
+                                if int(btc_history[mid]['timestamp']) <= entry_ts:
+                                    lo = mid + 1
+                                else:
+                                    hi = mid
+                            btc_entry_idx = max(0, lo)
+
+                        entry_bot_ctx = build_training_bot_context(
+                            history,
+                            candidate,
+                            entry_ts,
+                            btc_history=btc_history,
+                            index=btc_entry_idx if btc_history else None,
+                        )
+                        entry_trade_ctx = {
+                            'fee_rate': fee_rate,
+                            'position_value_usd': 5.0,
+                            'account_balance': 1000.0,
+                            'planned_hold_minutes': 96 * 15.0,
+                        }
+                        entry_p_win_train = ml_engine.predict_win_probability(
+                            history,
+                            entry_price,
+                            klines_5m=entry_5m,
+                            klines_1h=entry_1h,
+                            klines_4h=entry_4h,
+                            klines_1d=entry_1d,
+                            trade_context=entry_trade_ctx,
+                            bot_context=entry_bot_ctx,
+                        )
 
                         exit_index, final_exit_price, _ = simulate_trade(
-                            symbol_15m, index, entry_price, None, 1.0, exit_max_hold, 2.5,
+                            symbol_15m, index, entry_price, candidate.get('support_price'), 1.0, exit_max_hold, 2.5,
                             breakeven_stop=True, breakeven_trigger=1.5, breakeven_lock=1.0,
                             fee_rate=fee_rate, trend_exit=exit_trend_enabled,
                             trend_confirm_bars=exit_trend_confirm
@@ -1139,7 +1192,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                                 cp_price,
                                 position_data,
                                 continuation_score=50.0,
-                                entry_p_win=50.0,
+                                entry_p_win=entry_p_win_train,
                                 btc_klines=btc_slice,
                                 bot_context=bot_ctx
                             )
