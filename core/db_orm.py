@@ -418,6 +418,23 @@ class Notification(Base):
     text: Mapped[str] = mapped_column(Text)
 
 
+class MlShadowPrediction(Base):
+    __tablename__ = 'ml_shadow_predictions'
+
+    shadow_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text)
+    entry_id: Mapped[str | None] = mapped_column(Text)
+    champion_p_win: Mapped[float | None] = mapped_column(Float)
+    challenger_p_win: Mapped[float | None] = mapped_column(Float)
+    champion_threshold: Mapped[float | None] = mapped_column(Float)
+    challenger_threshold: Mapped[float | None] = mapped_column(Float)
+    champion_take: Mapped[int | None] = mapped_column(Integer)
+    challenger_take: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[str | None] = mapped_column(Text)
+
+
 class MlAnalysisRun(Base):
     __tablename__ = 'ml_analysis_runs'
 
@@ -511,6 +528,8 @@ Index('idx_decision_logs_type_symbol_time', DecisionLog.action_type, DecisionLog
 Index('idx_ml_feature_name', MlFeatureValue.feature_name)
 Index('idx_ml_outcome_entry', MlTradeOutcome.entry_id)
 Index('idx_ml_sizing_symbol_time', MlSizingRecommendation.symbol, MlSizingRecommendation.timestamp)
+Index('idx_ml_shadow_entry', MlShadowPrediction.entry_id)
+Index('idx_ml_shadow_symbol_time', MlShadowPrediction.symbol, MlShadowPrediction.timestamp)
 Index('idx_execution_latency_symbol_time', ExecutionLatency.symbol, ExecutionLatency.timestamp)
 Index('idx_notifications_time', Notification.timestamp)
 Index('idx_notifications_direction', Notification.direction)
