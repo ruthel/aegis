@@ -81,7 +81,10 @@ class SyncMixin:
                             changed = True
             
             if changed:
-        history = [p for p in all_positions if p['side'] == 'sell' or p.get('source') == 'exchange_history']
+                history = [
+                    p for p in all_positions
+                    if p['side'] == 'sell' or p.get('source') == 'exchange_history'
+                ]
                 self.state['positions'] = history + active_buy_positions
                 self.save_state()
         except Exception as e:
