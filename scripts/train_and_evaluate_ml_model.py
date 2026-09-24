@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Pipeline Unifiée d'Entraînement, Évaluation & Promotion ML (Phase 10).
+Pipeline d'entraînement du Challenger Aegis.
 
-Regroupe l'entraînement complet du modèle Challenger d'Entrée et l'évaluation avec garde-fous
-pour la promotion contrôlée en production sans édition manuelle du code.
+Le training construit les modèles Challenger (entrée, edge, sortie, sizing, target).
+La politique de promotion est volontairement centralisée dans scripts/promote_challenger.py
+afin que le manuel et l'auto-retraining utilisent exactement les mêmes garde-fous.
 """
 
 import os
@@ -30,168 +31,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from core.ml_engine import MLEngine
 from core.signal_engine import SignalEngine
-from core.ml_live_logger import MLLiveLogger
-from core.managers.notification import NotificationManager
 from utils.pattern_analyzer import PatternAnalyzer
-from scripts.trade_signals import detect_trade_signal, detect_all_trade_signals, simulate_trade
-
-
-def detect_trade_signal_augmented(pattern_analyzer, history, current_price):
-    """Détecte plus de types de signaux pour augmenter le dataset d'entraînement.
-    Retourne le signal du support/breakout d'abord, sinon teste des signaux additionnels."""
-    # 1. Signaux existants (support touch + breakout)
-    sig = detect_trade_signal(pattern_analyzer, history, current_price)
-    if sig:
-        return sig
-
-    if len(history) < 25:
-        return None
-
-    closes = [float(k['close']) for k in history]
-    highs = [float(k['high']) for k in history]
-    lows = [float(k['low']) for k in history]
-    opens = [float(k['open']) for k in history]
-
-    # Filtre commun: pas d'achat en chute rapide
-    if closes[-1] < opens[-1] and (opens[-1] - closes[-1]) / opens[-1] >= 0.008:
-        return None
-
-    # 2. SIGNAL: Pullback sur EMA20 en tendance haussière (le prix touche l'EMA20 par le haut)
-    ema20 = sum(closes[-20:]) / 20.0
-    ema20_prev = sum(closes[-23:-3]) / 20.0
-    ema20_rising = ema20 > ema20_prev
-    if ema20_rising and lows[-1] <= ema20 <= highs[-1] and closes[-1] >= ema20:
-        return {
-            'type': 'ema20_pullback',
-            'support_price': ema20 * 0.99,
-            'resistance_price': current_price * 1.02,
-            'rebounds': 1,
-            'confidence': 65,
-            'reason': f"Pullback EMA20 haussier @ {ema20:.2f}",
-        }
-
-    # 3. SIGNAL: Rebond RSI survente (RSI remonte au-dessus de 32 après avoir été < 30)
-    def _rsi(vals, period=14):
-        if len(vals) < period + 1:
-            return 50.0
-        gains, losses = [], []
-        for i in range(-period, 0):
-            d = vals[i] - vals[i - 1]
-            gains.append(max(0, d))
-            losses.append(max(0, -d))
-        ag = sum(gains) / period
-        al = sum(losses) / period
-        if al == 0:
-            return 100.0
-        rs = ag / al
-        return 100.0 - (100.0 / (1.0 + rs))
-
-    rsi_now = _rsi(closes)
-    rsi_prev = _rsi(closes[:-1])
-    if rsi_prev < 30 and 30 <= rsi_now <= 45 and closes[-1] > closes[-2]:
-        return {
-            'type': 'rsi_oversold_rebound',
-            'support_price': min(lows[-10:]),
-            'resistance_price': current_price * 1.02,
-            'rebounds': 1,
-            'confidence': 62,
-            'reason': f"Rebond RSI survente ({rsi_now:.0f})",
-        }
-
-    # 4. SIGNAL: Croisement EMA9 au-dessus EMA20 (momentum haussier naissant)
-    ema9 = sum(closes[-9:]) / 9.0
-    ema9_prev = sum(closes[-10:-1]) / 9.0
-    ema20_prev1 = sum(closes[-21:-1]) / 20.0
-    crossed_up = ema9_prev <= ema20_prev1 and ema9 > ema20
-    if crossed_up and closes[-1] > opens[-1]:
-        return {
-            'type': 'ema_cross_up',
-            'support_price': ema20 * 0.99,
-            'resistance_price': current_price * 1.02,
-            'rebounds': 1,
-            'confidence': 63,
-            'reason': f"Croisement EMA9>EMA20 @ {current_price:.2f}",
-        }
-
-    return None
-
-
-def compute_guardrail_metrics(db_file):
-    metrics = {
-        'closed_trades_count': 0,
-        'active_days': 0,
-        'profit_factor': 1.0,
-        'net_pnl': 0.0,
-        'net_pnl_pct_sum': 0.0,
-        'max_drawdown_pct': 0.0,
-        'latest_calibration_mae': None,
-        'latest_live_win_rate': None,
-        'latest_drift_status': None,
-        'trade_rows': [],
-    }
-    if not os.path.exists(db_file):
-        return metrics
-
-    conn = sqlite3.connect(db_file)
-    try:
-        cur = conn.cursor()
-        trade_rows = cur.execute("""
-            SELECT
-                t.symbol,
-                COALESCE(e.price, t.buy_price) AS entry_price,
-                COALESCE(e.confidence, e.p_win) AS p_win,
-                t.pnl_pct,
-                t.pnl,
-                t.timestamp
-            FROM ml_trade_outcomes t
-            LEFT JOIN decision_logs e
-              ON e.action_type IN ('ENTRY', 'BUY')
-             AND (e.event_id = t.entry_id OR e.entry_id = t.entry_id)
-            WHERE t.pnl_pct IS NOT NULL
-            ORDER BY t.timestamp ASC
-        """).fetchall()
-        metrics['trade_rows'] = trade_rows
-        metrics['closed_trades_count'] = len(trade_rows)
-        if trade_rows:
-            dates = []
-            pnls = []
-            pnl_pcts = []
-            for row in trade_rows:
-                pnl_pcts.append(float(row[3] or 0.0))
-                pnls.append(float(row[4] or 0.0))
-                try:
-                    dates.append(datetime.fromisoformat(str(row[5]).replace('Z', '+00:00')).date())
-                except Exception:
-                    pass
-            metrics['active_days'] = len(set(dates)) if dates else 1
-            wins = [p for p in pnl_pcts if p > 0]
-            losses = [abs(p) for p in pnl_pcts if p < 0]
-            metrics['profit_factor'] = (sum(wins) / sum(losses)) if losses and sum(losses) > 0 else (2.0 if wins else 1.0)
-            metrics['net_pnl'] = sum(pnls)
-            metrics['net_pnl_pct_sum'] = sum(pnl_pcts)
-
-            equity = 0.0
-            peak = 0.0
-            max_dd = 0.0
-            for pct in pnl_pcts:
-                equity += pct
-                peak = max(peak, equity)
-                max_dd = max(max_dd, peak - equity)
-            metrics['max_drawdown_pct'] = max_dd
-
-        latest_analysis = cur.execute("""
-            SELECT calibration_mae, live_win_rate, drift_status
-            FROM ml_analysis_runs
-            ORDER BY generated_at DESC
-            LIMIT 1
-        """).fetchone()
-        if latest_analysis:
-            metrics['latest_calibration_mae'] = latest_analysis[0]
-            metrics['latest_live_win_rate'] = latest_analysis[1]
-            metrics['latest_drift_status'] = latest_analysis[2]
-    finally:
-        conn.close()
-    return metrics
+from scripts.trade_signals import simulate_trade
 
 
 def _advance_cursor(klines_full, cursor, candle_ts):
@@ -203,6 +44,19 @@ def _advance_cursor(klines_full, cursor, candle_ts):
     while cursor < n and int(klines_full[cursor]['timestamp']) <= candle_ts:
         cursor += 1
     return cursor
+
+
+def _cursor_at_or_before(klines, candle_ts):
+    """Return the exclusive cursor after the last candle with timestamp <= candle_ts."""
+    rows = klines or []
+    lo, hi = 0, len(rows)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(rows[mid].get('timestamp', 0)) <= int(candle_ts):
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
 
 
 def aggregate_ohlcv(klines, group_size):
@@ -382,22 +236,6 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
     }
 
 
-def _prune_model_backups(backups_dir, keep=10):
-    """Ne conserve que les `keep` archives de modèle les plus récentes dans backups_dir."""
-    try:
-        import glob
-        archives = glob.glob(os.path.join(backups_dir, 'aegis_model_*.joblib'))
-        archives.sort(reverse=True)  # horodatage YYYYMMDD_HHMMSS -> plus récent en premier
-        for old in archives[keep:]:
-            try:
-                os.remove(old)
-                print(f"  🧹 Ancien backup supprimé : {os.path.basename(old)}")
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
 def _timeframe_ms(timeframe):
     """Convertit un timeframe ('5m','15m','1h','1d') en millisecondes."""
     units = {'m': 60_000, 'h': 3_600_000, 'd': 86_400_000}
@@ -570,9 +408,66 @@ def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=
     return fetched
 
 
+_KRAKEN_ARCHIVE_READY_CACHE = {}
+
+
+def _kraken_archive_symbol_ready(symbol, start_ms):
+    """Use Kraken-native data only when ALL model timeframes cover the requested window.
+
+    This prevents mixing a short Kraken history on one timeframe with a long Coinbase
+    history on another timeframe, and prevents silently shrinking a 3-year training
+    request to only ~90 days because Kraken's local archive is still young.
+    """
+    if os.getenv('ML_KRAKEN_ARCHIVE_REQUIRE_ALL_TIMEFRAMES', 'true').lower() != 'true':
+        return True
+
+    root = os.getenv('ML_KRAKEN_ARCHIVE_DIR', os.path.join('data', 'kraken_ohlcv'))
+    required = tuple(
+        item.strip()
+        for item in os.getenv('ML_KRAKEN_ARCHIVE_REQUIRED_TIMEFRAMES', '5m,15m,1h,4h,1d').split(',')
+        if item.strip()
+    )
+    min_ratio = max(0.0, min(1.0, float(os.getenv('ML_KRAKEN_ARCHIVE_MIN_COVERAGE_RATIO', '0.95'))))
+    key = (root, symbol, int(start_ms), required, min_ratio)
+    if key in _KRAKEN_ARCHIVE_READY_CACHE:
+        return _KRAKEN_ARCHIVE_READY_CACHE[key]
+
+    import gzip
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    requested_span = max(1, now_ms - int(start_ms))
+    ok = True
+    for tf in required:
+        path = os.path.join(root, f"{symbol.replace('/', '-')}_{tf}.json.gz")
+        if not os.path.exists(path):
+            ok = False
+            break
+        try:
+            with gzip.open(path, 'rt', encoding='utf-8') as fh:
+                rows = json.load(fh)
+            if not rows:
+                ok = False
+                break
+            rows.sort(key=lambda x: int(x.get('timestamp', 0) or 0))
+            first_ts = int(rows[0].get('timestamp', 0) or 0)
+            last_ts = int(rows[-1].get('timestamp', 0) or 0)
+            coverage_ratio = max(0.0, min(1.0, (last_ts - first_ts) / requested_span))
+            freshness_ms = int(os.getenv('ML_KRAKEN_ARCHIVE_MAX_STALENESS_CANDLES', '3')) * _timeframe_ms(tf)
+            if coverage_ratio < min_ratio or now_ms - last_ts > freshness_ms:
+                ok = False
+                break
+        except Exception:
+            ok = False
+            break
+
+    _KRAKEN_ARCHIVE_READY_CACHE[key] = ok
+    return ok
+
+
 def _load_kraken_archive_for_training(symbol, timeframe, start_ms):
     """Use the local Kraken-native archive only when it has enough fresh coverage."""
     if os.getenv('ML_PREFER_KRAKEN_ARCHIVE', 'false').lower() != 'true':
+        return []
+    if not _kraken_archive_symbol_ready(symbol, start_ms):
         return []
     root = os.getenv('ML_KRAKEN_ARCHIVE_DIR', os.path.join('data', 'kraken_ohlcv'))
     path = os.path.join(root, f"{symbol.replace('/', '-')}_{timeframe}.json.gz")
@@ -592,15 +487,14 @@ def _load_kraken_archive_for_training(symbol, timeframe, start_ms):
         coverage_days = (
             int(rows[-1]['timestamp']) - int(rows[0]['timestamp'])
         ) / 86_400_000.0
-        min_days = float(os.getenv('ML_KRAKEN_ARCHIVE_MIN_COVERAGE_DAYS', '90'))
         tf_ms = _timeframe_ms(timeframe)
         freshness_ms = int(os.getenv('ML_KRAKEN_ARCHIVE_MAX_STALENESS_CANDLES', '3')) * tf_ms
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        if coverage_days < min_days or now_ms - int(rows[-1]['timestamp']) > freshness_ms:
+        if now_ms - int(rows[-1]['timestamp']) > freshness_ms:
             return []
         print(
             f"      → {symbol} {timeframe}: {len(rows)} bougies Kraken archive "
-            f"({coverage_days:.1f} jours)"
+            f"({coverage_days:.1f} jours, univers Kraken complet prêt)"
         )
         return rows
     except Exception:
@@ -693,7 +587,8 @@ def generate_samples_from_klines(
         if index < next_allowed_index:
             continue
 
-        history = klines_15m[:index]
+        hist_window = int(os.getenv('ML_GEN_HISTORY_WINDOW', '200'))
+        history = klines_15m[max(0, index - hist_window):index]
         current_price = float(klines_15m[index]['close'])
         ts = klines_15m[index]['timestamp']
         signal = signal_engine.detect_best(history[-200:], current_price)
@@ -707,8 +602,8 @@ def generate_samples_from_klines(
             data = (klines_by_tf or {}).get(key) or []
             if not data:
                 return fallback
-            past = [k for k in data if int(k.get('timestamp', 0)) <= int(ts)]
-            return past[-60:]
+            cursor = _cursor_at_or_before(data, ts)
+            return data[max(0, cursor - 60):cursor]
 
         history_5m = _history_until('5m', klines_15m[max(0, index - 20):index])
         history_1h = _history_until('1h', aggregate_ohlcv(history, 4)[-60:])
@@ -724,12 +619,13 @@ def generate_samples_from_klines(
             'planned_hold_minutes': planned_hold_minutes,
             'planned_exit_hour': float(planned_exit_dt.hour),
         }
+        btc_context_index = _cursor_at_or_before(btc_history, ts) if btc_history else None
         bot_context = build_training_bot_context(
             history,
             signal,
             ts,
             btc_history=btc_history,
-            index=index,
+            index=btc_context_index,
             support_stats=support_stats,
         )
         features = ml_engine.extract_features_from_klines(
@@ -803,6 +699,19 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         signal_engine = SignalEngine(analyzer)
 
         pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
+        if os.getenv('ML_ARCHIVE_KRAKEN_BEFORE_TRAIN', 'true').lower() == 'true':
+            try:
+                from scripts.archive_kraken_ohlcv import archive_universe
+                archive_summary = archive_universe(
+                    pairs=pairs,
+                    timeframes=['5m', '15m', '1h', '4h', '1d'],
+                )
+                print(
+                    f"  🗄️ Archive Kraken: {archive_summary['updated']} flux mis à jour, "
+                    f"{archive_summary['failed']} échecs"
+                )
+            except Exception as exc:
+                print(f"  ⚠️ Archive Kraken indisponible, training continue: {exc}")
         history_days = int(os.getenv('ML_TRAINING_HISTORY_DAYS', '1095'))
         start_date = (datetime.now(timezone.utc) - timedelta(days=history_days)).strftime("%Y-%m-%d")
         # Durée de détention DYNAMIQUE (basée sur les conditions de marché) au lieu d'un
@@ -848,6 +757,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             # Curseurs multi-TF (lookup O(1) amorti au lieu de re-scanner toute la liste
             # à chaque itération). candle_ts est monotone croissant -> les curseurs avancent.
             cur_5m = cur_1h = cur_4h = cur_1d = 0
+            cur_btc_15m = 0
 
             # Progression de la génération des samples (barre qui se met à jour sur la même ligne)
             show_gen_progress = os.getenv('ML_FETCH_PROGRESS', 'true').lower() == 'true'
@@ -878,15 +788,16 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 current_price = klines_15m[index]['close']
                 ts = klines_15m[index]['timestamp']
 
-                # Détecte TOUS les signaux applicables à cet index (pas seulement le premier)
-                # -> chaque signal génère son propre sample, les signaux 15m ne sont plus
-                #    écrasés par support_touch.
-                signals_here = signal_engine.detect_all(history, current_price)
-                if not signals_here:
+                # Même univers que le live: une seule opportunité canonique par timestamp.
+                best_signal = signal_engine.detect_best(history, current_price)
+                if not best_signal:
                     continue
+                signals_here = [best_signal]
 
                 # Klines multi-TF (communes à tous les signaux de cet index)
                 candle_ts = klines_15m[index]['timestamp']
+                cur_btc_15m = _advance_cursor(btc_history, cur_btc_15m, candle_ts) if btc_history else 0
+                btc_context_index = cur_btc_15m if btc_history else None
                 cur_5m = _advance_cursor(klines_5m_full, cur_5m, candle_ts)
                 cur_1h = _advance_cursor(klines_1h_full, cur_1h, candle_ts)
                 cur_4h = _advance_cursor(klines_4h_full, cur_4h, candle_ts)
@@ -909,7 +820,14 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 for signal in signals_here:
                     _sig_type = signal.get('type', 'unknown')
                     support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
-                    bot_context = build_training_bot_context(history, signal, ts, btc_history=btc_history, index=index, support_stats=support_stats)
+                    bot_context = build_training_bot_context(
+                        history,
+                        signal,
+                        ts,
+                        btc_history=btc_history,
+                        index=btc_context_index,
+                        support_stats=support_stats,
+                    )
 
                     features = ml_engine.extract_features_from_klines(
                         history, current_price,
@@ -1260,229 +1178,37 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
 
 
 def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type='auto', fast_mode=False):
+    """Train the challenger, then delegate ALL promotion policy to promote_challenger.
+
+    Keeping a single promotion implementation prevents auto-retraining from bypassing
+    the same-opportunity shadow guardrails used by manual promotion.
+    """
     load_dotenv('.env', override=True)
-
     db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
-    logger = MLLiveLogger(data_dir=model_dir, sqlite_file=db_file)
-    logger.record_governance_event('train_started', trigger_type=trigger_type, reason='Pipeline unifiée démarrée')
 
     print("=" * 70)
-    print("🚀 PIPELINE UNIFIÉE ML : ENTRAÎNEMENT & GOUVERNANCE (PHASE 10)")
+    print("🚀 PIPELINE ML : TRAINING CHALLENGER + PROMOTION CENTRALISÉE")
     print("=" * 70)
 
-    # Step 1: Entraînement du Challenger
-    print("\n📦 1. Entraînement du modèle Challenger...")
-    challenger_path = os.path.join(model_dir, 'aegis_challenger.joblib')
-    champion_path = os.path.join(model_dir, 'aegis_model.joblib')
-    backup_path = os.path.join(model_dir, 'aegis_model_backup.joblib')
-
-    train_challenger_model(output_dir=model_dir, db_file=db_file, fast_mode=fast_mode)
-
-    if not os.path.exists(challenger_path) and os.path.exists(champion_path):
-        shutil.copy2(champion_path, challenger_path)
-
-    if not os.path.exists(challenger_path):
-        msg = "Échec de création du modèle Challenger."
-        print(f"❌ {msg}")
-        logger.record_governance_event('promotion_rejected', trigger_type=trigger_type, reason=msg)
-        logger.close()
+    ok = train_challenger_model(
+        output_dir=model_dir,
+        db_file=db_file,
+        fast_mode=fast_mode,
+    )
+    if not ok:
+        print("❌ Échec de l'entraînement Challenger.")
         return False
 
-    # Step 2: Évaluation Champion vs Challenger
-    print("\n⚔️ 2. Évaluation des garde-fous de promotion...")
-    
-    guardrail_metrics = compute_guardrail_metrics(db_file)
-    trade_rows = guardrail_metrics['trade_rows']
-    closed_trades_count = guardrail_metrics['closed_trades_count']
-    print(f"📊 Trades fermés réels dans le dataset : {closed_trades_count}")
-
-    champ_engine = MLEngine(model_dir=model_dir)
-    if os.path.exists(champion_path):
-        champ_engine.model_path = champion_path
-        champ_engine.load_model()
-
-    chall_engine = MLEngine(model_dir=model_dir)
-    chall_engine.model_path = challenger_path
-    chall_engine.load_model()
-
-    champ_meta = getattr(champ_engine, 'model_metadata', {}) or {}
-    chall_meta = getattr(chall_engine, 'model_metadata', {}) or {}
-
-    champ_prec = float(champ_meta.get('test_precision', 50.0))
-    chall_prec = float(chall_meta.get('test_precision', 50.0))
-
-    champ_acc = float(champ_meta.get('test_accuracy', 50.0))
-    chall_acc = float(chall_meta.get('test_accuracy', 50.0))
-
-    # Logs détaillés des modèles
-    print("\n" + "=" * 70)
-    print("📊 ÉVALUATION DÉTAILLÉE DES MODÈLES")
-    print("=" * 70)
-    print("\n  🏆 CHAMPION (modèle actuel en production):")
-    print(f"    Precision (test):     {champ_prec:.1f}%")
-    print(f"    Accuracy (test):      {champ_acc:.1f}%")
-    print(f"    Features entrée:      {champ_meta.get('n_features', 'n/a')}")
-    print(f"    Features sortie:      {champ_meta.get('exit_n_features', 'n/a')}")
-    print(f"    Entraîné le:          {champ_meta.get('trained_at', 'n/a')}")
-    print(f"    Samples entraînement: {champ_meta.get('train_samples', 'n/a')}")
-    print(f"    Win rate dataset:     {champ_meta.get('train_win_rate', 'n/a')}")
-    for key in ('test_recall', 'test_f1', 'train_accuracy', 'oob_score'):
-        val = champ_meta.get(key)
-        if val is not None:
-            print(f"    {key:22s}: {val}")
-
-    print(f"\n  ⚔️ CHALLENGER (nouveau modèle candidat):")
-    print(f"    Precision (test):     {chall_prec:.1f}%")
-    print(f"    Accuracy (test):      {chall_acc:.1f}%")
-    print(f"    Features entrée:      {chall_meta.get('n_features', 'n/a')}")
-    print(f"    Features sortie:      {chall_meta.get('exit_n_features', 'n/a')}")
-    print(f"    Entraîné le:          {chall_meta.get('trained_at', 'n/a')}")
-    print(f"    Samples entraînement: {chall_meta.get('train_samples', 'n/a')}")
-    print(f"    Win rate dataset:     {chall_meta.get('train_win_rate', 'n/a')}")
-    for key in ('test_recall', 'test_f1', 'train_accuracy', 'oob_score'):
-        val = chall_meta.get(key)
-        if val is not None:
-            print(f"    {key:22s}: {val}")
-
-    print(f"\n  📈 COMPARAISON:")
-    prec_delta = chall_prec - champ_prec
-    acc_delta = chall_acc - champ_acc
-    print(f"    Precision delta:      {prec_delta:+.1f}% {'✅' if prec_delta >= -0.5 else '❌'}")
-    print(f"    Accuracy delta:       {acc_delta:+.1f}% {'✅' if acc_delta >= -1.0 else '❌'}")
-    print("=" * 70)
-
-    min_trades = int(os.getenv('ML_PROMOTION_MIN_CLOSED_TRADES', '30'))
-    min_days = int(os.getenv('ML_PROMOTION_MIN_ACTIVE_DAYS', '3'))
-    max_drawdown_pct = float(os.getenv('ML_PROMOTION_MAX_DRAWDOWN_PCT', '8.0'))
-    min_profit_factor = float(os.getenv('ML_PROMOTION_MIN_PROFIT_FACTOR', '1.10'))
-    min_precision_delta = float(os.getenv('ML_PROMOTION_MIN_PRECISION_DELTA', '-0.5'))
-    min_accuracy_delta = float(os.getenv('ML_PROMOTION_MIN_ACCURACY_DELTA', '-1.0'))
-    max_calibration_mae = float(os.getenv('ML_PROMOTION_MAX_CALIBRATION_MAE', '20.0'))
-    require_calibration = os.getenv('ML_PROMOTION_REQUIRE_CALIBRATION', 'false').lower() == 'true'
-    allowed_drift_statuses = {
-        item.strip().lower()
-        for item in os.getenv('ML_PROMOTION_ALLOWED_DRIFT_STATUSES', 'ok,warning,insufficient_live_outcomes').split(',')
-        if item.strip()
-    }
-
-    profit_factor = float(guardrail_metrics['profit_factor'])
-    active_days = int(guardrail_metrics['active_days'])
-    net_pnl = float(guardrail_metrics['net_pnl'])
-    max_dd = float(guardrail_metrics['max_drawdown_pct'])
-    calibration_mae = guardrail_metrics.get('latest_calibration_mae')
-    drift_status_value = str(guardrail_metrics.get('latest_drift_status') or 'unknown').lower()
-
-    g1_min_trades = closed_trades_count >= min_trades
-    g2_min_days = active_days >= min_days
-    g3_better_perf = (chall_prec >= champ_prec + min_precision_delta) and (chall_acc >= champ_acc + min_accuracy_delta)
-    g4_drawdown = max_dd <= max_drawdown_pct
-    g5_profit_factor = profit_factor >= min_profit_factor
-    g6_net_pnl = net_pnl > 0
-    g7_calibration = (
-        calibration_mae is not None and float(calibration_mae) <= max_calibration_mae
-    ) if require_calibration else (
-        calibration_mae is None or float(calibration_mae) <= max_calibration_mae
+    from scripts.promote_challenger import promote
+    return bool(
+        promote(
+            model_dir=model_dir,
+            db_file=db_file,
+            check_only=check_only,
+            force=False,
+            trigger_type=trigger_type,
+        )
     )
-    g8_drift = drift_status_value in allowed_drift_statuses
-
-    print("\n🛡️ GARDE-FOUS DE PROMOTION :")
-    print(f"  [1] Trades fermés ({closed_trades_count}) >= {min_trades} : {'✅' if g1_min_trades else '❌'}")
-    print(f"  [2] Jours actifs ({active_days}) >= {min_days} : {'✅' if g2_min_days else '❌'}")
-    print(f"  [3] Challenger Precision/Accuracy vs Champion : {'✅' if g3_better_perf else '❌'}")
-    print(f"  [4] Max Drawdown ({max_dd:.2f}%) <= {max_drawdown_pct:.2f}% : {'✅' if g4_drawdown else '❌'}")
-    print(f"  [5] Profit Factor ({profit_factor:.2f}) >= {min_profit_factor:.2f} : {'✅' if g5_profit_factor else '❌'}")
-    print(f"  [6] PnL net ({net_pnl:.2f} USD) > 0 : {'✅' if g6_net_pnl else '❌'}")
-    print(f"  [7] Calibration MAE ({calibration_mae if calibration_mae is not None else 'n/a'}) <= {max_calibration_mae:.1f} : {'✅' if g7_calibration else '❌'}")
-    print(f"  [8] Drift status ({drift_status_value}) autorisé : {'✅' if g8_drift else '❌'}")
-
-    all_passed = all([
-        g1_min_trades,
-        g2_min_days,
-        g3_better_perf,
-        g4_drawdown,
-        g5_profit_factor,
-        g6_net_pnl,
-        g7_calibration,
-        g8_drift,
-    ])
-    metrics_data = {
-        'closed_trades_count': closed_trades_count,
-        'active_days': active_days,
-        'champion_precision': champ_prec,
-        'challenger_precision': chall_prec,
-        'champion_accuracy': champ_acc,
-        'challenger_accuracy': chall_acc,
-        'profit_factor': profit_factor,
-        'net_pnl': net_pnl,
-        'max_drawdown_pct': max_dd,
-        'calibration_mae': calibration_mae,
-        'drift_status': drift_status_value,
-        'guardrails': {
-            'min_trades': g1_min_trades,
-            'min_days': g2_min_days,
-            'better_perf': g3_better_perf,
-            'drawdown': g4_drawdown,
-            'profit_factor': g5_profit_factor,
-            'net_pnl': g6_net_pnl,
-            'calibration': g7_calibration,
-            'drift': g8_drift,
-        },
-        'all_guardrails_passed': all_passed
-    }
-    logger.record_governance_event(
-        'promotion_guardrails_evaluated',
-        source_model='challenger',
-        target_model='champion',
-        metrics=metrics_data,
-        trigger_type=trigger_type,
-        reason='Evaluation complete des garde-fous de promotion'
-    )
-
-    if not all_passed:
-        failed = [name for name, passed in metrics_data['guardrails'].items() if not passed]
-        reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
-        print(f"\n⛔ PROMOTION REFUSÉE : {reason}")
-        logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
-        logger.close()
-        return False
-
-    if check_only:
-        print("\n🔍 Mode --check-only : Promotion validée mais non appliquée.")
-        logger.record_governance_event('promotion_checked', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason="Validation sans promotion")
-        logger.close()
-        return True
-
-    # Step 3: Promotion
-    print("\n🏆 PROMOTION DU CHALLENGER EN CHAMPION !")
-    if os.path.exists(champion_path):
-        backups_dir = os.path.join(model_dir, 'backups')
-        os.makedirs(backups_dir, exist_ok=True)
-        ts_backup_path = os.path.join(backups_dir, f"aegis_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.joblib")
-        shutil.copy2(champion_path, ts_backup_path)
-        print(f"  📦 Archive horodatée créée dans backups/ : {ts_backup_path}")
-        _prune_model_backups(backups_dir, keep=10)
-        # Pas de backup redondant dans data/: l'archive horodatée fait foi
-        if os.path.exists(backup_path):
-            try:
-                os.remove(backup_path)
-            except Exception:
-                pass
-
-    shutil.copy2(challenger_path, champion_path)
-    print(f"  ✅ NOUVEAU CHAMPION PROMU AVEC SUCCÈS : {champion_path}")
-
-    reason = f"Promotion validée (Precision {chall_prec:.1f}%, Acc {chall_acc:.1f}%)"
-    logger.record_governance_event('promotion', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
-
-    try:
-        notifier = NotificationManager()
-        notifier.notify(f"🏆 **NOUVEAU CHAMPION ML PROMU**\n\nPrecision: {chall_prec:.1f}%\nAccuracy: {chall_acc:.1f}%\nBackup créé: OK")
-    except Exception:
-        pass
-
-    logger.close()
-    return True
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Pipeline unifiée ML Aegis")

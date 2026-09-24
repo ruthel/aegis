@@ -1,48 +1,49 @@
-"""Compare les sorties historiques: baseline trailing vs ML sortie fusionné."""
+"""Compare historical baseline exits with Aegis' current calibrated ML exit stack.
 
+This script is aligned with the current runtime:
+- unified .env
+- Kraken/USD symbol convention
+- canonical SignalEngine.detect_best()
+- calibrated P_win
+- Expected Net PnL entry gate
+- calibrated P_exit / P_continue
+- timestamp-aligned BTC context
+
+It is a model/backtest comparison, not an exchange microstructure simulator.
+"""
 import argparse
 import os
 import sys
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-import ccxt
 import numpy as np
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.ml_engine import MLEngine
-from scripts.trade_signals import detect_trade_signal, simulate_trade
-from scripts.train_and_evaluate_ml_model import build_training_bot_context, support_stats_from_history
+from core.signal_engine import SignalEngine
+from scripts.trade_signals import simulate_trade
+from scripts.train_and_evaluate_ml_model import (
+    aggregate_ohlcv,
+    build_training_bot_context,
+    fetch_symbol_history_2026,
+    support_stats_from_history,
+)
 from utils.exit_engine import ExitDecisionEngine
 from utils.pattern_analyzer import PatternAnalyzer
 
 
-def fetch_history(exchange, symbol, timeframe, start_date):
-    start_ts = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
-    all_klines = []
-    since = start_ts
-    limit = 1000
-    print(f"Fetch {symbol} {timeframe} depuis {start_date}...")
-    while True:
-        raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
-        if not raw:
-            break
-        all_klines.extend({
-            'timestamp': r[0],
-            'open': float(r[1]),
-            'high': float(r[2]),
-            'low': float(r[3]),
-            'close': float(r[4]),
-            'volume': float(r[5]),
-        } for r in raw)
-        since = raw[-1][0] + 1
-        if len(raw) < limit or len(all_klines) >= 30000:
-            break
-        time.sleep(0.05)
-    print(f"  {len(all_klines)} bougies")
-    return all_klines
+def _slice_until(rows, ts_value, count=60):
+    rows = rows or []
+    lo, hi = 0, len(rows)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(rows[mid].get("timestamp", 0)) <= int(ts_value):
+            lo = mid + 1
+        else:
+            hi = mid
+    return rows[max(0, lo - count):lo], lo
 
 
 def net_pnl(entry_price, exit_price, fee_rate):
@@ -51,203 +52,272 @@ def net_pnl(entry_price, exit_price, fee_rate):
 
 def summarize(name, trades):
     if not trades:
-        return {'name': name, 'trades': 0}
-    pnls = [t['pnl'] for t in trades]
+        return {"name": name, "trades": 0}
+    pnls = [float(t["pnl"]) for t in trades]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+    equity = peak = max_dd = 0.0
+    for pnl in pnls:
+        equity += pnl
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
     return {
-        'name': name,
-        'trades': len(trades),
-        'wins': len(wins),
-        'losses': len(losses),
-        'win_rate': len(wins) / len(trades) * 100.0,
-        'total_pnl': sum(pnls),
-        'avg_pnl': sum(pnls) / len(pnls),
-        'avg_win': sum(wins) / len(wins) if wins else 0.0,
-        'avg_loss': sum(losses) / len(losses) if losses else 0.0,
-        'avg_hold_candles': sum(t['hold_candles'] for t in trades) / len(trades),
+        "name": name,
+        "trades": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": len(wins) / len(trades) * 100.0,
+        "total_pnl": sum(pnls),
+        "avg_pnl": sum(pnls) / len(pnls),
+        "profit_factor": pf,
+        "max_drawdown_pct_points": max_dd,
+        "avg_hold_candles": sum(t["hold_candles"] for t in trades) / len(trades),
     }
 
 
 def print_summary(summary):
+    pf = summary.get("profit_factor", 0.0)
+    pf_text = f"{pf:.2f}" if np.isfinite(pf) else "∞"
     print(
-        f"{summary['name']}: trades={summary['trades']} | WR={summary.get('win_rate', 0):.1f}% | "
-        f"PnL={summary.get('total_pnl', 0):+.2f}% | Avg={summary.get('avg_pnl', 0):+.3f}% | "
-        f"AvgWin={summary.get('avg_win', 0):+.3f}% | AvgLoss={summary.get('avg_loss', 0):+.3f}% | "
+        f"{summary['name']}: trades={summary['trades']} | "
+        f"WR={summary.get('win_rate', 0):.1f}% | "
+        f"PnL={summary.get('total_pnl', 0):+.2f}% | "
+        f"Avg={summary.get('avg_pnl', 0):+.3f}% | PF={pf_text} | "
+        f"DD={summary.get('max_drawdown_pct_points', 0):.2f} | "
         f"Hold={summary.get('avg_hold_candles', 0):.1f} bougies"
     )
 
 
-def simulate_ml_exit(symbol, klines, entry_index, signal, args, ml_engine, exit_engine, btc_klines=None, support_stats=None):
-    entry_price = klines[entry_index]['close']
+def simulate_ml_exit(
+    symbol,
+    bundle,
+    btc_15m,
+    entry_index,
+    signal,
+    entry_p_win,
+    fee_rate,
+    max_hold_candles,
+    ml_engine,
+    exit_engine,
+    support_stats=None,
+):
+    klines = bundle["15m"]
+    entry_price = float(klines[entry_index]["close"])
     highest_price = entry_price
-    current_stop = entry_price * (1 - args.trailing_percent / 100.0)
-    if signal.get('support_price'):
-        current_stop = max(current_stop, float(signal['support_price']) * (1 - args.stop_percent / 100.0))
-    last_index = min(len(klines) - 1, entry_index + args.max_hold_candles)
-    entry_history = klines[:entry_index]
-    entry_bot_context = build_training_bot_context(
-        entry_history,
-        signal,
-        klines[entry_index]['timestamp'],
-        btc_history=btc_klines if btc_klines is not None else klines,
-        index=entry_index,
-        support_stats=support_stats
-    )
-    entry_p_win = ml_engine.predict_win_probability(entry_history, entry_price, bot_context=entry_bot_context)
-    entry_exit_forecast = None
+    current_stop = entry_price * (1 - float(os.getenv("BACKTEST_STOP_PERCENT", "1.0")) / 100.0)
+    if signal.get("support_price"):
+        current_stop = max(
+            current_stop,
+            float(signal["support_price"]) * (1 - float(os.getenv("BACKTEST_STOP_PERCENT", "1.0")) / 100.0),
+        )
+
+    last_index = min(len(klines) - 1, entry_index + max_hold_candles)
+    trailing_percent = float(os.getenv("TRAILING_STOP_PERCENT", "2.5"))
 
     for idx in range(entry_index + 1, last_index + 1):
         candle = klines[idx]
-        if candle['low'] <= current_stop:
-            return idx, current_stop, 'stop', entry_exit_forecast
+        if float(candle["low"]) <= current_stop:
+            return idx, current_stop, "stop"
 
-        if candle['high'] > highest_price:
-            highest_price = candle['high']
+        if float(candle["high"]) > highest_price:
+            highest_price = float(candle["high"])
             profit_pct = ((highest_price - entry_price) / entry_price) * 100.0
             if profit_pct >= 8.0:
-                percent = args.trailing_percent * 0.4
+                trail = trailing_percent * 0.4
             elif profit_pct >= 5.0:
-                percent = args.trailing_percent * 0.6
+                trail = trailing_percent * 0.6
             elif profit_pct >= 3.0:
-                percent = args.trailing_percent * 0.8
+                trail = trailing_percent * 0.8
             else:
-                percent = args.trailing_percent
-            current_stop = max(current_stop, highest_price * (1 - percent / 100.0))
+                trail = trailing_percent
+            current_stop = max(current_stop, highest_price * (1 - trail / 100.0))
 
-        history = klines[max(0, idx - 60):idx]
+        ts = int(candle["timestamp"])
+        history = klines[max(0, idx - 80):idx]
         if len(history) < 30:
             continue
-
-        current_price = candle['close']
-        position_data = {
-            'buy_price': entry_price,
-            'fee_rate': args.fee_rate,
-            'duration_minutes': (idx - entry_index) * 15.0,
-            'stop_loss_price': current_stop,
-            'target_price': signal.get('resistance_price') or entry_price * 1.015,
-        }
-        btc_slice = None
-        if btc_klines and len(btc_klines) > idx:
-            btc_slice = btc_klines[max(0, idx - 30):idx]
+        current_price = float(candle["close"])
+        btc_slice, btc_idx = _slice_until(btc_15m, ts, count=40)
         bot_context = build_training_bot_context(
             history,
             signal,
-            candle['timestamp'],
-            btc_history=btc_klines if btc_klines is not None else klines,
-            index=idx,
-            support_stats=support_stats
+            ts,
+            btc_history=btc_15m,
+            index=btc_idx,
+            support_stats=support_stats,
         )
-        score = exit_engine.compute_continuation_score(symbol, current_price, history[-30:], btc_slice, position_data)
-        ml_exit = ml_engine.predict_exit_decision(
-            history, current_price, position_data, score, entry_p_win, btc_slice, bot_context
+        position_data = {
+            "entry_price": entry_price,
+            "buy_price": entry_price,
+            "fee_rate": fee_rate,
+            "duration_minutes": (idx - entry_index) * 15.0,
+            "stop_loss_price": current_stop,
+            "target_price": signal.get("resistance_price") or entry_price * 1.02,
+        }
+        score = exit_engine.compute_continuation_score(
+            symbol, current_price, history[-30:], btc_slice, position_data
         )
-        if idx == entry_index + 1:
-            entry_exit_forecast = ml_exit
+        decision = ml_engine.predict_exit_decision(
+            history,
+            current_price,
+            position_data,
+            score,
+            entry_p_win,
+            btc_slice,
+            bot_context,
+        )
+        if decision.get("decision") == "FORCE_EXIT":
+            return idx, current_price, "ml_force_exit"
 
-        decision = ml_exit.get('decision')
-        if decision in ('FORCE_EXIT', 'TAKE_PROFIT'):
-            return idx, current_price, decision.lower(), entry_exit_forecast
-        if decision in ('TIGHTEN_STOP', 'PROTECT_BREAKEVEN'):
-            breakeven = entry_price * (1 + args.fee_rate) / max(0.000001, (1 - args.fee_rate))
-            gap = 0.0018 if decision == 'TIGHTEN_STOP' else 0.0008
-            current_stop = max(current_stop, min(current_price * (1 - gap), breakeven if decision == 'PROTECT_BREAKEVEN' else current_price * (1 - gap)))
+    return last_index, float(klines[last_index]["close"]), "timeout"
 
-    return last_index, klines[last_index]['close'], 'timeout', entry_exit_forecast
+
+def build_entry_context(ml_engine, symbol, bundle, btc_15m, index, signal, fee_rate, support_stats):
+    ts = int(bundle["15m"][index]["timestamp"])
+    history = bundle["15m"][max(0, index - 200):index]
+    current_price = float(bundle["15m"][index]["close"])
+    h5, _ = _slice_until(bundle["5m"], ts, 30)
+    h1, _ = _slice_until(bundle["1h"], ts, 30)
+    h4, _ = _slice_until(bundle["4h"], ts, 30)
+    h1d, _ = _slice_until(bundle["1d"], ts, 30)
+    _, btc_idx = _slice_until(btc_15m, ts, 60)
+    bot_context = build_training_bot_context(
+        history,
+        signal,
+        ts,
+        btc_history=btc_15m,
+        index=btc_idx,
+        support_stats=support_stats,
+    )
+    trade_context = {
+        "fee_rate": fee_rate,
+        "position_value_usd": 10.0,
+        "account_balance": 1000.0,
+        "planned_hold_minutes": 96 * 15.0,
+    }
+    features = ml_engine.extract_features_from_klines(
+        history,
+        current_price,
+        klines_5m=h5,
+        klines_1h=h1,
+        klines_4h=h4,
+        klines_1d=h1d,
+        trade_context=trade_context,
+        bot_context=bot_context,
+    )
+    p_win = ml_engine.predict_win_probability_from_features(features) if features is not None else 50.0
+    edge = ml_engine.predict_expected_net_pnl(features) if features is not None else {"ml_edge_available": False}
+    return p_win, edge, bot_context
 
 
 def main():
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--pairs', default='BTC/USDT,ETH/USDT,SOL/USDT,ADA/USDT')
-    parser.add_argument('--start-date', default='2026-01-01')
-    parser.add_argument('--timeframe', default='15m')
-    parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96')))
-    parser.add_argument('--stop-percent', type=float, default=float(os.getenv('BACKTEST_STOP_PERCENT', '1.0')))
-    parser.add_argument('--trailing-percent', type=float, default=float(os.getenv('TRAILING_STOP_PERCENT', '2.5')))
-    parser.add_argument('--fee-rate', type=float, default=float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0)
-    parser.add_argument('--entry-pwin-min', type=float, default=float(os.getenv('ML_MIN_PROBABILITY', '65.0')))
-    parser.add_argument('--entry-pcontinue-min', type=float, default=float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0')))
+    load_dotenv(".env", override=True)
+    parser = argparse.ArgumentParser(description="Backtest Aegis: baseline vs ML exit/full entry stack")
+    parser.add_argument("--pairs", default="BTC/USD,ETH/USD,SOL/USD,ADA/USD")
+    parser.add_argument("--start-date", default=(datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d"))
+    parser.add_argument("--max-hold-candles", type=int, default=int(os.getenv("ML_EXIT_MAX_HOLD_CANDLES", "960")))
+    parser.add_argument("--fee-rate", type=float, default=float(os.getenv("TRADING_FEE_PERCENT", "0.4")) / 100.0)
+    parser.add_argument("--entry-pwin-min", type=float, default=float(os.getenv("ML_MIN_PROBABILITY", "50.0")))
+    parser.add_argument("--min-edge", type=float, default=float(os.getenv("ML_MIN_EXPECTED_NET_PNL_PCT", "0.05")))
+    parser.add_argument("--expected-slippage", type=float, default=float(os.getenv("ML_EXPECTED_SLIPPAGE_PCT", "0.03")))
     args = parser.parse_args()
 
-    exchange = ccxt.kraken({'enableRateLimit': True})
-    ml_engine = MLEngine(model_dir='data')
+    ml_engine = MLEngine(model_dir="data")
+    if not ml_engine.load_model():
+        raise RuntimeError("Champion ML introuvable ou invalide dans data/aegis_model.joblib")
     exit_engine = ExitDecisionEngine()
-    analyzer = PatternAnalyzer(bot=None)
-    pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
-    btc = fetch_history(exchange, 'BTC/USDT', args.timeframe, args.start_date)
+    signal_engine = SignalEngine(PatternAnalyzer(bot=None))
 
-    baseline = []
-    ml_exit = []
-    ml_entry_and_exit = []
+    btc_15m = fetch_symbol_history_2026(None, "BTC/USD", "15m", args.start_date)
+    baseline, same_entries_ml_exit, full_stack = [], [], []
 
-    for symbol in pairs:
-        klines = btc if symbol == 'BTC/USDT' else fetch_history(exchange, symbol, args.timeframe, args.start_date)
+    for symbol in [p.strip() for p in args.pairs.split(",") if p.strip()]:
+        k15 = btc_15m if symbol == "BTC/USD" else fetch_symbol_history_2026(None, symbol, "15m", args.start_date)
+        k5 = fetch_symbol_history_2026(None, symbol, "5m", args.start_date)
+        k1 = fetch_symbol_history_2026(None, symbol, "1h", args.start_date)
+        k4 = aggregate_ohlcv(k1, 4)
+        k1d = fetch_symbol_history_2026(None, symbol, "1d", args.start_date)
+        bundle = {"15m": k15, "5m": k5, "1h": k1, "4h": k4, "1d": k1d}
+        if len(k15) < 200:
+            continue
+
         next_allowed = 0
         support_pnls = []
-        for index in range(50, len(klines) - args.max_hold_candles - 1):
+        for index in range(50, len(k15) - args.max_hold_candles - 1):
             if index < next_allowed:
                 continue
-            history = klines[:index]
-            entry_price = klines[index]['close']
-            signal = detect_trade_signal(analyzer, history, entry_price)
+            history = k15[max(0, index - 200):index]
+            entry_price = float(k15[index]["close"])
+            signal = signal_engine.detect_best(history, entry_price)
             if not signal:
                 continue
-            support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
 
-            b_exit_idx, b_exit_price, _ = simulate_trade(
-                klines, index, entry_price, signal.get('support_price'), args.stop_percent,
-                args.max_hold_candles, args.trailing_percent, breakeven_stop=True,
-                breakeven_trigger=1.5, breakeven_lock=1.0, fee_rate=args.fee_rate
+            support_stats = support_stats_from_history(support_pnls) if signal.get("type") == "support_touch" else None
+            b_idx, b_price, _ = simulate_trade(
+                k15,
+                index,
+                entry_price,
+                signal.get("support_price"),
+                float(os.getenv("BACKTEST_STOP_PERCENT", "1.0")),
+                args.max_hold_candles,
+                float(os.getenv("TRAILING_STOP_PERCENT", "2.5")),
+                breakeven_stop=True,
+                breakeven_trigger=float(os.getenv("BREAKEVEN_TRIGGER_PROFIT_PCT", "1.5")),
+                breakeven_lock=float(os.getenv("BREAKEVEN_LOCK_PROFIT_PCT", "1.0")),
+                fee_rate=args.fee_rate,
+                trend_exit=True,
+                trend_confirm_bars=int(os.getenv("ML_EXIT_TREND_CONFIRM_BARS", "2")),
             )
-            b_pnl = net_pnl(entry_price, b_exit_price, args.fee_rate)
-            baseline.append({'symbol': symbol, 'pnl': b_pnl, 'hold_candles': b_exit_idx - index})
+            b_pnl = net_pnl(entry_price, b_price, args.fee_rate)
+            baseline.append({"symbol": symbol, "pnl": b_pnl, "hold_candles": b_idx - index})
 
-            m_exit_idx, m_exit_price, m_reason, entry_forecast = simulate_ml_exit(
-                symbol, klines, index, signal, args, ml_engine, exit_engine,
-                btc if symbol != 'BTC/USDT' else None,
-                support_stats=support_stats
+            p_win, edge, _ = build_entry_context(
+                ml_engine, symbol, bundle, btc_15m, index, signal, args.fee_rate, support_stats
             )
-            m_pnl = net_pnl(entry_price, m_exit_price, args.fee_rate)
-            ml_exit.append({'symbol': symbol, 'pnl': m_pnl, 'hold_candles': m_exit_idx - index, 'reason': m_reason})
-
-            entry_bot_context = build_training_bot_context(
-                history,
+            m_idx, m_price, m_reason = simulate_ml_exit(
+                symbol,
+                bundle,
+                btc_15m,
+                index,
                 signal,
-                klines[index]['timestamp'],
-                btc_history=btc if symbol != 'BTC/USDT' else klines,
-                index=index,
-                support_stats=support_stats
+                p_win,
+                args.fee_rate,
+                args.max_hold_candles,
+                ml_engine,
+                exit_engine,
+                support_stats,
             )
-            entry_pwin = ml_engine.predict_win_probability(history, entry_price, bot_context=entry_bot_context)
-            entry_pcontinue = (entry_forecast or {}).get('p_continue', 50.0)
-            if entry_pwin >= args.entry_pwin_min and entry_pcontinue >= args.entry_pcontinue_min:
-                ml_entry_and_exit.append({'symbol': symbol, 'pnl': m_pnl, 'hold_candles': m_exit_idx - index, 'reason': m_reason})
+            m_pnl = net_pnl(entry_price, m_price, args.fee_rate)
+            same_entries_ml_exit.append(
+                {"symbol": symbol, "pnl": m_pnl, "hold_candles": m_idx - index, "reason": m_reason}
+            )
 
-            if signal.get('type') == 'support_touch':
+            effective_edge = None
+            if edge.get("ml_edge_available"):
+                effective_edge = float(edge.get("expected_net_pnl_pct") or 0.0) - args.expected_slippage
+            if p_win >= args.entry_pwin_min and effective_edge is not None and effective_edge >= args.min_edge:
+                full_stack.append(
+                    {"symbol": symbol, "pnl": m_pnl, "hold_candles": m_idx - index, "reason": m_reason}
+                )
+
+            if signal.get("type") == "support_touch":
                 support_pnls.append(float(b_pnl))
-            next_allowed = b_exit_idx + 4
+            next_allowed = max(b_idx, m_idx) + 4
 
-    print("\n=== COMPARATIF SORTIES 2026 ===")
+    print("\n=== COMPARATIF SORTIES AEGIS ACTUEL ===")
     summaries = [
-        summarize('Baseline sorties actuelles', baseline),
-        summarize('Même entrées + sorties ML', ml_exit),
-        summarize('Entrées filtrées ML + sorties ML', ml_entry_and_exit),
+        summarize("Baseline technique", baseline),
+        summarize("Mêmes entrées + P_exit calibré", same_entries_ml_exit),
+        summarize("P_win calibré + edge + P_exit", full_stack),
     ]
-    for s in summaries:
-        print_summary(s)
+    for summary in summaries:
+        print_summary(summary)
 
-    if baseline and ml_exit:
-        delta_wr = summaries[1]['win_rate'] - summaries[0]['win_rate']
-        delta_pnl = summaries[1]['total_pnl'] - summaries[0]['total_pnl']
-        print(f"\nDelta sortie ML vs baseline: WR {delta_wr:+.1f} pts | PnL {delta_pnl:+.2f}%")
-    if baseline and ml_entry_and_exit:
-        delta_wr = summaries[2]['win_rate'] - summaries[0]['win_rate']
-        delta_pnl = summaries[2]['total_pnl'] - summaries[0]['total_pnl']
-        trade_delta = summaries[2]['trades'] - summaries[0]['trades']
-        print(f"Delta entrée+sortie ML vs baseline: WR {delta_wr:+.1f} pts | PnL {delta_pnl:+.2f}% | Trades {trade_delta:+d}")
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

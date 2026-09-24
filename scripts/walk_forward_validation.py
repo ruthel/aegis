@@ -5,10 +5,13 @@ Validation walk-forward temporelle du modèle ML Aegis.
 - Données multi-timeframe réelles.
 - Aucun mélange aléatoire passé/futur.
 - PnL mesuré à partir des résultats simulés réels, pas d'hypothèse +1.5/-1.0.
+- P_win calibré + filtre Expected Net PnL, comme le chemin d'entrée live.
+- Modèles de fenêtre isolés en répertoire temporaire: aucun risque d'écraser le champion.
 """
 import os
 import sys
 import argparse
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -106,8 +109,9 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         print("❌ Aucune donnée générée pour la validation walk-forward.")
         return False
 
-    ml_engine = MLEngine(model_dir='data')
-    feature_names = ml_engine.feature_names
+    with tempfile.TemporaryDirectory(prefix='aegis_walkforward_schema_') as schema_tmp:
+        schema_engine = MLEngine(model_dir=schema_tmp)
+        feature_names = list(schema_engine.feature_names)
 
     X_matrix = np.array([
         [float(sample.get(name, 0.0) or 0.0) for name in feature_names]
@@ -142,28 +146,54 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
 
         X_train, y_train = X_matrix[train_mask], y_array[train_mask]
         X_test, y_test = X_matrix[test_mask], y_array[test_mask]
+        pnl_train = pnl_array[train_mask]
         pnl_test = pnl_array[test_mask]
 
         if len(X_train) < 100 or len(X_test) < 20 or len(np.unique(y_train)) < 2:
             current_start += step_days * 86400
             continue
 
-        temp_engine = MLEngine(model_dir='data')
-        if not temp_engine.train_model(
-            X_train,
-            y_train,
-            n_estimators=100,
-            max_depth=6,
-            use_lightgbm=os.getenv('ML_USE_LIGHTGBM', 'true').lower() == 'true',
-        ):
-            current_start += step_days * 86400
-            continue
+        # Le walk-forward ne doit JAMAIS écrire dans data/aegis_model.joblib.
+        # Chaque fenêtre utilise un répertoire temporaire isolé.
+        with tempfile.TemporaryDirectory(prefix='aegis_walkforward_') as tmpdir:
+            temp_engine = MLEngine(model_dir=tmpdir)
+            temp_engine.model_path = os.path.join(tmpdir, 'window_model.joblib')
+            use_lightgbm = os.getenv('ML_USE_LIGHTGBM', 'true').lower() == 'true'
+            if not temp_engine.train_model(
+                X_train,
+                y_train,
+                n_estimators=100,
+                max_depth=6,
+                use_lightgbm=use_lightgbm,
+            ):
+                current_start += step_days * 86400
+                continue
 
-        X_eval = temp_engine.scaler.transform(X_test) if temp_engine.scaler is not None else X_test
-        raw_probs = temp_engine.model.predict_proba(X_eval)
-        probs = raw_probs[:, 1] * 100.0 if raw_probs.shape[1] > 1 else np.full(len(X_test), 50.0)
+            # Entraîner également l'edge model sur le passé uniquement.
+            temp_engine.train_edge_model(
+                X_train,
+                pnl_train,
+                use_lightgbm=use_lightgbm,
+            )
 
-        selected = probs >= decision_threshold
+            probs = np.array([
+                temp_engine.predict_win_probability_from_features(row)
+                for row in X_test
+            ], dtype=np.float64)
+
+            edge_values = np.array([
+                float(
+                    temp_engine.predict_expected_net_pnl(row).get('expected_net_pnl_pct')
+                    if temp_engine.predict_expected_net_pnl(row).get('ml_edge_available')
+                    else 0.0
+                )
+                for row in X_test
+            ], dtype=np.float64)
+
+        min_edge = float(os.getenv('ML_MIN_EXPECTED_NET_PNL_PCT', '0.05'))
+        expected_slippage = float(os.getenv('ML_EXPECTED_SLIPPAGE_PCT', '0.03'))
+        effective_edge = edge_values - expected_slippage
+        selected = (probs >= decision_threshold) & (effective_edge >= min_edge)
         selected_pnls = pnl_test[selected]
         selected_labels = y_test[selected]
         trades_taken = int(np.sum(selected))
@@ -176,6 +206,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
         max_dd = _max_drawdown_from_pnls(selected_pnls)
         brier = float(np.mean(((probs / 100.0) - y_test) ** 2))
+        avg_expected_edge = float(np.mean(effective_edge[selected])) if trades_taken else 0.0
 
         start_str = datetime.fromtimestamp(current_start, timezone.utc).strftime('%Y-%m-%d')
         test_str = datetime.fromtimestamp(train_end, timezone.utc).strftime('%Y-%m-%d')
@@ -185,7 +216,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
             f"  • #{step_idx} [{start_str} -> {test_str}] "
             f"Train:{len(X_train)} Test:{len(X_test)} Trades:{trades_taken} "
             f"WR:{win_rate:.1f}% PnL:{total_pnl:+.2f}% PF:{pf_text} "
-            f"DD:{max_dd:.2f}% Brier:{brier:.4f}"
+            f"DD:{max_dd:.2f}% Brier:{brier:.4f} Edge:{avg_expected_edge:+.3f}%"
         )
 
         window_results.append({
@@ -198,6 +229,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
             'profit_factor': profit_factor,
             'max_drawdown_pct': max_dd,
             'brier_score': brier,
+            'avg_expected_edge_pct': avg_expected_edge,
         })
 
         current_start += step_days * 86400

@@ -52,163 +52,21 @@ def create_public_exchange(exchange_name):
 
 
 def detect_trade_signal(pattern_analyzer, history, current_price):
-    if len(history) < 15:
+    """Retourne le meilleur signal du moteur canonique partagé.
+
+    Toute la logique de détection vit dans detect_all_trade_signals(); ce wrapper
+    empêche le backtest standalone de diverger du SignalEngine utilisé en live.
+    """
+    signals = detect_all_trade_signals(pattern_analyzer, history, current_price)
+    if not signals:
         return None
-
-    closes = [k['close'] for k in history]
-    
-    # Helper: Calcul RSI simplifié
-    def calc_rsi(prices, period=14):
-        if len(prices) < period + 1:
-            return 50.0
-        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        gains = [d if d > 0 else 0 for d in deltas[-period:]]
-        losses = [-d if d < 0 else 0 for d in deltas[-period:]]
-        avg_gain = sum(gains) / period
-        avg_loss = sum(losses) / period
-        if avg_loss == 0:
-            return 100.0
-        rs = avg_gain / avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
-    
-    # Calcul volume ratio (utilisé par plusieurs signaux)
-    vols = [float(k.get('volume', 0.0) or 0.0) for k in history[-20:]]
-    avg_vol = (sum(vols) / len(vols)) if vols else 0.0
-    cur_vol = float(history[-1].get('volume', 0.0) or 0.0)
-    volume_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
-    
-    # Calcul RSI 14 périodes
-    rsi_14 = calc_rsi(closes, 14)
-    
-    # 1. Filtre de Pente (Bloquer si pente baissière SIDEWAYS_DOWN)
-    if len(closes) >= 12:
-        ema10_curr = sum(closes[-10:]) / 10.0
-        ema10_prev = sum(closes[-13:-3]) / 10.0
-        slope = (ema10_curr - ema10_prev) / ema10_prev if ema10_prev else 0
-        if slope < -0.0002:  # Pente descendante -> REJET !
-            return None
-
-    # 2. Filtre Anti-Couteau qui tombe (Falling Knife)
-    last_candle = history[-1]
-    open_px = float(last_candle.get('open', current_price))
-    close_px = float(last_candle.get('close', current_price))
-    if close_px < open_px:
-        drop_pct = (open_px - close_px) / open_px
-        if drop_pct >= 0.006:  # Baisse rapide sur bougie rouge -> REJET !
-            return None
-
-    # 3A. SIGNAL 1 : Support Touch PRO (Rebond sur support)
-    # AMÉLIORATION: Bonus si RSI oversold (<40) et/ou volume spike (>1.2×)
-    levels = pattern_analyzer.find_support_resistance_levels(history)
-    for support in levels.get('support_levels', [])[:3]:
-        support_price = float(support['price'])
-        rebounds = int(support.get('strength', 1))
-        if current_price <= support_price * 1.001 and rebounds >= 2:
-            confidence = min(85, 60 + (rebounds - 2) * 10)
-            
-            # Bonus qualité: RSI oversold + volume confirmation
-            if rsi_14 < 40:
-                confidence = min(95, confidence + 8)  # RSI oversold = signal plus fiable
-            if volume_ratio > 1.2:
-                confidence = min(95, confidence + 5)  # Volume spike = acheteurs présents
-            
-            nearest_resistance = None
-            for res in levels.get('resistance_levels', []):
-                r_price = float(res['price'])
-                if r_price > current_price * 1.002:
-                    if nearest_resistance is None or r_price < nearest_resistance:
-                        nearest_resistance = r_price
-            
-            return {
-                'type': 'support_touch',
-                'support_price': support_price,
-                'resistance_price': nearest_resistance,
-                'rebounds': rebounds,
-                'confidence': confidence,
-                'rsi': rsi_14,
-                'volume_ratio': volume_ratio,
-                'reason': f"Support {rebounds} rebonds @ {support_price:.2f} (RSI:{rsi_14:.0f}, Vol:{volume_ratio:.1f}x)",
-            }
-
-    # 3B. SIGNAL 2 : Cassure Haussière de Range / Pattern Breakout
-    # AMÉLIORATION: Volume spike (>1.5×) pour confirmer le breakout
-    if len(closes) >= 20:
-        recent_range_high = max([k['high'] for k in history[-10:-1]])
-        recent_range_low = min([k['low'] for k in history[-10:-1]])
-        range_size_pct = (recent_range_high - recent_range_low) / recent_range_low
-        
-        # Si compression de range (< 1.8%) et la bougie actuelle casse le haut du range avec impulsion verte
-        if range_size_pct < 0.018 and current_price > recent_range_high * 1.001 and close_px > open_px:
-            confidence = 75
-            
-            # Bonus qualité: Volume spike confirme l'intérêt acheteur
-            if volume_ratio >= 1.5:
-                confidence = min(95, confidence + 12)  # Breakout confirmé par volume
-            elif volume_ratio >= 1.2:
-                confidence = min(90, confidence + 5)   # Volume modéré
-            
-            return {
-                'type': 'pattern_breakout',
-                'support_price': recent_range_low,
-                'resistance_price': recent_range_high * 1.02,
-                'rebounds': 1,
-                'confidence': confidence,
-                'volume_ratio': volume_ratio,
-                'reason': f"Cassure Haussière de Range ({recent_range_high:.2f}, Vol:{volume_ratio:.1f}x)",
-            }
-
-    # ── SIGNAUX RAPIDES NATIFS 15m (RELAXÉS pour plus de samples) ──
-    # AMÉLIORATION: Seuils assouplis pour générer plus de samples EMA
-    if len(closes) >= 25:
-        ema9 = sum(closes[-9:]) / 9.0
-        ema20 = sum(closes[-20:]) / 20.0
-        ema9_prev = sum(closes[-10:-1]) / 9.0
-        ema20_prev = sum(closes[-21:-1]) / 20.0
-        # Pente EMA20 15m sur les 5 dernières bougies (tendance de fond COURT terme)
-        ema20_older = sum(closes[-25:-5]) / 20.0 if len(closes) >= 25 else ema20_prev
-        ema20_slope = (ema20 - ema20_older) / ema20_older if ema20_older else 0.0
-
-        # RELAXÉ: Volume confirmé si >= 1.1× (était 1.3×)
-        volume_confirmed = avg_vol > 0 and cur_vol >= avg_vol * 1.1
-
-        # Corps de bougie verte NET (reprise franche, pas une micro-bougie verte)
-        candle_range = float(history[-1].get('high', close_px)) - float(history[-1].get('low', close_px))
-        body = close_px - open_px
-        strong_green = close_px > open_px and candle_range > 0 and (body / candle_range) >= 0.5
-
-        # SIGNAL 3 : PULLBACK SUR EMA20 15m EN TENDANCE HAUSSIÈRE
-        # RELAXÉ: Pente EMA20 > 0.10% (était 0.15%)
-        near_ema20 = abs(current_price - ema20) / ema20 <= 0.002 if ema20 else False
-        if (ema9 > ema20 and ema20_slope > 0.0010 and near_ema20
-                and strong_green and volume_confirmed):
-            return {
-                'type': 'ema_pullback_15m',
-                'support_price': ema20 * 0.997,   # stop juste sous l'EMA20
-                'resistance_price': None,
-                'rebounds': 1,
-                'confidence': 74,
-                'volume_ratio': volume_ratio,
-                'reason': f"Pullback EMA20 15m (pente:{ema20_slope*100:.2f}%, Vol:{volume_ratio:.1f}x)",
-            }
-
-        # SIGNAL 4 : CROISEMENT FRAIS EMA9/EMA20 15m
-        # RELAXÉ: Gap >= 0.10% (était 0.15%), volume >= 1.1× (était 1.3×)
-        fresh_cross = ema9 > ema20 and ema9_prev <= ema20_prev
-        cross_gap = (ema9 - ema20) / ema20 if ema20 else 0.0
-        price_above_emas = current_price > ema9 and current_price > ema20
-        if (fresh_cross and cross_gap >= 0.0010 and price_above_emas
-                and strong_green and volume_confirmed):
-            recent_low_10 = min([k['low'] for k in history[-10:]])
-            return {
-                'type': 'ema_cross_15m',
-                'support_price': recent_low_10,   # stop sous le plus bas récent
-                'resistance_price': None,
-                'rebounds': 1,
-                'confidence': 72,
-                'reason': f"Croisement EMA9>EMA20 15m ({ema9:.4f})",
-            }
-
-    return None
+    return max(
+        signals,
+        key=lambda item: (
+            float(item.get('confidence') or 0.0),
+            float(item.get('volume_ratio') or 0.0),
+        ),
+    )
 
 
 def detect_all_trade_signals(pattern_analyzer, history, current_price):
@@ -578,8 +436,7 @@ def backtest_symbol(exchange, symbol, args):
 
 
 def parse_args():
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
+    load_dotenv('.env', override=True)
 
     parser = argparse.ArgumentParser(description='Backtest Support Touch Pro.')
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken').lower())

@@ -407,8 +407,8 @@ class LiveFixTests(unittest.TestCase):
 
     def test_training_pipeline_contains_shared_signals_and_robust_targets(self):
         source = (ROOT / "scripts/train_and_evaluate_ml_model.py").read_text(encoding="utf-8")
-        self.assertIn("signal_engine.detect_all", source)
-        self.assertIn("signal_engine.detect_best", source)
+        self.assertNotIn("signals_here = signal_engine.detect_all", source)
+        self.assertIn("best_signal = signal_engine.detect_best", source)
         self.assertIn("ML_TARGET_PATH_QUANTILE", source)
         self.assertIn("hold_advantage", source)
         self.assertIn("training_histories", source)
@@ -450,7 +450,8 @@ class LiveFixTests(unittest.TestCase):
         self.assertNotIn("train_test_split(", source)
         pipeline = (ROOT / "scripts/train_and_evaluate_ml_model.py").read_text(encoding="utf-8")
         self.assertIn("temporal_order = np.argsort", pipeline)
-        self.assertIn("<= int(ts)", pipeline)
+        self.assertIn("_cursor_at_or_before", pipeline)
+        self.assertIn("<= int(candle_ts)", pipeline)
 
 
 if __name__ == "__main__":
