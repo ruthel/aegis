@@ -69,11 +69,14 @@ def _print_model(title, importances, feat_names, top):
         print(f"\n{'='*66}\n{title}  (modele absent)\n{'='*66}")
         return
     print(f"\n{'='*66}\n{title}  ({len(importances)} features)\n{'='*66}")
-    n = min(len(importances), len(feat_names))
-    pairs = [(feat_names[i], float(importances[i])) for i in range(n)]
+    raw = [max(0.0, float(v)) for v in importances]
+    total = sum(raw)
+    normalized = [(v / total) if total > 0 else 0.0 for v in raw]
+    n = min(len(normalized), len(feat_names))
+    pairs = [(feat_names[i], normalized[i]) for i in range(n)]
     # Si le modèle a plus de features que de noms (schéma décalé), nommer les extras.
-    for i in range(n, len(importances)):
-        pairs.append((f"feature_{i}", float(importances[i])))
+    for i in range(n, len(normalized)):
+        pairs.append((f"feature_{i}", normalized[i]))
 
     ranked = sorted(pairs, key=lambda x: x[1], reverse=True)
     print(f"  ── Top {top} features ──")
@@ -121,6 +124,7 @@ def main():
         return list(model.feature_importances_) if (model is not None and hasattr(model, 'feature_importances_')) else None
 
     _print_model("ENTRÉE (P_win)", imp_of(data.get('model')), feature_names, args.top)
+    _print_model("EXPECTED NET PNL (edge)", imp_of(data.get('edge_model')), feature_names, args.top)
     _print_model("SORTIE (P_exit / P_continue)", imp_of(data.get('exit_model')), exit_feature_names, args.top)
     _print_model("SIZING", imp_of(data.get('sizing_model')), feature_names, args.top)
     _print_model("TARGET (P_target)", imp_of(data.get('target_model')), feature_names, args.top)
