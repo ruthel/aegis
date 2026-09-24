@@ -189,6 +189,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         from core.ml_engine import MLEngine
         self.ml_engine = MLEngine()
+        self.shadow_challenger_engine = None
+        if os.getenv('ML_SHADOW_CHALLENGER_ENABLED', 'True').lower() == 'true':
+            challenger_path = os.path.join('data', 'aegis_challenger.joblib')
+            if os.path.exists(challenger_path):
+                try:
+                    challenger = MLEngine(model_dir='data')
+                    challenger.model_path = challenger_path
+                    if challenger.load_model():
+                        self.shadow_challenger_engine = challenger
+                except Exception:
+                    self.shadow_challenger_engine = None
         self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '50.0'))
         self.ml_exit_entry_min_continue_prob = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
         # Seuil de p_continue ADAPTATIF selon la confiance d'entrée (p_win):
@@ -491,6 +502,34 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if extra:
             metrics.update(extra)
         return metrics
+
+    def _predict_shadow_challenger(self, features):
+        try:
+            engine = getattr(self, 'shadow_challenger_engine', None)
+            if engine is None or features is None:
+                return None
+            return float(engine.predict_win_probability_from_features(features))
+        except Exception:
+            return None
+
+    def _record_shadow_prediction(self, symbol, entry_id, champion_p_win, challenger_p_win):
+        try:
+            if (
+                entry_id
+                and challenger_p_win is not None
+                and getattr(self, 'ml_live_logger', None)
+                and hasattr(self.ml_live_logger, 'record_shadow_prediction')
+            ):
+                self.ml_live_logger.record_shadow_prediction(
+                    symbol=symbol,
+                    entry_id=entry_id,
+                    champion_p_win=champion_p_win,
+                    challenger_p_win=challenger_p_win,
+                    threshold=self.ml_min_probability,
+                    mode='paper' if self.paper_trading else 'live',
+                )
+        except Exception:
+            pass
 
     def record_ml_entry_learning_sample(
         self,
@@ -2310,6 +2349,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         ml_trade_context = None
         ml_entry_learning_id = None
         sizing_replay_payload = None
+        shadow_challenger_p_win = None
         ml_bot_context = self._build_ml_bot_context(
             symbol,
             market_context=market_context,
@@ -2381,6 +2421,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     bot_context=ml_bot_context
                 )
                 _prediction_done_ns = time.perf_counter_ns()
+                shadow_challenger_p_win = self._predict_shadow_challenger(ml_entry_features)
 
                 edge_info = self.ml_engine.predict_expected_net_pnl(ml_entry_features)
                 if edge_info.get('ml_edge_available'):
@@ -2401,7 +2442,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     position_data['ml_expected_execution_drag_pct'] = round(execution_drag_pct, 4)
                     position_data['ml_effective_edge_pct'] = round(effective_edge, 4)
                     if effective_edge < min_expected_edge:
-                        self.record_ml_entry_learning_sample(
+                        edge_reject_entry_id = self.record_ml_entry_learning_sample(
                             symbol,
                             'rejected',
                             current_price,
@@ -2411,6 +2452,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                             bot_context=ml_bot_context,
                             trade_context=ml_trade_context,
                             reason=f'ml_expected_edge_{effective_edge:+.3f}%'
+                        )
+                        self._record_shadow_prediction(
+                            symbol, edge_reject_entry_id, ml_win_prob, shadow_challenger_p_win
                         )
                         self.record_decision(
                             symbol,
@@ -2461,7 +2505,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         ml_exit_forecast,
                         ml_bot_context
                     )
-                    self.record_ml_entry_learning_sample(
+                    pwin_reject_entry_id = self.record_ml_entry_learning_sample(
                         symbol,
                         'rejected',
                         current_price,
@@ -2471,6 +2515,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         bot_context=ml_bot_context,
                         trade_context=ml_trade_context,
                         reason=f'ml_reject_risk_{ml_win_prob:.1f}%'
+                    )
+                    self._record_shadow_prediction(
+                        symbol, pwin_reject_entry_id, ml_win_prob, shadow_challenger_p_win
                     )
                     self.record_decision(
                         symbol, 'buy', False, f'ml_reject_risk_{ml_win_prob:.1f}%',
@@ -2548,7 +2595,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         ml_exit_forecast,
                         ml_bot_context
                     )
-                    self.record_ml_entry_learning_sample(
+                    pexit_reject_entry_id = self.record_ml_entry_learning_sample(
                         symbol,
                         'rejected',
                         current_price,
@@ -2558,6 +2605,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         bot_context=ml_bot_context,
                         trade_context=ml_trade_context,
                         reason=f"ml_exit_entry_rejected_{ml_exit_forecast.get('p_continue', 0):.1f}%"
+                    )
+                    self._record_shadow_prediction(
+                        symbol, pexit_reject_entry_id, ml_win_prob, shadow_challenger_p_win
                     )
                     self.record_decision(
                         symbol, 'buy', False, f"ml_exit_entry_rejected_{ml_exit_forecast.get('p_continue', 0):.1f}%",
@@ -2642,6 +2692,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             bot_context=ml_bot_context,
             trade_context=ml_trade_context,
             reason=reason
+        )
+        self._record_shadow_prediction(
+            symbol, ml_entry_learning_id, ml_win_prob, shadow_challenger_p_win
         )
         if sizing_replay_payload and getattr(self, 'ml_live_logger', None):
             sizing_replay_payload['entry_id'] = ml_entry_learning_id
