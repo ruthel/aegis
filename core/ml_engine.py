@@ -142,6 +142,12 @@ class MLEngine:
         self.sizing_feature_names = list(self.feature_names)
         # Le modèle P_target réutilise les mêmes features d'entrée que P_win/sizing
         self.target_feature_names = list(self.feature_names)
+        self.is_trained = False
+        self.is_edge_trained = False
+        self.is_exit_trained = False
+        self.is_sizing_trained = False
+        self.is_target_trained = False
+        self.load_model()
 
     def _feature_schema_payload(self) -> Dict:
         return {
@@ -231,13 +237,6 @@ class MLEngine:
             return False
         return True
 
-        
-        self.is_trained = False
-        self.is_edge_trained = False
-        self.is_exit_trained = False
-        self.is_sizing_trained = False
-        self.is_target_trained = False
-        self.load_model()
 
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
         fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
