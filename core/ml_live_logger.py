@@ -646,7 +646,11 @@ class MLLiveLogger:
                 conn = self._get_conn()
                 account_id = self._ensure_account(conn, mode)
                 existing_order = conn.execute(
-                    "SELECT order_id FROM orders WHERE account_id=? AND order_id=?",
+                    """
+                    SELECT order_id, amount, COALESCE(filled_amount, 0), avg_fill_price
+                    FROM orders
+                    WHERE account_id=? AND order_id=?
+                    """,
                     (account_id, order_id),
                 ).fetchone()
                 if not existing_order:
@@ -660,6 +664,7 @@ class MLLiveLogger:
                         """,
                         (account_id, order_id, symbol, side, amount, price, source, now, now, now),
                     )
+                    existing_order = (order_id, amount, 0.0, None)
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO fills
@@ -684,17 +689,38 @@ class MLLiveLogger:
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='sell_fee', source=source)
                         usd_delta = gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
+                requested_amount = float(existing_order[1] or amount)
+                previous_filled = float(existing_order[2] or 0.0)
+                previous_avg = float(existing_order[3] or 0.0)
+                new_filled = previous_filled + amount
+                if new_filled > 0:
+                    avg_fill_price = (
+                        (previous_avg * previous_filled) + (price * amount)
+                    ) / new_filled
+                else:
+                    avg_fill_price = price
+                is_filled = new_filled >= max(0.0, requested_amount - 1e-12)
+                order_status = 'filled' if is_filled else 'partially_filled'
+                closed_at = now if is_filled else None
                 conn.execute(
                     """
                     UPDATE orders
-                    SET status='filled',
-                        filled_amount=COALESCE(filled_amount, 0) + ?,
+                    SET status=?,
+                        filled_amount=?,
                         avg_fill_price=?,
-                        closed_at=COALESCE(closed_at, ?),
+                        closed_at=?,
                         updated_at=?
                     WHERE account_id=? AND order_id=?
                     """,
-                    (amount, price, now, now, account_id, order_id),
+                    (
+                        order_status,
+                        new_filled,
+                        avg_fill_price,
+                        closed_at,
+                        now,
+                        account_id,
+                        order_id,
+                    ),
                 )
                 if side == 'sell':
                     conn.execute(
