@@ -1,6 +1,6 @@
-# 🤖 Aegis Trading Bot v3
+# 🤖 Aegis Trading Bot v4
 
-Bot de trading spot Kraken avec **cerveau ML entrée/sortie/sizing**, 82 features d'entrée, 51 features de sortie, sizing ML dédié, risk management institutionnel, optimisations temps réel et ui web premium avec prédictions ML en temps réel via WebSocket.
+Bot de trading spot Kraken avec **stack ML entrée/edge/sortie/sizing/target**, 75 features d'entrée reproductibles historiquement, 46 features de sortie, validation temporelle, exécution paper réaliste, risk management et UI temps réel.
 
 ## 🚀 Démarrage Rapide (2 minutes)
 
@@ -41,19 +41,21 @@ python run.py
 - **Risk Management Pro** : Stop-loss adaptatif, trailing stop, circuit breakers
 - **Edge Detection** : Identification automatique des avantages statistiques
 
-### 🧠 Architecture ML Entrée/Sortie/Sizing
-Le bot ne fonctionne plus comme une cascade de verrous durs. Les anciens signaux métier sont désormais transmis au ML comme features, afin que le modèle décide sur l'ensemble du contexte au lieu de subir des blocages séparés.
+### 🧠 Architecture ML Entrée / Edge / Sortie / Sizing / Target
+Aegis combine des **garde-fous déterministes** et des modèles ML. Les critères qui ne peuvent pas être reconstruits fidèlement dans l'historique (score crypto dynamique et analyse technique globale) restent des gates live et ne sont plus injectés comme features ML.
 
 | Couche | Rôle |
 |--------|------|
-| Sécurités pré-ML | Cooldown, position déjà ouverte, capital disponible, minimums exchange |
-| Features d'entrée ML | Régime symbole/BTC, bear mode, reversal, falling knife, Support Touch, score crypto, signal technique, timing, frais, valeur position |
-| Décision d'entrée ML | Achat seulement si `P_win >= 65%` et continuation attendue suffisante |
-| Gestion de sortie ML | `HOLD` ou `FORCE_EXIT` ; les anciennes règles de protection sont retirées du chemin actif |
-| Sizing ML | Propose `sizing_factor` et taille finale; le Risk Manager garde les plafonds capital/minimum exchange |
+| Sécurités pré-ML | Cooldown, position existante, capital, minimums exchange, score crypto, signal technique |
+| Anti-falling-knife | Rejette une chute structurelle active tant qu'un retournement n'est pas confirmé |
+| Features d'entrée ML | Prix/volume, multi-timeframe, régimes, reversal/falling knife historiques, support, timing/session |
+| Décision d'entrée ML | `P_win >= 50%` + Expected Net PnL après coûts d'exécution |
+| P_exit | `HOLD` / `FORCE_EXIT` avec le même Continuation Score en training et live |
+| Sizing ML | Facteur de taille borné et validé sur holdout temporel |
+| P_target | Cible de gain robuste, validée sur holdout temporel |
+| Gouvernance | Contrat modèle v4, hash du schéma, refus des modèles incompatibles, Champion/Challenger |
 
-Support Touch n'est plus un fast-path d'exécution. Il reste utile comme source statistique pour le modèle : nombre de trades, win rate, PnL total, PnL moyen et régime récent.
-Les stops, objectifs et métriques de continuation restent visibles comme contexte de suivi, mais ne déclenchent plus de vente automatique quand `ML_OWNS_EXITS=true`.
+Le walk-forward complet rejoue P_win → edge → sizing → P_target → P_exit → frais/spread/slippage sur des fenêtres futures non vues. Le paper trading utilise le bid/ask live, les frais Kraken disponibles, le slippage, la latence et les partial fills.
 
 
 
@@ -188,9 +190,9 @@ aegis/
 │   ├── exit_engine.py          # ExitDecisionEngine (ContinuationScore 0-100)
 │   └── capital_manager.py      # Gestion capital + frais dynamiques
 ├── scripts/
-│   ├── train_and_evaluate_ml_model.py # Pipeline unifiée ML (entraînement Entrée + Sortie + Sizing, évaluation, promotion)
+│   ├── train_and_evaluate_ml_model.py # Pipeline ML: Entrée + Edge + Sortie + Sizing + Target + promotion
 │   ├── backtest_ml_sizing.py          # Replay sizing fixe vs sizing ML
-│   ├── walk_forward_validation.py     # Validation temporelle sans fuite
+│   ├── walk_forward_validation.py     # Walk-forward end-to-end sans fuite
 │   └── analyze_ml_live_performance.py # Analyse live, calibration et drift
 ├── data/
 │   ├── aegis_model.joblib      # Champion ML actif
@@ -673,7 +675,7 @@ python -m cProfile -o profile.stats run.py
 
 ---
 
-**Version** : 3.0 Aegis ML-First  
+**Version** : 4.0 Aegis ML-First  
 **Architecture** : Bot ML entrée/sortie + SQLite WAL + Flask + React/Vite SPA  
 **Code** : runtime JSON remplacé par DB relationnelle  
 **Performance** : WebSocket live + analytics amCharts 5 + décisions finales compactées  
