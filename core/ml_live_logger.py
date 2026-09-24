@@ -270,6 +270,8 @@ class MLLiveLogger:
                     pass
                 conn.execute('DROP TABLE IF EXISTS support_touch_trade_results')
                 Base.metadata.create_all(self._Session.kw['bind'])
+                self._migrate_ml_open_entries_mode(conn)
+                self._migrate_bot_daily_stats_mode(conn)
                 self._migrate_live_symbols_to_cryptos(conn)
                 self._ensure_cryptos_columns(conn)
                 self._ensure_ml_exit_recommendations_columns(conn)
@@ -1327,6 +1329,149 @@ class MLLiveLogger:
                     "DELETE FROM cryptos WHERE mode=? AND symbol=?",
                     (mode, source_symbol)
                 )
+        except Exception:
+            pass
+
+    def _migrate_ml_open_entries_mode(self, conn):
+        """Migrate ml_open_entries from symbol PK to (mode, symbol) PK."""
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_open_entries'"
+            ).fetchone()
+            if not exists:
+                return
+            info = conn.execute("PRAGMA table_info(ml_open_entries)").fetchall()
+            columns = {row[1] for row in info}
+            pk_cols = [row[1] for row in sorted(info, key=lambda r: int(r[5] or 0)) if int(row[5] or 0) > 0]
+            if 'mode' in columns and pk_cols == ['mode', 'symbol']:
+                return
+
+            def expr(name, fallback='NULL'):
+                return self._quote_ident(name) if name in columns else fallback
+
+            mode_expr = (
+                "COALESCE(mode, "
+                "(SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), "
+                "'paper')"
+                if 'mode' in columns
+                else "COALESCE((SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), 'paper')"
+            )
+
+            conn.execute("DROP TABLE IF EXISTS ml_open_entries_mode_migration")
+            conn.execute(
+                """
+                CREATE TABLE ml_open_entries_mode_migration (
+                    mode TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    entry_id TEXT,
+                    opened_at TEXT,
+                    order_id TEXT,
+                    price REAL,
+                    amount REAL,
+                    expected_price REAL,
+                    requested_price REAL,
+                    slippage_pct REAL,
+                    spread_pct REAL,
+                    order_type TEXT,
+                    duration_ms REAL,
+                    PRIMARY KEY (mode, symbol)
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO ml_open_entries_mode_migration
+                (mode, symbol, entry_id, opened_at, order_id, price, amount,
+                 expected_price, requested_price, slippage_pct, spread_pct,
+                 order_type, duration_ms)
+                SELECT
+                    {mode_expr},
+                    {expr('symbol', "''")},
+                    {expr('entry_id')},
+                    {expr('opened_at')},
+                    {expr('order_id')},
+                    {expr('price')},
+                    {expr('amount')},
+                    {expr('expected_price')},
+                    {expr('requested_price')},
+                    {expr('slippage_pct')},
+                    {expr('spread_pct')},
+                    {expr('order_type')},
+                    {expr('duration_ms')}
+                FROM ml_open_entries
+                WHERE {expr('symbol', "''")} <> ''
+                """
+            )
+            conn.execute("DROP TABLE ml_open_entries")
+            conn.execute("ALTER TABLE ml_open_entries_mode_migration RENAME TO ml_open_entries")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ml_open_entries_mode_symbol ON ml_open_entries(mode, symbol)"
+            )
+        except Exception:
+            pass
+
+    def _migrate_bot_daily_stats_mode(self, conn):
+        """Migrate daily risk stats to one row per (mode, date)."""
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_daily_stats'"
+            ).fetchone()
+            if not exists:
+                return
+            info = conn.execute("PRAGMA table_info(bot_daily_stats)").fetchall()
+            columns = {row[1] for row in info}
+            pk_cols = [row[1] for row in sorted(info, key=lambda r: int(r[5] or 0)) if int(row[5] or 0) > 0]
+            if 'mode' in columns and pk_cols == ['mode', 'stat_date']:
+                return
+
+            def expr(name, fallback='NULL'):
+                return self._quote_ident(name) if name in columns else fallback
+
+            mode_expr = "COALESCE(mode, 'paper')" if 'mode' in columns else "'paper'"
+            conn.execute("DROP TABLE IF EXISTS bot_daily_stats_mode_migration")
+            conn.execute(
+                """
+                CREATE TABLE bot_daily_stats_mode_migration (
+                    mode TEXT NOT NULL,
+                    stat_date TEXT NOT NULL,
+                    trades_count INTEGER,
+                    winning_trades_count INTEGER,
+                    losing_trades_count INTEGER,
+                    total_loss REAL,
+                    total_profit REAL,
+                    emergency_stop INTEGER,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (mode, stat_date)
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO bot_daily_stats_mode_migration
+                (mode, stat_date, trades_count, winning_trades_count,
+                 losing_trades_count, total_loss, total_profit, emergency_stop,
+                 created_at, updated_at)
+                SELECT
+                    {mode_expr},
+                    {expr('stat_date', "''")},
+                    {expr('trades_count', '0')},
+                    {expr('winning_trades_count', '0')},
+                    {expr('losing_trades_count', '0')},
+                    {expr('total_loss', '0')},
+                    {expr('total_profit', '0')},
+                    {expr('emergency_stop', '0')},
+                    {expr('created_at')},
+                    {expr('updated_at')}
+                FROM bot_daily_stats
+                WHERE {expr('stat_date', "''")} <> ''
+                """
+            )
+            conn.execute("DROP TABLE bot_daily_stats")
+            conn.execute("ALTER TABLE bot_daily_stats_mode_migration RENAME TO bot_daily_stats")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bot_daily_stats_mode_date ON bot_daily_stats(mode, stat_date)"
+            )
         except Exception:
             pass
 
