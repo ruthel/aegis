@@ -62,6 +62,34 @@ def archive_symbol(exchange, root, symbol, timeframe, keep=330000):
     print(f"{symbol} {timeframe}: {len(rows)} bougies | {first} -> {last}")
 
 
+def archive_universe(pairs=None, timeframes=None, root=None, keep=None):
+    """Archive Kraken for a universe; safe to call before training.
+
+    Public OHLCV only, rate limiting delegated to CCXT. Failures are isolated per
+    symbol/timeframe so an unavailable market never aborts model training.
+    """
+    pairs = pairs or ["BTC/USD", "ETH/USD", "SOL/USD", "ADA/USD"]
+    timeframes = timeframes or ["5m", "15m", "1h", "4h", "1d"]
+    root = root or os.getenv("ML_KRAKEN_ARCHIVE_DIR", "data/kraken_ohlcv")
+    keep = int(keep or os.getenv("ML_TRAINING_MAX_CANDLES", "330000"))
+    exchange = ccxt.kraken({"enableRateLimit": True})
+    exchange.load_markets()
+
+    summary = {"updated": 0, "failed": 0}
+    for symbol in pairs:
+        if symbol not in exchange.markets:
+            summary["failed"] += len(timeframes)
+            continue
+        for timeframe in timeframes:
+            try:
+                archive_symbol(exchange, root, symbol, timeframe, keep=keep)
+                summary["updated"] += 1
+            except Exception as exc:
+                summary["failed"] += 1
+                print(f"⚠️ {symbol} {timeframe}: {exc}")
+    return summary
+
+
 def main():
     load_dotenv(".env", override=True)
     parser = argparse.ArgumentParser()
@@ -69,17 +97,10 @@ def main():
     parser.add_argument("--timeframes", default="5m,15m,1h,4h,1d")
     args = parser.parse_args()
 
-    root = os.getenv("ML_KRAKEN_ARCHIVE_DIR", "data/kraken_ohlcv")
-    keep = int(os.getenv("ML_TRAINING_MAX_CANDLES", "330000"))
-    exchange = ccxt.kraken({"enableRateLimit": True})
-    exchange.load_markets()
-
-    for symbol in [x.strip() for x in args.pairs.split(",") if x.strip()]:
-        for timeframe in [x.strip() for x in args.timeframes.split(",") if x.strip()]:
-            try:
-                archive_symbol(exchange, root, symbol, timeframe, keep=keep)
-            except Exception as exc:
-                print(f"⚠️ {symbol} {timeframe}: {exc}")
+    pairs = [x.strip() for x in args.pairs.split(",") if x.strip()]
+    timeframes = [x.strip() for x in args.timeframes.split(",") if x.strip()]
+    summary = archive_universe(pairs=pairs, timeframes=timeframes)
+    print(f"Kraken archive: {summary['updated']} flux mis à jour, {summary['failed']} échecs")
 
 
 if __name__ == "__main__":
