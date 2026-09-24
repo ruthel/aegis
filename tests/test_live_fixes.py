@@ -450,7 +450,8 @@ class LiveFixTests(unittest.TestCase):
         self.assertNotIn("train_test_split(", source)
         pipeline = (ROOT / "scripts/train_and_evaluate_ml_model.py").read_text(encoding="utf-8")
         self.assertIn("temporal_order = np.argsort", pipeline)
-        self.assertIn("<= int(ts)", pipeline)
+        self.assertIn("_cursor_at_or_before", pipeline)
+        self.assertIn("<= int(candle_ts)", pipeline)
 
 
 if __name__ == "__main__":
