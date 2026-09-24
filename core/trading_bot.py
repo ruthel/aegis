@@ -3468,8 +3468,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if getattr(self, 'ml_live_logger', None):
                 self.ml_live_logger.record_crypto_score(
                     symbol,
-                    price,
                     score,
+                    price,
                     mode='paper' if self.paper_trading else 'live',
                 )
                 
