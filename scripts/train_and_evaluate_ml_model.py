@@ -634,6 +634,13 @@ def generate_samples_from_klines(
             h4_history=history_4h,
             d1_history=history_1d,
         )
+        if (
+            os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+            and bot_context.get('falling_knife_active')
+            and not bot_context.get('reversal_confirmed')
+        ):
+            continue  # historical_falling_knife_reject: same hard gate as live
+
         features = ml_engine.extract_features_from_klines(
             history,
             current_price,
@@ -837,6 +844,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                         h4_history=history_4h,
                         d1_history=history_1d,
                     )
+
+                    if (
+                        os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+                        and bot_context.get('falling_knife_active')
+                        and not bot_context.get('reversal_confirmed')
+                    ):
+                        continue
 
                     features = ml_engine.extract_features_from_klines(
                         history, current_price,
