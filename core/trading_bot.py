@@ -2176,6 +2176,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
     def _intelligent_strategy_locked(self, symbol, amount, current_price):
         """Corps de la stratégie exécuté sous verrou par symbole"""
+        _signal_perf_ns = time.perf_counter_ns()
+        _signal_wall_ts_ms = int(time.time() * 1000)
         crypto = symbol.split('/')[0]
         market_context = self.get_market_context(symbol)
 
@@ -2334,6 +2336,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     klines_1h = fut_1h.result()
                     klines_4h = fut_4h.result()
                     klines_1d = fut_1d.result()
+                _market_data_ready_ns = time.perf_counter_ns()
 
                 # Le live et le training doivent voir le même univers de candidats.
                 # On ne consulte le modèle que lorsqu'un signal canonique support/breakout/EMA existe.
@@ -2366,6 +2369,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     trade_context=ml_trade_context,
                     bot_context=ml_bot_context
                 )
+                _features_done_ns = time.perf_counter_ns()
                 ml_win_prob = self.ml_engine.predict_win_probability(
                     klines_15m,
                     current_price,
@@ -2376,6 +2380,63 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     trade_context=ml_trade_context,
                     bot_context=ml_bot_context
                 )
+                _prediction_done_ns = time.perf_counter_ns()
+
+                edge_info = self.ml_engine.predict_expected_net_pnl(ml_entry_features)
+                if edge_info.get('ml_edge_available'):
+                    expected_net_pnl = float(edge_info.get('expected_net_pnl_pct') or 0.0)
+                    min_expected_edge = float(os.getenv('ML_MIN_EXPECTED_NET_PNL_PCT', '0.05'))
+                    expected_slippage = float(os.getenv('ML_EXPECTED_SLIPPAGE_PCT', '0.03'))
+                    spread_cost = 0.0
+                    try:
+                        spread_cost = float(self.execution_manager.get_market_microstructure(symbol).get('spread_pct') or 0.0)
+                    except Exception:
+                        pass
+                    configured_fee = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
+                    live_fee = float(getattr(self, 'trading_fee', configured_fee) or configured_fee)
+                    fee_delta_pct = max(0.0, (live_fee - configured_fee) * 2.0 * 100.0)
+                    execution_drag_pct = spread_cost + expected_slippage + fee_delta_pct
+                    effective_edge = expected_net_pnl - execution_drag_pct
+                    position_data['ml_expected_net_pnl_pct'] = round(expected_net_pnl, 4)
+                    position_data['ml_expected_execution_drag_pct'] = round(execution_drag_pct, 4)
+                    position_data['ml_effective_edge_pct'] = round(effective_edge, 4)
+                    if effective_edge < min_expected_edge:
+                        self.record_ml_entry_learning_sample(
+                            symbol,
+                            'rejected',
+                            current_price,
+                            ml_win_prob,
+                            None,
+                            features=ml_entry_features,
+                            bot_context=ml_bot_context,
+                            trade_context=ml_trade_context,
+                            reason=f'ml_expected_edge_{effective_edge:+.3f}%'
+                        )
+                        self.record_decision(
+                            symbol,
+                            'buy',
+                            False,
+                            'ml_expected_net_edge_below_threshold',
+                            {
+                                'price': current_price,
+                                'p_win': ml_win_prob,
+                                'expected_net_pnl_pct': expected_net_pnl,
+                                'execution_drag_pct': execution_drag_pct,
+                                'effective_edge_pct': effective_edge,
+                                'min_expected_edge_pct': min_expected_edge,
+                            },
+                            throttle_seconds=60
+                        )
+                        return
+
+                position_data['latency_trace'] = {
+                    'signal_wall_ts_ms': _signal_wall_ts_ms,
+                    'signal_perf_ns': _signal_perf_ns,
+                    'market_data_ready_ns': _market_data_ready_ns,
+                    'features_done_ns': _features_done_ns,
+                    'prediction_done_ns': _prediction_done_ns,
+                }
+
                 ml_exit_forecast = self._predict_ml_exit_entry_forecast(
                     symbol, current_price, position_data, entry_p_win=ml_win_prob, bot_context=ml_bot_context
                 )
