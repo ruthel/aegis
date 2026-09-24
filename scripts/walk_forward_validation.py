@@ -109,8 +109,9 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         print("❌ Aucune donnée générée pour la validation walk-forward.")
         return False
 
-    ml_engine = MLEngine(model_dir='data')
-    feature_names = ml_engine.feature_names
+    with tempfile.TemporaryDirectory(prefix='aegis_walkforward_schema_') as schema_tmp:
+        schema_engine = MLEngine(model_dir=schema_tmp)
+        feature_names = list(schema_engine.feature_names)
 
     X_matrix = np.array([
         [float(sample.get(name, 0.0) or 0.0) for name in feature_names]
