@@ -36,7 +36,12 @@ class ExchangeBase(ABC):
         pass
 
     @abstractmethod
-    def create_limit_sell_order(self, symbol, amount, price):
+    def create_limit_buy_order(self, symbol, amount, price, params=None):
+        """Crée un ordre limite d'achat"""
+        pass
+
+    @abstractmethod
+    def create_limit_sell_order(self, symbol, amount, price, params=None):
         """Crée un ordre limite de vente"""
         pass
 
