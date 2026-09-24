@@ -1401,8 +1401,10 @@ class NotificationManager:
             if item['pnl_display']:
                 pnl_text = item['pnl_display'].strip(' •')
                 pnl_icon = "🟢" if '+' in pnl_text else "◉"
-                msg += f"{"└─" if is_last else "├─"}{pnl_icon} {pnl_text}"
-            msg += f"\n{""if is_last else "┆"}\n"
+                pnl_prefix = "└─" if is_last else "├─"
+                msg += f"{pnl_prefix}{pnl_icon} {pnl_text}"
+            spacer = "" if is_last else "┆"
+            msg += f"\n{spacer}\n"
         
         if not portfolio_items:
             msg += "└─ Aucune crypto\n"
