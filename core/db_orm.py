@@ -323,6 +323,7 @@ class MlFeatureValue(Base):
 class MlOpenEntry(Base):
     __tablename__ = 'ml_open_entries'
 
+    mode: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, primary_key=True)
     entry_id: Mapped[str] = mapped_column(Text)
     opened_at: Mapped[str] = mapped_column(Text)
