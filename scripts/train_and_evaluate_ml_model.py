@@ -531,7 +531,8 @@ def generate_samples_from_klines(
         if index < next_allowed_index:
             continue
 
-        history = klines_15m[:index]
+        hist_window = int(os.getenv('ML_GEN_HISTORY_WINDOW', '200'))
+        history = klines_15m[max(0, index - hist_window):index]
         current_price = float(klines_15m[index]['close'])
         ts = klines_15m[index]['timestamp']
         signal = signal_engine.detect_best(history[-200:], current_price)
@@ -545,8 +546,8 @@ def generate_samples_from_klines(
             data = (klines_by_tf or {}).get(key) or []
             if not data:
                 return fallback
-            past = [k for k in data if int(k.get('timestamp', 0)) <= int(ts)]
-            return past[-60:]
+            cursor = _cursor_at_or_before(data, ts)
+            return data[max(0, cursor - 60):cursor]
 
         history_5m = _history_until('5m', klines_15m[max(0, index - 20):index])
         history_1h = _history_until('1h', aggregate_ohlcv(history, 4)[-60:])
