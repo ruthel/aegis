@@ -1571,16 +1571,23 @@ class MLEngine:
             return False
 
     def train_sizing_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 6, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
-        """Entraîne le modèle ML de facteur de taille de position avec LightGBM ou RandomForest."""
+        """Entraîne le sizing avec holdout chronologique puis refit sur tout l'historique."""
         if not SKLEARN_AVAILABLE:
             return False
         if len(X) < 30:
             self.logger.warning("Données insuffisantes pour entraîner le modèle ML de sizing.")
             return False
         try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.float64)
+            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
+
             self.sizing_scaler = StandardScaler()
-            X_scaled = self.sizing_scaler.fit_transform(X)
-            
+            X_train_s = self.sizing_scaler.fit_transform(X_train)
+            X_test_s = self.sizing_scaler.transform(X_test)
+
             if use_lightgbm and LIGHTGBM_AVAILABLE:
                 self.sizing_model = lgb.LGBMRegressor(
                     n_estimators=n_estimators,
@@ -1599,7 +1606,25 @@ class MLEngine:
                     random_state=44,
                     n_jobs=-1
                 )
-            self.sizing_model.fit(X_scaled, y)
+
+            self.sizing_model.fit(X_train_s, y_train)
+            pred = np.asarray(self.sizing_model.predict(X_test_s), dtype=np.float64)
+            mae = float(mean_absolute_error(y_test, pred))
+            rmse = float(mean_squared_error(y_test, pred) ** 0.5)
+            r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
+
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata.update({
+                'sizing_validation_type': 'temporal_holdout',
+                'sizing_test_mae': round(mae, 5),
+                'sizing_test_rmse': round(rmse, 5),
+                'sizing_test_r2': round(r2, 5),
+                'sizing_samples': int(len(X_arr)),
+            })
+
+            self.sizing_scaler = StandardScaler()
+            X_all = self.sizing_scaler.fit_transform(X_arr)
+            self.sizing_model.fit(X_all, y_arr)
             self.is_sizing_trained = True
             self.save_model()
             return True
@@ -1608,19 +1633,23 @@ class MLEngine:
             return False
 
     def train_target_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 8, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
-        """Entraîne le modèle P_target: régresseur du gain maximum atteignable (%) d'un trade.
-
-        y = pour chaque sample, le meilleur gain net % observé pendant le hold
-        (max favorable excursion). Sert à poser un take-profit intelligent."""
+        """Entraîne P_target avec holdout chronologique puis refit sur tout l'historique."""
         if not SKLEARN_AVAILABLE:
             return False
         if len(X) < 30:
             self.logger.warning("Données insuffisantes pour entraîner le modèle ML P_target.")
             return False
         try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.float64)
+            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
+
             self.target_scaler = StandardScaler()
-            X_scaled = self.target_scaler.fit_transform(X)
-            
+            X_train_s = self.target_scaler.fit_transform(X_train)
+            X_test_s = self.target_scaler.transform(X_test)
+
             if use_lightgbm and LIGHTGBM_AVAILABLE:
                 self.target_model = lgb.LGBMRegressor(
                     n_estimators=n_estimators,
@@ -1639,7 +1668,25 @@ class MLEngine:
                     random_state=45,
                     n_jobs=-1
                 )
-            self.target_model.fit(X_scaled, y)
+
+            self.target_model.fit(X_train_s, y_train)
+            pred = np.asarray(self.target_model.predict(X_test_s), dtype=np.float64)
+            mae = float(mean_absolute_error(y_test, pred))
+            rmse = float(mean_squared_error(y_test, pred) ** 0.5)
+            r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
+
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata.update({
+                'target_validation_type': 'temporal_holdout',
+                'target_test_mae_pct': round(mae, 5),
+                'target_test_rmse_pct': round(rmse, 5),
+                'target_test_r2': round(r2, 5),
+                'target_samples': int(len(X_arr)),
+            })
+
+            self.target_scaler = StandardScaler()
+            X_all = self.target_scaler.fit_transform(X_arr)
+            self.target_model.fit(X_all, y_arr)
             self.is_target_trained = True
             self.save_model()
             return True
