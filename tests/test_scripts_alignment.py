@@ -92,6 +92,38 @@ class ScriptsAlignmentTests(unittest.TestCase):
         self.assertIn('ctx_h4, _ = _slice_until(bundle["4h"], ts, 80)', backtest)
         self.assertIn('ctx_1d, _ = _slice_until(bundle["1d"], ts, 80)', backtest)
 
+    def test_env_example_keys_are_referenced_by_runtime(self):
+        env_path = ROOT / ".env.example"
+        keys = []
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key = line.split("=", 1)[0].strip()
+                if key and key.replace("_", "").isalnum() and key.upper() == key:
+                    keys.append(key)
+
+        runtime_chunks = []
+        allowed_suffixes = {".py", ".sh", ".bat", ".ps1", ".yml", ".yaml", ".ts", ".tsx", ".js"}
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in allowed_suffixes:
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            if (
+                rel.startswith("tests/")
+                or rel.startswith("docs/")
+                or rel.startswith("ui/public/spa/")
+                or "/node_modules/" in rel
+            ):
+                continue
+            try:
+                runtime_chunks.append(path.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                pass
+
+        runtime_text = "\n".join(runtime_chunks)
+        unused = sorted(key for key in keys if key not in runtime_text)
+        self.assertEqual(unused, [], f"Variables .env.example sans référence runtime: {unused}")
+
     def test_db_checker_is_configurable(self):
         source = self.read("check_db_tables.py")
         self.assertIn("ML_LIVE_SQLITE_FILE", source)
