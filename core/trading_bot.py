@@ -294,7 +294,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         curr_price,
                         trade_context=trade_context
                     )
-                    rec = 'BUY_HIGH_CONFIDENCE' if prob >= getattr(self, 'ml_min_probability', 65.0) else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
+                    rec = 'BUY_HIGH_CONFIDENCE' if prob >= getattr(self, 'ml_min_probability', 50.0) else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
 
                     ml_preds[symbol] = {
                         'symbol': symbol,
@@ -317,7 +317,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
-                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
 
             if account_balance is None:
                 account_balance = self.get_account_balance()
@@ -409,7 +409,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
-                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
 
             preview_position = dict(position_data or {})
             preview_position.setdefault('buy_price', current_price)
@@ -800,7 +800,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             min_cost = float((limits or {}).get('min_cost') or 0.0)
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
-                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0
+                fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
 
             min_trade_usd = max(min_cost, min_amount * current_price * (1 + fee_rate))
             if min_trade_usd <= 0:
