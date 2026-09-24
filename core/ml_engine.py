@@ -197,7 +197,7 @@ class MLEngine:
         metadata = dict(getattr(self, 'model_metadata', {}) or {})
         return {
             'model_format_version': int(self.MODEL_FORMAT_VERSION),
-            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '3')),
+            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '4')),
             'feature_schema_hash': self.feature_schema_hash(),
             'feature_schema': self._feature_schema_payload(),
             'git_sha': self._git_sha(),
