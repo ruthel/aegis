@@ -997,9 +997,17 @@ class MLEngine:
             pred = self.edge_model.predict(X_test_s)
             mae = mean_absolute_error(y_test, pred)
             rmse = mean_squared_error(y_test, pred) ** 0.5
+            baseline_value = float(np.median(y_train)) if len(y_train) else 0.0
+            baseline_pred = np.full(len(y_test), baseline_value, dtype=np.float64)
+            baseline_mae = mean_absolute_error(y_test, baseline_pred)
+            baseline_rmse = mean_squared_error(y_test, baseline_pred) ** 0.5
+            mae_skill = 1.0 - (float(mae) / max(float(baseline_mae), 1e-12))
             self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
             self.model_metadata['edge_test_mae_pct'] = round(float(mae), 4)
             self.model_metadata['edge_test_rmse_pct'] = round(float(rmse), 4)
+            self.model_metadata['edge_baseline_mae_pct'] = round(float(baseline_mae), 4)
+            self.model_metadata['edge_baseline_rmse_pct'] = round(float(baseline_rmse), 4)
+            self.model_metadata['edge_mae_skill'] = round(float(mae_skill), 5)
             self.model_metadata['edge_validation_type'] = 'temporal_holdout'
 
             self.edge_scaler = StandardScaler()
@@ -1088,6 +1096,9 @@ class MLEngine:
                 self._apply_calibrator(self.probability_calibrator, p) for p in raw_holdout_probs
             ])
             brier = float(np.mean((calibrated_holdout_probs - y_test) ** 2))
+            baseline_prob = float(np.mean(y_train)) if len(y_train) else 0.5
+            baseline_brier = float(np.mean((baseline_prob - y_test) ** 2))
+            brier_skill = 1.0 - (brier / max(baseline_brier, 1e-12))
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
@@ -1111,6 +1122,8 @@ class MLEngine:
                 'test_recall': round(test_recall, 1),
                 'test_f1': round(test_f1, 1),
                 'test_brier': round(brier, 5),
+                'test_baseline_brier': round(baseline_brier, 5),
+                'test_brier_skill': round(brier_skill, 5),
                 'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
                 'oob_score': round(oob, 1) if oob else None,
@@ -1201,6 +1214,9 @@ class MLEngine:
                 self._apply_calibrator(self.probability_calibrator, p) for p in raw_holdout_probs
             ])
             brier = float(np.mean((calibrated_holdout_probs - y_test) ** 2))
+            baseline_prob = float(np.mean(y_train)) if len(y_train) else 0.5
+            baseline_brier = float(np.mean((baseline_prob - y_test) ** 2))
+            brier_skill = 1.0 - (brier / max(baseline_brier, 1e-12))
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
@@ -1223,6 +1239,8 @@ class MLEngine:
                 'test_recall': round(test_recall, 1),
                 'test_f1': round(test_f1, 1),
                 'test_brier': round(brier, 5),
+                'test_baseline_brier': round(baseline_brier, 5),
+                'test_brier_skill': round(brier_skill, 5),
                 'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
                 'best_params': grid_search.best_params_,
@@ -1567,6 +1585,9 @@ class MLEngine:
             calibrated = np.array([self._apply_calibrator(self.exit_calibrator, p) for p in raw_probs])
             y_pred = (calibrated >= 0.5).astype(int)
             brier = float(np.mean((calibrated - y_test) ** 2))
+            exit_baseline_prob = float(np.mean(y_train)) if len(y_train) else 0.5
+            exit_baseline_brier = float(np.mean((exit_baseline_prob - y_test) ** 2))
+            exit_brier_skill = 1.0 - (brier / max(exit_baseline_brier, 1e-12))
 
             exit_metrics = {
                 'exit_validation_type': 'temporal_holdout',
@@ -1575,6 +1596,8 @@ class MLEngine:
                 'exit_test_recall': round(float(recall_score(y_test, y_pred, zero_division=0) * 100), 1),
                 'exit_test_f1': round(float(f1_score(y_test, y_pred, zero_division=0) * 100), 1),
                 'exit_test_brier': round(brier, 5),
+                'exit_test_baseline_brier': round(exit_baseline_brier, 5),
+                'exit_test_brier_skill': round(exit_brier_skill, 5),
                 'exit_probability_calibrated': bool(self.exit_calibrator is not None),
                 'exit_samples': int(len(X_arr)),
             }
@@ -1633,12 +1656,20 @@ class MLEngine:
             mae = float(mean_absolute_error(y_test, pred))
             rmse = float(mean_squared_error(y_test, pred) ** 0.5)
             r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
+            baseline_value = float(np.median(y_train)) if len(y_train) else 1.0
+            baseline_pred = np.full(len(y_test), baseline_value, dtype=np.float64)
+            baseline_mae = float(mean_absolute_error(y_test, baseline_pred))
+            baseline_rmse = float(mean_squared_error(y_test, baseline_pred) ** 0.5)
+            mae_skill = 1.0 - (mae / max(baseline_mae, 1e-12))
 
             self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
             self.model_metadata.update({
                 'sizing_validation_type': 'temporal_holdout',
                 'sizing_test_mae': round(mae, 5),
                 'sizing_test_rmse': round(rmse, 5),
+                'sizing_baseline_mae': round(baseline_mae, 5),
+                'sizing_baseline_rmse': round(baseline_rmse, 5),
+                'sizing_mae_skill': round(mae_skill, 5),
                 'sizing_test_r2': round(r2, 5),
                 'sizing_samples': int(len(X_arr)),
             })
@@ -1695,12 +1726,20 @@ class MLEngine:
             mae = float(mean_absolute_error(y_test, pred))
             rmse = float(mean_squared_error(y_test, pred) ** 0.5)
             r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
+            baseline_value = float(np.median(y_train)) if len(y_train) else 0.0
+            baseline_pred = np.full(len(y_test), baseline_value, dtype=np.float64)
+            baseline_mae = float(mean_absolute_error(y_test, baseline_pred))
+            baseline_rmse = float(mean_squared_error(y_test, baseline_pred) ** 0.5)
+            mae_skill = 1.0 - (mae / max(baseline_mae, 1e-12))
 
             self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
             self.model_metadata.update({
                 'target_validation_type': 'temporal_holdout',
                 'target_test_mae_pct': round(mae, 5),
                 'target_test_rmse_pct': round(rmse, 5),
+                'target_baseline_mae_pct': round(baseline_mae, 5),
+                'target_baseline_rmse_pct': round(baseline_rmse, 5),
+                'target_mae_skill': round(mae_skill, 5),
                 'target_test_r2': round(r2, 5),
                 'target_samples': int(len(X_arr)),
             })
