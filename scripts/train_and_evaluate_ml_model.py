@@ -1008,109 +1008,132 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement expected PnL: {ex}")
 
-            # Entraînement du modèle de Sortie avec les VRAIES features exit
-            # Label DIRECTIONNEL close-to-close (Piste 2 v2): "après ce point, la TENDANCE
-            # reste-t-elle haussière (un close futur dépasse le prix actuel d'un gain net
-            # minime) ?" — on ne regarde que les CLÔTURES, pas les mèches intra-bougie, pour
-            # ne pas confondre volatilité HAUSSIÈRE (continuer) et bruit (les versions basées
-            # sur "premier seuil touché" captaient la volatilité comme signal de sortie).
+            # Entraînement P_exit multi-symboles. Le label répond à la question économique :
+            # "HOLD maintenant vaut-il mieux que EXIT NOW ?" après frais et coût temporel.
             try:
-                X_exit_samples, y_exit_labels = [], []
-                # Label PENTE sur la DURÉE RÉELLE RESTANTE (pas de fenêtre fixe): à chaque
-                # checkpoint on mesure si les closes DE cp JUSQU'À la sortie réelle du trade
-                # (exit_index, déterminée par la cassure de tendance) sont CROISSANTS.
-                # -> "continuer" si le gain est en train de croître, même lentement, même
-                #    sans atteindre un seuil de gain fixe. Fenêtre variable = cohérente avec
-                #    la durée dynamique du trade.
-                slope_min = float(os.getenv('ML_EXIT_LABEL_SLOPE_MIN_PCT_PER_BAR', '0.0'))  # pente mini %/bougie (0 = toute pente positive)
-                slope_min_bars = int(os.getenv('ML_EXIT_LABEL_SLOPE_MIN_BARS', '4'))         # nb min de bougies pour une régression fiable
-                for index in range(50, len(klines_15m) - 10):
-                    if len(X_exit_samples) >= 8000:
-                        break
-                    history = klines_15m[:index]
-                    entry_price = float(klines_15m[index]['close'])
-                    ts = klines_15m[index]['timestamp']
+                X_exit_samples, y_exit_labels, exit_timestamps = [], [], []
+                exit_min_edge = float(os.getenv('ML_EXIT_MIN_HOLD_EDGE_PCT', '0.05'))
+                time_cost_per_day = float(os.getenv('ML_EXIT_HOLD_TIME_COST_PCT_PER_DAY', '0.02'))
+                max_exit_samples = int(os.getenv('ML_EXIT_MAX_TRAIN_SAMPLES', '16000'))
 
-                    # Simuler le trade pour connaitre l'issue (borne temporelle des checkpoints).
-                    # Durée dynamique (sortie sur cassure de tendance) + filet max_hold.
-                    exit_index, exit_price, _ = simulate_trade(
-                        klines_15m, index, entry_price, None, 1.0, exit_max_hold, 2.5,
-                        breakeven_stop=True, breakeven_trigger=1.5, breakeven_lock=1.0, fee_rate=fee_rate,
-                        trend_exit=exit_trend_enabled, trend_confirm_bars=exit_trend_confirm
-                    )
+                for exit_symbol, tf_bundle in training_histories.items():
+                    symbol_15m = list(tf_bundle.get('15m') or [])
+                    if len(symbol_15m) < 100:
+                        continue
 
-                    # Checkpoints étendus pour couvrir toute la fenêtre de détention (jusqu'à
-                    # plusieurs jours), pas seulement 1h-8h. En bougies 15m depuis l'entrée:
-                    # 1h, 2h, 4h, 8h, 12h, 1j, 2j, 4j, 7j. Ceux au-delà de exit_index sont ignorés.
-                    checkpoints = [index + 4, index + 8, index + 16, index + 32,
-                                   index + 48, index + 96, index + 192, index + 384, index + 672]
-                    for cp in checkpoints:
-                        if cp >= len(klines_15m) or cp >= exit_index:
+                    for index in range(50, len(symbol_15m) - 10):
+                        if len(X_exit_samples) >= max_exit_samples:
                             break
-                        cp_price = float(klines_15m[cp]['close'])
-                        cp_history = klines_15m[:cp]
-                        if len(cp_history) < 20:
-                            continue
-                        
-                        duration_minutes = (cp - index) * 15.0
-                        position_data = {
-                            'entry_price': entry_price,
-                            'buy_price': entry_price,
-                            'fee_rate': fee_rate,
-                            'duration_minutes': duration_minutes,
-                            'stop_price': entry_price * 0.99,
-                            'target_price': entry_price * 1.02,
-                        }
 
-                        # === Label PENTE sur la durée réelle restante ===
-                        # On prend les CLÔTURES de [cp .. exit_index] (la vraie fin du trade,
-                        # pas une fenêtre fixe) et on calcule la pente d'une régression
-                        # linéaire, normalisée en %/bougie (comparable entre actifs).
-                        # Pente >= slope_min -> le gain croît: CONTINUER (1). Sinon: SORTIR (0).
-                        window_end = min(len(klines_15m) - 1, exit_index)
-                        future_closes = [float(klines_15m[k]['close']) for k in range(cp, window_end + 1)]
-                        if len(future_closes) < slope_min_bars:
-                            # Trop court pour une régression fiable -> on juge sur le signe
-                            # du dernier close vs cp_price (fallback minimal).
-                            exit_label = 1 if (future_closes and future_closes[-1] > cp_price) else 0
-                        else:
-                            n = len(future_closes)
-                            xs = list(range(n))
-                            mean_x = (n - 1) / 2.0
-                            mean_y = sum(future_closes) / n
-                            cov = sum((xs[i] - mean_x) * (future_closes[i] - mean_y) for i in range(n))
-                            var_x = sum((xs[i] - mean_x) ** 2 for i in range(n))
-                            slope_abs = cov / var_x if var_x > 0 else 0.0
-                            # Normaliser en %/bougie par rapport au prix courant
-                            slope_pct_per_bar = (slope_abs / cp_price) * 100.0 if cp_price > 0 else 0.0
-                            exit_label = 1 if slope_pct_per_bar >= slope_min else 0
+                        entry_price = float(symbol_15m[index]['close'])
+                        entry_ts = int(symbol_15m[index]['timestamp'])
+                        history = symbol_15m[:index]
 
-                        bot_ctx = build_training_bot_context(cp_history, None, ts, btc_history=btc_history, index=cp)
-                        exit_features = ml_engine.extract_exit_features(
-                            cp_history, cp_price, position_data,
-                            continuation_score=50.0,
-                            entry_p_win=50.0,
-                            btc_klines=btc_history[max(0, cp-30):cp] if btc_history else None,
-                            bot_context=bot_ctx
+                        exit_index, final_exit_price, _ = simulate_trade(
+                            symbol_15m, index, entry_price, None, 1.0, exit_max_hold, 2.5,
+                            breakeven_stop=True, breakeven_trigger=1.5, breakeven_lock=1.0,
+                            fee_rate=fee_rate, trend_exit=exit_trend_enabled,
+                            trend_confirm_bars=exit_trend_confirm
                         )
-                        if exit_features is not None:
-                            X_exit_samples.append(exit_features)
-                            y_exit_labels.append(exit_label)
-                
+
+                        checkpoints = [
+                            index + 4, index + 8, index + 16, index + 32,
+                            index + 48, index + 96, index + 192, index + 384, index + 672
+                        ]
+                        for cp in checkpoints:
+                            if cp >= len(symbol_15m) or cp >= exit_index:
+                                break
+                            cp_price = float(symbol_15m[cp]['close'])
+                            cp_history = symbol_15m[:cp]
+                            if len(cp_history) < 20:
+                                continue
+
+                            duration_minutes = (cp - index) * 15.0
+                            remaining_days = max(0.0, (exit_index - cp) * 15.0 / 1440.0)
+                            position_data = {
+                                'entry_price': entry_price,
+                                'buy_price': entry_price,
+                                'fee_rate': fee_rate,
+                                'duration_minutes': duration_minutes,
+                                'stop_price': entry_price * 0.99,
+                                'target_price': entry_price * 1.02,
+                            }
+
+                            exit_now_net = (
+                                (cp_price * (1 - fee_rate) - entry_price * (1 + fee_rate))
+                                / max(entry_price, 1e-9)
+                            ) * 100.0
+                            hold_final_net = (
+                                (float(final_exit_price) * (1 - fee_rate) - entry_price * (1 + fee_rate))
+                                / max(entry_price, 1e-9)
+                            ) * 100.0
+                            hold_advantage = hold_final_net - exit_now_net - (remaining_days * time_cost_per_day)
+                            exit_label = 1 if hold_advantage >= exit_min_edge else 0
+
+                            cp_ts = int(symbol_15m[cp]['timestamp'])
+                            btc_idx = 0
+                            if btc_history:
+                                # positionner BTC sur la dernière bougie connue au checkpoint, sans futur.
+                                lo, hi = 0, len(btc_history)
+                                while lo < hi:
+                                    mid = (lo + hi) // 2
+                                    if int(btc_history[mid]['timestamp']) <= cp_ts:
+                                        lo = mid + 1
+                                    else:
+                                        hi = mid
+                                btc_idx = max(0, lo)
+                            btc_slice = btc_history[max(0, btc_idx - 30):btc_idx] if btc_history else None
+                            bot_ctx = build_training_bot_context(
+                                cp_history,
+                                None,
+                                cp_ts,
+                                btc_history=btc_history,
+                                index=btc_idx if btc_history else None
+                            )
+                            exit_features = ml_engine.extract_exit_features(
+                                cp_history,
+                                cp_price,
+                                position_data,
+                                continuation_score=50.0,
+                                entry_p_win=50.0,
+                                btc_klines=btc_slice,
+                                bot_context=bot_ctx
+                            )
+                            if exit_features is not None:
+                                X_exit_samples.append(exit_features)
+                                y_exit_labels.append(exit_label)
+                                exit_timestamps.append(cp_ts / 1000.0 if cp_ts > 1e12 else float(cp_ts))
+
+                    if len(X_exit_samples) >= max_exit_samples:
+                        break
+
                 if len(X_exit_samples) >= 30:
-                    X_exit = np.array(X_exit_samples)
-                    y_exit = np.array(y_exit_labels)
-                    ml_engine.train_exit_model(X_exit, y_exit, n_estimators=150, max_depth=6, min_samples_split=10, use_lightgbm=use_lightgbm)
-                    n_continue = sum(y_exit_labels)
-                    n_exit = len(y_exit_labels) - n_continue
-                    _tot = max(1, len(y_exit_labels))
+                    X_exit = np.array(X_exit_samples, dtype=np.float64)
+                    y_exit = np.array(y_exit_labels, dtype=np.int64)
+                    ts_exit = np.array(exit_timestamps, dtype=np.float64)
+                    ml_engine.train_exit_model(
+                        X_exit,
+                        y_exit,
+                        timestamps=ts_exit,
+                        n_estimators=150,
+                        max_depth=6,
+                        min_samples_split=10,
+                        use_lightgbm=use_lightgbm
+                    )
+                    n_continue = int(np.sum(y_exit == 1))
+                    n_exit = int(len(y_exit) - n_continue)
+                    _tot = max(1, len(y_exit))
                     model_name = 'LightGBM' if use_lightgbm else 'RandomForest'
-                    print(f"  ✅ Modèle de Sortie entraîné ({model_name}) avec {len(X_exit_samples)} samples "
-                          f"(continue:{n_continue} [{n_continue/_tot*100:.1f}%], exit:{n_exit} [{n_exit/_tot*100:.1f}%])")
+                    print(
+                        f"  ✅ P_exit multi-symboles ({model_name}) : {len(X_exit_samples)} samples "
+                        f"(continue:{n_continue} [{n_continue/_tot*100:.1f}%], "
+                        f"exit:{n_exit} [{n_exit/_tot*100:.1f}%])"
+                    )
                 else:
                     print(f"  ⚠️ Pas assez de samples exit ({len(X_exit_samples)}), modèle sortie non entraîné")
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sortie: {ex}")
+
             try:
                 ml_engine.train_sizing_model(X, y_sizing, n_estimators=120, max_depth=6, min_samples_split=10, use_lightgbm=use_lightgbm)
                 print(f"  ✅ Modèle de Sizing entraîné et fusionné dans Challenger")
