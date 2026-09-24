@@ -73,23 +73,19 @@ class TimeframeAnalyzer:
     # ========== MÉTHODES EXISTANTES ==========
         
     def get_klines_for_timeframe(self, bot, symbol, timeframe, limit=50):
-        """Récupère les données kline pour un timeframe spécifique"""
+        """Récupère directement les bougies du timeframe demandé.
+
+        TradingBot.get_klines() retourne déjà des OHLCV au bon timeframe. Les agréger
+        une seconde fois transformait par exemple du 15m en 225m et du 1h en 60h.
+        """
         cache_key = f"{symbol}_{timeframe}"
-        
         try:
-            # En réalité, on utiliserait bot.exchange.fetch_ohlcv avec le timeframe
-            # Pour la simulation, on adapte les données 1m
-            base_klines = bot.get_klines(symbol, limit * self.get_timeframe_multiplier(timeframe), timeframe)
-            
-            if not base_klines:
-                return []
-            
-            # Convertir les données selon le timeframe
-            converted_klines = self.convert_to_timeframe(base_klines, timeframe)
-            
-            self.data_cache[cache_key] = converted_klines
-            return converted_klines
-            
+            klines = bot.get_klines(symbol, limit, timeframe)
+            if not klines:
+                return self.data_cache.get(cache_key, [])
+            result = list(klines)[-limit:]
+            self.data_cache[cache_key] = result
+            return result
         except Exception as e:
             print(f"Erreur récupération données {timeframe}: {e}")
             return self.data_cache.get(cache_key, [])
@@ -112,7 +108,10 @@ class TimeframeAnalyzer:
             return ['4h', '1h', '15m'], {'4h': 5, '1h': 3, '15m': 2}
     
     def convert_to_timeframe(self, klines_1m, target_timeframe):
-        """Convertit les données 1m vers le timeframe cible"""
+        """Agrégateur explicite réservé aux vraies séries 1m historiques.
+
+        Le runtime live n'appelle plus cette méthode sur des bougies déjà agrégées.
+        """
         if target_timeframe == '1m':
             return klines_1m
         
