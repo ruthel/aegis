@@ -29,6 +29,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.ml_engine import MLEngine
+from core.signal_engine import SignalEngine
 from core.ml_live_logger import MLLiveLogger
 from core.managers.notification import NotificationManager
 from utils.pattern_analyzer import PatternAnalyzer
@@ -754,6 +755,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         ml_engine = MLEngine(model_dir=output_dir)
         ml_engine.model_path = challenger_path
         analyzer = PatternAnalyzer(bot=None)
+        signal_engine = SignalEngine(analyzer)
 
         pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
         history_days = int(os.getenv('ML_TRAINING_HISTORY_DAYS', '1095'))
@@ -826,7 +828,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 # Détecte TOUS les signaux applicables à cet index (pas seulement le premier)
                 # -> chaque signal génère son propre sample, les signaux 15m ne sont plus
                 #    écrasés par support_touch.
-                signals_here = detect_all_trade_signals(analyzer, history, current_price)
+                signals_here = signal_engine.detect_all(history, current_price)
                 if not signals_here:
                     continue
 
