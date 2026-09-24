@@ -959,6 +959,12 @@ class MLEngine:
             self.is_trained = True
 
             y_pred = self.model.predict(X_test_scaled)
+            raw_holdout_probs = self.model.predict_proba(X_test_scaled)[:, 1]
+            self.probability_calibrator = self._fit_isotonic_calibrator(raw_holdout_probs, y_test)
+            calibrated_holdout_probs = np.array([
+                self._apply_calibrator(self.probability_calibrator, p) for p in raw_holdout_probs
+            ])
+            brier = float(np.mean((calibrated_holdout_probs - y_test) ** 2))
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
@@ -979,6 +985,8 @@ class MLEngine:
                 'test_precision': round(test_prec, 1),
                 'test_recall': round(test_recall, 1),
                 'test_f1': round(test_f1, 1),
+                'test_brier': round(brier, 5),
+                'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
                 'oob_score': round(oob, 1) if oob else None,
             }
@@ -1062,6 +1070,12 @@ class MLEngine:
             self.is_trained = True
 
             y_pred = self.model.predict(X_test_scaled)
+            raw_holdout_probs = self.model.predict_proba(X_test_scaled)[:, 1]
+            self.probability_calibrator = self._fit_isotonic_calibrator(raw_holdout_probs, y_test)
+            calibrated_holdout_probs = np.array([
+                self._apply_calibrator(self.probability_calibrator, p) for p in raw_holdout_probs
+            ])
+            brier = float(np.mean((calibrated_holdout_probs - y_test) ** 2))
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
@@ -1081,6 +1095,8 @@ class MLEngine:
                 'test_precision': round(test_prec, 1),
                 'test_recall': round(test_recall, 1),
                 'test_f1': round(test_f1, 1),
+                'test_brier': round(brier, 5),
+                'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
                 'best_params': grid_search.best_params_,
                 'best_cv_score': round(grid_search.best_score_ * 100, 1),
@@ -1730,7 +1746,9 @@ class MLEngine:
                 X = self.scaler.transform(X)
 
             probs = self.model.predict_proba(X)[0]
-            win_prob = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
+            raw_prob = float(probs[1]) if len(probs) > 1 else 0.5
+            calibrated_prob = self._apply_calibrator(self.probability_calibrator, raw_prob)
+            win_prob = max(0.0, min(1.0, calibrated_prob)) * 100.0
             return round(win_prob, 1)
 
         except Exception as e:
@@ -1747,8 +1765,12 @@ class MLEngine:
             joblib.dump({
                 'model': self.model,
                 'scaler': self.scaler,
+                'probability_calibrator': self.probability_calibrator,
+                'edge_model': self.edge_model,
+                'edge_scaler': self.edge_scaler,
                 'exit_model': self.exit_model,
                 'exit_scaler': self.exit_scaler,
+                'exit_calibrator': self.exit_calibrator,
                 'sizing_model': self.sizing_model,
                 'sizing_scaler': self.sizing_scaler,
                 'target_model': self.target_model,
@@ -1814,14 +1836,20 @@ class MLEngine:
             data = joblib.load(self.model_path)
             self.model = data.get('model')
             self.scaler = data.get('scaler')
+            self.probability_calibrator = data.get('probability_calibrator')
+            self.edge_model = data.get('edge_model')
+            self.edge_scaler = data.get('edge_scaler')
             self.exit_model = data.get('exit_model')
             self.exit_scaler = data.get('exit_scaler')
+            self.exit_calibrator = data.get('exit_calibrator')
             self.sizing_model = data.get('sizing_model')
             self.sizing_scaler = data.get('sizing_scaler')
             self.target_model = data.get('target_model')
             self.target_scaler = data.get('target_scaler')
             if self.model is not None and hasattr(self.model, 'n_jobs'):
                 self.model.n_jobs = 1
+            if self.edge_model is not None and hasattr(self.edge_model, 'n_jobs'):
+                self.edge_model.n_jobs = 1
             if self.exit_model is not None and hasattr(self.exit_model, 'n_jobs'):
                 self.exit_model.n_jobs = 1
             if self.sizing_model is not None and hasattr(self.sizing_model, 'n_jobs'):
@@ -1829,6 +1857,7 @@ class MLEngine:
             if self.target_model is not None and hasattr(self.target_model, 'n_jobs'):
                 self.target_model.n_jobs = 1
             self.is_trained = self.model is not None
+            self.is_edge_trained = self.edge_model is not None
             self.is_exit_trained = self.exit_model is not None
             self.is_sizing_trained = self.sizing_model is not None
             self.is_target_trained = self.target_model is not None
