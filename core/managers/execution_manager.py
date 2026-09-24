@@ -23,10 +23,10 @@ class ExecutionManager:
         """Récupère le spread, bid/ask et la profondeur du carnet live."""
         try:
             bid, ask = None, None
-            # 1. Tenter via WebSocket si disponible
-            if hasattr(self.bot, 'ws_client') and self.bot.ws_client:
-                clean_sym = symbol.replace('/', '')
-                ticker = self.bot.ws_client.get_ticker(clean_sym)
+            # 1. Tenter via le WebSocket Kraken du bot si disponible
+            websocket = getattr(self.bot, 'websocket', None)
+            if websocket and websocket.is_connected():
+                ticker = websocket.get_ticker(symbol)
                 if ticker:
                     bid = ticker.get('bid')
                     ask = ticker.get('ask')
@@ -109,12 +109,12 @@ class ExecutionManager:
             return False
 
         # 4. Adaptive Order Selection (Market Taker vs Limit Maker)
-        ml_buy_prob = position_data.get('ml_buy_prob', 0.65) or 0.65
+        ml_buy_prob = float(position_data.get('ml_buy_prob', 65.0) or 65.0)
         order_type = 'market'
         
         # Si confiance ML très élevée (>= 0.80) ou mode urgent -> Market
         # Sinon si adaptive maker activé -> Tenter Limit Maker au Bid
-        if self.adaptive_maker_orders and ml_buy_prob < 0.80 and not self.bot.paper_trading:
+        if self.adaptive_maker_orders and ml_buy_prob < 80.0 and not self.bot.paper_trading:
             order_type = 'limit'
 
         # 5. Exécution de l'ordre
@@ -122,7 +122,7 @@ class ExecutionManager:
         
         if order_type == 'limit' and not self.bot.paper_trading:
             limit_price = micro['bid']  # Poser au Bid pour frais Maker
-            print(f"⚡ {symbol}: Ordre LIMIT MAKER au Bid {limit_price:.2f} USD (Confiance ML: {ml_buy_prob*100:.1f}%)")
+            print(f"⚡ {symbol}: Ordre LIMIT MAKER au Bid {limit_price:.2f} USD (Confiance ML: {ml_buy_prob:.1f}%)")
             try:
                 order = self.bot.exchange.create_limit_buy_order(symbol, size_crypto, limit_price)
                 fill_start = time.time()
