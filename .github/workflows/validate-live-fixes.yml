@@ -3,7 +3,7 @@ name: Validate live execution fixes
 on:
   push:
     branches:
-      - fix/live-execution-ml-pipeline-20260924
+      - "fix/**"
   pull_request:
     branches:
       - main

@@ -47,6 +47,7 @@ from utils.exit_engine import ExitDecisionEngine
 from core.managers.execution_manager import ExecutionManager
 from core.managers.health_manager import HealthManager
 from core.ml_live_logger import MLLiveLogger
+from core.signal_engine import SignalEngine
 
 # Mixins
 from core.bot.trading import TradingMixin
@@ -184,9 +185,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             min_score=int(os.getenv('MIN_CRYPTO_SCORE', '40'))
         )
         self.pattern_analyzer = PatternAnalyzer(self)
+        self.signal_engine = SignalEngine(self.pattern_analyzer)
 
         from core.ml_engine import MLEngine
         self.ml_engine = MLEngine()
+        self.shadow_challenger_engine = None
+        if os.getenv('ML_SHADOW_CHALLENGER_ENABLED', 'True').lower() == 'true':
+            challenger_path = os.path.join('data', 'aegis_challenger.joblib')
+            if os.path.exists(challenger_path):
+                try:
+                    challenger = MLEngine(model_dir='data')
+                    challenger.model_path = challenger_path
+                    if challenger.load_model():
+                        self.shadow_challenger_engine = challenger
+                except Exception:
+                    self.shadow_challenger_engine = None
         self.ml_min_probability = float(os.getenv('ML_MIN_PROBABILITY', '50.0'))
         self.ml_exit_entry_min_continue_prob = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
         # Seuil de p_continue ADAPTATIF selon la confiance d'entrée (p_win):
@@ -489,6 +502,34 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if extra:
             metrics.update(extra)
         return metrics
+
+    def _predict_shadow_challenger(self, features):
+        try:
+            engine = getattr(self, 'shadow_challenger_engine', None)
+            if engine is None or features is None:
+                return None
+            return float(engine.predict_win_probability_from_features(features))
+        except Exception:
+            return None
+
+    def _record_shadow_prediction(self, symbol, entry_id, champion_p_win, challenger_p_win):
+        try:
+            if (
+                entry_id
+                and challenger_p_win is not None
+                and getattr(self, 'ml_live_logger', None)
+                and hasattr(self.ml_live_logger, 'record_shadow_prediction')
+            ):
+                self.ml_live_logger.record_shadow_prediction(
+                    symbol=symbol,
+                    entry_id=entry_id,
+                    champion_p_win=champion_p_win,
+                    challenger_p_win=challenger_p_win,
+                    threshold=self.ml_min_probability,
+                    mode='paper' if self.paper_trading else 'live',
+                )
+        except Exception:
+            pass
 
     def record_ml_entry_learning_sample(
         self,
@@ -2174,6 +2215,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
     def _intelligent_strategy_locked(self, symbol, amount, current_price):
         """Corps de la stratégie exécuté sous verrou par symbole"""
+        _signal_perf_ns = time.perf_counter_ns()
+        _signal_wall_ts_ms = int(time.time() * 1000)
         crypto = symbol.split('/')[0]
         market_context = self.get_market_context(symbol)
 
@@ -2249,6 +2292,43 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 {'price': current_price, 'error': str(e)}, throttle_seconds=120
             )
             return  # Silencieux - trop fréquent
+
+        # Les filtres affichés comme critères doivent réellement être des garde-fous.
+        if float(crypto_score or 0.0) < float(dynamic_min_score or 0.0):
+            self.record_decision(
+                symbol, 'buy', False, 'crypto_score_below_threshold',
+                {
+                    'price': current_price,
+                    'score': crypto_score,
+                    'min_score': dynamic_min_score,
+                },
+                throttle_seconds=60
+            )
+            return
+
+        if signal_action not in ('BUY', 'STRONG_BUY'):
+            self.record_decision(
+                symbol, 'buy', False, f'technical_action_{signal_action or "NONE"}',
+                {
+                    'price': current_price,
+                    'confidence': signal_confidence,
+                    'min_confidence': adaptive_threshold,
+                },
+                throttle_seconds=60
+            )
+            return
+
+        if float(signal_confidence or 0.0) < float(adaptive_threshold or 0.0):
+            self.record_decision(
+                symbol, 'buy', False, 'technical_confidence_below_threshold',
+                {
+                    'price': current_price,
+                    'confidence': signal_confidence,
+                    'min_confidence': adaptive_threshold,
+                },
+                throttle_seconds=60
+            )
+            return
         
         # 6. Calculer position sizing avant le ML pour que le modèle voie la valeur réelle prévue.
         signal_strength = self.get_signal_strength(symbol, current_price)
@@ -2269,6 +2349,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         ml_trade_context = None
         ml_entry_learning_id = None
         sizing_replay_payload = None
+        shadow_challenger_p_win = None
         ml_bot_context = self._build_ml_bot_context(
             symbol,
             market_context=market_context,
@@ -2295,6 +2376,28 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     klines_1h = fut_1h.result()
                     klines_4h = fut_4h.result()
                     klines_1d = fut_1d.result()
+                _market_data_ready_ns = time.perf_counter_ns()
+
+                # Le live et le training doivent voir le même univers de candidats.
+                # On ne consulte le modèle que lorsqu'un signal canonique support/breakout/EMA existe.
+                signal_history = list(klines_15m[:-1] if len(klines_15m) > 1 else klines_15m)
+                candidate_signal = self.signal_engine.detect_best(signal_history[-200:], current_price)
+                if not candidate_signal:
+                    self.record_decision(
+                        symbol, 'buy', False, 'no_shared_candidate_signal',
+                        {
+                            'price': current_price,
+                            'score': crypto_score,
+                            'min_score': dynamic_min_score,
+                            'confidence': signal_confidence,
+                            'min_confidence': adaptive_threshold,
+                        },
+                        throttle_seconds=60
+                    )
+                    return
+                ml_bot_context['candidate_signal_type'] = candidate_signal.get('type')
+                ml_bot_context['candidate_signal_confidence'] = float(candidate_signal.get('confidence') or 0.0)
+
                 ml_trade_context = self._build_ml_trade_context(position_data, account_balance)
                 ml_entry_features = self.ml_engine.extract_features_from_klines(
                     klines_15m,
@@ -2306,6 +2409,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     trade_context=ml_trade_context,
                     bot_context=ml_bot_context
                 )
+                _features_done_ns = time.perf_counter_ns()
                 ml_win_prob = self.ml_engine.predict_win_probability(
                     klines_15m,
                     current_price,
@@ -2316,6 +2420,67 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     trade_context=ml_trade_context,
                     bot_context=ml_bot_context
                 )
+                _prediction_done_ns = time.perf_counter_ns()
+                shadow_challenger_p_win = self._predict_shadow_challenger(ml_entry_features)
+
+                edge_info = self.ml_engine.predict_expected_net_pnl(ml_entry_features)
+                if edge_info.get('ml_edge_available'):
+                    expected_net_pnl = float(edge_info.get('expected_net_pnl_pct') or 0.0)
+                    min_expected_edge = float(os.getenv('ML_MIN_EXPECTED_NET_PNL_PCT', '0.05'))
+                    expected_slippage = float(os.getenv('ML_EXPECTED_SLIPPAGE_PCT', '0.03'))
+                    spread_cost = 0.0
+                    try:
+                        spread_cost = float(self.execution_manager.get_market_microstructure(symbol).get('spread_pct') or 0.0)
+                    except Exception:
+                        pass
+                    configured_fee = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
+                    live_fee = float(getattr(self, 'trading_fee', configured_fee) or configured_fee)
+                    fee_delta_pct = max(0.0, (live_fee - configured_fee) * 2.0 * 100.0)
+                    execution_drag_pct = spread_cost + expected_slippage + fee_delta_pct
+                    effective_edge = expected_net_pnl - execution_drag_pct
+                    position_data['ml_expected_net_pnl_pct'] = round(expected_net_pnl, 4)
+                    position_data['ml_expected_execution_drag_pct'] = round(execution_drag_pct, 4)
+                    position_data['ml_effective_edge_pct'] = round(effective_edge, 4)
+                    if effective_edge < min_expected_edge:
+                        edge_reject_entry_id = self.record_ml_entry_learning_sample(
+                            symbol,
+                            'rejected',
+                            current_price,
+                            ml_win_prob,
+                            None,
+                            features=ml_entry_features,
+                            bot_context=ml_bot_context,
+                            trade_context=ml_trade_context,
+                            reason=f'ml_expected_edge_{effective_edge:+.3f}%'
+                        )
+                        self._record_shadow_prediction(
+                            symbol, edge_reject_entry_id, ml_win_prob, shadow_challenger_p_win
+                        )
+                        self.record_decision(
+                            symbol,
+                            'buy',
+                            False,
+                            'ml_expected_net_edge_below_threshold',
+                            {
+                                'price': current_price,
+                                'p_win': ml_win_prob,
+                                'expected_net_pnl_pct': expected_net_pnl,
+                                'execution_drag_pct': execution_drag_pct,
+                                'effective_edge_pct': effective_edge,
+                                'min_expected_edge_pct': min_expected_edge,
+                            },
+                            throttle_seconds=60
+                        )
+                        return
+
+                position_data['latency_trace'] = {
+                    'signal_wall_ts_ms': _signal_wall_ts_ms,
+                    'signal_perf_ns': _signal_perf_ns,
+                    'market_data_ready_ns': _market_data_ready_ns,
+                    'features_done_ns': _features_done_ns,
+                    'prediction_done_ns': _prediction_done_ns,
+                }
+
                 ml_exit_forecast = self._predict_ml_exit_entry_forecast(
                     symbol, current_price, position_data, entry_p_win=ml_win_prob, bot_context=ml_bot_context
                 )
@@ -2340,7 +2505,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         ml_exit_forecast,
                         ml_bot_context
                     )
-                    self.record_ml_entry_learning_sample(
+                    pwin_reject_entry_id = self.record_ml_entry_learning_sample(
                         symbol,
                         'rejected',
                         current_price,
@@ -2350,6 +2515,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         bot_context=ml_bot_context,
                         trade_context=ml_trade_context,
                         reason=f'ml_reject_risk_{ml_win_prob:.1f}%'
+                    )
+                    self._record_shadow_prediction(
+                        symbol, pwin_reject_entry_id, ml_win_prob, shadow_challenger_p_win
                     )
                     self.record_decision(
                         symbol, 'buy', False, f'ml_reject_risk_{ml_win_prob:.1f}%',
@@ -2427,7 +2595,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         ml_exit_forecast,
                         ml_bot_context
                     )
-                    self.record_ml_entry_learning_sample(
+                    pexit_reject_entry_id = self.record_ml_entry_learning_sample(
                         symbol,
                         'rejected',
                         current_price,
@@ -2437,6 +2605,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         bot_context=ml_bot_context,
                         trade_context=ml_trade_context,
                         reason=f"ml_exit_entry_rejected_{ml_exit_forecast.get('p_continue', 0):.1f}%"
+                    )
+                    self._record_shadow_prediction(
+                        symbol, pexit_reject_entry_id, ml_win_prob, shadow_challenger_p_win
                     )
                     self.record_decision(
                         symbol, 'buy', False, f"ml_exit_entry_rejected_{ml_exit_forecast.get('p_continue', 0):.1f}%",
@@ -2521,6 +2692,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             bot_context=ml_bot_context,
             trade_context=ml_trade_context,
             reason=reason
+        )
+        self._record_shadow_prediction(
+            symbol, ml_entry_learning_id, ml_win_prob, shadow_challenger_p_win
         )
         if sizing_replay_payload and getattr(self, 'ml_live_logger', None):
             sizing_replay_payload['entry_id'] = ml_entry_learning_id

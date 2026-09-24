@@ -323,8 +323,12 @@ class PatternAnalyzer:
         lows = [k['low'] for k in recent_klines]
         volumes = [k['volume'] for k in recent_klines]
         
-        resistance_levels = self._find_pivot_highs(highs, volumes)
-        support_levels = self._find_pivot_lows(lows, volumes)
+        reference_prices = [float(x) for x in highs + lows if float(x or 0) > 0]
+        reference_price = float(np.median(reference_prices)) if reference_prices else 0.0
+        bucket_size = max(reference_price * self.proximity_threshold, 1e-12)
+
+        resistance_levels = self._find_pivot_highs(highs, volumes, bucket_size=bucket_size)
+        support_levels = self._find_pivot_lows(lows, volumes, bucket_size=bucket_size)
         
         return {
             'resistance_levels': resistance_levels,
@@ -333,12 +337,17 @@ class PatternAnalyzer:
             'strongest_support': max(support_levels, key=lambda x: x['strength']) if support_levels else None
         }
     
-    def _find_pivot_highs(self, highs, volumes):
-        """Trouve les résistances (pivots hauts)"""
+    def _find_pivot_highs(self, highs, volumes, bucket_size=None):
+        """Trouve les résistances en regroupant les prix proches en vraies zones."""
         levels = defaultdict(list)
+        valid = [float(v) for v in highs if float(v or 0) > 0]
+        if bucket_size is None:
+            ref = float(np.median(valid)) if valid else 0.0
+            bucket_size = max(ref * self.proximity_threshold, 1e-12)
         
         for i, high in enumerate(highs):
-            level_key = round(high / (high * self.proximity_threshold)) * (high * self.proximity_threshold)
+            high = float(high)
+            level_key = round(high / bucket_size) * bucket_size
             levels[level_key].append({
                 'price': high,
                 'index': i,
@@ -361,12 +370,17 @@ class PatternAnalyzer:
         
         return sorted(resistance_levels, key=lambda x: x['strength'], reverse=True)
     
-    def _find_pivot_lows(self, lows, volumes):
-        """Trouve les supports (pivots bas)"""
+    def _find_pivot_lows(self, lows, volumes, bucket_size=None):
+        """Trouve les supports en regroupant les prix proches en vraies zones."""
         levels = defaultdict(list)
+        valid = [float(v) for v in lows if float(v or 0) > 0]
+        if bucket_size is None:
+            ref = float(np.median(valid)) if valid else 0.0
+            bucket_size = max(ref * self.proximity_threshold, 1e-12)
         
         for i, low in enumerate(lows):
-            level_key = round(low / (low * self.proximity_threshold)) * (low * self.proximity_threshold)
+            low = float(low)
+            level_key = round(low / bucket_size) * bucket_size
             levels[level_key].append({
                 'price': low,
                 'index': i,

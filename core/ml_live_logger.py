@@ -31,6 +31,8 @@ from core.db_orm import (
     MlOpenEntry,
     MlModelMetadata,
     MlSizingRecommendation,
+    MlShadowPrediction,
+    ExecutionLatency,
     SysAudit,
     MlTradeOutcome,
     SupportTouchResult,
@@ -3947,6 +3949,98 @@ class MLLiveLogger:
             return True
         except Exception:
             return False
+
+    def record_shadow_prediction(
+        self,
+        symbol,
+        entry_id,
+        champion_p_win,
+        challenger_p_win,
+        threshold=50.0,
+        mode='paper',
+    ):
+        """Store champion/challenger predictions on the exact same opportunity."""
+        try:
+            champ = float(champion_p_win)
+            chall = float(challenger_p_win)
+            th = float(threshold)
+            row = MlShadowPrediction(
+                shadow_id=self._new_id('shadow'),
+                timestamp=now_iso(),
+                mode=mode,
+                symbol=str(symbol or ''),
+                entry_id=entry_id,
+                champion_p_win=champ,
+                challenger_p_win=chall,
+                champion_threshold=th,
+                challenger_threshold=th,
+                champion_take=1 if champ >= th else 0,
+                challenger_take=1 if chall >= th else 0,
+                created_at=now_iso(),
+            )
+            with self._lock:
+                with self._orm_session() as session:
+                    session.add(row)
+                    session.commit()
+            return row.shadow_id
+        except Exception:
+            return None
+
+    def record_execution_latency(
+        self,
+        symbol,
+        side,
+        order_type,
+        trace,
+        success=True,
+        expected_price=None,
+        executed_price=None,
+        slippage_pct=None,
+    ):
+        """Persist monotonic execution-stage latencies for live attribution."""
+        try:
+            t = dict(trace or {})
+            def _ms(a, b):
+                av, bv = t.get(a), t.get(b)
+                if av is None or bv is None:
+                    return None
+                return max(0.0, (float(bv) - float(av)) / 1_000_000.0)
+
+            send_key = 'order_send_ns' if t.get('order_send_ns') is not None else 'fallback_market_send_ns'
+            ack_key = 'order_ack_ns' if t.get('order_ack_ns') is not None else 'fallback_market_ack_ns'
+            start_ns = t.get('signal_perf_ns') or t.get('execution_start_ns')
+            end_ns = t.get('execution_done_ns') or t.get('final_fill_ns') or t.get(ack_key)
+            total_ms = None
+            if start_ns is not None and end_ns is not None:
+                total_ms = max(0.0, (float(end_ns) - float(start_ns)) / 1_000_000.0)
+
+            row = ExecutionLatency(
+                latency_id=self._new_id('latency'),
+                timestamp=now_iso(),
+                symbol=str(symbol or ''),
+                side=str(side or ''),
+                order_type=str(order_type or ''),
+                signal_to_market_data_ms=self._clean(_ms('signal_perf_ns', 'market_data_ready_ns')),
+                market_data_to_features_ms=self._clean(_ms('market_data_ready_ns', 'features_done_ns')),
+                features_to_prediction_ms=self._clean(_ms('features_done_ns', 'prediction_done_ns')),
+                prediction_to_send_ms=self._clean(_ms('prediction_done_ns', send_key)),
+                send_to_ack_ms=self._clean(_ms(send_key, ack_key)),
+                ack_to_first_fill_ms=self._clean(_ms(ack_key, 'first_fill_ns')),
+                first_to_final_fill_ms=self._clean(_ms('first_fill_ns', 'final_fill_ns')),
+                total_ms=self._clean(total_ms),
+                expected_price=self._clean(expected_price),
+                executed_price=self._clean(executed_price),
+                slippage_pct=self._clean(slippage_pct),
+                success=1 if success else 0,
+                trace_json=json.dumps(self._clean(t), separators=(',', ':')),
+            )
+            with self._lock:
+                with self._orm_session() as session:
+                    session.add(row)
+                    session.commit()
+            return row.latency_id
+        except Exception:
+            return None
 
     def log_decision_journal(self, entry, mode='paper', max_entries=5000):
         return self.record_decision_journal(entry, mode=mode, max_entries=max_entries)

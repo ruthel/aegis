@@ -42,8 +42,12 @@ class MLEngine:
         
         self.model = None
         self.scaler = None
+        self.probability_calibrator = None
+        self.edge_model = None
+        self.edge_scaler = None
         self.exit_model = None
         self.exit_scaler = None
+        self.exit_calibrator = None
         self.sizing_model = None
         self.sizing_scaler = None
         self.target_model = None
@@ -134,6 +138,7 @@ class MLEngine:
         self.target_feature_names = list(self.feature_names)
         
         self.is_trained = False
+        self.is_edge_trained = False
         self.is_exit_trained = False
         self.is_sizing_trained = False
         self.is_target_trained = False
@@ -805,6 +810,103 @@ class MLEngine:
             sample_weight[:split_idx], sample_weight[split_idx:]
         )
 
+    def _fit_isotonic_calibrator(self, raw_probs: np.ndarray, y_true: np.ndarray):
+        """Fit a monotonic probability calibrator on a chronological holdout."""
+        try:
+            from sklearn.isotonic import IsotonicRegression
+            raw_probs = np.asarray(raw_probs, dtype=np.float64)
+            y_true = np.asarray(y_true, dtype=np.float64)
+            if len(raw_probs) < 40 or len(np.unique(y_true)) < 2:
+                return None
+            return IsotonicRegression(out_of_bounds='clip').fit(raw_probs, y_true)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _apply_calibrator(calibrator, probability: float) -> float:
+        try:
+            if calibrator is None:
+                return float(probability)
+            return float(calibrator.predict([float(probability)])[0])
+        except Exception:
+            return float(probability)
+
+    def predict_win_probability_from_features(self, features: np.ndarray) -> float:
+        """Predict calibrated P_win from an already-built feature vector."""
+        if not self.is_trained or self.model is None or features is None:
+            return 50.0
+        try:
+            aligned = self._align_features_for_loaded_model(np.asarray(features, dtype=np.float64))
+            X = aligned.reshape(1, -1)
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
+            probs = self.model.predict_proba(X)[0]
+            raw = float(probs[1]) if len(probs) > 1 else 0.5
+            calibrated = self._apply_calibrator(self.probability_calibrator, raw)
+            return round(max(0.0, min(1.0, calibrated)) * 100.0, 1)
+        except Exception as e:
+            self.logger.error(f"Erreur prédiction P_win depuis features: {e}")
+            return 50.0
+
+    def train_edge_model(self, X: np.ndarray, y_net_pnl: np.ndarray, sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
+        """Predict expected net PnL (%) for candidate entries using temporal validation."""
+        if not SKLEARN_AVAILABLE or len(X) < 30:
+            return False
+        try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error
+            X_train, X_test, y_train, y_test, sw_train, _ = self._temporal_holdout_split(
+                X, np.asarray(y_net_pnl, dtype=np.float64), sample_weight
+            )
+            self.edge_scaler = StandardScaler()
+            X_train_s = self.edge_scaler.fit_transform(X_train)
+            X_test_s = self.edge_scaler.transform(X_test)
+            if use_lightgbm and LIGHTGBM_AVAILABLE:
+                self.edge_model = lgb.LGBMRegressor(
+                    n_estimators=180, max_depth=6, learning_rate=0.04,
+                    num_leaves=31, random_state=46, n_jobs=-1, verbose=-1
+                )
+            else:
+                self.edge_model = RandomForestRegressor(
+                    n_estimators=180, max_depth=8, min_samples_split=8,
+                    random_state=46, n_jobs=-1
+                )
+            self.edge_model.fit(X_train_s, y_train, sample_weight=sw_train)
+            pred = self.edge_model.predict(X_test_s)
+            mae = mean_absolute_error(y_test, pred)
+            rmse = mean_squared_error(y_test, pred) ** 0.5
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata['edge_test_mae_pct'] = round(float(mae), 4)
+            self.model_metadata['edge_test_rmse_pct'] = round(float(rmse), 4)
+            self.model_metadata['edge_validation_type'] = 'temporal_holdout'
+
+            self.edge_scaler = StandardScaler()
+            X_all = self.edge_scaler.fit_transform(X)
+            self.edge_model.fit(X_all, np.asarray(y_net_pnl, dtype=np.float64), sample_weight=sample_weight)
+            self.is_edge_trained = True
+            self.save_model()
+            return True
+        except Exception as e:
+            self.logger.error(f"Erreur entraînement expected PnL: {e}")
+            return False
+
+    def predict_expected_net_pnl(self, features: np.ndarray) -> Dict:
+        if not self.is_edge_trained or self.edge_model is None or features is None:
+            return {'ml_edge_available': False, 'expected_net_pnl_pct': None}
+        try:
+            aligned = self._align_features_for_loaded_model(np.asarray(features, dtype=np.float64))
+            X = aligned.reshape(1, -1)
+            if self.edge_scaler is not None:
+                X = self.edge_scaler.transform(X)
+            value = float(self.edge_model.predict(X)[0])
+            return {
+                'ml_edge_available': True,
+                'expected_net_pnl_pct': round(value, 4),
+                'reason': f'expected_net_pnl_{value:+.3f}%'
+            }
+        except Exception as e:
+            self.logger.error(f"Erreur prédiction expected PnL: {e}")
+            return {'ml_edge_available': False, 'expected_net_pnl_pct': None}
+
     def train_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 100, max_depth: int = 6, min_samples_split: int = 5, criterion: str = 'gini', sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
         """Entraîne LightGBM (défaut) ou Random Forest avec holdout chronologique."""
         if not SKLEARN_AVAILABLE:
@@ -857,6 +959,12 @@ class MLEngine:
             self.is_trained = True
 
             y_pred = self.model.predict(X_test_scaled)
+            raw_holdout_probs = self.model.predict_proba(X_test_scaled)[:, 1]
+            self.probability_calibrator = self._fit_isotonic_calibrator(raw_holdout_probs, y_test)
+            calibrated_holdout_probs = np.array([
+                self._apply_calibrator(self.probability_calibrator, p) for p in raw_holdout_probs
+            ])
+            brier = float(np.mean((calibrated_holdout_probs - y_test) ** 2))
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
@@ -877,6 +985,8 @@ class MLEngine:
                 'test_precision': round(test_prec, 1),
                 'test_recall': round(test_recall, 1),
                 'test_f1': round(test_f1, 1),
+                'test_brier': round(brier, 5),
+                'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
                 'oob_score': round(oob, 1) if oob else None,
             }
@@ -960,6 +1070,12 @@ class MLEngine:
             self.is_trained = True
 
             y_pred = self.model.predict(X_test_scaled)
+            raw_holdout_probs = self.model.predict_proba(X_test_scaled)[:, 1]
+            self.probability_calibrator = self._fit_isotonic_calibrator(raw_holdout_probs, y_test)
+            calibrated_holdout_probs = np.array([
+                self._apply_calibrator(self.probability_calibrator, p) for p in raw_holdout_probs
+            ])
+            brier = float(np.mean((calibrated_holdout_probs - y_test) ** 2))
             test_acc = accuracy_score(y_test, y_pred) * 100
             test_prec = precision_score(y_test, y_pred, zero_division=0) * 100
             test_recall = recall_score(y_test, y_pred, zero_division=0) * 100
@@ -979,6 +1095,8 @@ class MLEngine:
                 'test_precision': round(test_prec, 1),
                 'test_recall': round(test_recall, 1),
                 'test_f1': round(test_f1, 1),
+                'test_brier': round(brier, 5),
+                'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
                 'best_params': grid_search.best_params_,
                 'best_cv_score': round(grid_search.best_score_ * 100, 1),
@@ -1266,25 +1384,37 @@ class MLEngine:
             self.logger.error(f"Erreur extraction features ML sortie: {e}")
             return None
 
-    def train_exit_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 150, max_depth: int = 6, min_samples_split: int = 10, criterion: str = 'gini', use_lightgbm: bool = True) -> bool:
-        """Entraîne le modèle ML de continuation/sortie avec LightGBM ou RandomForest."""
-        if not SKLEARN_AVAILABLE:
-            return False
-        if len(X) < 30:
+    def train_exit_model(self, X: np.ndarray, y: np.ndarray, timestamps: Optional[np.ndarray] = None, n_estimators: int = 150, max_depth: int = 6, min_samples_split: int = 10, criterion: str = 'gini', use_lightgbm: bool = True) -> bool:
+        """Train P_continue with a chronological holdout and calibrated probabilities."""
+        if not SKLEARN_AVAILABLE or len(X) < 30:
             self.logger.warning("Données insuffisantes pour entraîner le modèle ML de sortie.")
             return False
         try:
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.int64)
+            if timestamps is not None and len(timestamps) == len(X_arr):
+                order = np.argsort(np.asarray(timestamps, dtype=np.float64), kind='stable')
+                X_arr = X_arr[order]
+                y_arr = y_arr[order]
+
+            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
+            if len(np.unique(y_train)) < 2:
+                self.logger.warning("P_exit temporel invalide: une seule classe en train.")
+                return False
+
             self.exit_scaler = StandardScaler()
-            X_scaled = self.exit_scaler.fit_transform(X)
-            
+            X_train_s = self.exit_scaler.fit_transform(X_train)
+            X_test_s = self.exit_scaler.transform(X_test)
+
             if use_lightgbm and LIGHTGBM_AVAILABLE:
-                # LightGBM gère mieux les classes déséquilibrées avec is_unbalance
                 self.exit_model = lgb.LGBMClassifier(
                     n_estimators=n_estimators,
                     max_depth=max_depth if max_depth else -1,
                     min_child_samples=min_samples_split,
                     learning_rate=0.05,
-                    is_unbalance=True,  # Équilibre automatique des classes
+                    is_unbalance=True,
                     random_state=43,
                     n_jobs=-1,
                     verbose=-1
@@ -1301,7 +1431,30 @@ class MLEngine:
                     random_state=43,
                     n_jobs=-1
                 )
-            self.exit_model.fit(X_scaled, y)
+
+            self.exit_model.fit(X_train_s, y_train)
+            raw_probs = self.exit_model.predict_proba(X_test_s)[:, 1]
+            self.exit_calibrator = self._fit_isotonic_calibrator(raw_probs, y_test)
+            calibrated = np.array([self._apply_calibrator(self.exit_calibrator, p) for p in raw_probs])
+            y_pred = (calibrated >= 0.5).astype(int)
+            brier = float(np.mean((calibrated - y_test) ** 2))
+
+            exit_metrics = {
+                'exit_validation_type': 'temporal_holdout',
+                'exit_test_accuracy': round(float(accuracy_score(y_test, y_pred) * 100), 1),
+                'exit_test_precision': round(float(precision_score(y_test, y_pred, zero_division=0) * 100), 1),
+                'exit_test_recall': round(float(recall_score(y_test, y_pred, zero_division=0) * 100), 1),
+                'exit_test_f1': round(float(f1_score(y_test, y_pred, zero_division=0) * 100), 1),
+                'exit_test_brier': round(brier, 5),
+                'exit_probability_calibrated': bool(self.exit_calibrator is not None),
+                'exit_samples': int(len(X_arr)),
+            }
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata.update(exit_metrics)
+
+            self.exit_scaler = StandardScaler()
+            X_all = self.exit_scaler.fit_transform(X_arr)
+            self.exit_model.fit(X_all, y_arr)
             self.is_exit_trained = True
             self.save_model()
             return True
@@ -1558,7 +1711,9 @@ class MLEngine:
             if self.exit_scaler is not None:
                 X = self.exit_scaler.transform(X)
             probs = self.exit_model.predict_proba(X)[0]
-            p_continue = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
+            raw_continue = float(probs[1]) if len(probs) > 1 else 0.5
+            calibrated_continue = self._apply_calibrator(self.exit_calibrator, raw_continue)
+            p_continue = max(0.0, min(1.0, calibrated_continue)) * 100.0
 
             buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
             fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0))
@@ -1628,7 +1783,9 @@ class MLEngine:
                 X = self.scaler.transform(X)
 
             probs = self.model.predict_proba(X)[0]
-            win_prob = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
+            raw_prob = float(probs[1]) if len(probs) > 1 else 0.5
+            calibrated_prob = self._apply_calibrator(self.probability_calibrator, raw_prob)
+            win_prob = max(0.0, min(1.0, calibrated_prob)) * 100.0
             return round(win_prob, 1)
 
         except Exception as e:
@@ -1645,8 +1802,12 @@ class MLEngine:
             joblib.dump({
                 'model': self.model,
                 'scaler': self.scaler,
+                'probability_calibrator': self.probability_calibrator,
+                'edge_model': self.edge_model,
+                'edge_scaler': self.edge_scaler,
                 'exit_model': self.exit_model,
                 'exit_scaler': self.exit_scaler,
+                'exit_calibrator': self.exit_calibrator,
                 'sizing_model': self.sizing_model,
                 'sizing_scaler': self.sizing_scaler,
                 'target_model': self.target_model,
@@ -1712,14 +1873,20 @@ class MLEngine:
             data = joblib.load(self.model_path)
             self.model = data.get('model')
             self.scaler = data.get('scaler')
+            self.probability_calibrator = data.get('probability_calibrator')
+            self.edge_model = data.get('edge_model')
+            self.edge_scaler = data.get('edge_scaler')
             self.exit_model = data.get('exit_model')
             self.exit_scaler = data.get('exit_scaler')
+            self.exit_calibrator = data.get('exit_calibrator')
             self.sizing_model = data.get('sizing_model')
             self.sizing_scaler = data.get('sizing_scaler')
             self.target_model = data.get('target_model')
             self.target_scaler = data.get('target_scaler')
             if self.model is not None and hasattr(self.model, 'n_jobs'):
                 self.model.n_jobs = 1
+            if self.edge_model is not None and hasattr(self.edge_model, 'n_jobs'):
+                self.edge_model.n_jobs = 1
             if self.exit_model is not None and hasattr(self.exit_model, 'n_jobs'):
                 self.exit_model.n_jobs = 1
             if self.sizing_model is not None and hasattr(self.sizing_model, 'n_jobs'):
@@ -1727,6 +1894,7 @@ class MLEngine:
             if self.target_model is not None and hasattr(self.target_model, 'n_jobs'):
                 self.target_model.n_jobs = 1
             self.is_trained = self.model is not None
+            self.is_edge_trained = self.edge_model is not None
             self.is_exit_trained = self.exit_model is not None
             self.is_sizing_trained = self.sizing_model is not None
             self.is_target_trained = self.target_model is not None
