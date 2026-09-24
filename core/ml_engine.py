@@ -235,6 +235,25 @@ class MLEngine:
                 expected_hash,
             )
             return False
+
+        expected_counts = {
+            'model': len(self.feature_names),
+            'edge_model': len(self.feature_names),
+            'exit_model': len(self.exit_feature_names),
+            'sizing_model': len(self.sizing_feature_names),
+            'target_model': len(self.target_feature_names),
+        }
+        for key, expected in expected_counts.items():
+            model = data.get(key)
+            actual = getattr(model, 'n_features_in_', None) if model is not None else None
+            if actual is not None and int(actual) != int(expected):
+                self.logger.error(
+                    "Modèle refusé: %s attend %s features, runtime %s",
+                    key,
+                    actual,
+                    expected,
+                )
+                return False
         return True
 
 
