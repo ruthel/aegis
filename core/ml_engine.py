@@ -436,13 +436,6 @@ class MLEngine:
         padded[:len(features)] = features
         return padded
 
-    def _target_model_feature_count(self) -> int:
-        if self.target_scaler is not None and hasattr(self.target_scaler, 'n_features_in_'):
-            return int(self.target_scaler.n_features_in_)
-        if self.target_model is not None and hasattr(self.target_model, 'n_features_in_'):
-            return int(self.target_model.n_features_in_)
-        return len(self.target_feature_names)
-
     def _calc_rsi(self, closes: np.ndarray, period: int = 14) -> float:
         if len(closes) < period + 1:
             return 50.0
