@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -64,7 +65,7 @@ def fetch_features(conn: sqlite3.Connection, entry_id: str) -> dict[str, float]:
     }
 
 
-def replay(db_path: Path, model_path: Path, limit: int) -> dict:
+def replay(db_path: Path, model_path: Path, limit: int, reference_notional: float) -> dict:
     engine = MLEngine()
     engine.model_path = str(model_path)
     engine.load_model()
@@ -112,7 +113,10 @@ def replay(db_path: Path, model_path: Path, limit: int) -> dict:
     ).fetchall()
 
     for row in list(rows) + list(replay_rows):
-        pnl = float(row["pnl"] or 0.0)
+        pnl_pct = float(row["pnl_pct"] or 0.0)
+        # Comparaison normalisée: chaque trade part du même notional de référence.
+        # On évite de remultiplier un PnL USD qui incorporait déjà le sizing historique.
+        baseline_trade_pnl = float(reference_notional) * (pnl_pct / 100.0)
         features = fetch_features(conn, row["entry_id"])
         if not features:
             continue
@@ -120,10 +124,10 @@ def replay(db_path: Path, model_path: Path, limit: int) -> dict:
         feature_vector = np.array([float(features.get(name, 0.0) or 0.0) for name in ordered_features], dtype=np.float64)
         pred = engine.predict_position_size_factor(features=feature_vector)
         factor = float(pred.get("sizing_factor") or 1.0)
-        baseline_pnl += pnl
-        sizing_pnl += pnl * factor
+        baseline_pnl += baseline_trade_pnl
+        sizing_pnl += baseline_trade_pnl * factor
         factors.append(factor)
-        if pnl >= 0:
+        if pnl_pct >= 0:
             positive += 1
         else:
             negative += 1
@@ -134,10 +138,11 @@ def replay(db_path: Path, model_path: Path, limit: int) -> dict:
                 "source": row["source"],
                 "timestamp": row["timestamp"],
                 "symbol": row["symbol"],
-                "pnl_usd": round(pnl, 4),
-                "pnl_pct": row["pnl_pct"],
+                "baseline_notional_usd": round(float(reference_notional), 4),
+                "pnl_usd": round(baseline_trade_pnl, 4),
+                "pnl_pct": pnl_pct,
                 "sizing_factor": round(factor, 3),
-                "sizing_pnl_usd": round(pnl * factor, 4),
+                "sizing_pnl_usd": round(baseline_trade_pnl * factor, 4),
                 "reason": pred.get("reason"),
             }
         )
@@ -147,6 +152,7 @@ def replay(db_path: Path, model_path: Path, limit: int) -> dict:
         "run_id": f"sizing_backtest_{generated_at.replace(':', '').replace('.', '')}",
         "generated_at": generated_at,
         "model_path": str(model_path),
+        "reference_notional_usd": round(float(reference_notional), 4),
         "samples": len(details),
         "baseline_pnl_usd": round(baseline_pnl, 4),
         "sizing_pnl_usd": round(sizing_pnl, 4),
@@ -192,13 +198,20 @@ def replay(db_path: Path, model_path: Path, limit: int) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Backtest/replay du sizing ML.")
+    load_dotenv(".env", override=True)
+    parser = argparse.ArgumentParser(description="Backtest/replay du sizing ML normalisé.")
     parser.add_argument("--db", default=os.getenv("ML_LIVE_SQLITE_FILE", "data/aegis_db.sqlite3"))
     parser.add_argument("--model", default="data/aegis_model.joblib")
     parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument(
+        "--notional",
+        type=float,
+        default=float(os.getenv("TRADE_AMOUNT", "50")),
+        help="Notional USD identique appliqué à tous les trades pour comparer 1.0x vs sizing ML.",
+    )
     args = parser.parse_args()
 
-    summary = replay(Path(args.db), Path(args.model), args.limit)
+    summary = replay(Path(args.db), Path(args.model), args.limit, args.notional)
     print("======================================================================")
     print("REPLAY SIZING ML")
     print("======================================================================")
