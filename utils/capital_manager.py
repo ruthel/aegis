@@ -19,7 +19,7 @@ class CapitalManager:
         # Dynamic Fees integration
         self.fees_cache = {}
         self.last_fees_update = 0
-        self.fees_update_interval = 3600  # 1h
+        self.fees_update_interval = int(os.getenv('FEE_SYNC_INTERVAL_SECONDS', '3600'))
         self.vip_level = None
         
         # Dust Manager integration
