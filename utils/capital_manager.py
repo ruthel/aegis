@@ -508,16 +508,16 @@ class CapitalManager:
             return self.fees_cache[cache_key]['fees']
         
         try:
-            if not self.bot.paper_trading:
-                fees_data = self.bot.safe_request(self.bot.exchange.fetch_trading_fees)
-                
+            exchange = getattr(self.bot, 'exchange', None)
+            if exchange is not None and hasattr(exchange, 'fetch_trading_fees'):
+                fees_data = self.bot.safe_request(exchange.fetch_trading_fees)
                 if symbol in fees_data:
                     maker_fee = fees_data[symbol]['maker']
                     taker_fee = fees_data[symbol]['taker']
-                    
+
                     self._detect_vip_level(taker_fee)
                     optimal_fee = self._calculate_optimal_fee(maker_fee, taker_fee)
-                    
+
                     self.fees_cache[cache_key] = {
                         'fees': {
                             'maker': maker_fee,
@@ -526,11 +526,9 @@ class CapitalManager:
                         },
                         'timestamp': now
                     }
-                    
                     return self.fees_cache[cache_key]['fees']
         except Exception as e:
-            if not self.bot.paper_trading:
-                print(f"⚠️ Erreur récupération frais {symbol}: {e}")
+            print(f"⚠️ Erreur récupération frais {symbol}: {e}")
         
         return self._get_fallback_fees()
         
