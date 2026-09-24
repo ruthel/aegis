@@ -38,6 +38,60 @@ class TradingMixin:
             return fee_rate * 0.9
         return fee_rate
 
+    def _paper_limit_fill_ratio(self, symbol):
+        """Estimate a first-touch paper partial-fill ratio from recorded live limit orders.
+
+        Falls back to the configured deterministic ratio until enough live executions
+        have accumulated. This lets paper execution gradually converge toward the
+        account's actual Kraken fill behavior without using future information.
+        """
+        fallback = max(
+            0.05,
+            min(1.0, float(os.getenv('PAPER_LIMIT_PARTIAL_FILL_RATIO', '0.50'))),
+        )
+        if os.getenv('PAPER_USE_LIVE_FILL_CALIBRATION', 'True').lower() != 'true':
+            return fallback
+        logger = getattr(self, 'ml_live_logger', None)
+        if logger is None:
+            return fallback
+
+        try:
+            min_orders = max(1, int(os.getenv('PAPER_FILL_CALIBRATION_MIN_ORDERS', '10')))
+            lookback = max(min_orders, int(os.getenv('PAPER_FILL_CALIBRATION_LOOKBACK', '100')))
+            conn = logger._get_conn()
+            account_id = logger._account_id('live')
+            normalized_symbol = str(symbol or '').replace('-', '/')
+            rows = conn.execute(
+                """
+                SELECT amount, COALESCE(filled_amount, 0)
+                FROM orders
+                WHERE account_id=?
+                  AND order_type='limit'
+                  AND amount > 0
+                  AND symbol=?
+                ORDER BY COALESCE(closed_at, updated_at, created_at) DESC
+                LIMIT ?
+                """,
+                (account_id, normalized_symbol, lookback),
+            ).fetchall()
+            ratios = [
+                max(0.0, min(1.0, float(filled or 0.0) / float(amount or 1.0)))
+                for amount, filled in rows
+                if float(amount or 0.0) > 0
+            ]
+            if len(ratios) < min_orders:
+                return fallback
+            ratios.sort()
+            mid = len(ratios) // 2
+            median = (
+                ratios[mid]
+                if len(ratios) % 2
+                else (ratios[mid - 1] + ratios[mid]) / 2.0
+            )
+            return max(0.05, min(1.0, float(median)))
+        except Exception:
+            return fallback
+
     def _paper_execution_snapshot(self, symbol, side, order_type='market', amount=0.0, limit_price=None):
         """Build a deterministic paper execution from live bid/ask and configured latency/slippage.
 
@@ -73,7 +127,7 @@ class TradingMixin:
             price = float(limit_price or (bid if side == 'buy' else ask) or last)
             latency_ms = max(0.0, float(os.getenv('PAPER_LIMIT_LATENCY_MS', '500')))
             if os.getenv('PAPER_SIMULATE_PARTIAL_FILLS', 'True').lower() == 'true':
-                partial_ratio = max(0.05, min(1.0, float(os.getenv('PAPER_LIMIT_PARTIAL_FILL_RATIO', '0.50'))))
+                partial_ratio = self._paper_limit_fill_ratio(symbol)
                 penetration_pct = max(0.0, float(os.getenv('PAPER_LIMIT_FULL_FILL_PENETRATION_PCT', '0.05')))
                 if side == 'buy':
                     penetration = ((price - ask) / price * 100.0) if price > 0 else 0.0
