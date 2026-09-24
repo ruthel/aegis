@@ -683,17 +683,6 @@ def generate_samples_from_klines(
         )
         pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100.0
 
-        path_quantile = max(0.50, min(0.95, float(os.getenv('ML_TARGET_PATH_QUANTILE', '0.70'))))
-        path_net_gains = []
-        for future_idx in range(index + 1, min(exit_index + 1, len(klines_15m))):
-            reachable = float(klines_15m[future_idx]['high'])
-            net_gain = (
-                (reachable * (1 - fee_rate) - current_price * (1 + fee_rate))
-                / max(current_price, 1e-9)
-            ) * 100.0
-            path_net_gains.append(max(0.0, net_gain))
-        target_gain_pct = float(np.quantile(path_net_gains, path_quantile)) if path_net_gains else 0.0
-
         samples.append(feature_dict)
         labels.append(1 if pnl_percent > 0 else 0)
         metadata.append({
@@ -706,7 +695,6 @@ def generate_samples_from_klines(
             'exit_price': exit_price,
             'signal': dict(signal),
             'sizing_target': sizing_factor_target_from_pnl(pnl_percent),
-            'target_gain_pct': target_gain_pct,
         })
         if signal.get('type') == 'support_touch':
             support_pnls.append(float(pnl_percent))
@@ -966,7 +954,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         btc_history = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='15m', start_date=start_date)
         btc_history_1h = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='1h', start_date=start_date)
 
-        X_samples, y_labels, sizing_targets, target_labels, pnl_targets, sample_timestamps = [], [], [], [], [], []
+        X_samples, y_labels, sizing_targets, pnl_targets, sample_timestamps = [], [], [], [], []
         training_histories = {}
         # Compteur de samples générés par TYPE de signal (diagnostic: voir combien
         # chaque déclencheur produit — support_touch, pattern_breakout, ema_pullback_15m,
@@ -1105,20 +1093,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                     pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
                     label = 1 if pnl_percent > 0 else 0
 
-                    # P_target apprend une cible robuste, pas le meilleur tick futur impossible à timer.
-                    # On prend un quantile configurable des gains nets atteints sur le chemin du trade.
-                    path_quantile = max(0.50, min(0.95, float(os.getenv('ML_TARGET_PATH_QUANTILE', '0.70'))))
-                    path_net_gains = []
-                    for j in range(index + 1, min(exit_index + 1, len(klines_15m))):
-                        reachable = float(klines_15m[j]['high'])
-                        net_gain = ((reachable * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100
-                        path_net_gains.append(max(0.0, net_gain))
-                    target_label = float(np.quantile(path_net_gains, path_quantile)) if path_net_gains else 0.0
-
                     X_samples.append(features)
                     y_labels.append(label)
                     sizing_targets.append(sizing_factor_target_from_pnl(pnl_percent))
-                    target_labels.append(target_label)
                     pnl_targets.append(float(pnl_percent))
                     sample_timestamps.append(float(ts) / 1000.0 if float(ts) > 1e12 else float(ts))
                     signal_type_counts[_sig_type] = signal_type_counts.get(_sig_type, 0) + 1
@@ -1181,7 +1158,6 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 # poids modérés configurables pour ne pas biaiser l'entraînement.
                 sample_weights.append(replay_weight_win if w and w > 1.0 else replay_weight_loss)
                 sizing_targets.append(0.40)   # sizing neutre-prudent pour un refus rejoué
-                target_labels.append(0.0)     # pas de cible de gain fiable pour un refus
                 pnl_targets.append(float(replay_pnl))
                 sample_timestamps.append(float(replay_ts))
                 n_replay += 1
@@ -1191,7 +1167,6 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
 
         X, y = np.array(X_samples), np.array(y_labels)
         y_sizing = np.array(sizing_targets, dtype=np.float64)
-        y_target = np.array(target_labels, dtype=np.float64)
         y_pnl = np.array(pnl_targets, dtype=np.float64)
         w_train = np.array(sample_weights, dtype=np.float64)
         ts_train = np.array(sample_timestamps, dtype=np.float64)
@@ -1202,7 +1177,6 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         X = X[temporal_order]
         y = y[temporal_order]
         y_sizing = y_sizing[temporal_order]
-        y_target = y_target[temporal_order]
         y_pnl = y_pnl[temporal_order]
         w_train = w_train[temporal_order]
         ts_train = ts_train[temporal_order]
@@ -1274,15 +1248,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             except Exception as ex:
                 print(f"  ⚠️ Note entraînement modèle sizing: {ex}")
 
-            try:
-                ml_engine.train_target_model(X, y_target, n_estimators=120, max_depth=8, min_samples_split=10, use_lightgbm=use_lightgbm)
-                avg_target = float(np.mean(y_target)) if len(y_target) else 0.0
-                med_target = float(np.median(y_target)) if len(y_target) else 0.0
-                print(f"  ✅ Modèle P_target entraîné (gain cible moyen: {avg_target:.2f}%, médian: {med_target:.2f}%)")
-            except Exception as ex:
-                print(f"  ⚠️ Note entraînement modèle P_target: {ex}")
-
-            print(f"  ✅ Challenger Entrée, Sortie, Sizing & P_target entraîné et sauvegardé dans {challenger_path}")
+            print(f"  ✅ Challenger Entrée, Sortie & Sizing entraîné et sauvegardé dans {challenger_path}")
             return True
         elif os.path.exists(champion_path):
             shutil.copy2(champion_path, challenger_path)
