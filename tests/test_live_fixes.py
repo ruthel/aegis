@@ -164,6 +164,7 @@ class LiveFixTests(unittest.TestCase):
         bot = FakeBot()
         manager = ExecutionManager(bot)
         manager.limit_fill_timeout = 0.05
+        manager.max_allowed_spread_pct = 1.0
         with patch("core.managers.execution_manager.time.sleep", return_value=None):
             ok = manager.execute_smart_buy(
                 "BTC/USD", self._position_data(70.0), 100.0, "test"
@@ -175,6 +176,7 @@ class LiveFixTests(unittest.TestCase):
     def test_execution_uses_market_at_or_above_80_percent(self):
         bot = FakeBot()
         manager = ExecutionManager(bot)
+        manager.max_allowed_spread_pct = 1.0
         ok = manager.execute_smart_buy(
             "BTC/USD", self._position_data(80.0), 100.0, "test"
         )
@@ -203,17 +205,17 @@ class LiveFixTests(unittest.TestCase):
 
     def test_temporal_holdout_keeps_future_in_test(self):
         engine = MLEngine(model_dir="data/nonexistent-test-model")
-        X = np.arange(100).reshape(20, 5)
-        y = np.array([0, 1] * 10)
-        w = np.arange(20, dtype=float)
+        X = np.arange(500).reshape(100, 5)
+        y = np.array([0, 1] * 50)
+        w = np.arange(100, dtype=float)
         with patch.dict(os.environ, {"ML_TEMPORAL_TEST_RATIO": "0.20"}, clear=False):
             X_train, X_test, y_train, y_test, w_train, w_test = engine._temporal_holdout_split(X, y, w)
-        self.assertTrue(np.array_equal(X_train, X[:16]))
-        self.assertTrue(np.array_equal(X_test, X[16:]))
-        self.assertTrue(np.array_equal(y_train, y[:16]))
-        self.assertTrue(np.array_equal(y_test, y[16:]))
-        self.assertTrue(np.array_equal(w_train, w[:16]))
-        self.assertTrue(np.array_equal(w_test, w[16:]))
+        self.assertTrue(np.array_equal(X_train, X[:80]))
+        self.assertTrue(np.array_equal(X_test, X[80:]))
+        self.assertTrue(np.array_equal(y_train, y[:80]))
+        self.assertTrue(np.array_equal(y_test, y[80:]))
+        self.assertTrue(np.array_equal(w_train, w[:80]))
+        self.assertTrue(np.array_equal(w_test, w[80:]))
 
     def test_unified_env_and_removed_dl_are_clean(self):
         targets = [
