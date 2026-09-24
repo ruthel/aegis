@@ -684,6 +684,7 @@ def generate_samples_from_klines(
 
     ml_engine = MLEngine(model_dir='data')
     analyzer = PatternAnalyzer(bot=None)
+    signal_engine = SignalEngine(analyzer)
     samples, labels, metadata = [], [], []
     support_pnls = []
     next_allowed_index = 0
@@ -695,7 +696,7 @@ def generate_samples_from_klines(
         history = klines_15m[:index]
         current_price = float(klines_15m[index]['close'])
         ts = klines_15m[index]['timestamp']
-        signal = detect_trade_signal(analyzer, history, current_price)
+        signal = signal_engine.detect_best(history[-200:], current_price)
         if not signal:
             continue
 
