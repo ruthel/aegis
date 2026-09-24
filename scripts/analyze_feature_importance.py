@@ -1,6 +1,6 @@
 """Analyse l'importance des features pour TOUS les modèles ML du champion.
 
-Affiche, pour chaque modèle (entrée/P_win, sortie/P_exit, sizing, target/P_target):
+Affiche, pour chaque modèle (entrée/P_win, Expected Net PnL, sortie/P_exit, sizing):
   - le top des features par importance (avec leurs noms)
   - des agrégats utiles: poids par timeframe (1h vs 5m/15m rapides) et poids de la
     volatilité, pour suivre le rééquilibrage attendu.
@@ -135,7 +135,6 @@ def main():
     _print_model("EXPECTED NET PNL (edge)", imp_of(data.get('edge_model')), feature_names, args.top)
     _print_model("SORTIE (P_exit / P_continue)", imp_of(data.get('exit_model')), exit_feature_names, args.top)
     _print_model("SIZING", imp_of(data.get('sizing_model')), feature_names, args.top)
-    _print_model("TARGET (P_target)", imp_of(data.get('target_model')), feature_names, args.top)
 
 
 if __name__ == '__main__':

@@ -52,10 +52,10 @@ Aegis combine des **garde-fous déterministes** et des modèles ML. Les critère
 | Décision d'entrée ML | `P_win >= 50%` + Expected Net PnL après coûts d'exécution |
 | P_exit | `HOLD` / `FORCE_EXIT` avec le même Continuation Score en training et live |
 | Sizing ML | Facteur de taille borné et validé sur holdout temporel |
-| P_target | Cible de gain robuste, validée sur holdout temporel |
+|  | Cible de gain robuste, validée sur holdout temporel |
 | Gouvernance | Contrat modèle v4, hash du schéma, refus des modèles incompatibles, Champion/Challenger |
 
-Le walk-forward complet rejoue P_win → edge → sizing → P_target → P_exit → frais/spread/slippage sur des fenêtres futures non vues. Le paper trading utilise le bid/ask live, les frais Kraken disponibles, le slippage, la latence et les partial fills.
+Le walk-forward complet rejoue P_win → edge → sizing →  → P_exit → frais/spread/slippage sur des fenêtres futures non vues. Le paper trading utilise le bid/ask live, les frais Kraken disponibles, le slippage, la latence et les partial fills.
 
 
 

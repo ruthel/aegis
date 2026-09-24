@@ -1587,15 +1587,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     min_amount, min_cost = 0.00001, 0.5
                 if amount < min_amount or (amount * entry_price) < min_cost:
                     continue
-                # Récupérer le take-profit P_target depuis l'enregistrement persistant si présent
-                target_gain_pct = None
-                try:
-                    for p in reversed(self.state.get('positions', [])):
-                        if p.get('symbol') == symbol and p.get('side') == 'buy' and p.get('ml_target_gain_pct') is not None:
-                            target_gain_pct = float(p['ml_target_gain_pct'])
-                            break
-                except Exception:
-                    target_gain_pct = None
                 self.trailing_stop_manager.positions[symbol] = {
                     'entry_price': entry_price,
                     'buy_price': entry_price,
@@ -1605,66 +1596,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'stop_price': entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0),
                     'trailing_active': False,
                     'amount': amount,
-                    'target_gain_pct': target_gain_pct,
                     'buy_time': time.time()
                 }
-
-    def _check_take_profit_target(self, symbol, current_price, position):
-        """Take-profit intelligent P_target: vend quand le gain net atteint la cible
-        prédite par le modèle P_target à l'entrée. Sécurise les gains avant qu'ils
-        ne s'évaporent. Le P_exit reste le filet de sécurité si la cible n'est jamais atteinte.
-        Retourne True si vente forcée effectuée."""
-        if not os.getenv('ML_TAKE_PROFIT_ENABLED', 'true').lower() == 'true':
-            return False
-
-        target_gain_pct = position.get('target_gain_pct')
-        if target_gain_pct is None or float(target_gain_pct) <= 0:
-            return False
-        target_gain_pct = float(target_gain_pct)
-
-        entry_price = float(position.get('entry_price') or position.get('buy_price') or position.get('avg_entry_price') or 0)
-        if entry_price <= 0:
-            return False
-
-        fee_rate = float(getattr(self, 'trading_fee', 0) or float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0)
-        breakeven_price = entry_price * (1 + fee_rate) / (1 - fee_rate)
-        net_pnl_pct = ((current_price - breakeven_price) / entry_price) * 100.0
-
-        # Cible non atteinte -> laisser courir (le trailing/breakeven/P_exit gèrent le reste)
-        if net_pnl_pct < target_gain_pct:
-            return False
-
-        base_currency = symbol.split('/')[0]
-        balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=not self.paper_trading)
-        available = balance.get(base_currency, {}).get('free', 0)
-        try:
-            min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
-            min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
-        except Exception:
-            min_amount, min_cost = 0.00001, 0.5
-
-        if self.paper_trading:
-            sell_amount = available if available > min_amount else float(position.get('amount') or 0)
-        else:
-            sell_amount = available
-        position_value = sell_amount * current_price
-
-        if sell_amount < min_amount or position_value < min_cost:
-            self.trailing_stop_manager.remove_position(symbol)
-            return False
-
-        print(f"🎯 TAKE-PROFIT {symbol}: gain net {net_pnl_pct:+.2f}% >= cible P_target {target_gain_pct:+.2f}% → Vente")
-        order = self.sell_market(symbol, sell_amount, reason=f"take_profit_target_{target_gain_pct:.1f}pct")
-        self.trailing_stop_manager.remove_position(symbol)
-        if order:
-            if hasattr(self, 'set_symbol_cooldown'):
-                self.set_symbol_cooldown(symbol, reason='take_profit_target')
-            self.record_decision(
-                symbol, 'sell', True, "take_profit_target",
-                {'price': current_price, 'net_pnl_pct': net_pnl_pct, 'target_gain_pct': target_gain_pct},
-                throttle_seconds=0
-            )
-        return True
 
     def _check_dynamic_breakeven_lock(self, symbol, current_price, position):
         """
@@ -1757,10 +1690,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 return
 
         try:
-            # Take-Profit P_target: sécurise le gain dès que la cible prédite est atteinte
             position = self.trailing_stop_manager.positions[symbol]
-            if self._check_take_profit_target(symbol, current_price, position):
-                return  # Vente take-profit effectuée
 
             # Dynamic Breakeven Lock: protège les profits acquis
             if self._check_dynamic_breakeven_lock(symbol, current_price, position):
@@ -2588,18 +2518,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         )
                 position_data['sizing_reason'] = sizing_info['sizing_reason']
                 position_data['ml_buy_prob'] = ml_win_prob
-
-                # P_target: prédire le gain maximum réaliste et poser un take-profit intelligent
-                if hasattr(self.ml_engine, 'predict_target'):
-                    try:
-                        ml_target = self.ml_engine.predict_target(features=ml_entry_features)
-                        if ml_target.get('ml_target_available') and ml_target.get('target_gain_pct') is not None:
-                            target_gain_pct = float(ml_target['target_gain_pct'])
-                            position_data['ml_target_gain_pct'] = round(target_gain_pct, 3)
-                            position_data['ml_target_price'] = round(current_price * (1 + target_gain_pct / 100.0), 8)
-                            position_data['ml_target_reason'] = ml_target.get('reason')
-                    except Exception as _target_ex:
-                        print(f"⚠️ P_target prédiction échouée {symbol}: {_target_ex}")
 
                 if ml_sizing:
                     position_data['ml_sizing_factor'] = ml_sizing.get('sizing_factor')

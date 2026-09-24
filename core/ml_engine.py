@@ -38,7 +38,7 @@ except ImportError:
 class MLEngine:
     """Moteur de Machine Learning dédié pour la prédiction de probabilité de gain"""
 
-    MODEL_FORMAT_VERSION = 4
+    MODEL_FORMAT_VERSION = 5
 
 
     def __init__(self, model_dir: str = 'data'):
@@ -56,8 +56,6 @@ class MLEngine:
         self.exit_calibrator = None
         self.sizing_model = None
         self.sizing_scaler = None
-        self.target_model = None
-        self.target_scaler = None
         self.feature_names = [
             'rsi_14', 'ema9_slope', 'ema20_slope', 'ema_cross_diff',
             'atr_percent', 'volume_ratio', 'candle_body_pct', 'candle_wick_top',
@@ -136,13 +134,10 @@ class MLEngine:
             'momentum_since_entry',     # Momentum cumulé depuis entrée (positif=favorable)
         ]
         self.sizing_feature_names = list(self.feature_names)
-        # Le modèle P_target réutilise les mêmes features d'entrée que P_win/sizing
-        self.target_feature_names = list(self.feature_names)
         self.is_trained = False
         self.is_edge_trained = False
         self.is_exit_trained = False
         self.is_sizing_trained = False
-        self.is_target_trained = False
         self.load_model()
 
     def _feature_schema_payload(self) -> Dict:
@@ -150,7 +145,6 @@ class MLEngine:
             'entry': list(self.feature_names),
             'exit': list(self.exit_feature_names),
             'sizing': list(self.sizing_feature_names),
-            'target': list(self.target_feature_names),
         }
 
     def feature_schema_hash(self) -> str:
@@ -169,7 +163,6 @@ class MLEngine:
             'ML_EXPECTED_SLIPPAGE_PCT',
             'ML_EXIT_SELL_THRESHOLD',
             'ML_EXIT_ENTRY_MIN_CONTINUE_PROB',
-            'ML_TARGET_PATH_QUANTILE',
             'HARD_ANTI_FALLING_KNIFE',
             'ML_USE_LIGHTGBM',
         ]
@@ -197,7 +190,7 @@ class MLEngine:
         metadata = dict(getattr(self, 'model_metadata', {}) or {})
         return {
             'model_format_version': int(self.MODEL_FORMAT_VERSION),
-            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '4')),
+            'model_version': str(os.getenv('AEGIS_MODEL_VERSION', '5')),
             'feature_schema_hash': self.feature_schema_hash(),
             'feature_schema': self._feature_schema_payload(),
             'git_sha': self._git_sha(),
@@ -237,7 +230,6 @@ class MLEngine:
             'edge_model': len(self.feature_names),
             'exit_model': len(self.exit_feature_names),
             'sizing_model': len(self.sizing_feature_names),
-            'target_model': len(self.target_feature_names),
         }
         for key, expected in expected_counts.items():
             model = data.get(key)
@@ -265,13 +257,10 @@ class MLEngine:
         self.exit_calibrator = None
         self.sizing_model = None
         self.sizing_scaler = None
-        self.target_model = None
-        self.target_scaler = None
         self.is_trained = False
         self.is_edge_trained = False
         self.is_exit_trained = False
         self.is_sizing_trained = False
-        self.is_target_trained = False
         self.model_metadata = {}
 
     def _default_trade_context(self, entry_dt: datetime) -> Dict[str, float]:
@@ -439,23 +428,6 @@ class MLEngine:
 
     def _align_sizing_features_for_loaded_model(self, features: np.ndarray) -> np.ndarray:
         expected = self._sizing_model_feature_count()
-        if len(features) == expected:
-            return features
-        if len(features) > expected:
-            return features[:expected]
-        padded = np.zeros(expected, dtype=np.float64)
-        padded[:len(features)] = features
-        return padded
-
-    def _target_model_feature_count(self) -> int:
-        if self.target_scaler is not None and hasattr(self.target_scaler, 'n_features_in_'):
-            return int(self.target_scaler.n_features_in_)
-        if self.target_model is not None and hasattr(self.target_model, 'n_features_in_'):
-            return int(self.target_model.n_features_in_)
-        return len(self.target_feature_names)
-
-    def _align_target_features_for_loaded_model(self, features: np.ndarray) -> np.ndarray:
-        expected = self._target_model_feature_count()
         if len(features) == expected:
             return features
         if len(features) > expected:
@@ -2093,147 +2065,6 @@ class MLEngine:
             self.logger.error(f"Erreur entraînement ML sizing: {e}")
             return False
 
-    def train_target_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 120, max_depth: int = 8, min_samples_split: int = 10, use_lightgbm: bool = True) -> bool:
-        """Entraîne P_target avec holdout chronologique puis refit sur tout l'historique."""
-        if not SKLEARN_AVAILABLE:
-            return False
-        if len(X) < 30:
-            self.logger.warning("Données insuffisantes pour entraîner le modèle ML P_target.")
-            return False
-        try:
-            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-            X_arr = np.asarray(X, dtype=np.float64)
-            y_arr = np.asarray(y, dtype=np.float64)
-            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
-
-            self.target_scaler = StandardScaler()
-            X_train_s = self.target_scaler.fit_transform(X_train)
-            X_test_s = self.target_scaler.transform(X_test)
-
-            if use_lightgbm and LIGHTGBM_AVAILABLE:
-                self.target_model = lgb.LGBMRegressor(
-                    n_estimators=n_estimators,
-                    max_depth=max_depth if max_depth else -1,
-                    min_child_samples=min_samples_split,
-                    learning_rate=0.05,
-                    random_state=45,
-                    n_jobs=-1,
-                    verbose=-1
-                )
-            else:
-                self.target_model = RandomForestRegressor(
-                    n_estimators=n_estimators,
-                    max_depth=max_depth,
-                    min_samples_split=min_samples_split,
-                    random_state=45,
-                    n_jobs=-1
-                )
-
-            self.target_model.fit(X_train_s, y_train)
-            pred = np.asarray(self.target_model.predict(X_test_s), dtype=np.float64)
-            mae = float(mean_absolute_error(y_test, pred))
-            rmse = float(mean_squared_error(y_test, pred) ** 0.5)
-            r2 = float(r2_score(y_test, pred)) if len(y_test) >= 2 else 0.0
-            baseline_value = float(np.median(y_train)) if len(y_train) else 0.0
-            baseline_pred = np.full(len(y_test), baseline_value, dtype=np.float64)
-            baseline_mae = float(mean_absolute_error(y_test, baseline_pred))
-            baseline_rmse = float(mean_squared_error(y_test, baseline_pred) ** 0.5)
-            mae_skill = 1.0 - (mae / max(baseline_mae, 1e-12))
-
-            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
-            self.model_metadata.update({
-                'target_validation_type': 'temporal_holdout',
-                'target_test_mae_pct': round(mae, 5),
-                'target_test_rmse_pct': round(rmse, 5),
-                'target_baseline_mae_pct': round(baseline_mae, 5),
-                'target_baseline_rmse_pct': round(baseline_rmse, 5),
-                'target_mae_skill': round(mae_skill, 5),
-                'target_test_r2': round(r2, 5),
-                'target_samples': int(len(X_arr)),
-            })
-
-            self.target_scaler = StandardScaler()
-            X_all = self.target_scaler.fit_transform(X_arr)
-            self.target_model.fit(X_all, y_arr)
-            self.is_target_trained = True
-            self.save_model()
-            return True
-        except Exception as e:
-            self.logger.error(f"Erreur entraînement ML P_target: {e}")
-            return False
-
-    def predict_target(
-        self,
-        features: Optional[np.ndarray] = None,
-        klines: Optional[List[Dict]] = None,
-        current_price: Optional[float] = None,
-        klines_5m: Optional[List[Dict]] = None,
-        klines_1h: Optional[List[Dict]] = None,
-        klines_4h: Optional[List[Dict]] = None,
-        klines_1d: Optional[List[Dict]] = None,
-        trade_context: Optional[Dict] = None,
-        bot_context: Optional[Dict] = None
-    ) -> Dict:
-        """Prédit le gain net maximum réaliste (%) atteignable par un trade à l'entrée.
-
-        Retourne un take-profit cible clampé à des bornes prudentes. Utilisé pour
-        sécuriser les gains avant qu'ils ne s'évaporent (P_exit reste le filet)."""
-        min_target = float(os.getenv('ML_TARGET_MIN_PCT', '0.8'))
-        max_target = float(os.getenv('ML_TARGET_MAX_PCT', '12.0'))
-
-        if not self.is_target_trained or self.target_model is None or not SKLEARN_AVAILABLE:
-            return {
-                'ml_target_available': False,
-                'target_gain_pct': None,
-                'reason': 'target_model_untrained'
-            }
-
-        if features is None:
-            if not klines:
-                return {
-                    'ml_target_available': False,
-                    'target_gain_pct': None,
-                    'reason': 'target_features_unavailable'
-                }
-            features = self.extract_features_from_klines(
-                klines,
-                current_price,
-                klines_5m=klines_5m,
-                klines_1h=klines_1h,
-                klines_4h=klines_4h,
-                klines_1d=klines_1d,
-                trade_context=trade_context,
-                bot_context=bot_context
-            )
-        if features is None:
-            return {
-                'ml_target_available': False,
-                'target_gain_pct': None,
-                'reason': 'target_features_unavailable'
-            }
-
-        try:
-            features = self._align_target_features_for_loaded_model(features)
-            X = features.reshape(1, -1)
-            if self.target_scaler is not None:
-                X = self.target_scaler.transform(X)
-            raw_target = float(self.target_model.predict(X)[0])
-            target_gain_pct = max(min_target, min(max_target, raw_target))
-            return {
-                'ml_target_available': True,
-                'target_gain_pct': round(target_gain_pct, 3),
-                'raw_target_gain_pct': round(raw_target, 3),
-                'reason': f'ml_target_+{target_gain_pct:.2f}%'
-            }
-        except Exception as e:
-            self.logger.error(f"Erreur prédiction ML P_target: {e}")
-            return {
-                'ml_target_available': False,
-                'target_gain_pct': None,
-                'reason': 'target_prediction_error'
-            }
-
     def predict_position_size_factor(
         self,
         features: Optional[np.ndarray] = None,
@@ -2440,8 +2271,6 @@ class MLEngine:
                 'exit_calibrator': self.exit_calibrator,
                 'sizing_model': self.sizing_model,
                 'sizing_scaler': self.sizing_scaler,
-                'target_model': self.target_model,
-                'target_scaler': self.target_scaler,
                 'model_metadata': getattr(self, 'model_metadata', None),
             }, self.model_path)
 
@@ -2470,12 +2299,6 @@ class MLEngine:
                     sizing_importance[name] = round(float(imp), 4)
                 metadata['sizing_feature_importance'] = sorted(sizing_importance.items(), key=lambda x: x[1], reverse=True)
                 metadata['sizing_n_features'] = len(self.sizing_feature_names)
-            if self.target_model is not None and hasattr(self.target_model, 'feature_importances_'):
-                target_importance = {}
-                for name, imp in zip(self.target_feature_names, self.target_model.feature_importances_):
-                    target_importance[name] = round(float(imp), 4)
-                metadata['target_feature_importance'] = sorted(target_importance.items(), key=lambda x: x[1], reverse=True)
-                metadata['target_n_features'] = len(self.target_feature_names)
             try:
                 if os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
                     return True
@@ -2514,8 +2337,6 @@ class MLEngine:
             self.exit_calibrator = data.get('exit_calibrator')
             self.sizing_model = data.get('sizing_model')
             self.sizing_scaler = data.get('sizing_scaler')
-            self.target_model = data.get('target_model')
-            self.target_scaler = data.get('target_scaler')
             if self.model is not None and hasattr(self.model, 'n_jobs'):
                 self.model.n_jobs = 1
             if self.edge_model is not None and hasattr(self.edge_model, 'n_jobs'):
@@ -2524,13 +2345,10 @@ class MLEngine:
                 self.exit_model.n_jobs = 1
             if self.sizing_model is not None and hasattr(self.sizing_model, 'n_jobs'):
                 self.sizing_model.n_jobs = 1
-            if self.target_model is not None and hasattr(self.target_model, 'n_jobs'):
-                self.target_model.n_jobs = 1
             self.is_trained = self.model is not None
             self.is_edge_trained = self.edge_model is not None
             self.is_exit_trained = self.exit_model is not None
             self.is_sizing_trained = self.sizing_model is not None
-            self.is_target_trained = self.target_model is not None
             self.model_metadata = data.get('model_metadata') or {}
 
             # Re-publier les feature importances en BD au chargement (ex: après reset DB)
@@ -2556,12 +2374,6 @@ class MLEngine:
                         sizing_importance[name] = round(float(imp), 4)
                     metadata['sizing_feature_importance'] = sorted(sizing_importance.items(), key=lambda x: x[1], reverse=True)
                     metadata['sizing_n_features'] = len(self.sizing_feature_names)
-                if self.target_model is not None and hasattr(self.target_model, 'feature_importances_'):
-                    target_importance = {}
-                    for name, imp in zip(self.target_feature_names, self.target_model.feature_importances_):
-                        target_importance[name] = round(float(imp), 4)
-                    metadata['target_feature_importance'] = sorted(target_importance.items(), key=lambda x: x[1], reverse=True)
-                    metadata['target_n_features'] = len(self.target_feature_names)
                 if not os.getenv('ML_SKIP_MODEL_METADATA', '').lower() in ('1', 'true', 'yes'):
                     from core.ml_live_logger import MLLiveLogger
                     with MLLiveLogger(
