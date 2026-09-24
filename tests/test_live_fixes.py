@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -714,6 +715,162 @@ class LiveFixTests(unittest.TestCase):
         )
         self.assertIsNotNone(exit_features)
         self.assertEqual(len(exit_features), len(engine.exit_feature_names))
+
+    def test_grid_search_resume_skips_completed_candidates(self):
+        rng = np.random.default_rng(501)
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {
+            'ML_GRID_CACHE_ENABLED': 'True',
+            'ML_GRID_CACHE_DIR': td,
+            'ML_GRID_RESUME': 'True',
+            'ML_GRID_REUSE_BEST': 'False',
+            'ML_GRID_RESEARCH_ON_DRIFT': 'False',
+            'ML_GRID_FORCE_SEARCH': 'False',
+        }, clear=False):
+            engine = MLEngine(model_dir=td)
+            X = rng.normal(size=(140, 6))
+            y = (X[:, 0] > 0).astype(int)
+            grid = {
+                'n_estimators': [10, 20],
+                'max_depth': [2],
+                'min_samples_split': [2],
+                'min_samples_leaf': [1],
+            }
+            cv_splits = 2
+            checkpoint_path, _ = engine._grid_cache_paths('random_forest')
+            signature = {
+                **engine._grid_reuse_signature('random_forest', grid, cv_splits),
+                'data_fingerprint': engine._grid_data_fingerprint(X, y, None),
+            }
+            first = {
+                'n_estimators': 10,
+                'max_depth': 2,
+                'min_samples_split': 2,
+                'min_samples_leaf': 1,
+            }
+            engine._atomic_write_json(checkpoint_path, {
+                'version': 1,
+                'signature': signature,
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat(),
+                'status': 'running',
+                'completed': {
+                    engine._grid_param_key(first): {
+                        'status': 'completed',
+                        'params': first,
+                        'mean_precision': 0.95,
+                        'fold_scores': [0.95, 0.95],
+                        'completed_at': datetime.now().isoformat(),
+                    }
+                },
+                'best_params': first,
+                'best_score': 0.95,
+            })
+
+            scored = []
+            def fake_score(model_type, params, X_train, y_train, sample_weight, splits):
+                scored.append(dict(params))
+                return 0.60, [0.60, 0.60]
+
+            with patch.object(engine, '_score_grid_candidate', side_effect=fake_score):
+                best, score, mode, tested, total = engine._select_entry_grid_params(
+                    X, y, None, 'random_forest', grid, cv_splits
+                )
+
+            self.assertEqual(mode, 'resume_search')
+            self.assertEqual(tested, 1)
+            self.assertEqual(total, 2)
+            self.assertEqual(len(scored), 1)
+            self.assertEqual(scored[0]['n_estimators'], 20)
+            self.assertEqual(best['n_estimators'], 10)
+            self.assertAlmostEqual(score, 0.95)
+
+    def test_grid_search_reuses_recent_best_without_rescoring(self):
+        rng = np.random.default_rng(502)
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {
+            'ML_GRID_CACHE_ENABLED': 'True',
+            'ML_GRID_CACHE_DIR': td,
+            'ML_GRID_RESUME': 'True',
+            'ML_GRID_REUSE_BEST': 'True',
+            'ML_GRID_FULL_SEARCH_INTERVAL_DAYS': '30',
+            'ML_GRID_RESEARCH_ON_DRIFT': 'False',
+            'ML_GRID_FORCE_SEARCH': 'False',
+        }, clear=False):
+            engine = MLEngine(model_dir=td)
+            X = rng.normal(size=(140, 6))
+            y = (X[:, 0] > 0).astype(int)
+            grid = {
+                'n_estimators': [10, 20],
+                'max_depth': [2],
+                'min_samples_split': [2],
+                'min_samples_leaf': [1],
+            }
+            cv_splits = 2
+            _, best_path = engine._grid_cache_paths('random_forest')
+            best_params = {
+                'n_estimators': 20,
+                'max_depth': 2,
+                'min_samples_split': 2,
+                'min_samples_leaf': 1,
+            }
+            engine._atomic_write_json(best_path, {
+                'version': 1,
+                'reuse_signature': engine._grid_reuse_signature(
+                    'random_forest', grid, cv_splits
+                ),
+                'data_fingerprint': 'previous-dataset-is-allowed-for-reuse',
+                'best_params': best_params,
+                'best_score': 0.81,
+                'completed_at': datetime.now().isoformat(),
+                'candidates_total': 2,
+                'successful_candidates': 2,
+            })
+
+            with patch.object(
+                engine,
+                '_score_grid_candidate',
+                side_effect=AssertionError('reuse should not rescore candidates'),
+            ):
+                best, score, mode, tested, total = engine._select_entry_grid_params(
+                    X, y, None, 'random_forest', grid, cv_splits
+                )
+
+            self.assertEqual(mode, 'reuse_best')
+            self.assertEqual(tested, 0)
+            self.assertEqual(total, 2)
+            self.assertEqual(best, best_params)
+            self.assertAlmostEqual(score, 0.81)
+
+    def test_grid_resume_signature_changes_with_dataset(self):
+        engine = MLEngine(model_dir='data/nonexistent-grid-fingerprint-test')
+        X1 = np.zeros((120, 4), dtype=np.float64)
+        X2 = X1.copy()
+        X2[-1, -1] = 1.0
+        y = np.zeros(120, dtype=np.int64)
+        self.assertNotEqual(
+            engine._grid_data_fingerprint(X1, y),
+            engine._grid_data_fingerprint(X2, y),
+        )
+
+    def test_env_template_has_only_current_grid_and_exit_settings(self):
+        env = (ROOT / '.env.example').read_text(encoding='utf-8')
+        for key in (
+            'ML_GRID_CACHE_ENABLED',
+            'ML_GRID_CACHE_DIR',
+            'ML_GRID_RESUME',
+            'ML_GRID_REUSE_BEST',
+            'ML_GRID_FULL_SEARCH_INTERVAL_DAYS',
+            'ML_GRID_RESEARCH_ON_DRIFT',
+            'ML_GRID_FORCE_SEARCH',
+        ):
+            self.assertIn(f'{key}=', env)
+
+        for dead_key in (
+            'HARD_STOP_EXIT_ENABLED',
+            'ML_EXIT_LABEL_SLOPE_MIN_PCT_PER_BAR',
+            'ML_EXIT_LABEL_SLOPE_MIN_BARS',
+            'ML_KRAKEN_ARCHIVE_MIN_COVERAGE_DAYS',
+        ):
+            self.assertNotIn(f'{dead_key}=', env)
 
     def test_unified_env_and_removed_dl_are_clean(self):
         targets = [
