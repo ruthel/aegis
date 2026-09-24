@@ -22,8 +22,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / 'data'
 ENV_DASHBOARD = ROOT / '.env'
-BOT_LOG_FILE = ROOT / 'bot.log'
+PAPER_BOT_LOG_FILE = ROOT / 'bot_paper.log'
+LIVE_BOT_LOG_FILE = ROOT / 'bot_live.log'
+ML_TRAINING_LOG_FILE = ROOT / 'ml_training.log'
 REPLAY_LOG_FILE = ROOT / 'ml_replay.log'
+
+def bot_log_file(mode=None):
+    mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
+    return PAPER_BOT_LOG_FILE if mode == 'paper' else LIVE_BOT_LOG_FILE
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
 BOT_START_LOCK = threading.Lock()
@@ -160,14 +166,8 @@ def latest_model_evaluations(limit=5):
 
 def latest_sizing_recommendations(limit=12, view_mode=None):
     try:
-        mode = view_mode or current_view_mode()
+        mode = active_trading_mode()
         with db_logger() as logger:
-            if mode == 'all':
-                rows = []
-                for item_mode in ('paper', 'live'):
-                    rows.extend(logger.get_latest_sizing_recommendations(mode=item_mode, limit=limit))
-                rows.sort(key=lambda item: str(item.get('timestamp') or ''), reverse=True)
-                return rows[:int(limit)]
             return logger.get_latest_sizing_recommendations(mode=mode, limit=limit)
     except Exception:
         return []
@@ -177,17 +177,8 @@ def latest_sizing_by_symbol(view_mode=None):
     """Dernière recommandation de sizing par symbole (une par paire, jamais masquée
     par une paire plus active). En mode 'all', on garde la plus récente entre paper et live."""
     try:
-        mode = view_mode or current_view_mode()
+        mode = active_trading_mode()
         with db_logger() as logger:
-            if mode == 'all':
-                merged = {}
-                for item_mode in ('paper', 'live'):
-                    per_symbol = logger.get_latest_sizing_recommendation_per_symbol(mode=item_mode)
-                    for symbol, rec in per_symbol.items():
-                        existing = merged.get(symbol)
-                        if existing is None or str(rec.get('timestamp') or '') > str(existing.get('timestamp') or ''):
-                            merged[symbol] = rec
-                return merged
             return logger.get_latest_sizing_recommendation_per_symbol(mode=mode)
     except Exception:
         return {}
@@ -625,8 +616,8 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
-        BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+        ML_TRAINING_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(ML_TRAINING_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
             log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ML retraining {trigger} started: {' '.join(command)}\n")
             process = subprocess.Popen(
                 command,
@@ -853,7 +844,7 @@ def start_bot_process():
         if os.name == 'nt':
             python_exe = python_exe.replace('python.exe', 'pythonw.exe')
         command = [python_exe, str(ROOT / 'run.py')]
-        BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        bot_log_file().parent.mkdir(parents=True, exist_ok=True)
 
         creationflags = 0
         if os.name == 'nt':
@@ -867,7 +858,7 @@ def start_bot_process():
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
 
-        with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+        with open(bot_log_file(), 'a', encoding='utf-8', errors='replace') as log:
             process = subprocess.Popen(
                 command,
                 cwd=str(ROOT),
@@ -1020,15 +1011,13 @@ def active_trading_mode():
 
 
 def current_view_mode():
-    raw = active_trading_mode()
-    if has_request_context():
-        raw = (request.args.get('view_mode') or request.args.get('mode') or raw).lower()
-    return raw if raw in {'paper', 'live', 'all'} else active_trading_mode()
+    """The UI is intentionally pinned to the bot's active trading mode."""
+    return active_trading_mode()
 
 
 def modes_for_view(view_mode=None):
-    mode = view_mode or current_view_mode()
-    return ['paper', 'live'] if mode == 'all' else [mode]
+    """Never merge paper/live records in an operational UI request."""
+    return [active_trading_mode()]
 
 
 def active_state_source(view_mode=None):
@@ -1063,8 +1052,8 @@ def _tag_mode(items, mode):
 def load_accounting_state(fallback=None, view_mode=None):
     """Charge l'état UI directement depuis orders/fills/balances."""
     fallback = fallback or {'positions': []}
-    selected_view = view_mode or current_view_mode()
-    selected_modes = modes_for_view(selected_view)
+    selected_view = active_trading_mode()
+    selected_modes = [selected_view]
     try:
         with db_logger() as logger:
             conn = logger._get_conn()
@@ -1102,24 +1091,7 @@ def load_accounting_state(fallback=None, view_mode=None):
             state['positions'] = merged_positions
             state['pending_orders'] = merged_pending_orders
             state['balances_by_mode'] = balances_by_mode
-            if selected_view == 'all':
-                merged_balances = {}
-                for balances in balances_by_mode.values():
-                    for asset, row in balances.items():
-                        target = merged_balances.setdefault(asset, {
-                            'free': 0.0,
-                            'used': 0.0,
-                            'locked': 0.0,
-                            'total': 0.0,
-                        })
-                        target['free'] += float(row.get('free') or 0.0)
-                        target['used'] += float(row.get('used') or 0.0)
-                        target['locked'] += float(row.get('locked') or 0.0)
-                        target['total'] += float(row.get('total') or 0.0)
-                state['balances'] = merged_balances
-                display_balance = round(sum(float((balances_by_mode.get(mode, {}).get('USD') or balances_by_mode.get(mode, {}).get('USDT') or balances_by_mode.get(mode, {}).get('USDC') or {}).get('free') or 0.0) for mode in selected_modes), 2)
-            else:
-                state['balances'] = balances_by_mode.get(selected_modes[0], {})
+            state['balances'] = balances_by_mode.get(selected_modes[0], {})
             if display_balance is not None:
                 state['paper_balance'] = display_balance
             elif selected_view != 'paper':
@@ -1453,7 +1425,7 @@ def support_touch(state):
 def important_logs():
     keywords = ('error', 'erreur', 'permission denied', 'failed', 'echou')
     lines = []
-    for line in tail_lines(ROOT / 'bot.log', 200):
+    for line in tail_lines(bot_log_file(), 200):
         if any(keyword in line.lower() for keyword in keywords):
             lines.append(line.strip())
     return lines[-40:]
@@ -1463,7 +1435,7 @@ def live_status():
     logger = None
     try:
         logger = db_logger()
-        data = logger.get_live_status()
+        data = logger.get_live_status(mode=active_trading_mode())
         if data:
             return data
     except Exception:
@@ -2556,14 +2528,16 @@ def api_bot_console():
     lines_count = request.args.get('lines', '500')
     if lines_count == 'all':
         try:
-            all_lines = BOT_LOG_FILE.read_text(encoding='utf-8', errors='replace').splitlines() if BOT_LOG_FILE.exists() else []
+            log_file = bot_log_file()
+            all_lines = log_file.read_text(encoding='utf-8', errors='replace').splitlines() if log_file.exists() else []
         except Exception:
             all_lines = []
         return jsonify({'lines': all_lines, 'total': len(all_lines)})
     lines_count = int(lines_count)
-    lines = tail_lines(BOT_LOG_FILE, lines_count)
+    log_file = bot_log_file()
+    lines = tail_lines(log_file, lines_count)
     try:
-        file_size = BOT_LOG_FILE.stat().st_size if BOT_LOG_FILE.exists() else 0
+        file_size = log_file.stat().st_size if log_file.exists() else 0
     except Exception:
         file_size = 0
     return jsonify({'lines': [l.rstrip() for l in lines], 'total': file_size})
@@ -2716,10 +2690,10 @@ def compute_ml_analytics(state, positions, paper_balance, meta_perf):
 def ml_status_payload(view_mode=None):
     """Endpoint pour le Core ML Engine avec statistiques complètes et prévisions"""
     global ML_PREDS_CACHE
-    view_mode = view_mode or current_view_mode()
+    view_mode = active_trading_mode()
     state = load_bot_state(
         {'positions': [], 'ml_predictions': {}},
-        mode=active_trading_mode() if view_mode == 'all' else view_mode
+        mode=view_mode
     )
     ml_preds = state.get('ml_predictions', {})
     clean_ml_preds = sanitize_ml_predictions(ml_preds)
@@ -2781,7 +2755,11 @@ def api_analytics_scores():
     cutoff = datetime.now() - timedelta(hours=hours)
     try:
         with db_logger() as logger:
-            results = logger.get_crypto_scores(symbol, since_iso=cutoff.isoformat())
+            results = logger.get_crypto_scores(
+                symbol,
+                since_iso=cutoff.isoformat(),
+                mode=active_trading_mode(),
+            )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
         
@@ -3084,7 +3062,7 @@ def api_ml_replay_start():
         replay_log.flush()
         # Trace courte dans bot.log juste pour signaler le lancement (sans la progression).
         try:
-            with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+            with open(bot_log_file(), 'a', encoding='utf-8', errors='replace') as log:
                 log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé ({replay_scope}). Progression dans l'onglet Replay.\n")
         except Exception:
             pass
