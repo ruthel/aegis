@@ -1384,25 +1384,37 @@ class MLEngine:
             self.logger.error(f"Erreur extraction features ML sortie: {e}")
             return None
 
-    def train_exit_model(self, X: np.ndarray, y: np.ndarray, n_estimators: int = 150, max_depth: int = 6, min_samples_split: int = 10, criterion: str = 'gini', use_lightgbm: bool = True) -> bool:
-        """Entraîne le modèle ML de continuation/sortie avec LightGBM ou RandomForest."""
-        if not SKLEARN_AVAILABLE:
-            return False
-        if len(X) < 30:
+    def train_exit_model(self, X: np.ndarray, y: np.ndarray, timestamps: Optional[np.ndarray] = None, n_estimators: int = 150, max_depth: int = 6, min_samples_split: int = 10, criterion: str = 'gini', use_lightgbm: bool = True) -> bool:
+        """Train P_continue with a chronological holdout and calibrated probabilities."""
+        if not SKLEARN_AVAILABLE or len(X) < 30:
             self.logger.warning("Données insuffisantes pour entraîner le modèle ML de sortie.")
             return False
         try:
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.int64)
+            if timestamps is not None and len(timestamps) == len(X_arr):
+                order = np.argsort(np.asarray(timestamps, dtype=np.float64), kind='stable')
+                X_arr = X_arr[order]
+                y_arr = y_arr[order]
+
+            X_train, X_test, y_train, y_test, _, _ = self._temporal_holdout_split(X_arr, y_arr)
+            if len(np.unique(y_train)) < 2:
+                self.logger.warning("P_exit temporel invalide: une seule classe en train.")
+                return False
+
             self.exit_scaler = StandardScaler()
-            X_scaled = self.exit_scaler.fit_transform(X)
-            
+            X_train_s = self.exit_scaler.fit_transform(X_train)
+            X_test_s = self.exit_scaler.transform(X_test)
+
             if use_lightgbm and LIGHTGBM_AVAILABLE:
-                # LightGBM gère mieux les classes déséquilibrées avec is_unbalance
                 self.exit_model = lgb.LGBMClassifier(
                     n_estimators=n_estimators,
                     max_depth=max_depth if max_depth else -1,
                     min_child_samples=min_samples_split,
                     learning_rate=0.05,
-                    is_unbalance=True,  # Équilibre automatique des classes
+                    is_unbalance=True,
                     random_state=43,
                     n_jobs=-1,
                     verbose=-1
@@ -1419,7 +1431,30 @@ class MLEngine:
                     random_state=43,
                     n_jobs=-1
                 )
-            self.exit_model.fit(X_scaled, y)
+
+            self.exit_model.fit(X_train_s, y_train)
+            raw_probs = self.exit_model.predict_proba(X_test_s)[:, 1]
+            self.exit_calibrator = self._fit_isotonic_calibrator(raw_probs, y_test)
+            calibrated = np.array([self._apply_calibrator(self.exit_calibrator, p) for p in raw_probs])
+            y_pred = (calibrated >= 0.5).astype(int)
+            brier = float(np.mean((calibrated - y_test) ** 2))
+
+            exit_metrics = {
+                'exit_validation_type': 'temporal_holdout',
+                'exit_test_accuracy': round(float(accuracy_score(y_test, y_pred) * 100), 1),
+                'exit_test_precision': round(float(precision_score(y_test, y_pred, zero_division=0) * 100), 1),
+                'exit_test_recall': round(float(recall_score(y_test, y_pred, zero_division=0) * 100), 1),
+                'exit_test_f1': round(float(f1_score(y_test, y_pred, zero_division=0) * 100), 1),
+                'exit_test_brier': round(brier, 5),
+                'exit_probability_calibrated': bool(self.exit_calibrator is not None),
+                'exit_samples': int(len(X_arr)),
+            }
+            self.model_metadata = dict(getattr(self, 'model_metadata', {}) or {})
+            self.model_metadata.update(exit_metrics)
+
+            self.exit_scaler = StandardScaler()
+            X_all = self.exit_scaler.fit_transform(X_arr)
+            self.exit_model.fit(X_all, y_arr)
             self.is_exit_trained = True
             self.save_model()
             return True
@@ -1676,7 +1711,9 @@ class MLEngine:
             if self.exit_scaler is not None:
                 X = self.exit_scaler.transform(X)
             probs = self.exit_model.predict_proba(X)[0]
-            p_continue = float(probs[1]) * 100.0 if len(probs) > 1 else 50.0
+            raw_continue = float(probs[1]) if len(probs) > 1 else 0.5
+            calibrated_continue = self._apply_calibrator(self.exit_calibrator, raw_continue)
+            p_continue = max(0.0, min(1.0, calibrated_continue)) * 100.0
 
             buy_price = float(position_data.get('entry_price') or position_data.get('buy_price') or position_data.get('price') or position_data.get('avg_entry_price') or current_price)
             fee_rate = float(position_data.get('fee_rate', float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0))
