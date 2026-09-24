@@ -391,6 +391,10 @@ class LiveFixTests(unittest.TestCase):
             self.assertTrue(engine.train_model(X, y, use_lightgbm=False))
             self.assertIsNotNone(engine.probability_calibrator)
             self.assertTrue(engine.train_edge_model(X, pnl, use_lightgbm=False))
+            self.assertIn('test_baseline_brier', engine.model_metadata)
+            self.assertIn('test_brier_skill', engine.model_metadata)
+            self.assertIn('edge_baseline_mae_pct', engine.model_metadata)
+            self.assertIn('edge_mae_skill', engine.model_metadata)
             pred = engine.predict_win_probability_from_features(X[-1])
             edge = engine.predict_expected_net_pnl(X[-1])
             self.assertGreaterEqual(pred, 0.0)
@@ -418,6 +422,8 @@ class LiveFixTests(unittest.TestCase):
             self.assertTrue(engine.train_exit_model(X, y, timestamps=ts, use_lightgbm=False))
             self.assertEqual(engine.model_metadata.get("exit_validation_type"), "temporal_holdout")
             self.assertIn("exit_test_brier", engine.model_metadata)
+            self.assertIn("exit_test_baseline_brier", engine.model_metadata)
+            self.assertIn("exit_test_brier_skill", engine.model_metadata)
             self.assertIsNotNone(engine.exit_calibrator)
 
     def test_shadow_comparison_uses_same_outcomes(self):
@@ -590,12 +596,16 @@ class LiveFixTests(unittest.TestCase):
             self.assertEqual(engine.model_metadata.get('sizing_validation_type'), 'temporal_holdout')
             self.assertIn('sizing_test_mae', engine.model_metadata)
             self.assertIn('sizing_test_rmse', engine.model_metadata)
+            self.assertIn('sizing_baseline_mae', engine.model_metadata)
+            self.assertIn('sizing_mae_skill', engine.model_metadata)
 
             y_target = np.clip(1.0 + 0.6 * X[:, 1], 0.0, 6.0)
             self.assertTrue(engine.train_target_model(X, y_target, use_lightgbm=False))
             self.assertEqual(engine.model_metadata.get('target_validation_type'), 'temporal_holdout')
             self.assertIn('target_test_mae_pct', engine.model_metadata)
             self.assertIn('target_test_rmse_pct', engine.model_metadata)
+            self.assertIn('target_baseline_mae_pct', engine.model_metadata)
+            self.assertIn('target_mae_skill', engine.model_metadata)
 
     def test_exit_training_uses_live_continuation_score(self):
         source = (ROOT / 'scripts/train_and_evaluate_ml_model.py').read_text(encoding='utf-8')
@@ -657,6 +667,9 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn('ML_ALLOW_SCHEMA_BOOTSTRAP_PROMOTION', source)
         self.assertIn('bootstrap_heads_ready', source)
         self.assertIn('aux_oos_validation', source)
+        self.assertIn('aux_oos_skill', source)
+        self.assertIn('ML_PROMOTION_MAX_OOS_BASELINE_RATIO', source)
+        self.assertIn('oos_skill_checks', source)
         self.assertIn("sizing_validation_type", source)
         self.assertIn("target_validation_type", source)
 
