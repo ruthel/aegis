@@ -676,9 +676,31 @@ def generate_samples_from_klines(
         )
         pnl_percent = ((exit_price * (1 - fee_rate) - current_price * (1 + fee_rate)) / current_price) * 100.0
 
+        path_quantile = max(0.50, min(0.95, float(os.getenv('ML_TARGET_PATH_QUANTILE', '0.70'))))
+        path_net_gains = []
+        for future_idx in range(index + 1, min(exit_index + 1, len(klines_15m))):
+            reachable = float(klines_15m[future_idx]['high'])
+            net_gain = (
+                (reachable * (1 - fee_rate) - current_price * (1 + fee_rate))
+                / max(current_price, 1e-9)
+            ) * 100.0
+            path_net_gains.append(max(0.0, net_gain))
+        target_gain_pct = float(np.quantile(path_net_gains, path_quantile)) if path_net_gains else 0.0
+
         samples.append(feature_dict)
         labels.append(1 if pnl_percent > 0 else 0)
-        metadata.append({'symbol': symbol, 'timestamp': ts, 'pnl_pct': pnl_percent})
+        metadata.append({
+            'symbol': symbol,
+            'timestamp': ts,
+            'pnl_pct': pnl_percent,
+            'entry_index': index,
+            'entry_price': current_price,
+            'exit_index': exit_index,
+            'exit_price': exit_price,
+            'signal': dict(signal),
+            'sizing_target': sizing_factor_target_from_pnl(pnl_percent),
+            'target_gain_pct': target_gain_pct,
+        })
         if signal.get('type') == 'support_touch':
             support_pnls.append(float(pnl_percent))
         next_allowed_index = exit_index + 4
