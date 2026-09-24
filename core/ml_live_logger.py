@@ -31,6 +31,7 @@ from core.db_orm import (
     MlOpenEntry,
     MlModelMetadata,
     MlSizingRecommendation,
+    MlShadowPrediction,
     ExecutionLatency,
     SysAudit,
     MlTradeOutcome,
@@ -3948,6 +3949,42 @@ class MLLiveLogger:
             return True
         except Exception:
             return False
+
+    def record_shadow_prediction(
+        self,
+        symbol,
+        entry_id,
+        champion_p_win,
+        challenger_p_win,
+        threshold=50.0,
+        mode='paper',
+    ):
+        """Store champion/challenger predictions on the exact same opportunity."""
+        try:
+            champ = float(champion_p_win)
+            chall = float(challenger_p_win)
+            th = float(threshold)
+            row = MlShadowPrediction(
+                shadow_id=self._new_id('shadow'),
+                timestamp=now_iso(),
+                mode=mode,
+                symbol=str(symbol or ''),
+                entry_id=entry_id,
+                champion_p_win=champ,
+                challenger_p_win=chall,
+                champion_threshold=th,
+                challenger_threshold=th,
+                champion_take=1 if champ >= th else 0,
+                challenger_take=1 if chall >= th else 0,
+                created_at=now_iso(),
+            )
+            with self._lock:
+                with self._orm_session() as session:
+                    session.add(row)
+                    session.commit()
+            return row.shadow_id
+        except Exception:
+            return None
 
     def record_execution_latency(
         self,
