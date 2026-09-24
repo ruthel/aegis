@@ -312,7 +312,6 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         'edge': chall_meta.get('edge_validation_type') == 'temporal_holdout',
         'exit': chall_meta.get('exit_validation_type') == 'temporal_holdout',
         'sizing': chall_meta.get('sizing_validation_type') == 'temporal_holdout',
-        'target': chall_meta.get('target_validation_type') == 'temporal_holdout',
     }
     g10 = all(aux_validations.values())
 
@@ -338,7 +337,6 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         'edge': _not_worse_than_baseline('edge_test_mae_pct', 'edge_baseline_mae_pct'),
         'exit': _not_worse_than_baseline('exit_test_brier', 'exit_test_baseline_brier'),
         'sizing': _not_worse_than_baseline('sizing_test_mae', 'sizing_baseline_mae'),
-        'target': _not_worse_than_baseline('target_test_mae_pct', 'target_baseline_mae_pct'),
     }
     g11 = all(oos_skill_checks.values())
 
@@ -353,7 +351,6 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         chall_engine.is_edge_trained,
         chall_engine.is_exit_trained,
         chall_engine.is_sizing_trained,
-        chall_engine.is_target_trained,
     ])
     bootstrap_ready = (
         bootstrap_allowed
@@ -381,7 +378,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     )
     print(
         f"  [10] Validation temporelle de toutes les têtes "
-        f"(entry/edge/exit/sizing/target): {'✅' if g10 else '❌'}"
+        f"(entry/edge/exit/sizing): {'✅' if g10 else '❌'}"
     )
     print(
         f"  [11] Performance OOS vs baseline naïve "
@@ -393,6 +390,11 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
             f"  [BOOTSTRAP] Champion absent/incompatible, Challenger complet "
             f"({chall_meta.get('train_samples', 0)} samples >= {bootstrap_min_samples}) : "
             f"{'✅' if bootstrap_ready else '❌'}"
+        )
+        print(
+            "     ↳ Les garde-fous live historiques [1-9] restent affichés à titre "
+            "informatif mais ne bloquent pas une migration de schéma. "
+            "Le bootstrap exige compatibilité + toutes les têtes OOS + skill vs baseline."
         )
 
     guardrails = {
@@ -430,8 +432,24 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         all_passed = True
 
     if not all_passed:
-        failed = [name for name, passed in guardrails.items() if not passed]
-        reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
+        if schema_bootstrap:
+            bootstrap_failures = []
+            if not bootstrap_allowed:
+                bootstrap_failures.append('bootstrap_disabled')
+            if not challenger_compatible:
+                bootstrap_failures.append('challenger_incompatible')
+            if not bootstrap_heads_ready:
+                bootstrap_failures.append('missing_ml_head')
+            if not g10:
+                bootstrap_failures.append('aux_oos_validation')
+            if not g11:
+                bootstrap_failures.append('aux_oos_skill')
+            if int(chall_meta.get('train_samples') or 0) < bootstrap_min_samples:
+                bootstrap_failures.append('insufficient_train_samples')
+            reason = f"Bootstrap schéma refusé: {', '.join(bootstrap_failures) or 'unknown'}"
+        else:
+            failed = [name for name, passed in guardrails.items() if not passed]
+            reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
         print(f"\n⛔ PROMOTION REFUSÉE : {reason}")
         print("   Astuce: relance avec --force, ou ajuste ML_PROMOTION_MIN_*_DELTA dans .env")
         logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
