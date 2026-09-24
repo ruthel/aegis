@@ -121,7 +121,15 @@ def main():
     print(f"Entraîné le: {meta.get('trained_at')} | samples: {meta.get('train_samples')}")
 
     def imp_of(model):
-        return list(model.feature_importances_) if (model is not None and hasattr(model, 'feature_importances_')) else None
+        if model is None:
+            return None
+        booster = getattr(model, 'booster_', None)
+        if booster is not None:
+            try:
+                return list(booster.feature_importance(importance_type='gain'))
+            except Exception:
+                pass
+        return list(model.feature_importances_) if hasattr(model, 'feature_importances_') else None
 
     _print_model("ENTRÉE (P_win)", imp_of(data.get('model')), feature_names, args.top)
     _print_model("EXPECTED NET PNL (edge)", imp_of(data.get('edge_model')), feature_names, args.top)
