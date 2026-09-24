@@ -3,7 +3,7 @@ ExecutionManager - Phase 7 : Exécution Intelligente & Microstructure de Marché
 Gère l'exécution optimale des ordres chez Kraken :
 1. Spread-aware execution : pause si spread > MAX_EXECUTION_SPREAD_PCT (ex: 0.08%)
 2. Dynamic volume / depth check : ajustement selon liquidité live
-3. Adaptive orders : market si high confidence (P_win >= 0.80), limit Maker si standard (P_win < 0.80)
+3. Adaptive orders : market si high confidence (P_win >= 80%), limit Maker si standard (P_win < 80%)
 4. Clean retry & anti-duplicate checks
 5. Slippage tracking & persistence des métriques d'exécution dans SQLite (execution_logs)
 """
@@ -109,10 +109,10 @@ class ExecutionManager:
             return False
 
         # 4. Adaptive Order Selection (Market Taker vs Limit Maker)
-        ml_buy_prob = float(position_data.get('ml_buy_prob', 65.0) or 65.0)
+        ml_buy_prob = float(position_data.get('ml_buy_prob', 50.0) or 50.0)
         order_type = 'market'
         
-        # Si confiance ML très élevée (>= 0.80) ou mode urgent -> Market
+        # Si confiance ML très élevée (>= 80%) ou mode urgent -> Market
         # Sinon si adaptive maker activé -> Tenter Limit Maker au Bid
         if self.adaptive_maker_orders and ml_buy_prob < 80.0 and not self.bot.paper_trading:
             order_type = 'limit'
