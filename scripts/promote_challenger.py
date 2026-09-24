@@ -14,6 +14,7 @@ Usage:
 import argparse
 import os
 import shutil
+import sqlite3
 import sys
 from datetime import datetime
 
@@ -42,6 +43,69 @@ def _prune_model_backups(backups_dir, keep=10):
                 pass
     except Exception:
         pass
+
+
+def _strategy_metrics(pnls):
+    pnls = [float(x) for x in pnls]
+    gross_profit = sum(x for x in pnls if x > 0)
+    gross_loss = abs(sum(x for x in pnls if x < 0))
+    pf = gross_profit / gross_loss if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for pnl in pnls:
+        equity += pnl
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
+    wins = sum(1 for x in pnls if x > 0)
+    return {
+        'trades': len(pnls),
+        'pnl_pct': sum(pnls),
+        'profit_factor': pf,
+        'max_drawdown_pct_points': max_dd,
+        'win_rate': (wins / len(pnls) * 100.0) if pnls else 0.0,
+    }
+
+
+def compute_shadow_comparison(db_file):
+    """Compare champion/challenger on exactly the same recorded opportunities."""
+    empty = {
+        'outcomes': 0,
+        'champion': _strategy_metrics([]),
+        'challenger': _strategy_metrics([]),
+    }
+    if not db_file or not os.path.exists(db_file):
+        return empty
+    try:
+        con = sqlite3.connect(db_file)
+        rows = con.execute(
+            """
+            SELECT s.timestamp, s.champion_take, s.challenger_take,
+                   COALESCE(o.pnl_pct, r.pnl_pct) AS outcome_pnl
+            FROM ml_shadow_predictions s
+            LEFT JOIN ml_trade_outcomes o ON o.entry_id = s.entry_id
+            LEFT JOIN ml_rejected_replay_results r ON r.entry_id = s.entry_id
+            WHERE COALESCE(o.pnl_pct, r.pnl_pct) IS NOT NULL
+            ORDER BY s.timestamp ASC
+            """
+        ).fetchall()
+        con.close()
+    except Exception:
+        return empty
+
+    champ = []
+    chall = []
+    for _, champ_take, chall_take, pnl in rows:
+        value = float(pnl or 0.0)
+        if int(champ_take or 0) == 1:
+            champ.append(value)
+        if int(chall_take or 0) == 1:
+            chall.append(value)
+    return {
+        'outcomes': len(rows),
+        'champion': _strategy_metrics(champ),
+        'challenger': _strategy_metrics(chall),
+    }
 
 
 def promote(model_dir='data', db_file=None, check_only=False, force=False, trigger_type='manual'):
@@ -120,6 +184,13 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     max_dd = float(guardrail_metrics['max_drawdown_pct'])
     calibration_mae = guardrail_metrics.get('latest_calibration_mae')
     drift_status_value = str(guardrail_metrics.get('latest_drift_status') or 'unknown').lower()
+    shadow = compute_shadow_comparison(db_file)
+    require_shadow = os.getenv('ML_PROMOTION_REQUIRE_SHADOW', 'true').lower() == 'true'
+    min_shadow_outcomes = int(os.getenv('ML_PROMOTION_SHADOW_MIN_OUTCOMES', '30'))
+    min_shadow_pnl_delta = float(os.getenv('ML_PROMOTION_SHADOW_MIN_PNL_DELTA_PCT', '0.0'))
+    max_shadow_dd_delta = float(os.getenv('ML_PROMOTION_SHADOW_MAX_DD_DELTA_PCT', '0.5'))
+    champ_shadow = shadow['champion']
+    chall_shadow = shadow['challenger']
 
     g1 = closed_trades_count >= min_trades
     g2 = active_days >= min_days
@@ -130,6 +201,12 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     g7 = (calibration_mae is not None and float(calibration_mae) <= max_calibration_mae) if require_calibration \
         else (calibration_mae is None or float(calibration_mae) <= max_calibration_mae)
     g8 = drift_status_value in allowed_drift_statuses
+    shadow_enough = shadow['outcomes'] >= min_shadow_outcomes
+    shadow_better = (
+        chall_shadow['pnl_pct'] >= champ_shadow['pnl_pct'] + min_shadow_pnl_delta
+        and chall_shadow['max_drawdown_pct_points'] <= champ_shadow['max_drawdown_pct_points'] + max_shadow_dd_delta
+    )
+    g9 = (shadow_enough and shadow_better) if require_shadow else (not shadow_enough or shadow_better)
 
     print("\n🛡️ GARDE-FOUS DE PROMOTION :")
     print(f"  [1] Trades fermés ({closed_trades_count}) >= {min_trades} : {'✅' if g1 else '❌'}")
@@ -140,16 +217,24 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     print(f"  [6] PnL net ({net_pnl:.2f} USD) > 0 : {'✅' if g6 else '❌'}")
     print(f"  [7] Calibration MAE ({calibration_mae if calibration_mae is not None else 'n/a'}) <= {max_calibration_mae:.1f} : {'✅' if g7 else '❌'}")
     print(f"  [8] Drift status ({drift_status_value}) autorisé : {'✅' if g8 else '❌'}")
+    print(
+        f"  [9] Shadow mêmes opportunités ({shadow['outcomes']} outcomes): "
+        f"Champion PnL {champ_shadow['pnl_pct']:+.2f}% / DD {champ_shadow['max_drawdown_pct_points']:.2f} | "
+        f"Challenger PnL {chall_shadow['pnl_pct']:+.2f}% / DD {chall_shadow['max_drawdown_pct_points']:.2f} : "
+        f"{'✅' if g9 else '❌'}"
+    )
 
     guardrails = {
         'min_trades': g1, 'min_days': g2, 'better_perf': g3, 'drawdown': g4,
         'profit_factor': g5, 'net_pnl': g6, 'calibration': g7, 'drift': g8,
+        'same_opportunity_shadow': g9,
     }
     metrics_data = {
         'closed_trades_count': closed_trades_count,
         'champion_precision': champ_prec, 'challenger_precision': chall_prec,
         'champion_accuracy': champ_acc, 'challenger_accuracy': chall_acc,
         'profit_factor': profit_factor, 'net_pnl': net_pnl, 'max_drawdown_pct': max_dd,
+        'shadow_comparison': shadow,
         'guardrails': guardrails,
     }
 
