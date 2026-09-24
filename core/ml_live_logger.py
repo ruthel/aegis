@@ -262,6 +262,9 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_trade_outcomes', 'spread_pct', 'REAL')
                 self._ensure_column(conn, 'crypto_scores', 'mode', 'TEXT')
                 self._ensure_column(conn, 'execution_latency', 'mode', 'TEXT')
+                self._ensure_column(conn, 'ml_analysis_runs', 'mode', 'TEXT')
+                self._ensure_column(conn, 'ml_prediction_calibration', 'mode', 'TEXT')
+                self._ensure_column(conn, 'ml_drift_alerts', 'mode', 'TEXT')
                 # Renommer la table ml_raw_events en sys_audit si besoin
                 try:
                     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
@@ -1354,9 +1357,9 @@ class MLLiveLogger:
             mode_expr = (
                 "COALESCE(mode, "
                 "(SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), "
-                "'paper')"
+                "'legacy')"
                 if 'mode' in columns
-                else "COALESCE((SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), 'paper')"
+                else "COALESCE((SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), 'legacy')"
             )
 
             conn.execute("DROP TABLE IF EXISTS ml_open_entries_mode_migration")
@@ -1429,7 +1432,7 @@ class MLLiveLogger:
             def expr(name, fallback='NULL'):
                 return self._quote_ident(name) if name in columns else fallback
 
-            mode_expr = "COALESCE(mode, 'paper')" if 'mode' in columns else "'paper'"
+            mode_expr = "COALESCE(mode, 'legacy')" if 'mode' in columns else "'legacy'"
             conn.execute("DROP TABLE IF EXISTS bot_daily_stats_mode_migration")
             conn.execute(
                 """
