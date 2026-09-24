@@ -508,7 +508,7 @@ def main():
     parser.add_argument('--exchange', default=os.getenv('EXCHANGE', 'kraken'))
     parser.add_argument('--timeframe', default=os.getenv('MAIN_TIMEFRAME', '15m'))
     parser.add_argument('--max-hold-candles', type=int, default=int(os.getenv('BACKTEST_MAX_HOLD_CANDLES', '96')))
-    parser.add_argument('--fee-rate', type=float, default=float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100.0)
+    parser.add_argument('--fee-rate', type=float, default=float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0)
     parser.add_argument('--max-replay', type=int, default=int(os.getenv('ML_LIVE_ANALYSIS_MAX_REPLAY', '500')))
     # Paramètres de la simulation de sortie réaliste (alignés sur le bot / le training).
     parser.add_argument('--stop-percent', type=float, default=float(os.getenv('STOP_LOSS_PERCENT', '5')))
