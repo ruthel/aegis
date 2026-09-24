@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.ml_engine import MLEngine
 from core.signal_engine import SignalEngine
 from utils.pattern_analyzer import PatternAnalyzer
+from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from scripts.trade_signals import simulate_trade
 
 
@@ -199,7 +200,7 @@ def sizing_factor_target_from_pnl(pnl_percent):
     return 1.25
 
 
-def build_training_bot_context(history, signal, ts, btc_history=None, index=None, support_stats=None):
+def build_training_bot_context(history, signal, ts, btc_history=None, index=None, support_stats=None, h1_history=None, h4_history=None, d1_history=None):
     symbol_regime = simple_regime(history)
     btc_regime = None
     if btc_history is not None and index is not None:
@@ -215,12 +216,14 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
     support_stats = support_stats or {}
     technical_action = 'BUY' if signal else 'HOLD'
     technical_min_confidence = dynamic_min_score
+    falling = detect_falling_knife(d1_history or [], h4_history or [])
+    reversal = detect_reversal_confirmation(h1_history or [])
     return {
         'symbol_regime': symbol_regime,
         'btc_regime': btc_regime,
         'bear_mode': symbol_regime in ('BEAR', 'SIDEWAYS_DOWN') or btc_regime in ('BEAR', 'SIDEWAYS_DOWN'),
-        'reversal_confirmed': False,
-        'falling_knife_active': False,
+        'reversal_confirmed': bool(reversal.get('confirmed')),
+        'falling_knife_active': bool(falling.get('is_falling')),
         'is_support_touch': (signal or {}).get('type') == 'support_touch',
         'support_confidence': confidence if (signal or {}).get('type') == 'support_touch' else 0.0,
         'support_rebounds': float((signal or {}).get('rebounds') or 0.0),
@@ -627,6 +630,9 @@ def generate_samples_from_klines(
             btc_history=btc_history,
             index=btc_context_index,
             support_stats=support_stats,
+            h1_history=history_1h,
+            h4_history=history_4h,
+            d1_history=history_1d,
         )
         features = ml_engine.extract_features_from_klines(
             history,
@@ -827,6 +833,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                         btc_history=btc_history,
                         index=btc_context_index,
                         support_stats=support_stats,
+                        h1_history=history_1h,
+                        h4_history=history_4h,
+                        d1_history=history_1d,
                     )
 
                     features = ml_engine.extract_features_from_klines(
@@ -1026,6 +1035,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                             entry_ts,
                             btc_history=btc_history,
                             index=btc_entry_idx if btc_history else None,
+                            h1_history=_slice_until(tf_bundle.get('1h'), entry_ts, 40),
+                            h4_history=_slice_until(tf_bundle.get('4h'), entry_ts, 80),
+                            d1_history=_slice_until(tf_bundle.get('1d'), entry_ts, 80),
                         )
                         entry_trade_ctx = {
                             'fee_rate': fee_rate,
