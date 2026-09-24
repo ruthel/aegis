@@ -2380,6 +2380,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             technical_confidence=global_signal.get('confidence'),
             technical_min_confidence=adaptive_threshold
         )
+        if (
+            getattr(self, 'ml_engine', None) is not None
+            and not getattr(self.ml_engine, 'is_trained', False)
+            and os.getenv('ALLOW_UNTRAINED_ML_ENTRIES', 'False').lower() != 'true'
+        ):
+            self.record_decision(
+                symbol,
+                'buy',
+                False,
+                'ml_model_unavailable_or_incompatible',
+                {'price': current_price},
+                throttle_seconds=300,
+            )
+            return
+
         if hasattr(self, 'ml_engine') and self.ml_engine is not None:
             try:
                 from concurrent.futures import ThreadPoolExecutor
