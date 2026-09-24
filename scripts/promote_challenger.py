@@ -27,7 +27,17 @@ from core.ml_live_logger import MLLiveLogger
 from core.managers.notification import NotificationManager
 
 
-def compute_guardrail_metrics(db_file):
+def _active_mode(mode=None):
+    value = str(
+        mode
+        or os.getenv('ML_GOVERNANCE_MODE')
+        or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+    ).lower()
+    return value if value in ('paper', 'live') else 'paper'
+
+
+def compute_guardrail_metrics(db_file, mode=None):
+    mode = _active_mode(mode)
     """Compute live guardrail metrics used by the single promotion policy."""
     metrics = {
         'closed_trades_count': 0,
@@ -58,11 +68,14 @@ def compute_guardrail_metrics(db_file):
                 t.timestamp
             FROM ml_trade_outcomes t
             LEFT JOIN decision_logs e
-              ON e.action_type IN ('ENTRY', 'BUY')
+              ON e.mode = t.mode
+             AND e.action_type IN ('ENTRY', 'BUY')
              AND (e.event_id = t.entry_id OR e.entry_id = t.entry_id)
-            WHERE t.pnl_pct IS NOT NULL
+            WHERE t.mode=?
+              AND t.pnl_pct IS NOT NULL
             ORDER BY t.timestamp ASC
-            """
+            """,
+            (mode,),
         ).fetchall()
         metrics['trade_rows'] = trade_rows
         metrics['closed_trades_count'] = len(trade_rows)
@@ -98,9 +111,11 @@ def compute_guardrail_metrics(db_file):
             """
             SELECT calibration_mae, live_win_rate, drift_status
             FROM ml_analysis_runs
+            WHERE mode=?
             ORDER BY generated_at DESC
             LIMIT 1
-            """
+            """,
+            (mode,),
         ).fetchone()
         if latest_analysis:
             metrics['latest_calibration_mae'] = latest_analysis[0]
@@ -150,8 +165,9 @@ def _strategy_metrics(pnls):
     }
 
 
-def compute_shadow_comparison(db_file):
-    """Compare champion/challenger on exactly the same recorded opportunities."""
+def compute_shadow_comparison(db_file, mode=None):
+    """Compare champion/challenger on the same opportunities of one trading mode."""
+    mode = _active_mode(mode)
     empty = {
         'outcomes': 0,
         'champion': _strategy_metrics([]),
@@ -166,11 +182,15 @@ def compute_shadow_comparison(db_file):
             SELECT s.timestamp, s.champion_take, s.challenger_take,
                    COALESCE(o.pnl_pct, r.pnl_pct) AS outcome_pnl
             FROM ml_shadow_predictions s
-            LEFT JOIN ml_trade_outcomes o ON o.entry_id = s.entry_id
+            LEFT JOIN ml_trade_outcomes o
+              ON o.entry_id = s.entry_id
+             AND o.mode = s.mode
             LEFT JOIN ml_rejected_replay_results r ON r.entry_id = s.entry_id
-            WHERE COALESCE(o.pnl_pct, r.pnl_pct) IS NOT NULL
+            WHERE s.mode=?
+              AND COALESCE(o.pnl_pct, r.pnl_pct) IS NOT NULL
             ORDER BY s.timestamp ASC
-            """
+            """,
+            (mode,),
         ).fetchall()
         con.close()
     except Exception:
@@ -191,9 +211,10 @@ def compute_shadow_comparison(db_file):
     }
 
 
-def promote(model_dir='data', db_file=None, check_only=False, force=False, trigger_type='manual'):
+def promote(model_dir='data', db_file=None, check_only=False, force=False, trigger_type='manual', mode=None):
     load_dotenv('.env', override=True)
 
+    mode = _active_mode(mode)
     db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
 
     challenger_path = os.path.join(model_dir, 'aegis_challenger.joblib')
@@ -208,7 +229,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     logger = MLLiveLogger(data_dir=model_dir, sqlite_file=db_file)
 
     print("=" * 70)
-    print("🏆 PROMOTION DIRECTE DU CHALLENGER (sans ré-entraînement)")
+    print(f"🏆 PROMOTION DIRECTE DU CHALLENGER — mode {mode.upper()} (sans ré-entraînement)")
     print("=" * 70)
 
     # Charger les métadonnées des deux modèles
@@ -266,7 +287,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         print("\n  📈 Deltas: n/a — migration de schéma, ancien Champion non comparable.")
 
     # Garde-fous (mêmes seuils que la pipeline principale)
-    guardrail_metrics = compute_guardrail_metrics(db_file)
+    guardrail_metrics = compute_guardrail_metrics(db_file, mode=mode)
     closed_trades_count = guardrail_metrics['closed_trades_count']
 
     min_trades = int(os.getenv('ML_PROMOTION_MIN_CLOSED_TRADES', '30'))
@@ -289,7 +310,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     max_dd = float(guardrail_metrics['max_drawdown_pct'])
     calibration_mae = guardrail_metrics.get('latest_calibration_mae')
     drift_status_value = str(guardrail_metrics.get('latest_drift_status') or 'unknown').lower()
-    shadow = compute_shadow_comparison(db_file)
+    shadow = compute_shadow_comparison(db_file, mode=mode)
     require_shadow = os.getenv('ML_PROMOTION_REQUIRE_SHADOW', 'true').lower() == 'true'
     min_shadow_outcomes = int(os.getenv('ML_PROMOTION_SHADOW_MIN_OUTCOMES', '30'))
     min_shadow_pnl_delta = float(os.getenv('ML_PROMOTION_SHADOW_MIN_PNL_DELTA_PCT', '0.0'))
@@ -511,7 +532,15 @@ if __name__ == '__main__':
     parser.add_argument('--check-only', action='store_true', help="Évalue sans promouvoir")
     parser.add_argument('--force', action='store_true', help="Ignore les garde-fous non satisfaits")
     parser.add_argument('--trigger', default='manual', help="auto ou manual")
+    parser.add_argument('--mode', choices=('paper', 'live'), default=None)
     args = parser.parse_args()
 
-    ok = promote(model_dir=args.dir, db_file=args.db, check_only=args.check_only, force=args.force, trigger_type=args.trigger)
+    ok = promote(
+        model_dir=args.dir,
+        db_file=args.db,
+        check_only=args.check_only,
+        force=args.force,
+        trigger_type=args.trigger,
+        mode=args.mode,
+    )
     sys.exit(0 if ok else 1)
