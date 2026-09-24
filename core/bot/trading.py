@@ -352,23 +352,48 @@ class TradingMixin:
         return open_pos
 
     def _close_buy_positions(self, symbol, amount, exit_price):
-        """Marque les positions d'achat ouvertes correspondantes comme fermées."""
+        """Ferme exactement la quantité vendue, y compris lors d'un partial fill."""
         try:
             target_sym = str(symbol).replace('/', '').upper()
             now_iso = datetime.now().isoformat()
-            remaining = float(amount or 0.0)
+            remaining = max(0.0, float(amount or 0.0))
             for p in reversed(self.state.get('positions', [])):
+                if remaining <= 1e-12:
+                    break
                 if not isinstance(p, dict):
                     continue
                 p_sym = str(p.get('symbol', '')).replace('/', '').upper()
-                if p_sym == target_sym and p.get('side') == 'buy' and not p.get('closed_at') and not p.get('exit_price'):
-                    pos_amount = float(p.get('amount', 0.0) or p.get('position_size_crypto', 0.0) or 0.0)
+                if p_sym != target_sym or p.get('side') != 'buy' or p.get('closed_at') or p.get('exit_price'):
+                    continue
+
+                pos_amount = float(
+                    p.get('amount', 0.0)
+                    or p.get('position_size_crypto', 0.0)
+                    or 0.0
+                )
+                if pos_amount <= 0:
+                    continue
+
+                if remaining + 1e-12 >= pos_amount:
                     p['exit_price'] = float(exit_price)
                     p['closed_at'] = now_iso
                     p['status'] = 'closed'
                     remaining -= pos_amount
-                    if remaining <= 0:
-                        break
+                else:
+                    left = pos_amount - remaining
+                    p['amount'] = left
+                    p['position_size_crypto'] = left
+                    entry_price = float(
+                        p.get('avg_entry_price')
+                        or p.get('price')
+                        or 0.0
+                    )
+                    if entry_price > 0:
+                        p['position_size_usd'] = left * entry_price
+                    p['partial_exit_amount'] = float(p.get('partial_exit_amount') or 0.0) + remaining
+                    p['last_partial_exit_price'] = float(exit_price)
+                    p['status'] = 'executed'
+                    remaining = 0.0
             self.save_state()
         except Exception as e:
             print(f"⚠️ Erreur _close_buy_positions: {e}")
