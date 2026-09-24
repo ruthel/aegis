@@ -363,6 +363,59 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
                 use_lightgbm=use_lightgbm,
             )
 
+            full_strategy = os.getenv('FULL_STRATEGY_WALK_FORWARD', 'True').lower() == 'true'
+            exit_engine = ExitDecisionEngine()
+            if full_strategy:
+                sizing_targets = np.asarray(
+                    [float(meta.get('sizing_target', 1.0)) for meta in meta_train],
+                    dtype=np.float64,
+                )
+                target_targets = np.asarray(
+                    [float(meta.get('target_gain_pct', 0.0)) for meta in meta_train],
+                    dtype=np.float64,
+                )
+                temp_engine.train_sizing_model(
+                    X_train,
+                    sizing_targets,
+                    use_lightgbm=use_lightgbm,
+                )
+                temp_engine.train_target_model(
+                    X_train,
+                    target_targets,
+                    use_lightgbm=use_lightgbm,
+                )
+
+                train_bundles = {
+                    symbol: _truncate_bundle(bundle, train_end)
+                    for symbol, bundle in market_bundles.items()
+                }
+                btc_train = [
+                    row for row in btc_history
+                    if _to_epoch_seconds(row.get('timestamp', 0)) < train_end
+                ]
+                wf_signal_engine = SignalEngine(PatternAnalyzer(bot=None))
+                X_exit, y_exit, ts_exit = generate_exit_training_samples(
+                    ml_engine=temp_engine,
+                    signal_engine=wf_signal_engine,
+                    training_histories=train_bundles,
+                    btc_history=btc_train,
+                    fee_rate=fee_rate,
+                    start_ts=current_start,
+                    end_ts=train_end,
+                    exit_max_hold=int(os.getenv('ML_EXIT_MAX_HOLD_CANDLES', '960')),
+                    max_samples=int(os.getenv('FULL_STRATEGY_EXIT_MAX_SAMPLES', '6000')),
+                )
+                if len(X_exit) >= 30 and len(np.unique(y_exit)) >= 2:
+                    temp_engine.train_exit_model(
+                        X_exit,
+                        y_exit,
+                        timestamps=ts_exit,
+                        n_estimators=120,
+                        max_depth=6,
+                        min_samples_split=10,
+                        use_lightgbm=use_lightgbm,
+                    )
+
             probs = np.array([
                 temp_engine.predict_win_probability_from_features(row)
                 for row in X_test
@@ -381,10 +434,58 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         expected_slippage = float(os.getenv('ML_EXPECTED_SLIPPAGE_PCT', '0.03'))
         effective_edge = edge_values - expected_slippage
         selected = (probs >= decision_threshold) & (effective_edge >= min_edge)
-        selected_pnls = pnl_test[selected]
-        selected_labels = y_test[selected]
-        trades_taken = int(np.sum(selected))
-        winning_trades = int(np.sum(selected_labels == 1)) if trades_taken else 0
+
+        reference_notional = float(os.getenv('FULL_STRATEGY_REFERENCE_NOTIONAL_USD', '100.0'))
+        full_strategy_pnl_usd = 0.0
+        if full_strategy:
+            replayed_pnls = []
+            for test_pos in np.where(selected)[0]:
+                features = X_test[test_pos]
+                meta = dict(meta_test[test_pos])
+                symbol = str(meta.get('symbol') or '')
+                bundle = market_bundles.get(symbol)
+                if not bundle:
+                    continue
+
+                sizing_info = temp_engine.predict_position_size_factor(features=features)
+                sizing_factor = float(sizing_info.get('sizing_factor') or 1.0)
+                target_info = temp_engine.predict_target(features=features)
+                target_gain = (
+                    float(target_info.get('target_gain_pct'))
+                    if target_info.get('ml_target_available') and target_info.get('target_gain_pct') is not None
+                    else None
+                )
+                replay = _simulate_full_strategy_trade(
+                    ml_engine=temp_engine,
+                    exit_engine=exit_engine,
+                    bundle=bundle,
+                    btc_history=btc_history,
+                    metadata=meta,
+                    entry_p_win=float(probs[test_pos]),
+                    target_gain_pct=target_gain,
+                    fee_rate=fee_rate,
+                    test_end_ts=test_end,
+                )
+                if replay is None:
+                    pnl_pct = float(pnl_test[test_pos])
+                else:
+                    pnl_pct = float(replay['pnl_pct'])
+
+                weighted_pnl_pct = pnl_pct * sizing_factor
+                replayed_pnls.append(weighted_pnl_pct)
+                full_strategy_pnl_usd += (
+                    reference_notional * sizing_factor * pnl_pct / 100.0
+                )
+
+            selected_pnls = np.asarray(replayed_pnls, dtype=np.float64)
+            trades_taken = int(len(selected_pnls))
+            winning_trades = int(np.sum(selected_pnls > 0)) if trades_taken else 0
+        else:
+            selected_pnls = pnl_test[selected]
+            selected_labels = y_test[selected]
+            trades_taken = int(np.sum(selected))
+            winning_trades = int(np.sum(selected_labels == 1)) if trades_taken else 0
+
         win_rate = (winning_trades / trades_taken * 100.0) if trades_taken else 0.0
         total_pnl = float(np.sum(selected_pnls)) if trades_taken else 0.0
 
@@ -403,8 +504,11 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
             f"  • #{step_idx} [{start_str} -> {test_str}] "
             f"Train:{len(X_train)} Test:{len(X_test)} Trades:{trades_taken} "
             f"WR:{win_rate:.1f}% PnL:{total_pnl:+.2f}% PF:{pf_text} "
-            f"DD:{max_dd:.2f}% Brier:{brier:.4f} Edge:{avg_expected_edge:+.3f}%"
+            f"DD:{max_dd:.2f}% Brier:{brier:.4f} Edge:{avg_expected_edge:+.3f}% "
+            f"Mode:{'FULL' if full_strategy else 'ENTRY'}"
         )
+        if full_strategy:
+            print(f"      ↳ PnL capital simulé ({reference_notional:.0f}$ notionnel/trade): {full_strategy_pnl_usd:+.2f}$")
 
         window_results.append({
             'step': step_idx,
@@ -417,6 +521,8 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
             'max_drawdown_pct': max_dd,
             'brier_score': brier,
             'avg_expected_edge_pct': avg_expected_edge,
+            'full_strategy': bool(full_strategy),
+            'capital_pnl_usd': round(float(full_strategy_pnl_usd), 4) if full_strategy else None,
         })
 
         current_start += step_days * 86400
