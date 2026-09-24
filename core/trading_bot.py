@@ -108,6 +108,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.bear_mode_min_confidence_bonus = float(os.getenv('BEAR_MODE_MIN_CONFIDENCE_BONUS', '20'))
         self.market_context_cache_seconds = int(os.getenv('MARKET_CONTEXT_CACHE_SECONDS', '300'))
         self.market_context_cache = {}
+        self._rest_kline_cache = {}
         self.support_touch_adaptive_filter = os.getenv('SUPPORT_TOUCH_ADAPTIVE_FILTER', 'True').lower() == 'true'
         self.support_touch_backtest_interval = 5 * 60
         self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_SOURCE', 'data/aegis_db.sqlite3')
@@ -1277,11 +1278,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             klines = self.websocket.get_klines(symbol, count, timeframe=timeframe)
             if len(klines) >= count:
                 return klines
+
+        # Cache REST très court par symbole/timeframe: conserve la correction des
+        # timeframes sans refaire 5 appels réseau à chaque tick.
+        cache_ttl = max(0.0, float(os.getenv('KLINE_REST_CACHE_TTL_SECONDS', '10')))
+        cache_key = (str(symbol), str(timeframe), int(count))
+        cached = self._rest_kline_cache.get(cache_key)
+        if cached and (time.time() - cached.get('timestamp', 0.0)) <= cache_ttl:
+            return list(cached.get('klines') or [])
         
         # TOUJOURS utiliser les vraies données exchange (même en paper trading)
         try:
             ohlcv = self.safe_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit=count)
-            return [{'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]} for c in ohlcv]
+            result = [{'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]} for c in ohlcv]
+            self._rest_kline_cache[cache_key] = {'timestamp': time.time(), 'klines': result}
+            return result
         except Exception as e:
             print(f"Erreur récupération klines {symbol}: {e}")
             # Fallback seulement en cas d'erreur critique
