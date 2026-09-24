@@ -1146,8 +1146,415 @@ class MLEngine:
             self.logger.error(f"Erreur lors de l'entraînement ML: {e}")
             return False
 
+    def _entry_param_grid(self, model_type: str) -> Dict:
+        if model_type == 'lightgbm':
+            return {
+                'n_estimators': [100, 200, 300],
+                'max_depth': [4, 6, 8, -1],
+                'learning_rate': [0.01, 0.05, 0.1],
+                'num_leaves': [15, 31, 63],
+                'min_child_samples': [5, 10, 20],
+            }
+        return {
+            'n_estimators': [100, 200, 300],
+            'max_depth': [4, 6, 8, None],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4],
+        }
+
+    @staticmethod
+    def _grid_param_key(params: Dict) -> str:
+        return json.dumps(params, sort_keys=True, separators=(',', ':'), default=str)
+
+    @staticmethod
+    def _load_json_file(path: str) -> Optional[Dict]:
+        try:
+            if not path or not os.path.exists(path):
+                return None
+            with open(path, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _atomic_write_json(path: str, payload: Dict) -> None:
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        tmp = f"{path}.tmp-{os.getpid()}"
+        with open(tmp, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, path)
+
+    def _grid_cache_paths(self, model_type: str) -> Tuple[str, str]:
+        cache_dir = os.getenv(
+            'ML_GRID_CACHE_DIR',
+            os.path.join(self.model_dir, 'ml_search'),
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        stem = f"entry_{model_type}"
+        return (
+            os.path.join(cache_dir, f"{stem}_checkpoint.json"),
+            os.path.join(cache_dir, f"{stem}_best.json"),
+        )
+
+    def _grid_data_fingerprint(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: Optional[np.ndarray] = None,
+    ) -> str:
+        """Fingerprint stable et peu coûteux du dataset de recherche.
+
+        Le hash utilise la forme, la distribution des labels et un échantillon
+        déterministe réparti sur toute la chronologie. Un changement de dataset
+        invalide donc la REPRISE d'une recherche interrompue, sans empêcher de
+        réutiliser les meilleurs hyperparamètres d'une recherche récente.
+        """
+        X_arr = np.asarray(X, dtype=np.float64)
+        y_arr = np.asarray(y, dtype=np.float64)
+        h = hashlib.sha256()
+        h.update(str(tuple(X_arr.shape)).encode('utf-8'))
+        h.update(str(tuple(y_arr.shape)).encode('utf-8'))
+        if len(X_arr):
+            sample_count = min(256, len(X_arr))
+            idx = np.linspace(0, len(X_arr) - 1, num=sample_count, dtype=np.int64)
+            h.update(np.ascontiguousarray(X_arr[idx], dtype=np.float32).tobytes())
+            h.update(np.ascontiguousarray(y_arr[idx], dtype=np.float32).tobytes())
+            h.update(str(float(np.mean(y_arr))).encode('utf-8'))
+        if sample_weight is not None and len(sample_weight):
+            sw = np.asarray(sample_weight, dtype=np.float64)
+            sample_count = min(128, len(sw))
+            idx = np.linspace(0, len(sw) - 1, num=sample_count, dtype=np.int64)
+            h.update(np.ascontiguousarray(sw[idx], dtype=np.float32).tobytes())
+        return h.hexdigest()
+
+    def _grid_reuse_signature(
+        self,
+        model_type: str,
+        param_grid: Dict,
+        cv_splits: int,
+    ) -> Dict:
+        grid_hash = hashlib.sha256(
+            json.dumps(param_grid, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
+        ).hexdigest()
+        return {
+            'version': 1,
+            'feature_schema_hash': self.feature_schema_hash(),
+            'model_type': model_type,
+            'param_grid_hash': grid_hash,
+            'cv_splits': int(cv_splits),
+            'scoring': 'precision',
+            'temporal_test_ratio': float(os.getenv('ML_TEMPORAL_TEST_RATIO', '0.20')),
+            'config_hash': self._config_hash(),
+        }
+
+    def _grid_live_research_reason(self) -> Optional[str]:
+        if os.getenv('ML_GRID_FORCE_SEARCH', 'False').lower() == 'true':
+            return 'forced_by_env'
+        if os.getenv('ML_GRID_RESEARCH_ON_DRIFT', 'True').lower() != 'true':
+            return None
+
+        db_file = os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
+        if not db_file or not os.path.exists(db_file):
+            return None
+
+        try:
+            import sqlite3
+            con = sqlite3.connect(db_file)
+            row = con.execute(
+                """
+                SELECT drift_status, live_win_rate, calibration_mae
+                FROM ml_analysis_runs
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            con.close()
+            if not row:
+                return None
+
+            status = str(row[0] or '').strip().lower()
+            research_statuses = {
+                item.strip().lower()
+                for item in os.getenv(
+                    'ML_GRID_RESEARCH_DRIFT_STATUSES',
+                    'warning,critical',
+                ).split(',')
+                if item.strip()
+            }
+            if status in research_statuses:
+                return f'drift_status:{status}'
+
+            min_live_wr = float(os.getenv('ML_GRID_RESEARCH_MIN_LIVE_WIN_RATE', '55'))
+            if row[1] is not None and float(row[1]) < min_live_wr:
+                return f'live_win_rate:{float(row[1]):.2f}<{min_live_wr:.2f}'
+
+            max_cal_mae = float(os.getenv('ML_GRID_RESEARCH_MAX_CALIBRATION_MAE', '20'))
+            if row[2] is not None and float(row[2]) > max_cal_mae:
+                return f'calibration_mae:{float(row[2]):.2f}>{max_cal_mae:.2f}'
+        except Exception as exc:
+            self.logger.debug("Impossible d'évaluer le drift pour le cache Grid Search: %s", exc)
+        return None
+
+    def _make_entry_classifier(self, model_type: str, params: Dict):
+        clean = dict(params or {})
+        if model_type == 'lightgbm':
+            return lgb.LGBMClassifier(
+                random_state=42,
+                n_jobs=-1,
+                verbose=-1,
+                **clean,
+            )
+        return RandomForestClassifier(
+            random_state=42,
+            n_jobs=-1,
+            **clean,
+        )
+
+    def _score_grid_candidate(
+        self,
+        model_type: str,
+        params: Dict,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        sample_weight: Optional[np.ndarray],
+        cv_splits: int,
+    ) -> Tuple[float, List[float]]:
+        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.metrics import precision_score
+
+        fold_scores = []
+        splitter = TimeSeriesSplit(n_splits=int(cv_splits))
+        for fold_train_idx, fold_val_idx in splitter.split(X_train):
+            scaler = StandardScaler()
+            X_fold_train = scaler.fit_transform(X_train[fold_train_idx])
+            X_fold_val = scaler.transform(X_train[fold_val_idx])
+
+            model = self._make_entry_classifier(model_type, params)
+            kwargs = {}
+            if sample_weight is not None:
+                kwargs['sample_weight'] = np.asarray(sample_weight)[fold_train_idx]
+            model.fit(X_fold_train, y_train[fold_train_idx], **kwargs)
+            pred = model.predict(X_fold_val)
+            fold_scores.append(
+                float(precision_score(y_train[fold_val_idx], pred, zero_division=0))
+            )
+
+        return (
+            float(np.mean(fold_scores)) if fold_scores else 0.0,
+            [float(v) for v in fold_scores],
+        )
+
+    def _select_entry_grid_params(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        sample_weight: Optional[np.ndarray],
+        model_type: str,
+        param_grid: Dict,
+        cv_splits: int,
+    ) -> Tuple[Dict, float, str, int, int]:
+        """Choisit les hyperparamètres avec cache, reprise et recherche périodique."""
+        from sklearn.model_selection import ParameterGrid
+
+        candidates = list(ParameterGrid(param_grid))
+        if not candidates:
+            raise ValueError("Grid Search vide")
+
+        cache_enabled = os.getenv('ML_GRID_CACHE_ENABLED', 'True').lower() == 'true'
+        resume_enabled = os.getenv('ML_GRID_RESUME', 'True').lower() == 'true'
+        reuse_enabled = os.getenv('ML_GRID_REUSE_BEST', 'True').lower() == 'true'
+        checkpoint_path, best_path = self._grid_cache_paths(model_type)
+        reuse_signature = self._grid_reuse_signature(model_type, param_grid, cv_splits)
+        data_fingerprint = self._grid_data_fingerprint(X_train, y_train, sample_weight)
+        exact_signature = {
+            **reuse_signature,
+            'data_fingerprint': data_fingerprint,
+        }
+
+        allowed_keys = {self._grid_param_key(params) for params in candidates}
+        research_reason = self._grid_live_research_reason()
+        best_cache = self._load_json_file(best_path) if cache_enabled else None
+
+        max_age_days = float(os.getenv('ML_GRID_FULL_SEARCH_INTERVAL_DAYS', '30'))
+        cache_age_days = None
+        if best_cache and best_cache.get('completed_at'):
+            try:
+                completed_dt = datetime.fromisoformat(str(best_cache['completed_at']))
+                cache_age_days = max(
+                    0.0,
+                    (datetime.now() - completed_dt).total_seconds() / 86400.0,
+                )
+            except Exception:
+                cache_age_days = None
+
+        best_key = self._grid_param_key((best_cache or {}).get('best_params') or {})
+        cache_signature_ok = (
+            bool(best_cache)
+            and best_cache.get('reuse_signature') == reuse_signature
+            and best_key in allowed_keys
+        )
+        cache_fresh = (
+            cache_age_days is not None
+            and max_age_days > 0
+            and cache_age_days < max_age_days
+        )
+        can_reuse = (
+            cache_enabled
+            and reuse_enabled
+            and cache_signature_ok
+            and cache_fresh
+            and research_reason is None
+        )
+
+        if can_reuse:
+            params = dict(best_cache['best_params'])
+            score = float(best_cache.get('best_score') or 0.0)
+            self.logger.info(
+                "Grid Search: réutilisation des meilleurs paramètres (%s jours, score CV %.3f).",
+                f"{cache_age_days:.1f}",
+                score,
+            )
+            return params, score, 'reuse_best', 0, len(candidates)
+
+        if research_reason:
+            self.logger.info("Grid Search complet requis: %s", research_reason)
+        elif best_cache and not cache_fresh:
+            self.logger.info(
+                "Grid Search complet requis: cache expiré (%s jours >= %s).",
+                f"{cache_age_days:.1f}" if cache_age_days is not None else 'n/a',
+                max_age_days,
+            )
+
+        state = None
+        if cache_enabled and resume_enabled:
+            candidate_state = self._load_json_file(checkpoint_path)
+            if candidate_state and candidate_state.get('signature') == exact_signature:
+                state = candidate_state
+
+        if state is None:
+            state = {
+                'version': 1,
+                'signature': exact_signature,
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat(),
+                'status': 'running',
+                'completed': {},
+                'best_params': None,
+                'best_score': None,
+            }
+
+        completed = state.get('completed') if isinstance(state.get('completed'), dict) else {}
+        already_done = sum(
+            1 for key, item in completed.items()
+            if key in allowed_keys and isinstance(item, dict) and item.get('status') == 'completed'
+        )
+        if already_done:
+            self.logger.info(
+                "Grid Search: reprise checkpoint — %s/%s combinaisons déjà testées.",
+                already_done,
+                len(candidates),
+            )
+
+        best_params = state.get('best_params')
+        best_score = float(state.get('best_score') or -1.0)
+        tested_this_run = 0
+
+        for index, params in enumerate(candidates, start=1):
+            key = self._grid_param_key(params)
+            previous = completed.get(key)
+            if isinstance(previous, dict) and previous.get('status') == 'completed':
+                continue
+
+            self.logger.info(
+                "Grid Search %s/%s — test %s",
+                index,
+                len(candidates),
+                params,
+            )
+            try:
+                mean_score, fold_scores = self._score_grid_candidate(
+                    model_type,
+                    params,
+                    X_train,
+                    y_train,
+                    sample_weight,
+                    cv_splits,
+                )
+                completed[key] = {
+                    'status': 'completed',
+                    'params': dict(params),
+                    'mean_precision': float(mean_score),
+                    'fold_scores': fold_scores,
+                    'completed_at': datetime.now().isoformat(),
+                }
+                tested_this_run += 1
+                if best_params is None or mean_score > best_score:
+                    best_params = dict(params)
+                    best_score = float(mean_score)
+            except Exception as exc:
+                completed[key] = {
+                    'status': 'failed',
+                    'params': dict(params),
+                    'error': str(exc)[:500],
+                    'updated_at': datetime.now().isoformat(),
+                }
+                self.logger.warning("Grid candidate échoué %s: %s", params, exc)
+
+            state.update({
+                'updated_at': datetime.now().isoformat(),
+                'completed': completed,
+                'best_params': best_params,
+                'best_score': best_score if best_params is not None else None,
+            })
+            if cache_enabled:
+                self._atomic_write_json(checkpoint_path, state)
+
+        successful = [
+            item for key, item in completed.items()
+            if key in allowed_keys
+            and isinstance(item, dict)
+            and item.get('status') == 'completed'
+        ]
+        if not successful:
+            raise RuntimeError("Aucune combinaison Grid Search n'a terminé avec succès")
+
+        successful.sort(key=lambda item: float(item.get('mean_precision') or 0.0), reverse=True)
+        best_item = successful[0]
+        best_params = dict(best_item['params'])
+        best_score = float(best_item.get('mean_precision') or 0.0)
+
+        state.update({
+            'status': 'completed',
+            'updated_at': datetime.now().isoformat(),
+            'completed_at': datetime.now().isoformat(),
+            'best_params': best_params,
+            'best_score': best_score,
+            'completed': completed,
+        })
+        if cache_enabled:
+            self._atomic_write_json(checkpoint_path, state)
+            self._atomic_write_json(best_path, {
+                'version': 1,
+                'reuse_signature': reuse_signature,
+                'data_fingerprint': data_fingerprint,
+                'best_params': best_params,
+                'best_score': best_score,
+                'completed_at': datetime.now().isoformat(),
+                'candidates_total': len(candidates),
+                'successful_candidates': len(successful),
+            })
+
+        mode = 'resume_search' if already_done else 'full_search'
+        return best_params, best_score, mode, tested_this_run, len(candidates)
+
     def train_model_with_grid_search(self, X: np.ndarray, y: np.ndarray, sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True, cv: int = 3) -> bool:
-        """Grid Search temporel: TimeSeriesSplit sur le passé, holdout final sur le futur."""
+        """Recherche temporelle reprenable avec cache des meilleurs hyperparamètres."""
         if not SKLEARN_AVAILABLE:
             self.logger.warning("scikit-learn n'est pas disponible pour l'entraînement ML.")
             return False
@@ -1156,55 +1563,44 @@ class MLEngine:
             return self.train_model(X, y, sample_weight=sample_weight, use_lightgbm=use_lightgbm)
 
         try:
-            from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
-            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, make_scorer
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
+            X_arr = np.asarray(X, dtype=np.float64)
+            y_arr = np.asarray(y, dtype=np.int64)
+            sw_arr = np.asarray(sample_weight, dtype=np.float64) if sample_weight is not None else None
             X_train, X_test, y_train, y_test, sw_train, _sw_test = self._temporal_holdout_split(
-                X, y, sample_weight
+                X_arr, y_arr, sw_arr
             )
             if len(np.unique(y_train)) < 2:
                 self.logger.warning("Grid Search temporel invalide: une seule classe dans la fenêtre d'entraînement.")
                 return False
 
-            self.scaler = StandardScaler()
-            X_train_scaled = self.scaler.fit_transform(X_train)
-            X_test_scaled = self.scaler.transform(X_test)
-
-            precision_scorer = make_scorer(precision_score, zero_division=0)
             if use_lightgbm and LIGHTGBM_AVAILABLE:
-                param_grid = {
-                    'n_estimators': [100, 200, 300],
-                    'max_depth': [4, 6, 8, -1],
-                    'learning_rate': [0.01, 0.05, 0.1],
-                    'num_leaves': [15, 31, 63],
-                    'min_child_samples': [5, 10, 20],
-                }
-                base_model = lgb.LGBMClassifier(random_state=42, n_jobs=-1, verbose=-1)
                 model_type = 'lightgbm'
             else:
-                param_grid = {
-                    'n_estimators': [100, 200, 300],
-                    'max_depth': [4, 6, 8, None],
-                    'min_samples_split': [2, 5, 10],
-                    'min_samples_leaf': [1, 2, 4],
-                }
-                base_model = RandomForestClassifier(random_state=42, n_jobs=-1)
                 model_type = 'random_forest'
+            param_grid = self._entry_param_grid(model_type)
 
             requested_cv = int(os.getenv('ML_CV_SPLITS', str(cv)))
             max_splits = max(2, min(requested_cv, max(2, len(X_train) // 50)))
-            tscv = TimeSeriesSplit(n_splits=max_splits)
-            grid_search = GridSearchCV(
-                base_model,
-                param_grid,
-                cv=tscv,
-                scoring=precision_scorer,
-                n_jobs=-1,
-                verbose=1
-            )
-            grid_search.fit(X_train_scaled, y_train, sample_weight=sw_train)
 
-            self.model = grid_search.best_estimator_
+            best_params, best_cv_score, search_mode, tested_this_run, candidate_count = (
+                self._select_entry_grid_params(
+                    X_train,
+                    y_train,
+                    sw_train,
+                    model_type,
+                    param_grid,
+                    max_splits,
+                )
+            )
+
+            self.scaler = StandardScaler()
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
+            self.model = self._make_entry_classifier(model_type, best_params)
+            fit_kwargs = {'sample_weight': sw_train} if sw_train is not None else {}
+            self.model.fit(X_train_scaled, y_train, **fit_kwargs)
             self.is_trained = True
 
             y_pred = self.model.predict(X_test_scaled)
@@ -1229,11 +1625,11 @@ class MLEngine:
                 'trained_at': datetime.now().isoformat(),
                 'model_type': f'{model_type}_grid_search',
                 'validation_type': 'temporal_holdout_timeseries_cv',
-                'temporal_test_ratio': round(len(X_test) / max(1, len(X)), 4),
-                'n_features': int(X.shape[1]),
+                'temporal_test_ratio': round(len(X_test) / max(1, len(X_arr)), 4),
+                'n_features': int(X_arr.shape[1]),
                 'exit_n_features': len(self.exit_feature_names),
-                'train_samples': int(len(X)),
-                'train_win_rate': f"{int(sum(y))/len(y)*100:.1f}%",
+                'train_samples': int(len(X_arr)),
+                'train_win_rate': f"{int(sum(y_arr))/len(y_arr)*100:.1f}%",
                 'test_accuracy': round(test_acc, 1),
                 'test_precision': round(test_prec, 1),
                 'test_recall': round(test_recall, 1),
@@ -1243,26 +1639,39 @@ class MLEngine:
                 'test_brier_skill': round(brier_skill, 5),
                 'probability_calibrated': bool(self.probability_calibrator is not None),
                 'train_accuracy': round(train_acc, 1),
-                'best_params': grid_search.best_params_,
-                'best_cv_score': round(grid_search.best_score_ * 100, 1),
+                'best_params': best_params,
+                'best_cv_score': round(best_cv_score * 100, 1),
                 'cv_type': 'TimeSeriesSplit',
                 'cv_splits': max_splits,
+                'grid_search_mode': search_mode,
+                'grid_candidates_total': int(candidate_count),
+                'grid_candidates_tested_this_run': int(tested_this_run),
+                'grid_cache_enabled': os.getenv('ML_GRID_CACHE_ENABLED', 'True').lower() == 'true',
             }
 
             self.logger.info(
-                f"Grid Search complete: {model_type} | TimeSeriesSplit | "
-                f"Acc={test_acc:.1f}% | Prec={test_prec:.1f}% | F1={test_f1:.1f}%"
+                "Grid Search %s: %s | CV precision=%.1f%% | "
+                "holdout Acc=%.1f%% Prec=%.1f%% F1=%.1f%%",
+                search_mode,
+                model_type,
+                best_cv_score * 100.0,
+                test_acc,
+                test_prec,
+                test_f1,
             )
 
             self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X)
-            self.model.fit(X_scaled, y, sample_weight=sample_weight)
+            X_scaled = self.scaler.fit_transform(X_arr)
+            self.model = self._make_entry_classifier(model_type, best_params)
+            final_kwargs = {'sample_weight': sw_arr} if sw_arr is not None else {}
+            self.model.fit(X_scaled, y_arr, **final_kwargs)
             self.save_model()
             return True
 
         except Exception as e:
             self.logger.error(f"Erreur lors du Grid Search ML: {e}")
             return self.train_model(X, y, sample_weight=sample_weight, use_lightgbm=use_lightgbm)
+
 
     def extract_exit_features(
         self,
