@@ -2985,7 +2985,14 @@ def ml_replay_stats():
                 stats['pending'] += row['n']
         stats['remaining'] = max(0, stats['total_rejected'] - stats['replayed'])
         last = conn.execute(
-            "SELECT generated_at, rejected_replayed FROM ml_analysis_runs ORDER BY generated_at DESC LIMIT 1"
+            """
+            SELECT generated_at, rejected_replayed
+            FROM ml_analysis_runs
+            WHERE mode=?
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            (active_mode,),
         ).fetchone()
         if last:
             stats['last_run_at'] = last['generated_at']
@@ -3042,6 +3049,8 @@ def api_ml_replay_start():
         str(ROOT / 'scripts' / 'analyze_ml_live_performance.py'),
         '--db',
         str(aegis_db_path()),
+        '--mode',
+        active_trading_mode(),
     ]
     if max_replay:
         try:
