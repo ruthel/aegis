@@ -316,6 +316,32 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     }
     g10 = all(aux_validations.values())
 
+    # Un modèle ne doit pas être promu s'il fait moins bien qu'une prédiction
+    # naïve calculée uniquement sur le passé du holdout temporel.
+    max_oos_baseline_ratio = max(
+        1.0,
+        float(os.getenv('ML_PROMOTION_MAX_OOS_BASELINE_RATIO', '1.05')),
+    )
+
+    def _not_worse_than_baseline(metric_key, baseline_key):
+        try:
+            metric = float(chall_meta.get(metric_key))
+            baseline = float(chall_meta.get(baseline_key))
+        except (TypeError, ValueError):
+            return False
+        if baseline <= 1e-12:
+            return metric <= 1e-12
+        return metric <= baseline * max_oos_baseline_ratio
+
+    oos_skill_checks = {
+        'entry': _not_worse_than_baseline('test_brier', 'test_baseline_brier'),
+        'edge': _not_worse_than_baseline('edge_test_mae_pct', 'edge_baseline_mae_pct'),
+        'exit': _not_worse_than_baseline('exit_test_brier', 'exit_test_baseline_brier'),
+        'sizing': _not_worse_than_baseline('sizing_test_mae', 'sizing_baseline_mae'),
+        'target': _not_worse_than_baseline('target_test_mae_pct', 'target_baseline_mae_pct'),
+    }
+    g11 = all(oos_skill_checks.values())
+
     # Migration de schéma : l'ancien champion strictement incompatible ne peut pas
     # produire de shadow comparable. On autorise un bootstrap uniquement si le
     # Challenger v4 est complet et validé temporellement.
@@ -334,6 +360,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         and challenger_compatible
         and bootstrap_heads_ready
         and g10
+        and g11
         and int(chall_meta.get('train_samples') or 0) >= bootstrap_min_samples
     )
 
@@ -356,6 +383,11 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         f"  [10] Validation temporelle de toutes les têtes "
         f"(entry/edge/exit/sizing/target): {'✅' if g10 else '❌'}"
     )
+    print(
+        f"  [11] Performance OOS vs baseline naïve "
+        f"(ratio max {max_oos_baseline_ratio:.2f}): {'✅' if g11 else '❌'} "
+        f"{oos_skill_checks}"
+    )
     if schema_bootstrap:
         print(
             f"  [BOOTSTRAP] Champion absent/incompatible, Challenger complet "
@@ -367,6 +399,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         'min_trades': g1, 'min_days': g2, 'better_perf': g3, 'drawdown': g4,
         'profit_factor': g5, 'net_pnl': g6, 'calibration': g7, 'drift': g8,
         'same_opportunity_shadow': g9, 'aux_oos_validation': g10,
+        'aux_oos_skill': g11,
     }
     metrics_data = {
         'closed_trades_count': closed_trades_count,
@@ -379,6 +412,8 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
         'schema_bootstrap': schema_bootstrap,
         'bootstrap_ready': bootstrap_ready,
         'aux_validations': aux_validations,
+        'oos_skill_checks': oos_skill_checks,
+        'max_oos_baseline_ratio': max_oos_baseline_ratio,
         'guardrails': guardrails,
     }
 
