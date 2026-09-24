@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Pipeline Unifiée d'Entraînement, Évaluation & Promotion ML (Phase 10).
+Pipeline d'entraînement du Challenger Aegis.
 
-Regroupe l'entraînement complet du modèle Challenger d'Entrée et l'évaluation avec garde-fous
-pour la promotion contrôlée en production sans édition manuelle du code.
+Le training construit les modèles Challenger (entrée, edge, sortie, sizing, target).
+La politique de promotion est volontairement centralisée dans scripts/promote_challenger.py
+afin que le manuel et l'auto-retraining utilisent exactement les mêmes garde-fous.
 """
 
 import os
@@ -30,168 +31,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from core.ml_engine import MLEngine
 from core.signal_engine import SignalEngine
-from core.ml_live_logger import MLLiveLogger
-from core.managers.notification import NotificationManager
 from utils.pattern_analyzer import PatternAnalyzer
-from scripts.trade_signals import detect_trade_signal, detect_all_trade_signals, simulate_trade
-
-
-def detect_trade_signal_augmented(pattern_analyzer, history, current_price):
-    """Détecte plus de types de signaux pour augmenter le dataset d'entraînement.
-    Retourne le signal du support/breakout d'abord, sinon teste des signaux additionnels."""
-    # 1. Signaux existants (support touch + breakout)
-    sig = detect_trade_signal(pattern_analyzer, history, current_price)
-    if sig:
-        return sig
-
-    if len(history) < 25:
-        return None
-
-    closes = [float(k['close']) for k in history]
-    highs = [float(k['high']) for k in history]
-    lows = [float(k['low']) for k in history]
-    opens = [float(k['open']) for k in history]
-
-    # Filtre commun: pas d'achat en chute rapide
-    if closes[-1] < opens[-1] and (opens[-1] - closes[-1]) / opens[-1] >= 0.008:
-        return None
-
-    # 2. SIGNAL: Pullback sur EMA20 en tendance haussière (le prix touche l'EMA20 par le haut)
-    ema20 = sum(closes[-20:]) / 20.0
-    ema20_prev = sum(closes[-23:-3]) / 20.0
-    ema20_rising = ema20 > ema20_prev
-    if ema20_rising and lows[-1] <= ema20 <= highs[-1] and closes[-1] >= ema20:
-        return {
-            'type': 'ema20_pullback',
-            'support_price': ema20 * 0.99,
-            'resistance_price': current_price * 1.02,
-            'rebounds': 1,
-            'confidence': 65,
-            'reason': f"Pullback EMA20 haussier @ {ema20:.2f}",
-        }
-
-    # 3. SIGNAL: Rebond RSI survente (RSI remonte au-dessus de 32 après avoir été < 30)
-    def _rsi(vals, period=14):
-        if len(vals) < period + 1:
-            return 50.0
-        gains, losses = [], []
-        for i in range(-period, 0):
-            d = vals[i] - vals[i - 1]
-            gains.append(max(0, d))
-            losses.append(max(0, -d))
-        ag = sum(gains) / period
-        al = sum(losses) / period
-        if al == 0:
-            return 100.0
-        rs = ag / al
-        return 100.0 - (100.0 / (1.0 + rs))
-
-    rsi_now = _rsi(closes)
-    rsi_prev = _rsi(closes[:-1])
-    if rsi_prev < 30 and 30 <= rsi_now <= 45 and closes[-1] > closes[-2]:
-        return {
-            'type': 'rsi_oversold_rebound',
-            'support_price': min(lows[-10:]),
-            'resistance_price': current_price * 1.02,
-            'rebounds': 1,
-            'confidence': 62,
-            'reason': f"Rebond RSI survente ({rsi_now:.0f})",
-        }
-
-    # 4. SIGNAL: Croisement EMA9 au-dessus EMA20 (momentum haussier naissant)
-    ema9 = sum(closes[-9:]) / 9.0
-    ema9_prev = sum(closes[-10:-1]) / 9.0
-    ema20_prev1 = sum(closes[-21:-1]) / 20.0
-    crossed_up = ema9_prev <= ema20_prev1 and ema9 > ema20
-    if crossed_up and closes[-1] > opens[-1]:
-        return {
-            'type': 'ema_cross_up',
-            'support_price': ema20 * 0.99,
-            'resistance_price': current_price * 1.02,
-            'rebounds': 1,
-            'confidence': 63,
-            'reason': f"Croisement EMA9>EMA20 @ {current_price:.2f}",
-        }
-
-    return None
-
-
-def compute_guardrail_metrics(db_file):
-    metrics = {
-        'closed_trades_count': 0,
-        'active_days': 0,
-        'profit_factor': 1.0,
-        'net_pnl': 0.0,
-        'net_pnl_pct_sum': 0.0,
-        'max_drawdown_pct': 0.0,
-        'latest_calibration_mae': None,
-        'latest_live_win_rate': None,
-        'latest_drift_status': None,
-        'trade_rows': [],
-    }
-    if not os.path.exists(db_file):
-        return metrics
-
-    conn = sqlite3.connect(db_file)
-    try:
-        cur = conn.cursor()
-        trade_rows = cur.execute("""
-            SELECT
-                t.symbol,
-                COALESCE(e.price, t.buy_price) AS entry_price,
-                COALESCE(e.confidence, e.p_win) AS p_win,
-                t.pnl_pct,
-                t.pnl,
-                t.timestamp
-            FROM ml_trade_outcomes t
-            LEFT JOIN decision_logs e
-              ON e.action_type IN ('ENTRY', 'BUY')
-             AND (e.event_id = t.entry_id OR e.entry_id = t.entry_id)
-            WHERE t.pnl_pct IS NOT NULL
-            ORDER BY t.timestamp ASC
-        """).fetchall()
-        metrics['trade_rows'] = trade_rows
-        metrics['closed_trades_count'] = len(trade_rows)
-        if trade_rows:
-            dates = []
-            pnls = []
-            pnl_pcts = []
-            for row in trade_rows:
-                pnl_pcts.append(float(row[3] or 0.0))
-                pnls.append(float(row[4] or 0.0))
-                try:
-                    dates.append(datetime.fromisoformat(str(row[5]).replace('Z', '+00:00')).date())
-                except Exception:
-                    pass
-            metrics['active_days'] = len(set(dates)) if dates else 1
-            wins = [p for p in pnl_pcts if p > 0]
-            losses = [abs(p) for p in pnl_pcts if p < 0]
-            metrics['profit_factor'] = (sum(wins) / sum(losses)) if losses and sum(losses) > 0 else (2.0 if wins else 1.0)
-            metrics['net_pnl'] = sum(pnls)
-            metrics['net_pnl_pct_sum'] = sum(pnl_pcts)
-
-            equity = 0.0
-            peak = 0.0
-            max_dd = 0.0
-            for pct in pnl_pcts:
-                equity += pct
-                peak = max(peak, equity)
-                max_dd = max(max_dd, peak - equity)
-            metrics['max_drawdown_pct'] = max_dd
-
-        latest_analysis = cur.execute("""
-            SELECT calibration_mae, live_win_rate, drift_status
-            FROM ml_analysis_runs
-            ORDER BY generated_at DESC
-            LIMIT 1
-        """).fetchone()
-        if latest_analysis:
-            metrics['latest_calibration_mae'] = latest_analysis[0]
-            metrics['latest_live_win_rate'] = latest_analysis[1]
-            metrics['latest_drift_status'] = latest_analysis[2]
-    finally:
-        conn.close()
-    return metrics
+from scripts.trade_signals import simulate_trade
 
 
 def _advance_cursor(klines_full, cursor, candle_ts):
@@ -393,22 +234,6 @@ def build_training_bot_context(history, signal, ts, btc_history=None, index=None
         'technical_confidence': confidence,
         'technical_min_confidence': technical_min_confidence,
     }
-
-
-def _prune_model_backups(backups_dir, keep=10):
-    """Ne conserve que les `keep` archives de modèle les plus récentes dans backups_dir."""
-    try:
-        import glob
-        archives = glob.glob(os.path.join(backups_dir, 'aegis_model_*.joblib'))
-        archives.sort(reverse=True)  # horodatage YYYYMMDD_HHMMSS -> plus récent en premier
-        for old in archives[keep:]:
-            try:
-                os.remove(old)
-                print(f"  🧹 Ancien backup supprimé : {os.path.basename(old)}")
-            except Exception:
-                pass
-    except Exception:
-        pass
 
 
 def _timeframe_ms(timeframe):
