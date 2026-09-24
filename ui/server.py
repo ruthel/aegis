@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / 'data'
-ENV_DASHBOARD = ROOT / '.env.ui'
+ENV_DASHBOARD = ROOT / '.env'
 BOT_LOG_FILE = ROOT / 'bot.log'
 REPLAY_LOG_FILE = ROOT / 'ml_replay.log'
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
@@ -318,8 +318,7 @@ def _get_ws_ml_engine():
         pass
     return _ws_ml_engine
 
-load_dotenv(ROOT / '.env.local', override=True)
-load_dotenv(ROOT / '.env.ui', override=True)
+load_dotenv(ROOT / '.env', override=True)
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
@@ -527,7 +526,7 @@ def config_payload():
         'risk_sizing': risk_sizing_config(),
         'ml_sizing_recommendations': latest_sizing_recommendations(8),
         'ml_sizing_backtests': latest_sizing_backtests(3),
-        'message': 'Les changements sont ecrits dans .env.ui. Redemarrage requis selon le champ.',
+        'message': 'Les changements sont ecrits dans .env. Redemarrage requis selon le champ.',
     }
 
 
