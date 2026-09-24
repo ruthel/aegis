@@ -408,9 +408,66 @@ def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=
     return fetched
 
 
+_KRAKEN_ARCHIVE_READY_CACHE = {}
+
+
+def _kraken_archive_symbol_ready(symbol, start_ms):
+    """Use Kraken-native data only when ALL model timeframes cover the requested window.
+
+    This prevents mixing a short Kraken history on one timeframe with a long Coinbase
+    history on another timeframe, and prevents silently shrinking a 3-year training
+    request to only ~90 days because Kraken's local archive is still young.
+    """
+    if os.getenv('ML_KRAKEN_ARCHIVE_REQUIRE_ALL_TIMEFRAMES', 'true').lower() != 'true':
+        return True
+
+    root = os.getenv('ML_KRAKEN_ARCHIVE_DIR', os.path.join('data', 'kraken_ohlcv'))
+    required = tuple(
+        item.strip()
+        for item in os.getenv('ML_KRAKEN_ARCHIVE_REQUIRED_TIMEFRAMES', '5m,15m,1h,4h,1d').split(',')
+        if item.strip()
+    )
+    min_ratio = max(0.0, min(1.0, float(os.getenv('ML_KRAKEN_ARCHIVE_MIN_COVERAGE_RATIO', '0.95'))))
+    key = (root, symbol, int(start_ms), required, min_ratio)
+    if key in _KRAKEN_ARCHIVE_READY_CACHE:
+        return _KRAKEN_ARCHIVE_READY_CACHE[key]
+
+    import gzip
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    requested_span = max(1, now_ms - int(start_ms))
+    ok = True
+    for tf in required:
+        path = os.path.join(root, f"{symbol.replace('/', '-')}_{tf}.json.gz")
+        if not os.path.exists(path):
+            ok = False
+            break
+        try:
+            with gzip.open(path, 'rt', encoding='utf-8') as fh:
+                rows = json.load(fh)
+            if not rows:
+                ok = False
+                break
+            rows.sort(key=lambda x: int(x.get('timestamp', 0) or 0))
+            first_ts = int(rows[0].get('timestamp', 0) or 0)
+            last_ts = int(rows[-1].get('timestamp', 0) or 0)
+            coverage_ratio = max(0.0, min(1.0, (last_ts - first_ts) / requested_span))
+            freshness_ms = int(os.getenv('ML_KRAKEN_ARCHIVE_MAX_STALENESS_CANDLES', '3')) * _timeframe_ms(tf)
+            if coverage_ratio < min_ratio or now_ms - last_ts > freshness_ms:
+                ok = False
+                break
+        except Exception:
+            ok = False
+            break
+
+    _KRAKEN_ARCHIVE_READY_CACHE[key] = ok
+    return ok
+
+
 def _load_kraken_archive_for_training(symbol, timeframe, start_ms):
     """Use the local Kraken-native archive only when it has enough fresh coverage."""
     if os.getenv('ML_PREFER_KRAKEN_ARCHIVE', 'false').lower() != 'true':
+        return []
+    if not _kraken_archive_symbol_ready(symbol, start_ms):
         return []
     root = os.getenv('ML_KRAKEN_ARCHIVE_DIR', os.path.join('data', 'kraken_ohlcv'))
     path = os.path.join(root, f"{symbol.replace('/', '-')}_{timeframe}.json.gz")
@@ -430,15 +487,14 @@ def _load_kraken_archive_for_training(symbol, timeframe, start_ms):
         coverage_days = (
             int(rows[-1]['timestamp']) - int(rows[0]['timestamp'])
         ) / 86_400_000.0
-        min_days = float(os.getenv('ML_KRAKEN_ARCHIVE_MIN_COVERAGE_DAYS', '90'))
         tf_ms = _timeframe_ms(timeframe)
         freshness_ms = int(os.getenv('ML_KRAKEN_ARCHIVE_MAX_STALENESS_CANDLES', '3')) * tf_ms
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        if coverage_days < min_days or now_ms - int(rows[-1]['timestamp']) > freshness_ms:
+        if now_ms - int(rows[-1]['timestamp']) > freshness_ms:
             return []
         print(
             f"      → {symbol} {timeframe}: {len(rows)} bougies Kraken archive "
-            f"({coverage_days:.1f} jours)"
+            f"({coverage_days:.1f} jours, univers Kraken complet prêt)"
         )
         return rows
     except Exception:
