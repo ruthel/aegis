@@ -72,6 +72,8 @@ class ScriptsAlignmentTests(unittest.TestCase):
         self.assertIn("archive_universe(", training)
         self.assertIn("ML_ARCHIVE_KRAKEN_BEFORE_TRAIN=True", env)
         self.assertIn("ML_PREFER_KRAKEN_ARCHIVE=True", env)
+        self.assertIn("ML_KRAKEN_ARCHIVE_REQUIRE_ALL_TIMEFRAMES=True", env)
+        self.assertIn("_kraken_archive_symbol_ready", training)
 
     def test_trade_signal_wrapper_uses_canonical_all_signals(self):
         source = self.read("trade_signals.py")
