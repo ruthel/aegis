@@ -412,6 +412,7 @@ def _fetch_ohlcv_range(cb, symbol, timeframe, since, end_ts, max_candles, label=
 
 
 _KRAKEN_ARCHIVE_READY_CACHE = {}
+_TRAINING_DATA_PROVIDERS = set()
 
 
 def _kraken_archive_symbol_ready(symbol, start_ms):
@@ -523,6 +524,7 @@ def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None
 
     kraken_archive = _load_kraken_archive_for_training(symbol, timeframe, window_start_ms)
     if kraken_archive:
+        _TRAINING_DATA_PROVIDERS.add('kraken_archive')
         return kraken_archive[-max_candles:]
 
     # Long-history fallback. Coinbase is used only when a sufficiently deep Kraken
@@ -558,6 +560,7 @@ def fetch_symbol_history_2026(exchange, symbol, timeframe="15m", start_date=None
     if cache_enabled:
         _save_cache(symbol, timeframe, all_klines)
 
+    _TRAINING_DATA_PROVIDERS.add('coinbase')
     if cached_count:
         print(f"      → {symbol} {timeframe}: {len(all_klines)} bougies (cache: {cached_count}, delta: {len(delta)})")
     else:
@@ -974,6 +977,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         w_train = w_train[temporal_order]
         ts_train = ts_train[temporal_order]
         
+        ml_engine.model_metadata = {
+            **dict(getattr(ml_engine, 'model_metadata', {}) or {}),
+            'training_start': datetime.fromtimestamp(float(np.min(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
+            'training_end': datetime.fromtimestamp(float(np.max(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
+            'data_provider': '+'.join(sorted(_TRAINING_DATA_PROVIDERS)) if _TRAINING_DATA_PROVIDERS else 'unknown',
+        }
+
         # Stats du dataset d'entraînement
         n_wins = int(np.sum(y == 1))
         n_losses = int(np.sum(y == 0))
