@@ -38,7 +38,7 @@ except ImportError:
 class MLEngine:
     """Moteur de Machine Learning dédié pour la prédiction de probabilité de gain"""
 
-    MODEL_FORMAT_VERSION = 3
+    MODEL_FORMAT_VERSION = 4
 
 
     def __init__(self, model_dir: str = 'data'):
@@ -77,11 +77,10 @@ class MLEngine:
             'is_support_touch', 'support_confidence', 'support_rebounds',
             'support_backtest_winrate', 'support_backtest_total_pnl',
             'support_backtest_avg_pnl',
-            'crypto_score', 'dynamic_min_score', 'score_vs_threshold',
+            # Les gates live non reconstructibles historiquement (crypto score,
+            # seuil dynamique et analyse technique globale) restent hors du ML.
             'is_optimal_trading_time', 'trading_session_code',
             'minutes_to_session_close',
-            'technical_action_code', 'technical_confidence',
-            'technical_min_confidence', 'technical_confidence_edge',
             # Phase 5: ajout uniquement en fin de schema pour compatibilite champion.
             'rsi_4h', 'ema20_slope_4h', 'ema50_slope_4h', 'price_change_3b_4h',
             'daily_recovery_score', 'multi_tf_reversal_score',
@@ -111,11 +110,8 @@ class MLEngine:
             'symbol_regime_code', 'btc_regime_code', 'bear_mode',
             'reversal_confirmed', 'falling_knife_active',
             'is_support_touch', 'support_confidence',
-            'crypto_score', 'score_vs_threshold',
             'is_optimal_trading_time', 'trading_session_code',
             'minutes_to_session_close',
-            'technical_action_code', 'technical_confidence',
-            'technical_confidence_edge',
             # Features DIRECTIONNELLES ajoutées en fin de schéma (compat champion) pour que
             # le P_exit distingue volatilité HAUSSIÈRE (continuer) de volatilité CHAOTIQUE
             # (sortir), au lieu de se baser surtout sur la volatilité brute (atr/std).
@@ -866,16 +862,9 @@ class MLEngine:
                 bot_features['support_backtest_winrate'],
                 bot_features['support_backtest_total_pnl'],
                 bot_features['support_backtest_avg_pnl'],
-                bot_features['crypto_score'],
-                bot_features['dynamic_min_score'],
-                bot_features['score_vs_threshold'],
                 bot_features['is_optimal_trading_time'],
                 bot_features['trading_session_code'],
                 bot_features['minutes_to_session_close'],
-                bot_features['technical_action_code'],
-                bot_features['technical_confidence'],
-                bot_features['technical_min_confidence'],
-                bot_features['technical_confidence_edge'],
                 rsi_4h, ema20_slope_4h, ema50_slope_4h, price_change_3b_4h,
                 daily_recovery_score, multi_tf_reversal_score,
                 multi_tf_trend_alignment, volume_recovery_score,
@@ -1312,7 +1301,11 @@ class MLEngine:
                 trend_signals += 1
             if price_change_5b > 0:
                 trend_signals += 1
-            multi_tf_align = float(market_features[54]) if len(market_features) > 54 else 0.5
+            try:
+                _multi_tf_idx = self.feature_names.index('multi_tf_trend_alignment')
+                multi_tf_align = float(market_features[_multi_tf_idx]) if len(market_features) > _multi_tf_idx else 0.5
+            except ValueError:
+                multi_tf_align = 0.5
             if multi_tf_align > 0.5:
                 trend_signals += 1
             
@@ -1332,17 +1325,20 @@ class MLEngine:
             # Mais JAMAIS aussi négatif que l'ancien calcul (qui multipliait par -1)
             volatility_directional = volatility_raw * direction_factor
 
-            # Features DIRECTIONNELLES piochées dans le schéma 78 (indices fixes) pour
-            # que le P_exit sache si la volatilité va dans le BON sens (tendance/momentum
-            # haussier -> continuer) ou est CHAOTIQUE (sortir). Bornées à 0.0 si le vecteur
-            # marché est plus court (sécurité si schéma réduit).
-            def _mf(idx):
-                return float(market_features[idx]) if len(market_features) > idx else 0.0
-            exit_short_tf_alignment = _mf(76)       # short_tf_alignment
-            exit_multi_tf_trend_alignment = _mf(54)  # multi_tf_trend_alignment
-            exit_ema20_breakout_15m = _mf(68)        # ema20_breakout_15m
-            exit_momentum_accel_5m = _mf(73)         # momentum_accel_5m
-            exit_consecutive_green_5m = _mf(75)      # consecutive_green_5m
+            # Résolution par NOM de feature : les changements de schéma d'entrée ne
+            # peuvent plus décaler silencieusement les features directionnelles de P_exit.
+            def _entry_feature(name, default=0.0):
+                try:
+                    idx = self.feature_names.index(name)
+                    return float(market_features[idx]) if len(market_features) > idx else float(default)
+                except (ValueError, TypeError):
+                    return float(default)
+
+            exit_short_tf_alignment = _entry_feature('short_tf_alignment')
+            exit_multi_tf_trend_alignment = _entry_feature('multi_tf_trend_alignment')
+            exit_ema20_breakout_15m = _entry_feature('ema20_breakout_15m')
+            exit_momentum_accel_5m = _entry_feature('momentum_accel_5m')
+            exit_consecutive_green_5m = _entry_feature('consecutive_green_5m')
 
             # === VOLUME PROFILE ===
             # Le volume précède le prix : accumulation = continuer, distribution = sortir
@@ -1470,14 +1466,9 @@ class MLEngine:
                 bot_features['falling_knife_active'],
                 bot_features['is_support_touch'],
                 bot_features['support_confidence'],
-                bot_features['crypto_score'],
-                bot_features['score_vs_threshold'],
                 bot_features['is_optimal_trading_time'],
                 bot_features['trading_session_code'],
                 bot_features['minutes_to_session_close'],
-                bot_features['technical_action_code'],
-                bot_features['technical_confidence'],
-                bot_features['technical_confidence_edge'],
                 # Features directionnelles (fin de schéma, compat champion)
                 exit_short_tf_alignment, exit_multi_tf_trend_alignment,
                 exit_ema20_breakout_15m, exit_momentum_accel_5m,
