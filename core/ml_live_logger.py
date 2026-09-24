@@ -4579,16 +4579,17 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def save_daily_stats(self, stats):
+    def save_daily_stats(self, stats, mode='paper'):
         if not isinstance(stats, dict):
             return False
         try:
             now = now_iso()
+            mode = str(mode or 'paper').lower()
             stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
                 if not row:
-                    row = BotDailyStat(stat_date=stat_date, created_at=now)
+                    row = BotDailyStat(mode=mode, stat_date=stat_date, created_at=now)
                     session.add(row)
                 row.trades_count = int(stats.get('trades_count') or 0)
                 row.total_loss = self._clean(stats.get('total_loss') or 0)
@@ -4606,11 +4607,12 @@ class MLLiveLogger:
         except Exception:
             return False
 
-    def load_daily_stats(self, stat_date=None):
+    def load_daily_stats(self, stat_date=None, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
             if not row:
                 return {}
             result = {
@@ -4672,16 +4674,17 @@ class MLLiveLogger:
         except Exception:
             return False
 
-    def save_daily_stats(self, stats):
+    def save_daily_stats(self, stats, mode='paper'):
         if not isinstance(stats, dict):
             return False
         try:
             now = now_iso()
+            mode = str(mode or 'paper').lower()
             stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
                 if not row:
-                    row = BotDailyStat(stat_date=stat_date, created_at=now)
+                    row = BotDailyStat(mode=mode, stat_date=stat_date, created_at=now)
                     session.add(row)
                 row.trades_count = int(stats.get('trades_count') or 0)
                 row.total_loss = self._clean(stats.get('total_loss') or 0)
@@ -4699,11 +4702,12 @@ class MLLiveLogger:
         except Exception:
             return False
 
-    def load_daily_stats(self, stat_date=None):
+    def load_daily_stats(self, stat_date=None, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
             if not row:
                 return {}
             result = {
