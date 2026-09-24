@@ -604,17 +604,23 @@ def generate_samples_from_klines(
         support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
 
         # Important: ne jamais laisser une feature multi-timeframe voir une bougie future.
-        def _history_until(key, fallback):
+        def _history_until(key, fallback, count):
             data = (klines_by_tf or {}).get(key) or []
             if not data:
-                return fallback
+                return list(fallback)[-count:]
             cursor = _cursor_at_or_before(data, ts)
-            return data[max(0, cursor - 60):cursor]
+            return data[max(0, cursor - count):cursor]
 
-        history_5m = _history_until('5m', klines_15m[max(0, index - 20):index])
-        history_1h = _history_until('1h', aggregate_ohlcv(history, 4)[-60:])
-        history_4h = _history_until('4h', aggregate_ohlcv(history, 16)[-60:])
-        history_1d = _history_until('1d', aggregate_ohlcv(history, 96)[-60:])
+        # Feature windows match live inference exactly.
+        history_5m = _history_until('5m', klines_15m[max(0, index - 20):index], 30)
+        history_1h = _history_until('1h', aggregate_ohlcv(history, 4), 30)
+        history_4h = _history_until('4h', aggregate_ohlcv(history, 16), 30)
+        history_1d = _history_until('1d', aggregate_ohlcv(history, 96), 30)
+
+        # Market-structure context needs the same deeper windows as live detectors.
+        context_1h = _history_until('1h', aggregate_ohlcv(history, 4), 40)
+        context_4h = _history_until('4h', aggregate_ohlcv(history, 16), 80)
+        context_1d = _history_until('1d', aggregate_ohlcv(history, 96), 80)
 
         planned_hold_minutes = 96 * 15.0
         planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
@@ -633,9 +639,9 @@ def generate_samples_from_klines(
             btc_history=btc_history,
             index=btc_context_index,
             support_stats=support_stats,
-            h1_history=history_1h,
-            h4_history=history_4h,
-            d1_history=history_1d,
+            h1_history=context_1h,
+            h4_history=context_4h,
+            d1_history=context_1d,
         )
         if (
             os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
@@ -1031,6 +1037,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 history_1h = klines_1h_full[max(0, cur_1h - 30):cur_1h]
                 history_4h = klines_4h_full[max(0, cur_4h - 30):cur_4h]
                 history_1d = klines_1d_full[max(0, cur_1d - 30):cur_1d]
+                context_1h = klines_1h_full[max(0, cur_1h - 40):cur_1h]
+                context_4h = klines_4h_full[max(0, cur_4h - 80):cur_4h]
+                context_1d = klines_1d_full[max(0, cur_1d - 80):cur_1d]
                 planned_hold_minutes = 96 * 15.0
                 planned_exit_dt = datetime.fromtimestamp(ts / 1000.0, timezone.utc) + timedelta(minutes=planned_hold_minutes)
                 trade_context = {
@@ -1052,9 +1061,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                         btc_history=btc_history,
                         index=btc_context_index,
                         support_stats=support_stats,
-                        h1_history=history_1h,
-                        h4_history=history_4h,
-                        d1_history=history_1d,
+                        h1_history=context_1h,
+                        h4_history=context_4h,
+                        d1_history=context_1d,
                     )
 
                     if (

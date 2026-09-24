@@ -81,6 +81,17 @@ class ScriptsAlignmentTests(unittest.TestCase):
         self.assertIn("detect_all_trade_signals", wrapper)
         self.assertIn("max(", wrapper)
 
+    def test_market_structure_context_uses_live_depth(self):
+        training = self.read("train_and_evaluate_ml_model.py")
+        self.assertIn("cur_4h - 80", training)
+        self.assertIn("cur_1d - 80", training)
+        self.assertIn("cur_1h - 40", training)
+        self.assertIn("cur_4h - 30", training)
+        self.assertIn("cur_1d - 30", training)
+        backtest = self.read("backtest_ml_exit_comparison.py")
+        self.assertIn('ctx_h4, _ = _slice_until(bundle["4h"], ts, 80)', backtest)
+        self.assertIn('ctx_1d, _ = _slice_until(bundle["1d"], ts, 80)', backtest)
+
     def test_db_checker_is_configurable(self):
         source = self.read("check_db_tables.py")
         self.assertIn("ML_LIVE_SQLITE_FILE", source)
