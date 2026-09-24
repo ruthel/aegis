@@ -2589,18 +2589,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 position_data['sizing_reason'] = sizing_info['sizing_reason']
                 position_data['ml_buy_prob'] = ml_win_prob
 
-                # P_target: prédire le gain maximum réaliste et poser un take-profit intelligent
-                if hasattr(self.ml_engine, 'predict_target'):
-                    try:
-                        ml_target = self.ml_engine.predict_target(features=ml_entry_features)
-                        if ml_target.get('ml_target_available') and ml_target.get('target_gain_pct') is not None:
-                            target_gain_pct = float(ml_target['target_gain_pct'])
-                            position_data['ml_target_gain_pct'] = round(target_gain_pct, 3)
-                            position_data['ml_target_price'] = round(current_price * (1 + target_gain_pct / 100.0), 8)
-                            position_data['ml_target_reason'] = ml_target.get('reason')
-                    except Exception as _target_ex:
-                        print(f"⚠️ P_target prédiction échouée {symbol}: {_target_ex}")
-
                 if ml_sizing:
                     position_data['ml_sizing_factor'] = ml_sizing.get('sizing_factor')
                     position_data['ml_sizing_reason'] = ml_sizing.get('reason')
