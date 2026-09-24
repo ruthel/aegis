@@ -4451,17 +4451,26 @@ class MLLiveLogger:
             return []
 
     def save_live_status(self, status):
+        """Persist runtime/WebSocket status under the trading mode that produced it."""
         if not isinstance(status, dict):
             return False
         try:
             now = now_iso()
+            mode = str(
+                status.get('trading_mode')
+                or status.get('mode')
+                or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+            ).lower()
+            if mode not in ('paper', 'live'):
+                mode = 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
             symbols = status.get('symbols') if isinstance(status.get('symbols'), dict) else {}
             payload = {
                 'timestamp': status.get('timestamp'),
                 'exchange': status.get('exchange'),
                 'connected': bool(status.get('connected')),
                 'running': bool(status.get('running')),
-                'mode': status.get('mode'),
+                'mode': mode,
+                'connection_mode': status.get('connection_mode'),
                 'reconnect_attempts': status.get('reconnect_attempts'),
                 'queue_size': status.get('queue_size'),
                 'queue_maxsize': status.get('queue_maxsize'),
@@ -4474,9 +4483,10 @@ class MLLiveLogger:
                 ],
             }
             with self._orm_session() as session:
-                row = session.get(BotAppState, 'live_status')
+                state_key = f'live_status:{mode}'
+                row = session.get(BotAppState, state_key)
                 if not row:
-                    row = BotAppState(state_key='live_status', created_at=now)
+                    row = BotAppState(state_key=state_key, created_at=now)
                     session.add(row)
                 row.state_value = json.dumps(payload, ensure_ascii=False)
                 row.updated_at = now
@@ -4487,9 +4497,9 @@ class MLLiveLogger:
                     normalized_symbol = self._normalize_live_symbol(symbol)
                     if not normalized_symbol:
                         continue
-                    live_row = session.get(Crypto, ('paper', normalized_symbol))
+                    live_row = session.get(Crypto, (mode, normalized_symbol))
                     if not live_row:
-                        live_row = Crypto(mode='paper', symbol=normalized_symbol, created_at=now, updated_at=now)
+                        live_row = Crypto(mode=mode, symbol=normalized_symbol, created_at=now, updated_at=now)
                         session.add(live_row)
                     price = self._clean(data.get('price'))
                     live_row.price = price
@@ -4517,28 +4527,44 @@ class MLLiveLogger:
                     )
                     live_row.ws_connected = 1 if status.get('connected') else 0
                     live_row.updated_at = now
-
                 session.commit()
             return True
         except Exception:
             return False
 
-    def get_live_status(self):
+    def get_live_status(self, mode='paper'):
+        """Load only status/symbol rows belonging to the requested trading mode."""
         try:
+            mode = str(mode or 'paper').lower()
+            if mode not in ('paper', 'live'):
+                mode = 'paper'
             with self._orm_session() as session:
-                row = session.get(BotAppState, 'live_status')
+                row = session.get(BotAppState, f'live_status:{mode}')
                 payload = {}
                 if row and row.state_value:
                     try:
                         payload = json.loads(row.state_value)
                     except Exception:
                         payload = {}
+                elif not row:
+                    # One-time compatibility with the retired unscoped key. Never expose
+                    # it if its recorded trading mode disagrees with the requested mode.
+                    legacy = session.get(BotAppState, 'live_status')
+                    if legacy and legacy.state_value:
+                        try:
+                            legacy_payload = json.loads(legacy.state_value)
+                        except Exception:
+                            legacy_payload = {}
+                        if str(legacy_payload.get('mode') or '').lower() == mode:
+                            payload = legacy_payload
+
                 symbol_rows = session.scalars(
                     select(Crypto)
-                    .where(Crypto.mode == 'paper')
+                    .where(Crypto.mode == mode)
                     .order_by(Crypto.symbol.asc())
                 ).all()
                 subscriptions = payload.get('subscribed_symbols') or [item.symbol for item in symbol_rows]
+
             symbols = {}
             for item in symbol_rows:
                 data = {
@@ -4567,7 +4593,8 @@ class MLLiveLogger:
                 'exchange': payload.get('exchange'),
                 'connected': bool(payload.get('connected')),
                 'running': bool(payload.get('running')),
-                'mode': payload.get('mode'),
+                'mode': mode,
+                'connection_mode': payload.get('connection_mode'),
                 'reconnect_attempts': payload.get('reconnect_attempts'),
                 'queue_size': payload.get('queue_size'),
                 'queue_maxsize': payload.get('queue_maxsize'),
