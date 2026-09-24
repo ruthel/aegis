@@ -399,32 +399,58 @@ class TradingMixin:
         
         try:
             if self.paper_trading:
-                if cost > self.paper_balance:
-                    print(f"❌ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
+                paper_exec = self._paper_execution_snapshot(
+                    symbol, 'buy', order_type='market', amount=amount
+                )
+                paper_price = float(paper_exec['price'])
+                paper_amount = float(paper_exec['amount'] or amount)
+                paper_cost = paper_amount * paper_price
+                fee_rate = float(paper_exec['fee_rate'])
+                total_debit = paper_cost * (1.0 + fee_rate)
+                if total_debit > self.paper_balance:
+                    print(
+                        f"❌ Paper trading: Fonds insuffisants {total_debit:.2f} > "
+                        f"{self.paper_balance:.2f}"
+                    )
                     return None
-                    
-                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
-                buy_fee = cost * fee_rate
+
+                buy_fee = paper_cost * fee_rate
                 order_id = f'paper_{time.time_ns()}'
                 if getattr(self, 'ml_live_logger', None):
                     self.ml_live_logger.record_order_transaction(
-                        symbol, 'buy', amount, price, order_type='market',
+                        symbol, 'buy', paper_amount, paper_price, order_type='market',
                         status='open', order_id=order_id, mode='paper',
                         source='paper_trade'
                     )
                     self.ml_live_logger.record_fill_transaction(
-                        order_id, symbol, 'buy', amount, price,
+                        order_id, symbol, 'buy', paper_amount, paper_price,
                         fee_amount=buy_fee, fee_asset='USD',
                         mode='paper', source='paper_trade'
                     )
                     self._refresh_paper_balance_from_accounting()
                 else:
-                    self.paper_balance -= (cost * (1 + fee_rate))
-                order = {'id': order_id, 'price': price, 'amount': amount, 'cost': cost}
+                    self.paper_balance -= total_debit
+
+                order = {
+                    'id': order_id,
+                    'price': paper_price,
+                    'average': paper_price,
+                    'amount': paper_amount,
+                    'filled': paper_amount,
+                    'cost': paper_cost,
+                    'status': 'closed',
+                    'fee': {'cost': buy_fee, 'currency': 'USD'},
+                    'paper_execution': paper_exec,
+                }
+                price = paper_price
+                cost = paper_cost
                 action_text = "moyennage" if allow_averaging else "achat"
-                print(f"🧪 PAPER - {action_text.title()} simulé: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
+                print(
+                    f"🧪 PAPER - {action_text.title()} simulé: {paper_amount:.6f} {symbol} "
+                    f"@ {paper_price:.6f} | spread {paper_exec['spread_pct']:.3f}% | "
+                    f"slippage {paper_exec['slippage_pct']:.3f}% | "
+                    f"latence {paper_exec['latency_ms']:.0f}ms"
+                )
             else:
                 order = self.safe_request(self.exchange.create_market_buy_order, symbol, amount)
                 action_text = "Moyennage" if allow_averaging else "Achat"
@@ -483,28 +509,47 @@ class TradingMixin:
         
         try:
             if self.paper_trading:
-                fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
-                if fee_rate <= 0:
-                    fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
-                revenue = amount * price
+                paper_exec = self._paper_execution_snapshot(
+                    symbol, 'sell', order_type='market', amount=amount
+                )
+                paper_price = float(paper_exec['price'])
+                paper_amount = float(paper_exec['amount'] or amount)
+                fee_rate = float(paper_exec['fee_rate'])
+                revenue = paper_amount * paper_price
                 sell_fee = revenue * fee_rate
                 order_id = f'paper_{time.time_ns()}'
                 if getattr(self, 'ml_live_logger', None):
                     self.ml_live_logger.record_order_transaction(
-                        symbol, 'sell', amount, price, order_type='market',
+                        symbol, 'sell', paper_amount, paper_price, order_type='market',
                         status='open', order_id=order_id, mode='paper',
                         source='paper_trade'
                     )
                     self.ml_live_logger.record_fill_transaction(
-                        order_id, symbol, 'sell', amount, price,
+                        order_id, symbol, 'sell', paper_amount, paper_price,
                         fee_amount=sell_fee, fee_asset='USD',
                         mode='paper', source='paper_trade'
                     )
                     self._refresh_paper_balance_from_accounting()
                 else:
                     self.paper_balance += (revenue * (1 - fee_rate))
-                order = {'id': order_id, 'price': price, 'amount': amount, 'cost': revenue}
-                print(f"🧪 PAPER - Vente simulée: {amount:.6f} {symbol} à {price:.6f} (Balance: {self.paper_balance:.2f} USD)")
+                order = {
+                    'id': order_id,
+                    'price': paper_price,
+                    'average': paper_price,
+                    'amount': paper_amount,
+                    'filled': paper_amount,
+                    'cost': revenue,
+                    'status': 'closed',
+                    'fee': {'cost': sell_fee, 'currency': 'USD'},
+                    'paper_execution': paper_exec,
+                }
+                price = paper_price
+                print(
+                    f"🧪 PAPER - Vente simulée: {paper_amount:.6f} {symbol} @ {paper_price:.6f} | "
+                    f"spread {paper_exec['spread_pct']:.3f}% | "
+                    f"slippage {paper_exec['slippage_pct']:.3f}% | "
+                    f"latence {paper_exec['latency_ms']:.0f}ms"
+                )
             else:
                 balance = self.balance_manager.get_balance()
                 base_currency = symbol.split('/')[0]
