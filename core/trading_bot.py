@@ -44,6 +44,7 @@ from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
+from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from core.managers.execution_manager import ExecutionManager
 from core.managers.health_manager import HealthManager
 from core.ml_live_logger import MLLiveLogger
@@ -840,98 +841,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return ((new_price - old_price) / old_price) * 100
 
     def _detect_falling_knife(self, symbol):
-        """Détecte une chute structurelle pour éviter d'acheter juste parce que le prix est bas."""
+        """Détecte la même structure de chute qu'en training historique."""
         try:
             daily = self.get_klines(symbol, 80, '1d')
             h4 = self.get_klines(symbol, 80, '4h')
-            if len(daily) < 50 or len(h4) < 30:
-                return {
-                    'is_falling': False,
-                    'reason': 'insufficient_data',
-                    'daily_momentum_7d': 0,
-                    'h4_momentum_24h': 0
-                }
-
-            daily_closes = [float(k['close']) for k in daily]
-            h4_closes = [float(k['close']) for k in h4]
-            daily_ema20 = self.calculate_ema(daily_closes, 20)
-            daily_ema50 = self.calculate_ema(daily_closes, 50)
-            h4_ema20 = self.calculate_ema(h4_closes, 20)
-            h4_ema50 = self.calculate_ema(h4_closes, 50)
-            current_daily = daily_closes[-1]
-            current_h4 = h4_closes[-1]
-
-            daily_momentum_7d = self._calculate_momentum_pct(daily, 7)
-            h4_momentum_24h = self._calculate_momentum_pct(h4, 6)
-            recent_lows = [float(k['low']) for k in daily[-8:]]
-            lower_low = min(recent_lows[-3:]) < min(recent_lows[:5])
-
-            ema_downtrend = current_daily < daily_ema20 < daily_ema50 and current_h4 < h4_ema20 < h4_ema50
-            momentum_down = daily_momentum_7d <= -3 or h4_momentum_24h <= -2
-            is_falling = ema_downtrend and (momentum_down or lower_low)
-
-            reasons = []
-            if ema_downtrend:
-                reasons.append('ema_downtrend_1d_4h')
-            if momentum_down:
-                reasons.append('negative_momentum')
-            if lower_low:
-                reasons.append('lower_lows')
-
-            return {
-                'is_falling': is_falling,
-                'reason': ','.join(reasons) if reasons else 'not_falling',
-                'daily_momentum_7d': daily_momentum_7d,
-                'h4_momentum_24h': h4_momentum_24h,
-                'daily_ema20': daily_ema20,
-                'daily_ema50': daily_ema50,
-                'h4_ema20': h4_ema20,
-                'h4_ema50': h4_ema50
-            }
+            return detect_falling_knife(daily, h4)
         except Exception as e:
             return {'is_falling': False, 'reason': f'error:{e}'}
 
     def _has_reversal_confirmation(self, symbol):
-        """Confirmation simple de stabilisation avant achat en bear mode."""
+        """Utilise exactement le même détecteur pur que le training."""
         try:
             h1 = self.get_klines(symbol, 40, '1h')
-            if len(h1) < 21:
-                return {'confirmed': False, 'reason': 'insufficient_data'}
-
-            closes = [float(k['close']) for k in h1]
-            lows = [float(k['low']) for k in h1]
-            volumes = [float(k['volume']) for k in h1]
-            ema9 = self.calculate_ema(closes, 9)
-            ema21 = self.calculate_ema(closes, 21)
-            recent_momentum = self._calculate_momentum_pct(h1, 3)
-            higher_low = min(lows[-3:]) > min(lows[-8:-3])
-            avg_volume = sum(volumes[-12:-1]) / max(1, len(volumes[-12:-1]))
-            volume_ok = volumes[-1] >= avg_volume * 1.05 if avg_volume > 0 else False
-            price_above_fast_ema = closes[-1] > ema9
-            ema_reclaim = ema9 >= ema21 * 0.998
-
-            confirmed = price_above_fast_ema and recent_momentum > 0 and (higher_low or volume_ok or ema_reclaim)
-            reasons = []
-            if price_above_fast_ema:
-                reasons.append('price_above_ema9')
-            if recent_momentum > 0:
-                reasons.append('positive_1h_momentum')
-            if higher_low:
-                reasons.append('higher_low')
-            if volume_ok:
-                reasons.append('volume_confirmed')
-            if ema_reclaim:
-                reasons.append('ema9_reclaim')
-
-            return {
-                'confirmed': confirmed,
-                'reason': ','.join(reasons) if reasons else 'no_reversal_confirmation',
-                'momentum_3h': recent_momentum,
-                'ema9': ema9,
-                'ema21': ema21,
-                'higher_low': higher_low,
-                'volume_ok': volume_ok
-            }
+            return detect_reversal_confirmation(h1)
         except Exception as e:
             return {'confirmed': False, 'reason': f'error:{e}'}
 
@@ -2256,8 +2178,36 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # 1. VÉRIFICATIONS ABSOLUES DE SÉCURITÉ (CAPITAL / BEAR CONTEXT)
 
-        # 1A. Détection Couteau qui tombe: feature ML uniquement, pas verrou dur.
-        falling_knife = self._detect_falling_knife(symbol)
+        # 1A. Hard gate anti-falling-knife : une chute structurelle active ne peut
+        # être achetée qu'après confirmation explicite de retournement.
+        falling_knife = (
+            market_context.get('falling_knife')
+            if isinstance(market_context.get('falling_knife'), dict)
+            else self._detect_falling_knife(symbol)
+        )
+        reversal = (
+            market_context.get('reversal')
+            if isinstance(market_context.get('reversal'), dict)
+            else self._has_reversal_confirmation(symbol)
+        )
+        if (
+            os.getenv('HARD_ANTI_FALLING_KNIFE', 'True').lower() == 'true'
+            and bool(falling_knife.get('is_falling'))
+            and not bool(reversal.get('confirmed'))
+        ):
+            self.record_decision(
+                symbol,
+                'buy',
+                False,
+                'falling_knife_without_reversal',
+                {
+                    'price': current_price,
+                    'falling_knife': falling_knife,
+                    'reversal': reversal,
+                },
+                throttle_seconds=120,
+            )
+            return
 
         # 1B. Vérifier position existante et capital
         if not self.can_open_position(symbol):
