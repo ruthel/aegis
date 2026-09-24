@@ -245,6 +245,8 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
     all_labels = []
     all_timestamps = []
     all_pnls = []
+    all_metadata = []
+    market_bundles = {}
 
     for symbol in pairs:
         print(f"📥 {symbol}: chargement multi-timeframe...")
@@ -260,14 +262,17 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         klines_4h = aggregate_ohlcv(klines_1h, 4)
         klines_1d = fetch_symbol_history_2026(None, symbol, timeframe='1d', start_date=start_date)
 
+        bundle = {
+            '15m': klines_15m,
+            '5m': klines_5m,
+            '1h': klines_1h,
+            '4h': klines_4h,
+            '1d': klines_1d,
+        }
+        market_bundles[symbol] = bundle
+
         samples, labels, metadata = generate_samples_from_klines(
-            {
-                '15m': klines_15m,
-                '5m': klines_5m,
-                '1h': klines_1h,
-                '4h': klines_4h,
-                '1d': klines_1d,
-            },
+            bundle,
             symbol,
             stop_percent=1.0,
             trailing_percent=2.5,
@@ -281,6 +286,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
             all_labels.append(int(label))
             all_timestamps.append(_to_epoch_seconds(meta['timestamp']))
             all_pnls.append(float(meta['pnl_pct']))
+            all_metadata.append(dict(meta))
 
     if not all_samples:
         print("❌ Aucune donnée générée pour la validation walk-forward.")
@@ -297,6 +303,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
     y_array = np.asarray(all_labels, dtype=np.int64)
     ts_array = np.asarray(all_timestamps, dtype=np.float64)
     pnl_array = np.asarray(all_pnls, dtype=np.float64)
+    metadata_array = np.asarray(all_metadata, dtype=object)
 
     # Mélange des symboles interdit: ordre chronologique global avant toute fenêtre.
     order = np.argsort(ts_array, kind='stable')
@@ -304,6 +311,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
     y_array = y_array[order]
     ts_array = ts_array[order]
     pnl_array = pnl_array[order]
+    metadata_array = metadata_array[order]
 
     min_ts = float(np.min(ts_array))
     max_ts = float(np.max(ts_array))
@@ -325,6 +333,8 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
         X_test, y_test = X_matrix[test_mask], y_array[test_mask]
         pnl_train = pnl_array[train_mask]
         pnl_test = pnl_array[test_mask]
+        meta_train = metadata_array[train_mask]
+        meta_test = metadata_array[test_mask]
 
         if len(X_train) < 100 or len(X_test) < 20 or len(np.unique(y_train)) < 2:
             current_start += step_days * 86400
