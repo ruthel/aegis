@@ -25,8 +25,7 @@ from scripts.train_and_evaluate_ml_model import fetch_symbol_history_2026, gener
 import ccxt
 
 def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30):
-    load_dotenv('.env.local', override=True)
-    load_dotenv('.env.ui', override=True)
+    load_dotenv('.env', override=True)
 
     print("=" * 70)
     print("🚀 DÉMARRAGE DE LA VALIDATION WALK-FORWARD (PHASE 5)")
@@ -41,7 +40,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
     start_date = (datetime.now(timezone.utc) - timedelta(days=total_history_days)).strftime("%Y-%m-%d")
 
     btc_history = None
-    if any(p != 'BTC/USDT' for p in pairs):
+    if any(p != 'BTC/USD' for p in pairs):
         btc_history = fetch_symbol_history_2026(exchange, 'BTC/USDT', timeframe='15m', start_date=start_date)
 
     all_samples = []
@@ -162,7 +161,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
 
 def main():
     parser = argparse.ArgumentParser(description='Walk-Forward Validation Aegis')
-    parser.add_argument('--pairs', default='BTC/USDT,ETH/USDT,SOL/USDT,ADA/USDT')
+    parser.add_argument('--pairs', default='BTC/USDT,ETH/USD,SOL/USD,ADA/USD')
     parser.add_argument('--train-days', type=int, default=90)
     parser.add_argument('--test-days', type=int, default=30)
     parser.add_argument('--step-days', type=int, default=30)
