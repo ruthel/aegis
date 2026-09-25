@@ -4125,7 +4125,13 @@ class MLLiveLogger:
                         reason=entry.get('reason'),
                         price=self._clean(price),
                         confidence=self._clean(confidence),
-                        min_confidence=self._clean(metrics.get('min_confidence') or metrics.get('threshold')),
+                        min_confidence=self._clean(
+                            metrics.get('min_confidence')
+                            if metrics.get('min_confidence') is not None
+                            else metrics.get('min_score')
+                            if metrics.get('min_score') is not None
+                            else metrics.get('threshold')
+                        ),
                         p_win=self._clean(p_win),
                         p_continue=self._clean(p_continue),
                         label_status='final',
