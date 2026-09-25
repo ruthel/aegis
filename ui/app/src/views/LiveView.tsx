@@ -26,6 +26,7 @@ import {
   liveSymbolItem,
   num,
   pct,
+  normalizeDecisionMetrics,
   supportBySymbolMap,
 } from '@/lib/formatters'
 import { postJson } from '@/lib/api'
@@ -536,7 +537,6 @@ function DecisionEngine({
             const signalStrength = `${regimeLabel} ${strengthBase}`
 
             const reversal = Boolean(ctx.reversal_confirmed ?? (ctx.reversal as JsonMap | undefined)?.confirmed)
-            const returnAllowed = reversal && !knife
             const trigger = knife
               ? 'Falling knife détecté'
               : reversal
@@ -545,20 +545,30 @@ function DecisionEngine({
                   ? 'Contexte support surveillé'
                   : 'Aucun trigger confirmé'
 
-            const pWin = Number(item.p_win ?? 0)
+            const snapshotPWin = Number(item.p_win ?? 0)
             const rawPWinValue = item.raw_p_win
             const rawPWin = rawPWinValue == null ? null : Number(rawPWinValue)
             const threshold = Number(item.min_probability ?? ml.min_probability ?? 0)
-            const mlConfidenceRaw = item.ml_confidence ?? item.confidence ?? item.model_confidence
-            const mlConfidence = mlConfidenceRaw == null ? null : Number(mlConfidenceRaw)
             const recommendation = asString(item.recommendation, 'NEUTRAL')
-            const thresholdReached = pWin >= threshold && threshold > 0
 
             const latestDecision = [...(status.decisions || [])]
               .reverse()
               .find((decision) => asString(decision.symbol) === symbol && asString(decision.action).toLowerCase() === 'buy')
             const latestDecisionAllowed = latestDecision?.allowed === true
             const latestDecisionReason = latestDecision ? asString(latestDecision.reason, '') : ''
+            const latestMetrics = normalizeDecisionMetrics(latestDecision?.metrics)
+            const decisionPWinRaw = latestMetrics.p_win
+            const decisionPWin = decisionPWinRaw == null ? null : Number(decisionPWinRaw)
+            const hasDecisionPWin = decisionPWin != null && Number.isFinite(decisionPWin)
+            const displayedPWin = hasDecisionPWin ? decisionPWin : null
+            const thresholdReached = hasDecisionPWin && threshold > 0 && Number(decisionPWin) >= threshold
+            const gateValueRaw = latestMetrics.confidence
+            const gateThresholdRaw = latestMetrics.min_confidence
+            const gateValue = gateValueRaw == null ? null : Number(gateValueRaw)
+            const gateThreshold = gateThresholdRaw == null ? null : Number(gateThresholdRaw)
+            const isTechnicalGate = latestDecisionReason.includes('technical')
+            const isScoreGate = latestDecisionReason.includes('score')
+            const gateLabel = isScoreGate ? 'Score marché' : isTechnicalGate ? 'Confiance technique' : 'Filtre'
 
             const exitDecision = asString(exitRec.decision ?? mlExit.decision, 'HOLD').toUpperCase()
             const inSellMode = Boolean(openPosition)
@@ -590,13 +600,13 @@ function DecisionEngine({
                   : 'warning'
 
             const modelStatus =
-              recommendation === 'BUY_HIGH_CONFIDENCE' ? 'FAVORABLE'
-                : recommendation === 'REJECT_RISK' ? 'RISKY'
-                  : 'NEUTRE'
+              hasDecisionPWin
+                ? thresholdReached ? 'ML OK' : 'ML REFUS'
+                : latestDecision ? 'ML NON ÉVALUÉ' : recommendation === 'BUY_HIGH_CONFIDENCE' ? 'APERÇU ML +' : 'EN ATTENTE'
 
             const modelVariant =
-              modelStatus === 'FAVORABLE' ? 'success'
-                : modelStatus === 'RISKY' ? 'danger'
+              modelStatus === 'ML OK' ? 'success'
+                : modelStatus === 'ML REFUS' ? 'danger'
                   : 'warning'
 
             const reason = inSellMode
@@ -665,69 +675,61 @@ function DecisionEngine({
                 </div>
 
                 <div className="grid grid-cols-2 gap-1.5">
-                  <EntryBox label="Trades" value={st.trades ?? '--'} />
-                  <EntryBox label="Win rate" value={st.win_rate !== undefined ? pct(st.win_rate, 1) : '--'} />
                   <EntryBox
-                    label="Rend. moy."
-                    value={st.avg_pnl_percent !== undefined ? formatSignedPct(st.avg_pnl_percent, 2) : st.avg_pnl !== undefined ? formatSignedPct(st.avg_pnl, 2) : '--'}
+                    label={gateLabel}
+                    value={gateValue != null && Number.isFinite(gateValue) ? (isScoreGate ? num(gateValue, 1) : pct(gateValue, 1)) : '--'}
+                    tone={gateValue != null && gateThreshold != null && gateValue >= gateThreshold ? 'good' : undefined}
                   />
-                  <EntryBox label="Protection" value={`${num(ctx.trade_multiplier ?? 1, 2)}x`} tone={Number(ctx.trade_multiplier ?? 1) >= 1 ? 'good' : undefined} />
-                </div>
-
-                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-                  <EntryBox label="Retour" value={returnAllowed ? 'OUI' : 'NON'} tone={returnAllowed ? 'good' : undefined} />
                   <EntryBox
-                    label="Confiance ML"
-                    value={mlConfidence == null || !Number.isFinite(mlConfidence) ? '--' : pct(mlConfidence, 1)}
-                    tone={mlConfidence != null && mlConfidence >= threshold ? 'good' : undefined}
+                    label={isScoreGate ? 'Seuil score' : isTechnicalGate ? 'Seuil technique' : 'Seuil filtre'}
+                    value={gateThreshold != null && Number.isFinite(gateThreshold) ? (isScoreGate ? num(gateThreshold, 1) : pct(gateThreshold, 1)) : '--'}
                   />
                 </div>
 
                 <div className="mt-2.5 rounded-md border border-cyan-400/10 bg-cyan-400/[0.035] p-2.5">
                   <div className="flex items-end justify-between gap-2">
                     <div>
-                      <span className="block text-[8.5px] font-bold uppercase tracking-wide text-cyan-200/60">ML Probability</span>
+                      <span className="block text-[8.5px] font-bold uppercase tracking-wide text-cyan-200/60">P_win · décision courante</span>
                       <strong className={cn(
                         'block text-[20px] font-black leading-none tabular-nums',
-                        thresholdReached ? 'text-emerald-300' : pWin < 50 ? 'text-rose-300' : 'text-amber-300'
+                        !hasDecisionPWin ? 'text-muted-foreground' : thresholdReached ? 'text-emerald-300' : 'text-rose-300'
                       )}>
-                        {pct(pWin, 1)}
+                        {hasDecisionPWin ? pct(displayedPWin, 1) : 'Non évalué'}
                       </strong>
                     </div>
                     <div className="text-right">
-                      <span className="block text-[8.5px] text-muted-foreground">Seuil</span>
+                      <span className="block text-[8.5px] text-muted-foreground">Seuil ML</span>
                       <strong className="text-[11px] tabular-nums">{pct(threshold, 0)}</strong>
-                      {rawPWin != null && Number.isFinite(rawPWin) && (
-                        <span className="mt-0.5 block text-[8px] text-muted-foreground">
-                          Brut {pct(rawPWin, 1)}
-                        </span>
-                      )}
                     </div>
                   </div>
 
-                  <div className="relative mt-2 h-1.5 overflow-visible rounded-full bg-muted">
-                    <div
-                      className={cn(
-                        'h-full rounded-full transition-all',
-                        thresholdReached ? 'bg-emerald-400' : pWin < 50 ? 'bg-rose-400' : 'bg-amber-400'
-                      )}
-                      style={{ width: `${Math.max(0, Math.min(100, pWin))}%` }}
-                    />
-                    {threshold > 0 && threshold < 100 && (
-                      <span
-                        className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-cyan-200/80"
-                        style={{ left: `${threshold}%` }}
+                  {hasDecisionPWin && (
+                    <div className="relative mt-2 h-1.5 overflow-visible rounded-full bg-muted">
+                      <div
+                        className={cn('h-full rounded-full transition-all', thresholdReached ? 'bg-emerald-400' : 'bg-rose-400')}
+                        style={{ width: `${Math.max(0, Math.min(100, Number(displayedPWin)))}%` }}
                       />
-                    )}
+                      {threshold > 0 && threshold < 100 && (
+                        <span
+                          className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-cyan-200/80"
+                          style={{ left: `${threshold}%` }}
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-1.5 text-[8.5px] text-muted-foreground">
+                    {hasDecisionPWin
+                      ? thresholdReached ? 'Le ML a validé cette étape.' : 'Le ML a rejeté cette étape.'
+                      : 'Cette décision a été arrêtée avant le filtre ML.'}
                   </div>
-                  <div className="mt-1.5 flex items-center justify-between text-[8.5px]">
-                    <span className={thresholdReached ? 'font-bold text-emerald-300' : 'font-bold text-amber-300'}>
-                      {thresholdReached ? 'Above threshold' : 'Below threshold'}
-                    </span>
-                    {inSellMode && (
-                      <span className="text-muted-foreground">Position ouverte</span>
-                    )}
-                  </div>
+
+                  {Number.isFinite(snapshotPWin) && snapshotPWin > 0 && (
+                    <div className="mt-1 border-t border-white/[0.05] pt-1 text-[8px] text-muted-foreground">
+                      Dernier aperçu modèle: {pct(snapshotPWin, 1)}
+                      {rawPWin != null && Number.isFinite(rawPWin) ? ` · brut ${pct(rawPWin, 1)}` : ''}
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
@@ -744,7 +746,7 @@ function DecisionEngine({
                       </strong>
                     </div>
                     <Badge variant={finalVariant} className="px-2 py-1 text-[9px]">
-                      {thresholdReached ? 'SEUIL OK' : 'SEUIL NON'}
+                      {hasDecisionPWin ? (thresholdReached ? 'ML OK' : 'ML NON') : 'AVANT ML'}
                     </Badge>
                   </div>
                   <p className="mt-1 truncate text-[9.5px] text-muted-foreground" title={reason}>{reason}</p>
