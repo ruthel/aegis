@@ -3021,6 +3021,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'),
                 '--trigger',
                 'auto',
+                '--mode',
+                'paper' if self.paper_trading else 'live',
             ]
             if getattr(self, 'ml_auto_retrain_check_only', True):
                 command.append('--check-only')
@@ -3035,7 +3037,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             env['PYTHONIOENCODING'] = 'utf-8'
             training_log_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)),
-                'ml_training.log',
+                f"ml_training_{active_mode}.log",
             )
             try:
                 log_fh = open(training_log_path, 'a', encoding='utf-8', errors='replace')
