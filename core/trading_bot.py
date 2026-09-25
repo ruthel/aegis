@@ -289,17 +289,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     
                     curr_price = float(klines_15m[-1]['close'])
                     trade_context = self._build_ml_trade_context() if hasattr(self, '_build_ml_trade_context') else {}
-                    prob = self.ml_engine.predict_win_probability(
+                    startup_features = self.ml_engine.extract_features_from_klines(
                         klines_15m,
                         curr_price,
                         trade_context=trade_context
                     )
+                    prob_components = self.ml_engine.predict_win_probability_components_from_features(startup_features)
+                    prob = float(prob_components.get('p_win', 50.0))
+                    raw_prob = float(prob_components.get('raw_p_win', 50.0))
                     rec = 'BUY_HIGH_CONFIDENCE' if prob >= getattr(self, 'ml_min_probability', 50.0) else ('NEUTRAL' if prob >= 50.0 else 'REJECT_RISK')
 
                     ml_preds[symbol] = {
                         'symbol': symbol,
                         'prob': round(float(prob), 2),
                         'p_win': prob,
+                        'raw_p_win': raw_prob,
                         'rec': rec,
                         'recommendation': rec,
                         'min_probability': getattr(self, 'ml_min_probability', 65.0),
@@ -2392,16 +2396,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     bot_context=ml_bot_context
                 )
                 _features_done_ns = time.perf_counter_ns()
-                ml_win_prob = self.ml_engine.predict_win_probability(
-                    klines_15m,
-                    current_price,
-                    klines_5m=klines_5m,
-                    klines_1h=klines_1h,
-                    klines_4h=klines_4h,
-                    klines_1d=klines_1d,
-                    trade_context=ml_trade_context,
-                    bot_context=ml_bot_context
-                )
+                ml_prob_components = self.ml_engine.predict_win_probability_components_from_features(ml_entry_features)
+                ml_win_prob = float(ml_prob_components.get('p_win', 50.0))
+                ml_raw_win_prob = float(ml_prob_components.get('raw_p_win', 50.0))
                 _prediction_done_ns = time.perf_counter_ns()
                 shadow_challenger_p_win = self._predict_shadow_challenger(ml_entry_features)
 
@@ -2472,6 +2469,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 ml_preds[symbol] = {
                     'symbol': symbol,
                     'p_win': ml_win_prob,
+                    'raw_p_win': ml_raw_win_prob,
                     'recommendation': recommendation,
                     'min_probability': self.ml_min_probability,
                     'ml_exit_entry_forecast': ml_exit_forecast,
