@@ -107,10 +107,19 @@ class FakeBot:
 
     def _resolve_exchange_execution(self, symbol, order, amount, fallback_price, side="buy"):
         return {
-            "price": float(order.get("price") or fallback_price),
-            "amount": float(order.get("amount") or amount),
+            "price": float(order.get("average") or order.get("price") or fallback_price),
+            "amount": float(order.get("filled") or order.get("amount") or amount),
             "fee_amount": 0.01,
         }
+
+    def _confirm_live_order_execution(self, symbol, order, side=None):
+        return self._resolve_exchange_execution(
+            symbol,
+            order,
+            float(order.get("amount") or order.get("filled") or 0.0),
+            float(order.get("average") or order.get("price") or self.get_price(symbol)),
+            side=side or "buy",
+        )
 
     def _record_live_order_accounting(self, *args, **kwargs):
         return None
