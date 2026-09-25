@@ -247,6 +247,18 @@ export function decisionReasonTitle(reason: unknown): string {
     technical_signal_below_threshold: 'Signal technique trop faible',
     technical_signal_not_buy: 'Signal technique sans achat',
     technical_signal_confidence_below_threshold: 'Confiance technique trop faible',
+    technical_confidence_below_threshold: 'Confiance technique trop faible',
+    crypto_score_below_threshold: 'Score marché insuffisant',
+    no_shared_candidate_signal: 'Aucun signal d’entrée confirmé',
+    ml_model_unavailable_or_incompatible: 'Modèle ML indisponible',
+    ml_expected_net_edge_below_threshold: 'Edge net attendu insuffisant',
+    position_or_capital_blocked: 'Position ou capital bloqué',
+    execution_position_blocked: 'Ouverture de position bloquée',
+    execution_spread_too_wide: 'Spread trop large',
+    execution_capital_blocked: 'Capital insuffisant',
+    execution_invalid_order_size: 'Taille d’ordre invalide',
+    execution_cooldown_active: 'Cooldown d’exécution actif',
+    bot_paused: 'Bot en pause',
     technical_signal_not_buy_soft: 'Signal technique transmis au ML',
     technical_signal_confidence_below_threshold_soft: 'Confiance technique transmise au ML',
     support_touch_disabled_in_bear_mode: 'Support Touch désactivé en bear mode',
@@ -302,8 +314,8 @@ export function decisionExplanation(item: JsonMap): string {
   if (key === 'symbol_cooldown_active') {
     return `Le bot attend avant de retrader cette paire. Temps restant: ${durationText(metrics.cooldown_remaining_seconds)}.`
   }
-  if (key === 'technical_signal_below_threshold') {
-    return `Le signal technique ne confirme pas assez l'achat. Confiance ${metricNumber(metrics.confidence)}% / seuil ${metricNumber(metrics.min_confidence)}%.`
+  if (key === 'technical_signal_below_threshold' || key === 'technical_confidence_below_threshold' || key === 'technical_signal_confidence_below_threshold') {
+    return `Le filtre technique a rejeté l'entrée avant le ML. Confiance technique ${metricNumber(metrics.confidence)}% / seuil ${metricNumber(metrics.min_confidence)}%.`
   }
   if (item.allowed) {
     if (Object.keys(mlDecision).length) {
