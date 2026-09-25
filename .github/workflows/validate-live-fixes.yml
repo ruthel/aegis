@@ -40,3 +40,15 @@ jobs:
       - name: Unit and smoke tests
         run: |
           python -m unittest discover -s tests -p "test_*.py" -v
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Frontend typecheck and build
+        working-directory: ui/app
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.28.2 --activate
+          pnpm install --frozen-lockfile
+          pnpm build
