@@ -248,18 +248,26 @@ class ExecutionManager:
                         latency_trace['fallback_market_send_ns'] = time.perf_counter_ns()
                         market_order = self.bot.exchange.create_market_buy_order(symbol, remaining)
                         latency_trace['fallback_market_ack_ns'] = time.perf_counter_ns()
-                        market_exec = self.bot._resolve_exchange_execution(
-                            symbol, market_order, remaining, current_price, side='buy'
+                        market_exec = self.bot._confirm_live_order_execution(
+                            symbol, market_order, side='buy'
                         )
-                        if latency_trace.get('first_fill_ns') is None:
-                            latency_trace['first_fill_ns'] = time.perf_counter_ns()
-                        latency_trace['final_fill_ns'] = time.perf_counter_ns()
-                        market_amount = float(market_exec.get('amount') or remaining)
-                        market_px = float(market_exec.get('price') or current_price)
-                        self.bot._record_live_order_accounting(
-                            symbol, 'buy', market_amount, market_px, market_order,
-                            order_type='market', filled=True
-                        )
+                        if market_exec:
+                            if latency_trace.get('first_fill_ns') is None:
+                                latency_trace['first_fill_ns'] = time.perf_counter_ns()
+                            latency_trace['final_fill_ns'] = time.perf_counter_ns()
+                            market_amount = float(market_exec.get('amount') or 0.0)
+                            market_px = float(market_exec.get('price') or 0.0)
+                            self.bot._record_live_order_accounting(
+                                symbol, 'buy', market_amount, market_px, market_order,
+                                order_type='market', filled=True
+                            )
+                        else:
+                            market_amount = 0.0
+                            market_px = 0.0
+                            print(
+                                f"⚠️ {symbol}: fallback Market envoyé mais fill Kraken non confirmé. "
+                                "Aucune quantité locale ajoutée."
+                            )
                     else:
                         market_order = None
                         market_exec = None
@@ -310,15 +318,41 @@ class ExecutionManager:
 
         # 6. Slippage Tracking & Logging. Pour le live, le prix demande peut
         # diverger du prix moyen réellement exécuté, surtout après un fallback.
-        execution = composite_execution or self.bot._resolve_exchange_execution(
-            symbol,
-            order,
-            size_crypto,
-            current_price,
-            side='buy',
-        )
-        executed_price = float(execution.get('price') or order.get('price') or current_price)
-        executed_amount = float(execution.get('amount') or size_crypto)
+        if composite_execution:
+            execution = composite_execution
+        elif self.bot.paper_trading:
+            execution = self.bot._resolve_exchange_execution(
+                symbol,
+                order,
+                size_crypto,
+                current_price,
+                side='buy',
+            )
+        else:
+            execution = self.bot._confirm_live_order_execution(symbol, order, side='buy')
+            if not execution:
+                print(f"❌ Smart Execution: fill Kraken non confirmé sur {symbol}")
+                self._log_execution(
+                    symbol, 'buy', order_type, expected_price, requested_price,
+                    None, None, micro['spread_pct'], size_crypto,
+                    (time.time() - start_time) * 1000.0, False,
+                    'exchange_fill_unconfirmed'
+                )
+                self.bot.record_decision(
+                    symbol,
+                    action_type='buy',
+                    allowed=False,
+                    reason='exchange_fill_unconfirmed',
+                    metrics={'price': current_price, 'order_id': order.get('id')},
+                    throttle_seconds=0,
+                )
+                return False
+
+        executed_price = float(execution.get('price') or 0.0)
+        executed_amount = float(execution.get('amount') or 0.0)
+        if executed_price <= 0 or executed_amount <= 0:
+            print(f"❌ Smart Execution: exécution invalide sur {symbol}")
+            return False
         slippage_pct = ((executed_price - expected_price) / expected_price * 100.0) if expected_price > 0 else 0.0
         exec_duration_ms = (time.time() - start_time) * 1000.0
 
