@@ -623,7 +623,7 @@ class NotificationManager:
         
         try:
             from ui.server import compute_trade_history, load_accounting_state
-            state = load_accounting_state({'positions': []}, view_mode='live')
+            state = load_accounting_state({'positions': []}, view_mode=self._active_mode())
             positions = state.get('positions', [])
             trades = compute_trade_history(positions)
         except Exception:
