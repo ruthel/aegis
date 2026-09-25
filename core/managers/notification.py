@@ -48,18 +48,28 @@ class NotificationManager:
         return '🧪 PAPER' if self._active_mode() == 'paper' else '💸 LIVE'
 
     def _refresh_live_state(self, include_positions=True, include_history=True):
-        """Rafraîchit l'état LIVE depuis Kraken avant une réponse Telegram."""
+        """Tente un refresh LIVE borné; ne bloque jamais indéfiniment Telegram."""
         bot = self.bot_ref
         if not bot or getattr(bot, 'paper_trading', True):
-            return
-        try:
-            if include_positions and hasattr(bot, 'sync_positions_from_exchange'):
-                bot.sync_positions_from_exchange()
-                return
-            if include_history and hasattr(bot, 'sync_trade_history'):
-                bot.sync_trade_history()
-        except Exception:
-            pass
+            return True
+
+        timeout_seconds = float(os.getenv('TELEGRAM_LIVE_REFRESH_TIMEOUT_SECONDS', '4.0'))
+        result = {'ok': False}
+
+        def _refresh():
+            try:
+                if include_positions and hasattr(bot, 'sync_positions_from_exchange'):
+                    bot.sync_positions_from_exchange()
+                elif include_history and hasattr(bot, 'sync_trade_history'):
+                    bot.sync_trade_history()
+                result['ok'] = True
+            except Exception:
+                result['ok'] = False
+
+        worker = threading.Thread(target=_refresh, daemon=True, name='telegram-live-refresh')
+        worker.start()
+        worker.join(max(0.5, timeout_seconds))
+        return bool(result['ok']) if not worker.is_alive() else False
 
     def _open_orders_for_active_mode(self, symbol):
         """Retourne uniquement les ordres du mode du bot attaché."""
@@ -163,7 +173,14 @@ class NotificationManager:
                         parts = text.split()
                         command = parts[0].lower()
                         args = parts[1:] if len(parts) > 1 else []
-                        self._handle_telegram_command(command, args)
+                        # Ne jamais bloquer la boucle getUpdates sur une commande lente
+                        # (Kraken, SQLite, génération de graphique, etc.).
+                        threading.Thread(
+                            target=self._handle_telegram_command,
+                            args=(command, args),
+                            daemon=True,
+                            name=f"telegram-command-{command.lstrip('/') or 'unknown'}",
+                        ).start()
                         
             except Exception as e:
                 # Éviter de saturer la boucle en cas d'erreur réseau
@@ -413,8 +430,8 @@ class NotificationManager:
             return "⚠️ Bot non disponible"
         
         bot = self.bot_ref
-        self._refresh_live_state(include_positions=True, include_history=True)
-        balance = bot.balance_manager.get_balance(force_refresh=not bot.paper_trading)
+        live_refresh_ok = self._refresh_live_state(include_positions=True, include_history=True)
+        balance = bot.balance_manager.get_balance(force_refresh=(not bot.paper_trading and live_refresh_ok))
         usd_data = balance.get('USD', {}) or {}
         usd_free = float(usd_data.get('free') or 0.0)
         usd_used = float(usd_data.get('used') or usd_data.get('locked') or 0.0)
@@ -1459,15 +1476,10 @@ class NotificationManager:
         if not bot:
             return "⚠️ Bot non disponible"
 
-        # En LIVE, synchroniser d'abord l'état local avec Kraken puis rafraîchir
-        # le solde afin que /status reflète l'exchange au moment de la demande.
-        if not bot.paper_trading and hasattr(bot, 'sync_positions_from_exchange'):
-            try:
-                bot.sync_positions_from_exchange()
-            except Exception:
-                pass
-
-        balance = bot.balance_manager.get_balance(force_refresh=not bot.paper_trading)
+        # En LIVE, tenter un refresh court. Si Kraken est occupé/lent,
+        # répondre avec le dernier état connu au lieu de bloquer Telegram.
+        live_refresh_ok = self._refresh_live_state(include_positions=True, include_history=True)
+        balance = bot.balance_manager.get_balance(force_refresh=(not bot.paper_trading and live_refresh_ok))
         usd_data = balance.get('USD', {}) or {}
         usd_free = float(usd_data.get('free') or 0.0)
         usd_locked = float(usd_data.get('used') or usd_data.get('locked') or 0.0)
@@ -1639,11 +1651,7 @@ class NotificationManager:
             from ui.server import load_bot_state, live_status, weighted_positions
 
             if self.bot_ref and hasattr(self.bot_ref, 'state'):
-                if not self.bot_ref.paper_trading and hasattr(self.bot_ref, 'sync_positions_from_exchange'):
-                    try:
-                        self.bot_ref.sync_positions_from_exchange()
-                    except Exception:
-                        pass
+                self._refresh_live_state(include_positions=True, include_history=True)
                 state = self.bot_ref.state
             else:
                 state = load_bot_state({'positions': []}, mode=self._active_mode())
