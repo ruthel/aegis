@@ -573,6 +573,28 @@ function DecisionEngine({
 
             const exitDecision = asString(exitRec.decision ?? mlExit.decision, 'HOLD').toUpperCase()
             const inSellMode = Boolean(openPosition)
+
+            // La probabilité principale dépend du cycle de vie de la position:
+            // - sans position ouverte: P_win (probabilité d'entrée gagnante)
+            // - position ouverte: P_exit = 100 - P_continue
+            const pContinueRaw = exitRec.p_continue ?? mlExit.p_continue ?? item.p_continue
+            const minPContinueRaw = exitRec.min_p_continue ?? mlExit.min_p_continue ?? item.min_p_continue
+            const pContinue = pContinueRaw == null ? null : Number(pContinueRaw)
+            const minPContinue = minPContinueRaw == null ? null : Number(minPContinueRaw)
+            const hasExitProbability = pContinue != null && Number.isFinite(pContinue)
+            const displayedPExit = hasExitProbability ? Math.max(0, Math.min(100, 100 - Number(pContinue))) : null
+            const exitThreshold = minPContinue != null && Number.isFinite(minPContinue)
+              ? Math.max(0, Math.min(100, 100 - Number(minPContinue)))
+              : null
+            const exitThresholdReached =
+              displayedPExit != null && exitThreshold != null && Number(displayedPExit) >= Number(exitThreshold)
+
+            const activeProbabilityLabel = inSellMode ? 'P_exit · décision courante' : 'P_win · décision courante'
+            const activeProbability = inSellMode ? displayedPExit : displayedPWin
+            const hasActiveProbability = inSellMode ? hasExitProbability : hasDecisionPWin
+            const activeThreshold = inSellMode ? exitThreshold : threshold
+            const activeThresholdReached = inSellMode ? exitThresholdReached : thresholdReached
+
             const transientWaitReasons = [
               'symbol_cooldown_active',
               'execution_cooldown_active',
@@ -600,14 +622,17 @@ function DecisionEngine({
                 : finalDecision === 'SELL' || finalDecision === 'REJECT' ? 'danger'
                   : 'warning'
 
-            const modelStatus =
-              hasDecisionPWin
+            const modelStatus = inSellMode
+              ? hasExitProbability
+                ? exitThresholdReached ? 'SORTIE ML' : 'CONTINUE ML'
+                : 'EXIT ML EN ATTENTE'
+              : hasDecisionPWin
                 ? thresholdReached ? 'ML OK' : 'ML REFUS'
                 : latestDecision ? 'ML NON ÉVALUÉ' : recommendation === 'BUY_HIGH_CONFIDENCE' ? 'APERÇU ML +' : 'EN ATTENTE'
 
             const modelVariant =
-              modelStatus === 'ML OK' ? 'success'
-                : modelStatus === 'ML REFUS' ? 'danger'
+              modelStatus === 'ML OK' || modelStatus === 'CONTINUE ML' ? 'success'
+                : modelStatus === 'ML REFUS' || modelStatus === 'SORTIE ML' ? 'danger'
                   : 'warning'
 
             const reason = inSellMode
@@ -690,47 +715,71 @@ function DecisionEngine({
                 <div className="mt-2.5 rounded-md border border-cyan-400/10 bg-cyan-400/[0.035] p-2.5">
                   <div className="flex items-end justify-between gap-2">
                     <div>
-                      <span className="block text-[8.5px] font-bold uppercase tracking-wide text-cyan-200/60">P_win · décision courante</span>
+                      <span className="block text-[8.5px] font-bold uppercase tracking-wide text-cyan-200/60">{activeProbabilityLabel}</span>
                       <strong className={cn(
                         'block text-[20px] font-black leading-none tabular-nums',
-                        !hasDecisionPWin ? 'text-muted-foreground' : thresholdReached ? 'text-emerald-300' : 'text-rose-300'
+                        !hasActiveProbability
+                          ? 'text-muted-foreground'
+                          : inSellMode
+                            ? activeThresholdReached ? 'text-rose-300' : 'text-emerald-300'
+                            : activeThresholdReached ? 'text-emerald-300' : 'text-rose-300'
                       )}>
-                        {hasDecisionPWin ? pct(displayedPWin, 1) : 'Non évalué'}
+                        {hasActiveProbability && activeProbability != null ? pct(activeProbability, 1) : 'Non évalué'}
                       </strong>
                     </div>
                     <div className="text-right">
-                      <span className="block text-[8.5px] text-muted-foreground">Seuil ML</span>
-                      <strong className="text-[11px] tabular-nums">{pct(threshold, 0)}</strong>
+                      <span className="block text-[8.5px] text-muted-foreground">
+                        {inSellMode ? 'Seuil sortie ML' : 'Seuil entrée ML'}
+                      </span>
+                      <strong className="text-[11px] tabular-nums">
+                        {activeThreshold != null && Number.isFinite(activeThreshold) ? pct(activeThreshold, 0) : '--'}
+                      </strong>
                     </div>
                   </div>
 
-                  {hasDecisionPWin && (
+                  {hasActiveProbability && activeProbability != null && (
                     <div className="relative mt-2 h-1.5 overflow-visible rounded-full bg-muted">
                       <div
-                        className={cn('h-full rounded-full transition-all', thresholdReached ? 'bg-emerald-400' : 'bg-rose-400')}
-                        style={{ width: `${Math.max(0, Math.min(100, Number(displayedPWin)))}%` }}
+                        className={cn(
+                          'h-full rounded-full transition-all',
+                          inSellMode
+                            ? activeThresholdReached ? 'bg-rose-400' : 'bg-emerald-400'
+                            : activeThresholdReached ? 'bg-emerald-400' : 'bg-rose-400'
+                        )}
+                        style={{ width: `${Math.max(0, Math.min(100, Number(activeProbability)))}%` }}
                       />
-                      {threshold > 0 && threshold < 100 && (
+                      {activeThreshold != null && activeThreshold > 0 && activeThreshold < 100 && (
                         <span
                           className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-cyan-200/80"
-                          style={{ left: `${threshold}%` }}
+                          style={{ left: `${activeThreshold}%` }}
                         />
                       )}
                     </div>
                   )}
 
                   <div className="mt-1.5 text-[8.5px] text-muted-foreground">
-                    {hasDecisionPWin
-                      ? thresholdReached ? 'Le ML a validé cette étape.' : 'Le ML a rejeté cette étape.'
-                      : 'Cette décision a été arrêtée avant le filtre ML.'}
+                    {inSellMode
+                      ? hasExitProbability
+                        ? exitThresholdReached
+                          ? 'Le risque de sortie a atteint le seuil ML.'
+                          : 'Le ML recommande de maintenir la position.'
+                        : 'La probabilité de sortie n’a pas encore été évaluée.'
+                      : hasDecisionPWin
+                        ? thresholdReached ? 'Le ML a validé cette étape.' : 'Le ML a rejeté cette étape.'
+                        : 'Cette décision a été arrêtée avant le filtre ML.'}
                   </div>
 
-                  {Number.isFinite(snapshotPWin) && snapshotPWin > 0 && (
+                  {inSellMode && hasExitProbability && pContinue != null ? (
+                    <div className="mt-1 border-t border-white/[0.05] pt-1 text-[8px] text-muted-foreground">
+                      P_continue: {pct(pContinue, 1)}
+                      {minPContinue != null && Number.isFinite(minPContinue) ? ` · seuil maintien ${pct(minPContinue, 1)}` : ''}
+                    </div>
+                  ) : Number.isFinite(snapshotPWin) && snapshotPWin > 0 ? (
                     <div className="mt-1 border-t border-white/[0.05] pt-1 text-[8px] text-muted-foreground">
                       Dernier aperçu modèle: {pct(snapshotPWin, 1)}
                       {rawPWin != null && Number.isFinite(rawPWin) ? ` · brut ${pct(rawPWin, 1)}` : ''}
                     </div>
-                  )}
+                  ) : null}
                 </div>
 
                 <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
@@ -747,7 +796,13 @@ function DecisionEngine({
                       </strong>
                     </div>
                     <Badge variant={finalVariant} className="px-2 py-1 text-[9px]">
-                      {hasDecisionPWin ? (thresholdReached ? 'ML OK' : 'ML NON') : 'AVANT ML'}
+                      {inSellMode
+                        ? hasExitProbability
+                          ? exitThresholdReached ? 'EXIT ML' : 'HOLD ML'
+                          : 'EXIT EN ATTENTE'
+                        : hasDecisionPWin
+                          ? thresholdReached ? 'ML OK' : 'ML NON'
+                          : 'AVANT ML'}
                     </Badge>
                   </div>
                   <p className="mt-1 truncate text-[9.5px] text-muted-foreground" title={reason}>{reason}</p>
