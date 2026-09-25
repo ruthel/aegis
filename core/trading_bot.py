@@ -2284,6 +2284,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'price': current_price,
                     'confidence': signal_confidence,
                     'min_confidence': adaptive_threshold,
+                    'technical_strength': global_signal.get('strength'),
+                    'adjusted_strength': global_signal.get('adjusted_strength'),
+                    'dominant_trend': global_signal.get('dominant_trend'),
+                    'trend_consistency': global_signal.get('trend_consistency'),
+                    'technical_signals': global_signal.get('signals') or [],
+                    'volatility': volatility,
+                    'active_timeframes': analysis.get('active_timeframes') or [],
                 },
                 throttle_seconds=60
             )
