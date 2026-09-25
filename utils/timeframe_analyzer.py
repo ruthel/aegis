@@ -319,42 +319,55 @@ class TimeframeAnalyzer:
         }
     
     def generate_global_signal(self, timeframe_analysis, current_price, symbol='', volatility=2.0, weights=None):
-        """Génère un signal global basé sur tous les timeframes"""
+        """Génère un signal global basé sur tous les timeframes."""
         if weights is None:
             weights = {'15m': 3, '5m': 2, '1m': 1}
-        
-        total_strength = 0
-        max_weight = 0
-        trend_votes = {'bullish': 0, 'bearish': 0, 'neutral': 0, 'unknown': 0}
+
+        total_strength = 0.0
+        max_weight = 0.0
+        trend_votes = {'bullish': 0.0, 'bearish': 0.0, 'neutral': 0.0, 'unknown': 0.0}
         all_signals = []
-        
+
         for tf, analysis in timeframe_analysis.items():
-            weight = weights.get(tf, 1)
-            strength = analysis['strength']
-            trend = analysis['trend']
-            
+            weight = float(weights.get(tf, 1))
+            strength = float(analysis.get('strength') or 0.0)
+            trend = analysis.get('trend') or 'unknown'
+
             total_strength += strength * weight
             max_weight += weight
-            trend_votes[trend] += weight
-            
-            for signal in analysis['signals']:
+            trend_votes[trend] = trend_votes.get(trend, 0.0) + weight
+
+            for signal in analysis.get('signals', []):
                 all_signals.append(f"{tf}: {signal}")
-        
-        avg_strength = total_strength / max_weight if max_weight > 0 else 0
-        dominant_trend = max(trend_votes, key=trend_votes.get)
-        # Convertir 'unknown' en 'neutral'
+
+        avg_strength = total_strength / max_weight if max_weight > 0 else 0.0
+
+        dominant_trend = max(trend_votes, key=trend_votes.get) if trend_votes else 'neutral'
         if dominant_trend == 'unknown':
             dominant_trend = 'neutral'
-        action = self.determine_action(avg_strength, dominant_trend, timeframe_analysis)
-        base_confidence = self.calculate_confidence(timeframe_analysis, avg_strength)
-        
+
+        dominant_weight = float(trend_votes.get(dominant_trend, 0.0))
+        trend_consistency = dominant_weight / max_weight if max_weight > 0 else 0.0
+        adjusted_strength = avg_strength * trend_consistency
+
+        action = self.determine_action(
+            avg_strength,
+            dominant_trend,
+            timeframe_analysis,
+            weights=weights,
+            trend_consistency=trend_consistency,
+        )
+        base_confidence = self.calculate_confidence(
+            timeframe_analysis,
+            avg_strength,
+            weights=weights,
+            dominant_trend=dominant_trend,
+            trend_consistency=trend_consistency,
+        )
+
         profile = self.get_crypto_profile(symbol, volatility)
         adjusted_confidence = base_confidence + profile['confidence_adjustment']
         adjusted_confidence = max(0, min(100, adjusted_confidence))
-        
-        trends = [analysis['trend'] for analysis in timeframe_analysis.values()]
-        trend_consistency = trends.count(dominant_trend) / len(trends) if trends else 0.0
-        adjusted_strength = avg_strength * trend_consistency
 
         return {
             'action': action,
@@ -367,52 +380,97 @@ class TimeframeAnalyzer:
             'signals': all_signals[:5],
             'volatility': volatility,
             'profile': profile,
-            'summary': self.generate_summary(action, avg_strength, dominant_trend, adjusted_confidence, volatility)
+            'summary': self.generate_summary(action, adjusted_strength, dominant_trend, adjusted_confidence, volatility)
         }
     
-    def determine_action(self, avg_strength, dominant_trend, timeframe_analysis):
-        """Détermine l'action recommandée - SIMPLIFIÉ"""
+    def determine_action(
+        self,
+        avg_strength,
+        dominant_trend,
+        timeframe_analysis,
+        weights=None,
+        trend_consistency=None,
+    ):
+        """Détermine l'action à partir de la force multi-timeframe pondérée."""
         strong_buy_threshold = 1.5
         buy_threshold = 0.3
         sell_threshold = -0.3
         strong_sell_threshold = -1.5
-        
-        trends = [analysis['trend'] for analysis in timeframe_analysis.values()]
-        trend_consistency = trends.count(dominant_trend) / len(trends)
-        adjusted_strength = avg_strength * trend_consistency
-        
-        # Logique simplifiée: strength détermine l'action
+
+        if weights is None:
+            weights = {tf: 1.0 for tf in timeframe_analysis}
+
+        if trend_consistency is None:
+            total_weight = 0.0
+            dominant_weight = 0.0
+            for tf, analysis in timeframe_analysis.items():
+                weight = float(weights.get(tf, 1.0))
+                total_weight += weight
+                if (analysis.get('trend') or 'unknown') == dominant_trend:
+                    dominant_weight += weight
+            trend_consistency = dominant_weight / total_weight if total_weight > 0 else 0.0
+
+        adjusted_strength = float(avg_strength or 0.0) * float(trend_consistency or 0.0)
+
         if adjusted_strength >= strong_buy_threshold:
             return 'STRONG_BUY'
-        elif adjusted_strength >= buy_threshold:
+        if adjusted_strength >= buy_threshold:
             return 'BUY'
-        elif adjusted_strength <= strong_sell_threshold:
+        if adjusted_strength <= strong_sell_threshold:
             return 'STRONG_SELL'
-        elif adjusted_strength <= sell_threshold:
+        if adjusted_strength <= sell_threshold:
             return 'SELL'
-        else:
-            return 'HOLD'
-    
-    def calculate_confidence(self, timeframe_analysis, avg_strength):
-        """Calcule le score de confiance (0-100) - VERSION RÉALISTE"""
-        strength_factor = min(abs(avg_strength) / 2.0, 1.0)
-        
-        trends = [analysis['trend'] for analysis in timeframe_analysis.values()]
-        dominant_trend = max(set(trends), key=trends.count)
-        consistency_factor = trends.count(dominant_trend) / len(trends)
-        
-        total_signals = sum(len(analysis['signals']) for analysis in timeframe_analysis.values())
-        signal_factor = min(total_signals / 6.0, 1.0)
-        
+        return 'HOLD'
+
+    def calculate_confidence(
+        self,
+        timeframe_analysis,
+        avg_strength,
+        weights=None,
+        dominant_trend=None,
+        trend_consistency=None,
+    ):
+        """Calcule la confiance avec la même pondération multi-timeframe que l'action."""
+        if weights is None:
+            weights = {tf: 1.0 for tf in timeframe_analysis}
+
+        if dominant_trend is None:
+            weighted_votes = {}
+            for tf, analysis in timeframe_analysis.items():
+                trend = analysis.get('trend') or 'unknown'
+                weighted_votes[trend] = weighted_votes.get(trend, 0.0) + float(weights.get(tf, 1.0))
+            dominant_trend = max(weighted_votes, key=weighted_votes.get) if weighted_votes else 'neutral'
+
+        if trend_consistency is None:
+            total_weight = 0.0
+            dominant_weight = 0.0
+            for tf, analysis in timeframe_analysis.items():
+                weight = float(weights.get(tf, 1.0))
+                total_weight += weight
+                if (analysis.get('trend') or 'unknown') == dominant_trend:
+                    dominant_weight += weight
+            trend_consistency = dominant_weight / total_weight if total_weight > 0 else 0.0
+
+        strength_factor = min(abs(float(avg_strength or 0.0)) / 2.0, 1.0)
+
+        weighted_signal_score = 0.0
+        max_signal_score = 0.0
+        for tf, analysis in timeframe_analysis.items():
+            weight = float(weights.get(tf, 1.0))
+            signal_count = len(analysis.get('signals', []))
+            weighted_signal_score += min(signal_count / 6.0, 1.0) * weight
+            max_signal_score += weight
+        signal_factor = weighted_signal_score / max_signal_score if max_signal_score > 0 else 0.0
+
         confidence = (
-            strength_factor * 0.40 + 
-            consistency_factor * 0.30 + 
-            signal_factor * 0.30
-        ) * 100
-        
-        if abs(avg_strength) >= 2.5:
-            confidence = min(confidence * 1.1, 100)
-        
+            strength_factor * 0.40
+            + float(trend_consistency or 0.0) * 0.30
+            + signal_factor * 0.30
+        ) * 100.0
+
+        if abs(float(avg_strength or 0.0)) >= 2.5:
+            confidence = min(confidence * 1.1, 100.0)
+
         return round(confidence, 1)
     
     def generate_summary(self, action, strength, trend, confidence, volatility=2.0):
