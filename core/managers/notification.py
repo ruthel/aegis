@@ -38,6 +38,15 @@ class NotificationManager:
         self.daily_stats = {'start_balance': 0, 'trades': [], 'start_time': None}
         self._last_update_id = None
         
+    def _active_mode(self):
+        """Mode du bot auquel CE notifier est attaché; jamais déduit d'une vue UI."""
+        if self.bot_ref is not None:
+            return 'paper' if bool(getattr(self.bot_ref, 'paper_trading', True)) else 'live'
+        return 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
+
+    def _mode_badge(self):
+        return '🧪 PAPER' if self._active_mode() == 'paper' else '💸 LIVE'
+
     def set_bot(self, bot):
         """Référence au bot pour status périodique et écoute des commandes"""
         self.bot_ref = bot
@@ -381,7 +390,7 @@ class NotificationManager:
         
         try:
             from ui.server import compute_trade_history, load_accounting_state
-            state = load_accounting_state({'positions': []}, view_mode='live')
+            state = load_accounting_state({'positions': []}, view_mode=self._active_mode())
             positions = state.get('positions', [])
             trades = compute_trade_history(positions)
         except Exception:
@@ -427,7 +436,7 @@ class NotificationManager:
             emoji = "🟢" if pnl >= 0 else "🔴"
             return f"{emoji} {pnl:+.2f} $"
         
-        msg = "📈 <b>PERFORMANCE P&L</b>\n\n"
+        msg = f"{self._mode_badge()}\n📈 <b>PERFORMANCE P&L</b>\n\n"
         msg += f"📅 <b>Aujourd'hui</b>\n"
         msg += f"   {fmt_pnl(pnl_day)} ({trades_day} trades)\n\n"
         msg += f"📆 <b>7 derniers jours</b>\n"
@@ -445,7 +454,7 @@ class NotificationManager:
         bot = self.bot_ref
         ml_engine = getattr(bot, 'ml_engine', None)
         
-        msg = "🧠 <b>STATUT ML</b>\n\n"
+        msg = f"{self._mode_badge()}\n🧠 <b>STATUT ML</b>\n\n"
         
         if not ml_engine:
             msg += "⚠️ ML Engine non disponible"
@@ -463,10 +472,7 @@ class NotificationManager:
         has_sizing = ml_engine.sizing_model is not None
         msg += f"📊 <b>Sizing Model</b>: {'✅ Actif' if has_sizing else '❌ Absent'}\n"
         
-        # Modèle target
-        has_target = ml_engine.target_model is not None
-        msg += f"🎯 <b>Target Model</b>: {'✅ Actif' if has_target else '❌ Absent'}\n\n"
-        
+        msg += "\n"
         # Dernières prédictions
         try:
             logger = getattr(bot, 'ml_live_logger', None)
@@ -1254,7 +1260,7 @@ class NotificationManager:
                 return False
 
             logger = getattr(self.bot_ref, 'ml_live_logger', None) if self.bot_ref else None
-            store_key = 'telegram_last_daily_status_day'
+            store_key = f"telegram_last_daily_status_day:{self._active_mode()}"
             if logger:
                 claimed = logger.claim_daily_key(store_key, day_key)
                 self.last_status_day = day_key
@@ -1285,9 +1291,8 @@ class NotificationManager:
     def _get_historical_performance(self):
         """Calcule les statistiques de performance réelles basées sur l'équité Kraken (comme le web)"""
         try:
-            from ui.server import trade_stats, load_accounting_state, apply_live_balance_pnl, get_live_market_data, active_trading_mode
-            # Utiliser le mode de trading actif (live ou paper)
-            trading_mode = active_trading_mode()
+            from ui.server import trade_stats, load_accounting_state, apply_live_balance_pnl, live_status
+            trading_mode = self._active_mode()
             state = load_accounting_state({'positions': []}, view_mode=trading_mode)
             positions = state.get('positions', [])
             
@@ -1309,12 +1314,14 @@ class NotificationManager:
                     'best_trade': 0,
                 }
             
-            # Appliquer le PnL basé sur l'équité Kraken (comme le web)
-            live = get_live_market_data()
-            adjusted_stats = apply_live_balance_pnl(stats, state, live)
-            
+            # L'equity Kraken n'est pertinente qu'en LIVE; en PAPER on garde
+            # strictement les résultats du ledger paper.
+            adjusted_stats = stats
+            if trading_mode == 'live':
+                adjusted_stats = apply_live_balance_pnl(stats, state, live_status()) or stats
+
             return {
-                'total_pnl': adjusted_stats.get('total_pnl_net', stats.get('total_pnl_net', 0)) if adjusted_stats else stats.get('total_pnl_net', 0),
+                'total_pnl': adjusted_stats.get('total_pnl_net', stats.get('total_pnl_net', 0)),
                 'total_trades': stats.get('total_trades', 0),
                 'winrate': stats.get('win_rate', 0),
                 'best_trade': stats.get('best_trade_net', 0),
@@ -1506,7 +1513,7 @@ class NotificationManager:
             if self.bot_ref and hasattr(self.bot_ref, 'state'):
                 state = self.bot_ref.state
             else:
-                state = load_bot_state({'positions': []})
+                state = load_bot_state({'positions': []}, mode=self._active_mode())
 
             live = live_status()
 
@@ -1521,7 +1528,7 @@ class NotificationManager:
             if not open_positions:
                 return "📦 <b>POSITIONS ACTIVES</b>\n\nAucune position ouverte pour le moment."
 
-            msg = "📦 <b>POSITIONS ACTIVES</b>\n\n"
+            msg = f"{self._mode_badge()}\n📦 <b>POSITIONS ACTIVES</b>\n\n"
 
             total_val = 0.0
             total_pnl_net = 0.0
@@ -1572,7 +1579,7 @@ class NotificationManager:
         """Construit le message d'affichage de l'historique des trades fermés."""
         try:
             from ui.server import compute_trade_history, load_bot_state
-            state = load_bot_state({'positions': []})
+            state = load_bot_state({'positions': []}, mode=self._active_mode())
             positions = state.get('positions', [])
             all_trades = compute_trade_history(positions)
 
@@ -1583,7 +1590,7 @@ class NotificationManager:
 
             recent_trades = closed_trades[:8]
 
-            msg = "📜 <b>HISTORIQUE DES TRADES</b>\n\n"
+            msg = f"{self._mode_badge()}\n📜 <b>HISTORIQUE DES TRADES</b>\n\n"
 
             for i, t in enumerate(recent_trades, 1):
                 symbol = t.get('symbol', 'Inconnu')
