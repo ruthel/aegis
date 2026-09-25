@@ -36,60 +36,186 @@ class SyncMixin:
             print(f"⚠️ Erreur sauvegarde état SQLite: {e}")
 
     def sync_positions_from_exchange(self):
+        """Réconcilie les positions LIVE avec les avoirs réellement présents sur Kraken.
+
+        En live, le solde Kraken (free + used) est la quantité de référence. Une vente
+        manuelle, un retrait ou un reliquat dust ne doit jamais laisser Aegis croire
+        qu'il détient encore l'ancienne quantité complète.
+        """
         if self.paper_trading:
             return
-        
+
         try:
             self.sync_open_orders()
             self.sync_trade_history()
-            
-            balance = self.balance_manager.get_balance()
-            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
-            
-            all_positions = [p for p in self.state.get('positions', [])]
-            active_buy_positions = []
-            changed = False
-            
-            for pair in trading_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
-                base_currency = symbol.split('/')[0]
-                available = balance.get(base_currency, {}).get('free', 0)
-                
-                if available > 0.00001:
-                    existing_buys = [p for p in all_positions if p['symbol'] == symbol and p['side'] == 'buy']
-                    
-                    # Ignorer si valeur trop faible (dust)
-                    try:
-                        current_price = self.get_price(symbol)
-                        min_cost = self.get_min_amount(symbol)['min_cost']
-                        if available * current_price < min_cost:
-                            continue
-                    except:
-                        pass
 
-                    if existing_buys:
-                        position = existing_buys[-1].copy()
-                        old_amount = position.get('amount', 0)
-                        position['amount'] = available
-                        active_buy_positions.append(position)
-                        if abs(old_amount - available) > 0.00001:
-                            changed = True
-                    else:
+            balance = self.balance_manager.get_balance(force_refresh=True)
+            trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
+
+            all_positions = list(self.state.get('positions', []))
+            changed = False
+            now_iso = datetime.now().isoformat()
+
+            for pair in trading_pairs:
+                raw = pair.strip()
+                symbol = raw if '/' in raw else (
+                    f"{raw[:-3]}/{raw[-3:]}" if raw.endswith('USD')
+                    else f"{raw[:3]}/{raw[3:]}"
+                )
+                base_currency = symbol.split('/')[0]
+
+                asset_balance = balance.get(base_currency, {}) or {}
+                free_amount = float(asset_balance.get('free') or 0.0)
+                used_amount = float(asset_balance.get('used') or asset_balance.get('locked') or 0.0)
+                exchange_total = max(0.0, free_amount + used_amount)
+
+                active_buys = [
+                    p for p in all_positions
+                    if isinstance(p, dict)
+                    and p.get('symbol') == symbol
+                    and p.get('side') == 'buy'
+                    and not p.get('closed_at')
+                    and not p.get('exit_price')
+                    and str(p.get('status') or '').lower() != 'closed'
+                ]
+
+                local_total = sum(
+                    float(p.get('amount') or p.get('position_size_crypto') or 0.0)
+                    for p in active_buys
+                )
+
+                try:
+                    current_price = float(self.get_price(symbol) or 0.0)
+                    min_cost = float(self.get_min_amount(symbol)['min_cost'] or 0.0)
+                except Exception:
+                    current_price = 0.0
+                    min_cost = 0.0
+
+                exchange_value = exchange_total * current_price if current_price > 0 else 0.0
+                is_dust = exchange_total <= 1e-12 or (
+                    min_cost > 0 and current_price > 0 and exchange_value < min_cost
+                )
+
+                # Rien à rapprocher si Aegis ne connaît aucune position active.
+                if not active_buys:
+                    if not is_dust and exchange_total > 0:
                         last_trade = self.get_last_buy_from_history(symbol)
                         if last_trade:
-                            active_buy_positions.append(last_trade)
+                            restored = dict(last_trade)
+                            restored['amount'] = exchange_total
+                            restored['position_size_crypto'] = exchange_total
+                            if float(restored.get('price') or 0.0) > 0:
+                                restored['position_size_usd'] = exchange_total * float(restored['price'])
+                            restored['status'] = 'executed'
+                            restored['closed_at'] = None
+                            restored['exchange_reconciled_at'] = now_iso
+                            all_positions.append(restored)
                             changed = True
-            
+                    continue
+
+                # Si Kraken ne détient plus qu'une poussière, fermer la position
+                # tradable locale. La poussière reste visible via les balances Kraken,
+                # mais ne doit plus être gérée comme une position vendable complète.
+                if is_dust:
+                    for p in active_buys:
+                        previous_amount = float(p.get('amount') or p.get('position_size_crypto') or 0.0)
+                        p['exchange_previous_amount'] = previous_amount
+                        p['exchange_remaining_amount'] = exchange_total
+                        p['external_reduction_amount'] = max(0.0, previous_amount - exchange_total)
+                        p['closed_at'] = now_iso
+                        p['status'] = 'external_reconciled_dust'
+                        p['close_reason'] = 'kraken_balance_below_min_trade'
+                    if local_total > exchange_total + 1e-12:
+                        changed = True
+                        if hasattr(self, 'record_decision'):
+                            self.record_decision(
+                                symbol,
+                                action_type='sync',
+                                allowed=True,
+                                reason='exchange_position_reconciled_to_dust',
+                                metrics={
+                                    'local_amount': local_total,
+                                    'exchange_amount': exchange_total,
+                                    'exchange_value': exchange_value,
+                                    'min_cost': min_cost,
+                                },
+                                throttle_seconds=0,
+                            )
+                    continue
+
+                tolerance = max(1e-12, exchange_total * 1e-8)
+                if abs(local_total - exchange_total) <= tolerance:
+                    continue
+
+                # Répartir la quantité réelle Kraken sur les positions locales, de la
+                # plus récente à la plus ancienne. La somme locale devient exactement
+                # égale au solde exchange.
+                remaining = exchange_total
+                for p in reversed(active_buys):
+                    old_amount = float(p.get('amount') or p.get('position_size_crypto') or 0.0)
+                    new_amount = min(old_amount, remaining)
+                    reduction = max(0.0, old_amount - new_amount)
+
+                    if new_amount > 1e-12:
+                        p['amount'] = new_amount
+                        p['position_size_crypto'] = new_amount
+                        entry_price = float(p.get('avg_entry_price') or p.get('price') or 0.0)
+                        if entry_price > 0:
+                            p['position_size_usd'] = new_amount * entry_price
+                        p['exchange_reconciled_at'] = now_iso
+                        p['external_reduction_amount'] = float(p.get('external_reduction_amount') or 0.0) + reduction
+                        remaining -= new_amount
+                    else:
+                        p['exchange_previous_amount'] = old_amount
+                        p['exchange_remaining_amount'] = 0.0
+                        p['external_reduction_amount'] = float(p.get('external_reduction_amount') or 0.0) + old_amount
+                        p['closed_at'] = now_iso
+                        p['status'] = 'external_reconciled'
+                        p['close_reason'] = 'kraken_balance_reconciled'
+
+                changed = True
+                if hasattr(self, 'record_decision'):
+                    self.record_decision(
+                        symbol,
+                        action_type='sync',
+                        allowed=True,
+                        reason='exchange_position_quantity_reconciled',
+                        metrics={
+                            'local_amount': local_total,
+                            'exchange_amount': exchange_total,
+                            'difference': exchange_total - local_total,
+                        },
+                        throttle_seconds=0,
+                    )
+
             if changed:
-                history = [
-                    p for p in all_positions
-                    if p['side'] == 'sell' or p.get('source') == 'exchange_history'
-                ]
-                self.state['positions'] = history + active_buy_positions
+                self.state['positions'] = all_positions
                 self.save_state()
+
+                # Nettoyer aussi les protections runtime des positions devenues dust.
+                trailing_manager = getattr(self, 'trailing_stop_manager', None)
+                if trailing_manager:
+                    for pair in trading_pairs:
+                        raw = pair.strip()
+                        symbol = raw if '/' in raw else (
+                            f"{raw[:-3]}/{raw[-3:]}" if raw.endswith('USD')
+                            else f"{raw[:3]}/{raw[3:]}"
+                        )
+                        base_currency = symbol.split('/')[0]
+                        asset_balance = balance.get(base_currency, {}) or {}
+                        total = float(asset_balance.get('free') or 0.0) + float(
+                            asset_balance.get('used') or asset_balance.get('locked') or 0.0
+                        )
+                        try:
+                            price = float(self.get_price(symbol) or 0.0)
+                            min_cost = float(self.get_min_amount(symbol)['min_cost'] or 0.0)
+                            if total <= 1e-12 or (price > 0 and min_cost > 0 and total * price < min_cost):
+                                trailing_manager.remove_position(symbol)
+                        except Exception:
+                            pass
         except Exception as e:
-            print(f"⚠️ Erreur sync: {e}")
-    
+            print(f"⚠️ Erreur sync positions Kraken: {e}")
+
     def sync_open_orders(self):
         try:
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
