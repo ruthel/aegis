@@ -4286,9 +4286,13 @@ class MLLiveLogger:
                     'metrics': {
                         'decision': row.decision,
                         'confidence': row.confidence,
+                        'min_confidence': row.min_confidence,
                         'p_win': row.p_win,
                         'p_continue': row.p_continue,
                         'price': row.price,
+                        'spread_pct': row.spread_pct,
+                        'slippage_pct': row.slippage_pct,
+                        'order_type': row.order_type,
                     },
                 })
             return items
