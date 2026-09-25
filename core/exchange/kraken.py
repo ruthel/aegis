@@ -26,6 +26,9 @@ class KrakenClient(ExchangeBase):
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
+            # Empêche un appel Kraken de monopoliser le verrou API indéfiniment.
+            # Valeur ccxt en millisecondes.
+            'timeout': int(os.getenv('KRAKEN_REQUEST_TIMEOUT_MS', '8000')),
             # Nonce en microsecondes: granularité plus fine que les millisecondes
             # par défaut, réduit fortement le risque de collision entre appels rapprochés.
             'nonce': lambda: ccxt.Exchange.microseconds(),
