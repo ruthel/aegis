@@ -24,7 +24,8 @@ DATA_DIR = ROOT / 'data'
 ENV_DASHBOARD = ROOT / '.env'
 PAPER_BOT_LOG_FILE = ROOT / 'bot_paper.log'
 LIVE_BOT_LOG_FILE = ROOT / 'bot_live.log'
-ML_TRAINING_LOG_FILE = ROOT / 'ml_training.log'
+PAPER_ML_TRAINING_LOG_FILE = ROOT / 'ml_training_paper.log'
+LIVE_ML_TRAINING_LOG_FILE = ROOT / 'ml_training_live.log'
 PAPER_REPLAY_LOG_FILE = ROOT / 'ml_replay_paper.log'
 LIVE_REPLAY_LOG_FILE = ROOT / 'ml_replay_live.log'
 
@@ -35,6 +36,10 @@ def bot_log_file(mode=None):
 def replay_log_file(mode=None):
     mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
     return PAPER_REPLAY_LOG_FILE if mode == 'paper' else LIVE_REPLAY_LOG_FILE
+
+def ml_training_log_file(mode=None):
+    mode = str(mode or active_trading_mode()).lower()
+    return PAPER_ML_TRAINING_LOG_FILE if mode == 'paper' else LIVE_ML_TRAINING_LOG_FILE
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
 BOT_START_LOCK = threading.Lock()
@@ -606,6 +611,7 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
         if not script_path.exists():
             return {'ok': False, 'running': False, 'reason': 'script_missing', 'status': current}
 
+        training_mode = active_trading_mode()
         command = [
             sys.executable,
             str(script_path),
@@ -615,6 +621,8 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
             os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'),
             '--trigger',
             trigger,
+            '--mode',
+            training_mode,
         ]
         if check_only:
             command.append('--check-only')
@@ -622,10 +630,12 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
             command.append('--fast')
 
         env = os.environ.copy()
+        env['ML_GOVERNANCE_MODE'] = training_mode
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
-        ML_TRAINING_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(ML_TRAINING_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+        training_log_file = ml_training_log_file(training_mode)
+        training_log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(training_log_file, 'a', encoding='utf-8', errors='replace') as log:
             log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ML retraining {trigger} started: {' '.join(command)}\n")
             process = subprocess.Popen(
                 command,
@@ -642,6 +652,7 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
             'command': ' '.join(command),
             'status': 'running',
             'trigger': trigger,
+            'mode': training_mode,
             'check_only': bool(check_only),
             'fast': bool(fast),
             'exit_code': None,
