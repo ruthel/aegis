@@ -334,7 +334,9 @@ function Cooldowns({ cooldowns }: { cooldowns: JsonMap[] }) {
             <div key={`${asString(item.symbol)}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2.5 text-[12.5px] last:border-b-0">
               <div className="min-w-0 overflow-hidden">
                 <strong className="block truncate text-[13px]">{asString(item.symbol)}</strong>
-                <span className="block truncate text-[11px] text-muted-foreground">Pause dynamique</span>
+                <span className="block truncate text-[11px] text-muted-foreground" title={decisionReasonTitle(item.reason)}>
+                  {decisionReasonTitle(item.reason)}
+                </span>
               </div>
               <Badge variant="warning" className="min-w-[46px] max-w-[76px] shrink-0 justify-center whitespace-nowrap px-2 py-1 text-[9.5px] normal-case tabular-nums">
                 {cooldownDurationText(localRemaining)}
