@@ -41,3 +41,6 @@ build/
 dist/
 *.egg-info/
 *.pyc
+
+# Frontend build output (generated automatically by start.py)
+ui/public/spa/
