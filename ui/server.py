@@ -296,7 +296,7 @@ def risk_sizing_config():
             {'min_capital_usd': 300, 'exposure_pct': 60},
         ],
         'legacy_configured_max_total_capital_exposure_pct': env_float('MAX_TOTAL_CAPITAL_EXPOSURE_PCT', 60.0),
-        'max_positions_per_crypto': env_int('MAX_POSITIONS_PER_CRYPTO', 2),
+        'max_positions_per_crypto': 1,
         'max_total_positions': env_int('MAX_TOTAL_POSITIONS', 8),
         'max_daily_loss_usd': env_float('MAX_DAILY_LOSS', 50.0),
         'max_weekly_loss_usd': env_float('MAX_WEEKLY_LOSS', 150.0),
@@ -345,7 +345,7 @@ CONFIG_FIELDS = {
     'MAX_DAILY_LOSS': {'type': 'float', 'label': 'Perte max / jour', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
     'MAX_WEEKLY_LOSS': {'type': 'float', 'label': 'Perte max / semaine', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
     'MAX_TOTAL_CAPITAL_EXPOSURE_PCT': {'type': 'float', 'label': 'Exposition capitale max %', 'section': 'Risque', 'min': 1, 'max': 100, 'restart': 'bot'},
-    'MAX_POSITIONS_PER_CRYPTO': {'type': 'int', 'label': 'Positions max / crypto', 'section': 'Risque', 'min': 1, 'max': 20, 'restart': 'bot'},
+    'MAX_POSITIONS_PER_CRYPTO': {'type': 'int', 'label': 'Positions max / crypto', 'section': 'Risque', 'min': 1, 'max': 1, 'restart': 'bot'},
     'MAX_TOTAL_POSITIONS': {'type': 'int', 'label': 'Positions max total', 'section': 'Risque', 'min': 1, 'max': 100, 'restart': 'bot'},
     'MAX_POSITION_TRADE_AMOUNT_MULTIPLIER': {'type': 'float', 'label': 'Multiplicateur max / position', 'section': 'Risque', 'min': 0.1, 'max': 20, 'restart': 'bot'},
     'SELL_LIMIT_ARM_DISTANCE_PCT': {'type': 'float', 'label': 'Distance activation sell limit %', 'section': 'Risque', 'min': 0.0, 'max': 10, 'restart': 'bot'},
@@ -2202,7 +2202,7 @@ def compute_next_buy_forecast(state):
 
     candidates = []
     pairs_list = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
-    min_p_win = float(os.getenv('ML_MIN_PROBABILITY', '65.0'))
+    min_p_win = float(os.getenv('ML_MIN_PROBABILITY', '50.0'))
     min_p_continue = float(os.getenv('ML_EXIT_ENTRY_MIN_CONTINUE_PROB', '50.0'))
     now = datetime.now()
 
@@ -2758,7 +2758,7 @@ def ml_status_payload(view_mode=None):
         'is_trained': is_trained,
         'trained_at': meta.get('trained_at'),
         'total_samples': real_samples if real_samples is not None else 0,
-        'min_probability': float(os.getenv('ML_MIN_PROBABILITY', '65.0')),
+        'min_probability': float(os.getenv('ML_MIN_PROBABILITY', '50.0')),
         'top_features': meta.get('feature_importance', [])[:6],
         'sizing_model_active': bool(meta.get('sizing_feature_importance')),
         'sizing_n_features': meta.get('sizing_n_features'),

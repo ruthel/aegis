@@ -107,10 +107,19 @@ class FakeBot:
 
     def _resolve_exchange_execution(self, symbol, order, amount, fallback_price, side="buy"):
         return {
-            "price": float(order.get("price") or fallback_price),
-            "amount": float(order.get("amount") or amount),
+            "price": float(order.get("average") or order.get("price") or fallback_price),
+            "amount": float(order.get("filled") or order.get("amount") or amount),
             "fee_amount": 0.01,
         }
+
+    def _confirm_live_order_execution(self, symbol, order, side=None):
+        return self._resolve_exchange_execution(
+            symbol,
+            order,
+            float(order.get("amount") or order.get("filled") or 0.0),
+            float(order.get("average") or order.get("price") or self.get_price(symbol)),
+            side=side or "buy",
+        )
 
     def _record_live_order_accounting(self, *args, **kwargs):
         return None
@@ -911,6 +920,74 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn("temporal_order = np.argsort", pipeline)
         self.assertIn("_cursor_at_or_before", pipeline)
         self.assertIn("<= int(candle_ts)", pipeline)
+
+
+    def test_ml_entry_pipeline_fails_closed_on_runtime_exception(self):
+        source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
+        start = source.index('except Exception as e:\n                # Aegis est ML-first')
+        end = source.index("final_size_usd =", start)
+        failure_block = source[start:end]
+        self.assertIn("'ml_pipeline_error'", failure_block)
+        self.assertIn("return", failure_block)
+
+    def test_exit_uses_probability_attached_to_open_position(self):
+        source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
+        start = source.index("def _evaluate_exit_engine_for_symbol")
+        end = source.index("def _apply_ml_exit_management", start)
+        block = source[start:end]
+        self.assertIn("position_data.get('ml_buy_prob')", block)
+        self.assertNotIn("self.state.get('ml_predictions', {}).get(symbol", block)
+
+    def test_rehydration_preserves_entry_timestamp_and_probability(self):
+        source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
+        start = source.index("def _rehydrate_open_positions_for_exit_evaluation")
+        end = source.index("def _check_dynamic_breakeven_lock", start)
+        block = source[start:end]
+        self.assertIn("data.get('opened_at')", block)
+        self.assertIn("'ml_buy_prob': data.get('ml_buy_prob')", block)
+        self.assertNotIn("'buy_time': time.time()", block)
+
+    def test_ml_lineage_contract_allows_only_one_logical_position_per_symbol(self):
+        env_source = (ROOT / ".env.example").read_text(encoding="utf-8")
+        bot_source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
+        self.assertIn("MAX_POSITIONS_PER_CRYPTO=1", env_source)
+        self.assertIn("max_pos_per_crypto = min(1, max(1, configured_max_per_crypto))", bot_source)
+
+    def test_ui_ml_threshold_default_matches_runtime(self):
+        ui_source = (ROOT / "ui/server.py").read_text(encoding="utf-8")
+        self.assertNotIn("os.getenv('ML_MIN_PROBABILITY', '65.0')", ui_source)
+        self.assertIn("os.getenv('ML_MIN_PROBABILITY', '50.0')", ui_source)
+
+    def test_telegram_refresh_and_restart_are_not_racy(self):
+        source = (ROOT / "core/managers/notification.py").read_text(encoding="utf-8")
+        self.assertIn("if include_positions and hasattr(bot, 'sync_positions_from_exchange')", source)
+        self.assertIn("if include_history and hasattr(bot, 'sync_trade_history')", source)
+        self.assertNotIn("elif include_history and hasattr(bot, 'sync_trade_history')", source)
+        self.assertIn("def _handle_telegram_command(self, command, args=None, update_id=None):", source)
+        self.assertIn("int(update_id) + 1", source)
+        self.assertIn("ThreadPoolExecutor", source)
+
+    def test_ml_logger_has_no_duplicate_runtime_methods(self):
+        import ast
+        source = (ROOT / "core/ml_live_logger.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "MLLiveLogger")
+        names = [node.name for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        for name in ("save_daily_stats", "load_daily_stats", "load_open_entries", "log_execution_metric"):
+            self.assertEqual(names.count(name), 1, name)
+
+    def test_execution_metric_contract_is_fully_persisted(self):
+        orm = (ROOT / "core/db_orm.py").read_text(encoding="utf-8")
+        logger = (ROOT / "core/ml_live_logger.py").read_text(encoding="utf-8")
+        for field in (
+            "executed_price",
+            "execution_side",
+            "execution_amount",
+            "execution_success",
+            "execution_reason",
+        ):
+            self.assertIn(field, orm)
+            self.assertIn(field, logger)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import os
 import time
 import threading
 import io
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from config import BOT_NAME
 
@@ -40,6 +41,11 @@ class NotificationManager:
         self._telegram_poll_thread = None
         self._telegram_poll_running = False
         self._telegram_last_error = None
+        self._telegram_executor = ThreadPoolExecutor(
+            max_workers=max(1, int(os.getenv('TELEGRAM_COMMAND_WORKERS', '3'))),
+            thread_name_prefix='telegram-worker',
+        )
+        self._live_refresh_lock = threading.Lock()
         
     def _active_mode(self):
         """Mode du bot auquel CE notifier est attaché; jamais déduit d'une vue UI."""
@@ -59,15 +65,24 @@ class NotificationManager:
         timeout_seconds = float(os.getenv('TELEGRAM_LIVE_REFRESH_TIMEOUT_SECONDS', '4.0'))
         result = {'ok': False}
 
+        # Ne jamais empiler plusieurs synchronisations Kraken lentes. Si une
+        # précédente commande Telegram est encore en train de rafraîchir l'état,
+        # répondre avec le dernier snapshot connu.
+        if not self._live_refresh_lock.acquire(blocking=False):
+            return False
+
         def _refresh():
             try:
                 if include_positions and hasattr(bot, 'sync_positions_from_exchange'):
                     bot.sync_positions_from_exchange()
-                elif include_history and hasattr(bot, 'sync_trade_history'):
+                if include_history and hasattr(bot, 'sync_trade_history'):
                     bot.sync_trade_history()
                 result['ok'] = True
-            except Exception:
+            except Exception as exc:
+                self._telegram_last_error = f"live refresh: {exc}"
                 result['ok'] = False
+            finally:
+                self._live_refresh_lock.release()
 
         worker = threading.Thread(target=_refresh, daemon=True, name='telegram-live-refresh')
         worker.start()
@@ -234,18 +249,18 @@ class NotificationManager:
                         print(f"📥 Telegram commande reçue: {command} {' '.join(args)}".rstrip())
                         # Ne jamais bloquer la boucle getUpdates sur une commande lente
                         # (Kraken, SQLite, génération de graphique, etc.).
-                        threading.Thread(
-                            target=self._handle_telegram_command,
-                            args=(command, args),
-                            daemon=True,
-                            name=f"telegram-command-{command.lstrip('/') or 'unknown'}",
-                        ).start()
+                        self._telegram_executor.submit(
+                            self._handle_telegram_command,
+                            command,
+                            args,
+                            update_id,
+                        )
                         
             except Exception as e:
                 # Éviter de saturer la boucle en cas d'erreur réseau
                 time.sleep(10)
 
-    def _handle_telegram_command(self, command, args=None):
+    def _handle_telegram_command(self, command, args=None, update_id=None):
         """Traite une commande reçue depuis Telegram"""
         args = args or []
         
@@ -395,7 +410,7 @@ class NotificationManager:
                         except Exception:
                             self.notify(status_msg, "")
                     
-                    threading.Thread(target=send_status_with_chart, daemon=True).start()
+                    self._telegram_executor.submit(send_status_with_chart)
                 else:
                     # Pas d'image : message complet
                     status_msg = self._build_status_message(compact=False)
@@ -410,10 +425,10 @@ class NotificationManager:
                 
                 # IMPORTANT: Confirmer la lecture du message à Telegram avant de couper le bot.
                 # Sinon, au redémarrage, getUpdates renverra à nouveau ce message de /restart en boucle.
-                if hasattr(self, '_last_update_id') and self._last_update_id:
+                if update_id is not None:
                     try:
                         confirm_url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates"
-                        confirm_params = {'offset': self._last_update_id + 1, 'limit': 1, 'timeout': 0}
+                        confirm_params = {'offset': int(update_id) + 1, 'limit': 1, 'timeout': 0}
                         requests.get(confirm_url, params=confirm_params, timeout=2)
                     except Exception:
                         pass
@@ -1043,7 +1058,7 @@ class NotificationManager:
         except Exception:
             return False
 
-    def notify(self, message, emoji="🤖"):
+    def notify(self, message, emoji="🤖", wait=False):
         """Envoie un message Telegram avec diagnostics et découpage sûr."""
         full_text = f"{emoji} {message}".strip() if emoji else str(message)
         if not self.enabled:
@@ -1117,7 +1132,9 @@ class NotificationManager:
                     return False
             return True
 
-        threading.Thread(target=_send, daemon=True, name='telegram-send').start()
+        if wait:
+            return bool(_send())
+        self._telegram_executor.submit(_send)
         return True
 
     def notify_trade_buy(self, symbol, amount, price, total, signal_data):
@@ -1514,11 +1531,11 @@ class NotificationManager:
                 status_msg = self._build_status_message(compact=True)
                 if not self.send_photo(pnl_chart, caption=status_msg):
                     # Fallback : texte seul si envoi échoue
-                    return self.notify(status_msg, "")
+                    return self.notify(status_msg, "", wait=True)
                 return True
             else:
                 status = self._build_status_message(compact=False)
-                return self.notify(status, "")
+                return self.notify(status, "", wait=True)
         except Exception:
             return False
             

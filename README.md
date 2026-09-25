@@ -227,7 +227,7 @@ Tables principales :
 - `bot_app_state.live_status` : dernier état global WebSocket/ui (`connected`, `running`, queue, worker), stocké comme valeur applicative et non comme table dédiée.
 - `ml_exit_recommendations` : dernière recommandation ML de sortie par symbole actif (`p_continue`, décision, prix d'entrée, durée).
 - `decision_logs`, `ml_trade_outcomes` : décisions finales du bot et résultats des trades.
-- `ml_open_entries` : lien entre une entrée acceptée encore ouverte et sa future sortie.
+- `ml_open_entries` : lineage ML de l'unique entrée logique ouverte par `(mode, symbole)` et lien vers sa future sortie; la source comptable reste `orders`/`fills`/`ledger_entries`.
 - `ml_feature_values` : features ML normalisées en lignes `event_id/feature_name/feature_value`.
 - `bot_commands` : commandes envoyées par le ui au bot.
 - `crypto_scores` : historique des scores crypto utilisés par l'analytics.

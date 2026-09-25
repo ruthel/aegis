@@ -1434,7 +1434,13 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             )
             entry_p_win = 50.0
             try:
-                entry_p_win = float(self.state.get('ml_predictions', {}).get(symbol, {}).get('p_win', 50.0))
+                # Le modèle de sortie doit recevoir le P_win qui a réellement
+                # déclenché CETTE entrée, jamais la dernière prédiction du symbole.
+                entry_p_win = float(
+                    position_data.get('ml_buy_prob')
+                    or position_data.get('entry_p_win')
+                    or 50.0
+                )
             except Exception:
                 entry_p_win = 50.0
             ml_exit = None
@@ -1591,16 +1597,26 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     min_amount, min_cost = 0.00001, 0.5
                 if amount < min_amount or (amount * entry_price) < min_cost:
                     continue
+                opened_at = data.get('opened_at') or data.get('created_at') or data.get('timestamp')
+                if not opened_at:
+                    opened_at = datetime.now().isoformat()
                 self.trailing_stop_manager.positions[symbol] = {
                     'entry_price': entry_price,
                     'buy_price': entry_price,
                     'avg_entry_price': entry_price,
                     'price': entry_price,
-                    'highest_price': entry_price,
-                    'stop_price': entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0),
-                    'trailing_active': False,
+                    'highest_price': float(data.get('highest_price') or entry_price),
+                    'stop_price': float(
+                        data.get('stop_price')
+                        or (entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0))
+                    ),
+                    'trailing_active': bool(data.get('trailing_active', False)),
                     'amount': amount,
-                    'buy_time': time.time()
+                    'ml_buy_prob': data.get('ml_buy_prob') or data.get('entry_p_win'),
+                    # Toujours conserver un timestamp ISO parseable. Ne jamais
+                    # remettre artificiellement l'âge de la position à zéro.
+                    'created_at': str(opened_at),
+                    'buy_time': str(opened_at),
                 }
 
     def _check_dynamic_breakeven_lock(self, symbol, current_price, position):
@@ -1671,9 +1687,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
             print(f"🔒 BREAKEVEN LOCK {symbol}: PnL {net_pnl_pct:+.2f}% < plancher {floor_pct:+.2f}% (plus haut: {highest_net_pnl:+.2f}%) → Vente forcée")
             order = self.sell_market(symbol, sell_amount, reason=f"breakeven_lock_{floor_pct:.1f}pct")
-            # Retirer la position dans TOUS les cas (succès ou échec) pour éviter la boucle infinie
-            self.trailing_stop_manager.remove_position(symbol)
             if order:
+                # Ne supprimer le suivi qu'après une vente confirmée. En cas
+                # d'échec Kraken, conserver tout le contexte de protection.
+                self.trailing_stop_manager.remove_position(symbol)
                 if hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='breakeven_lock')
                 self.record_decision(
@@ -1681,7 +1698,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     {'price': current_price, 'net_pnl_pct': net_pnl_pct, 'floor_pct': floor_pct, 'highest_net_pnl': highest_net_pnl},
                     throttle_seconds=0
                 )
-            return True
+                return True
+            self.record_decision(
+                symbol,
+                'sell',
+                False,
+                'breakeven_sell_failed',
+                {'price': current_price, 'net_pnl_pct': net_pnl_pct, 'floor_pct': floor_pct},
+                throttle_seconds=30,
+            )
+            return False
         return False
 
     def _update_trailing_stop_from_tick(self, symbol, current_price):
@@ -1696,11 +1722,43 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             position = self.trailing_stop_manager.positions[symbol]
 
-            # Dynamic Breakeven Lock: protège les profits acquis
+            # Dynamic Breakeven Lock est une protection de sécurité, distincte
+            # de la décision stratégique ML. Il peut fermer une position même si
+            # ML_OWNS_EXITS=True.
             if self._check_dynamic_breakeven_lock(symbol, current_price, position):
-                return  # Vente forcée effectuée, pas besoin d'évaluer le ML
+                return
 
             ml_owns_exits = os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true'
+
+            # Le ML peut posséder la stratégie de sortie, mais jamais la sécurité
+            # catastrophique. Si le stop de sécurité est touché, on tente une vente
+            # et on ne retire le suivi qu'après confirmation de l'ordre.
+            if ml_owns_exits and self.trailing_stop_manager.should_stop_loss(symbol, current_price):
+                base_currency = symbol.split('/')[0]
+                balance = self.balance_manager.get_balance(
+                    force_refresh=True,
+                    skip_ledger_sync=not self.paper_trading,
+                )
+                available = float((balance.get(base_currency, {}) or {}).get('free') or 0.0)
+                tracked_amount = float(position.get('amount') or position.get('position_size_crypto') or 0.0)
+                sell_amount = tracked_amount if self.paper_trading else available
+                if self.paper_trading and available > 0:
+                    sell_amount = min(tracked_amount, available) if tracked_amount > 0 else available
+                if sell_amount > 0:
+                    order = self.sell_market(symbol, sell_amount, reason='safety_stop_loss')
+                    if order:
+                        self.trailing_stop_manager.remove_position(symbol)
+                        self.set_symbol_cooldown(symbol, reason='safety_stop_loss')
+                        self.record_decision(
+                            symbol,
+                            'sell',
+                            True,
+                            'safety_stop_loss',
+                            {'price': current_price, 'amount': sell_amount},
+                            throttle_seconds=0,
+                        )
+                        return
+
             changed = False if ml_owns_exits else self.trailing_stop_manager.update_position(symbol, current_price)
             eval_res = self._evaluate_exit_engine_for_symbol(symbol, current_price)
             
@@ -2619,8 +2677,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'reason': sizing_info.get('sizing_reason'),
                 }
             except Exception as e:
+                # Aegis est ML-first : une panne de la chaîne ML ne doit jamais
+                # devenir une autorisation implicite d'achat avec le sizing pré-ML.
                 print(f"⚠️ Erreur prédiction ML pour {symbol}: {e}")
                 sizing_replay_payload = None
+                self.record_decision(
+                    symbol,
+                    'buy',
+                    False,
+                    'ml_pipeline_error',
+                    {'price': current_price, 'error': str(e)},
+                    throttle_seconds=60,
+                )
+                return
 
         final_size_usd = float(position_data.get('position_size_usd') or 0.0)
         final_size_crypto = float(position_data.get('position_size_crypto') or 0.0)
@@ -3224,7 +3293,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         # 1. Vérification en Paper Trading
         if self.paper_trading:
-            max_pos_per_crypto = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '2'))
+            # Le lineage ML actuel maintient une entrée logique ouverte par
+            # (mode, symbole). Tant que ce contrat persiste, interdire plusieurs
+            # positions indépendantes sur le même symbole au runtime.
+            configured_max_per_crypto = int(os.getenv('MAX_POSITIONS_PER_CRYPTO', '1'))
+            max_pos_per_crypto = min(1, max(1, configured_max_per_crypto))
             max_total_positions = int(os.getenv('MAX_TOTAL_POSITIONS', str(max_pos_per_crypto * max(1, len(getattr(self, 'trading_pairs', [])) or 4))))
             open_paper_positions = [
                 p for p in self.state.get('positions', [])
