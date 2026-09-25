@@ -206,6 +206,7 @@ class Crypto(Base):
 class BotDailyStat(Base):
     __tablename__ = 'bot_daily_stats'
 
+    mode: Mapped[str] = mapped_column(Text, primary_key=True)
     stat_date: Mapped[str] = mapped_column(Text, primary_key=True)
     trades_count: Mapped[int | None] = mapped_column(Integer)
     winning_trades_count: Mapped[int | None] = mapped_column(Integer)
@@ -222,6 +223,7 @@ class CryptoScore(Base):
 
     score_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str] = mapped_column(Text)
     score: Mapped[int | None] = mapped_column(Integer)
     price: Mapped[float | None] = mapped_column(Float)
@@ -323,6 +325,7 @@ class MlFeatureValue(Base):
 class MlOpenEntry(Base):
     __tablename__ = 'ml_open_entries'
 
+    mode: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, primary_key=True)
     entry_id: Mapped[str] = mapped_column(Text)
     opened_at: Mapped[str] = mapped_column(Text)
@@ -389,6 +392,7 @@ class ExecutionLatency(Base):
 
     latency_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str] = mapped_column(Text)
     side: Mapped[str | None] = mapped_column(Text)
     order_type: Mapped[str | None] = mapped_column(Text)
@@ -412,6 +416,7 @@ class Notification(Base):
 
     event_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     telegram_ts: Mapped[int | None] = mapped_column(Integer)
     message_id: Mapped[str | None] = mapped_column(Text)
     direction: Mapped[str] = mapped_column(Text)
@@ -439,6 +444,7 @@ class MlAnalysisRun(Base):
     __tablename__ = 'ml_analysis_runs'
 
     run_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    mode: Mapped[str | None] = mapped_column(Text)
     generated_at: Mapped[str] = mapped_column(Text)
     accepted_entries: Mapped[int] = mapped_column(Integer)
     closed_entries: Mapped[int] = mapped_column(Integer)
@@ -459,6 +465,7 @@ class MlPredictionCalibration(Base):
 
     run_id: Mapped[str] = mapped_column(Text, primary_key=True)
     bucket_label: Mapped[str] = mapped_column(Text, primary_key=True)
+    mode: Mapped[str | None] = mapped_column(Text)
     min_p_win: Mapped[float] = mapped_column(Float)
     max_p_win: Mapped[float] = mapped_column(Float)
     entries: Mapped[int] = mapped_column(Integer)
@@ -495,6 +502,7 @@ class MlDriftAlert(Base):
 
     alert_id: Mapped[str] = mapped_column(Text, primary_key=True)
     run_id: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     generated_at: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text)
     message: Mapped[str] = mapped_column(Text)
@@ -513,6 +521,7 @@ class GovernanceLog(Base):
 
     gov_id: Mapped[str] = mapped_column(Text, primary_key=True)
     timestamp: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str | None] = mapped_column(Text)
     event_type: Mapped[str] = mapped_column(Text)
     source_model: Mapped[str | None] = mapped_column(Text)
     target_model: Mapped[str | None] = mapped_column(Text)
@@ -532,6 +541,7 @@ Index('idx_ml_shadow_entry', MlShadowPrediction.entry_id)
 Index('idx_ml_shadow_symbol_time', MlShadowPrediction.symbol, MlShadowPrediction.timestamp)
 Index('idx_execution_latency_symbol_time', ExecutionLatency.symbol, ExecutionLatency.timestamp)
 Index('idx_notifications_time', Notification.timestamp)
+Index('idx_notifications_mode_time', Notification.mode, Notification.timestamp)
 Index('idx_notifications_direction', Notification.direction)
 Index('idx_crypto_scores_symbol_time', CryptoScore.symbol, CryptoScore.timestamp)
 Index('idx_accounts_mode', Account.mode)
@@ -540,6 +550,7 @@ Index('idx_orders_symbol_status', Order.symbol, Order.status)
 Index('idx_fills_order', Fill.account_id, Fill.order_id)
 Index('idx_ledger_account_asset_time', LedgerEntry.account_id, LedgerEntry.asset, LedgerEntry.entry_ts)
 Index('idx_governance_type_time', GovernanceLog.event_type, GovernanceLog.timestamp)
+Index('idx_governance_mode_time', GovernanceLog.mode, GovernanceLog.timestamp)
 Index('idx_ml_exit_recommendations_symbol', MlExitRecommendation.mode, MlExitRecommendation.symbol)
 Index('idx_cryptos_symbol', Crypto.mode, Crypto.symbol)
 

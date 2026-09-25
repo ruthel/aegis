@@ -603,8 +603,7 @@ class LiveFixTests(unittest.TestCase):
         training_source = (ROOT / 'scripts/train_and_evaluate_ml_model.py').read_text(encoding='utf-8')
         live_source = (ROOT / 'core/trading_bot.py').read_text(encoding='utf-8')
         walk_source = (ROOT / 'scripts/walk_forward_validation.py').read_text(encoding='utf-8')
-        env_source = (ROOT / '.env.example').read_text(encoding='utf-8')
-        for source in (engine_source, training_source, live_source, walk_source, env_source):
+        for source in (engine_source, training_source, live_source, walk_source):
             self.assertNotIn('P_target', source)
             self.assertNotIn('ML_TARGET_', source)
             self.assertNotIn('predict_target', source)
@@ -854,8 +853,15 @@ class LiveFixTests(unittest.TestCase):
             engine._grid_data_fingerprint(X2, y),
         )
 
-    def test_env_template_has_only_current_grid_and_exit_settings(self):
-        env = (ROOT / '.env.example').read_text(encoding='utf-8')
+    def test_grid_runtime_has_current_checkpoint_controls_and_no_dead_keys(self):
+        engine = (ROOT / 'core/ml_engine.py').read_text(encoding='utf-8')
+        runtime = "\n".join([
+            engine,
+            (ROOT / 'scripts/train_and_evaluate_ml_model.py').read_text(encoding='utf-8'),
+            (ROOT / 'scripts/analyze_ml_live_performance.py').read_text(encoding='utf-8'),
+            (ROOT / 'core/trading_bot.py').read_text(encoding='utf-8'),
+        ])
+
         for key in (
             'ML_GRID_CACHE_ENABLED',
             'ML_GRID_CACHE_DIR',
@@ -865,7 +871,7 @@ class LiveFixTests(unittest.TestCase):
             'ML_GRID_RESEARCH_ON_DRIFT',
             'ML_GRID_FORCE_SEARCH',
         ):
-            self.assertIn(f'{key}=', env)
+            self.assertIn(key, engine)
 
         for dead_key in (
             'HARD_STOP_EXIT_ENABLED',
@@ -873,7 +879,7 @@ class LiveFixTests(unittest.TestCase):
             'ML_EXIT_LABEL_SLOPE_MIN_BARS',
             'ML_KRAKEN_ARCHIVE_MIN_COVERAGE_DAYS',
         ):
-            self.assertNotIn(f'{dead_key}=', env)
+            self.assertNotIn(dead_key, runtime)
 
     def test_unified_env_and_removed_dl_are_clean(self):
         targets = [

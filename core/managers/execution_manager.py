@@ -307,7 +307,8 @@ class ExecutionManager:
                     ml_entry_learning_id,
                     order=order,
                     price=executed_price,
-                    amount=executed_amount
+                    amount=executed_amount,
+                    mode='paper' if self.bot.paper_trading else 'live',
                 )
             except Exception:
                 pass
@@ -364,6 +365,7 @@ class ExecutionManager:
                     expected_price=expected_price,
                     executed_price=executed_price,
                     slippage_pct=slippage_pct,
+                    mode='paper' if self.bot.paper_trading else 'live',
                 )
             except Exception:
                 pass
@@ -402,7 +404,8 @@ class ExecutionManager:
                     amount=amount,
                     duration_ms=duration_ms,
                     success=success,
-                    reason=reason
+                    reason=reason,
+                    mode='paper' if self.bot.paper_trading else 'live',
                 )
             except Exception:
                 pass

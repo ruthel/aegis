@@ -44,6 +44,7 @@ class WebSocketManager:
         self.market_meta = {}
         self._last_bad_tick_log = {}
         self.live_logger = MLLiveLogger(data_dir='data', sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
+        self.trading_mode = 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
         self.live_status_interval = float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '1'))
         self._last_live_status_write = 0
         
@@ -317,7 +318,9 @@ class WebSocketManager:
                 'exchange': os.getenv('EXCHANGE', 'kraken').lower(),
                 'connected': self.is_connected(),
                 'running': self.running,
-                'mode': 'websocket' if self.is_connected() else 'rest_fallback',
+                'mode': self.trading_mode,
+                'trading_mode': self.trading_mode,
+                'connection_mode': 'websocket' if self.is_connected() else 'rest_fallback',
                 'reconnect_attempts': self.reconnect_attempts,
                 'queue_size': self.analysis_queue.qsize(),
                 'queue_maxsize': self.analysis_queue.maxsize,

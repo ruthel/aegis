@@ -95,13 +95,14 @@ class MLLiveLogger:
         self.append_event(event)
         return decision_id
 
-    def mark_entry_opened(self, symbol, entry_id, order=None, price=None, amount=None):
+    def mark_entry_opened(self, symbol, entry_id, order=None, price=None, amount=None, mode='paper'):
         if not entry_id:
             return
         self.append_event({
             'event_id': self._new_id('entry_opened'),
             'event_type': 'entry_opened',
             'timestamp': datetime.now().isoformat(),
+            'mode': mode,
             'symbol': symbol,
             'entry_id': entry_id,
             'order_id': (order or {}).get('id') if isinstance(order, dict) else None,
@@ -124,7 +125,7 @@ class MLLiveLogger:
         reason=None,
         mode='paper',
     ):
-        open_entry = self.load_open_entries().get(symbol, {})
+        open_entry = self.load_open_entries(mode=mode).get(symbol, {})
         event = {
             'event_id': self._new_id('exit_decision'),
             'event_type': 'exit_decision',
@@ -158,7 +159,7 @@ class MLLiveLogger:
         order=None,
         mode='paper',
     ):
-        open_entries = self.load_open_entries()
+        open_entries = self.load_open_entries(mode=mode)
         open_entry = open_entries.pop(symbol, None)
 
         event = {
@@ -259,6 +260,13 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_sizing_recommendations', 'max_exposure_usd', 'REAL')
                 self._ensure_column(conn, 'ml_trade_outcomes', 'slippage_pct', 'REAL')
                 self._ensure_column(conn, 'ml_trade_outcomes', 'spread_pct', 'REAL')
+                self._ensure_column(conn, 'crypto_scores', 'mode', 'TEXT')
+                self._ensure_column(conn, 'execution_latency', 'mode', 'TEXT')
+                self._ensure_column(conn, 'ml_analysis_runs', 'mode', 'TEXT')
+                self._ensure_column(conn, 'ml_prediction_calibration', 'mode', 'TEXT')
+                self._ensure_column(conn, 'ml_drift_alerts', 'mode', 'TEXT')
+                self._ensure_column(conn, 'notifications', 'mode', 'TEXT')
+                self._ensure_column(conn, 'governance_logs', 'mode', 'TEXT')
                 # Renommer la table ml_raw_events en sys_audit si besoin
                 try:
                     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
@@ -269,6 +277,8 @@ class MLLiveLogger:
                     pass
                 conn.execute('DROP TABLE IF EXISTS support_touch_trade_results')
                 Base.metadata.create_all(self._Session.kw['bind'])
+                self._migrate_ml_open_entries_mode(conn)
+                self._migrate_bot_daily_stats_mode(conn)
                 self._migrate_live_symbols_to_cryptos(conn)
                 self._ensure_cryptos_columns(conn)
                 self._ensure_ml_exit_recommendations_columns(conn)
@@ -1326,6 +1336,149 @@ class MLLiveLogger:
                     "DELETE FROM cryptos WHERE mode=? AND symbol=?",
                     (mode, source_symbol)
                 )
+        except Exception:
+            pass
+
+    def _migrate_ml_open_entries_mode(self, conn):
+        """Migrate ml_open_entries from symbol PK to (mode, symbol) PK."""
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_open_entries'"
+            ).fetchone()
+            if not exists:
+                return
+            info = conn.execute("PRAGMA table_info(ml_open_entries)").fetchall()
+            columns = {row[1] for row in info}
+            pk_cols = [row[1] for row in sorted(info, key=lambda r: int(r[5] or 0)) if int(row[5] or 0) > 0]
+            if 'mode' in columns and pk_cols == ['mode', 'symbol']:
+                return
+
+            def expr(name, fallback='NULL'):
+                return self._quote_ident(name) if name in columns else fallback
+
+            mode_expr = (
+                "COALESCE(mode, "
+                "(SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), "
+                "'legacy')"
+                if 'mode' in columns
+                else "COALESCE((SELECT mode FROM decision_logs d WHERE d.event_id=ml_open_entries.entry_id LIMIT 1), 'legacy')"
+            )
+
+            conn.execute("DROP TABLE IF EXISTS ml_open_entries_mode_migration")
+            conn.execute(
+                """
+                CREATE TABLE ml_open_entries_mode_migration (
+                    mode TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    entry_id TEXT,
+                    opened_at TEXT,
+                    order_id TEXT,
+                    price REAL,
+                    amount REAL,
+                    expected_price REAL,
+                    requested_price REAL,
+                    slippage_pct REAL,
+                    spread_pct REAL,
+                    order_type TEXT,
+                    duration_ms REAL,
+                    PRIMARY KEY (mode, symbol)
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO ml_open_entries_mode_migration
+                (mode, symbol, entry_id, opened_at, order_id, price, amount,
+                 expected_price, requested_price, slippage_pct, spread_pct,
+                 order_type, duration_ms)
+                SELECT
+                    {mode_expr},
+                    {expr('symbol', "''")},
+                    {expr('entry_id')},
+                    {expr('opened_at')},
+                    {expr('order_id')},
+                    {expr('price')},
+                    {expr('amount')},
+                    {expr('expected_price')},
+                    {expr('requested_price')},
+                    {expr('slippage_pct')},
+                    {expr('spread_pct')},
+                    {expr('order_type')},
+                    {expr('duration_ms')}
+                FROM ml_open_entries
+                WHERE {expr('symbol', "''")} <> ''
+                """
+            )
+            conn.execute("DROP TABLE ml_open_entries")
+            conn.execute("ALTER TABLE ml_open_entries_mode_migration RENAME TO ml_open_entries")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ml_open_entries_mode_symbol ON ml_open_entries(mode, symbol)"
+            )
+        except Exception:
+            pass
+
+    def _migrate_bot_daily_stats_mode(self, conn):
+        """Migrate daily risk stats to one row per (mode, date)."""
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_daily_stats'"
+            ).fetchone()
+            if not exists:
+                return
+            info = conn.execute("PRAGMA table_info(bot_daily_stats)").fetchall()
+            columns = {row[1] for row in info}
+            pk_cols = [row[1] for row in sorted(info, key=lambda r: int(r[5] or 0)) if int(row[5] or 0) > 0]
+            if 'mode' in columns and pk_cols == ['mode', 'stat_date']:
+                return
+
+            def expr(name, fallback='NULL'):
+                return self._quote_ident(name) if name in columns else fallback
+
+            mode_expr = "COALESCE(mode, 'legacy')" if 'mode' in columns else "'legacy'"
+            conn.execute("DROP TABLE IF EXISTS bot_daily_stats_mode_migration")
+            conn.execute(
+                """
+                CREATE TABLE bot_daily_stats_mode_migration (
+                    mode TEXT NOT NULL,
+                    stat_date TEXT NOT NULL,
+                    trades_count INTEGER,
+                    winning_trades_count INTEGER,
+                    losing_trades_count INTEGER,
+                    total_loss REAL,
+                    total_profit REAL,
+                    emergency_stop INTEGER,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (mode, stat_date)
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO bot_daily_stats_mode_migration
+                (mode, stat_date, trades_count, winning_trades_count,
+                 losing_trades_count, total_loss, total_profit, emergency_stop,
+                 created_at, updated_at)
+                SELECT
+                    {mode_expr},
+                    {expr('stat_date', "''")},
+                    {expr('trades_count', '0')},
+                    {expr('winning_trades_count', '0')},
+                    {expr('losing_trades_count', '0')},
+                    {expr('total_loss', '0')},
+                    {expr('total_profit', '0')},
+                    {expr('emergency_stop', '0')},
+                    {expr('created_at')},
+                    {expr('updated_at')}
+                FROM bot_daily_stats
+                WHERE {expr('stat_date', "''")} <> ''
+                """
+            )
+            conn.execute("DROP TABLE bot_daily_stats")
+            conn.execute("ALTER TABLE bot_daily_stats_mode_migration RENAME TO bot_daily_stats")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bot_daily_stats_mode_date ON bot_daily_stats(mode, stat_date)"
+            )
         except Exception:
             pass
 
@@ -3261,7 +3414,9 @@ class MLLiveLogger:
                 ).all()
                 open_entry_rows = []
                 open_entry_rows = session.scalars(
-                    select(MlOpenEntry).order_by(MlOpenEntry.opened_at.asc())
+                    select(MlOpenEntry)
+                    .where(MlOpenEntry.mode == key)
+                    .order_by(MlOpenEntry.opened_at.asc())
                 ).all()
 
             state = {
@@ -3614,7 +3769,9 @@ class MLLiveLogger:
         return
 
     def _insert_open_entry(self, session, event):
+        mode = str(event.get('mode') or 'paper').lower()
         session.merge(MlOpenEntry(
+            mode=mode,
             symbol=event.get('symbol'),
             entry_id=event.get('entry_id'),
             opened_at=event.get('timestamp'),
@@ -3651,7 +3808,11 @@ class MLLiveLogger:
             entry_row = session.get(DecisionLog, event.get('entry_id'))
             if entry_row:
                 entry_row.label_status = 'closed'
-            session.execute(delete(MlOpenEntry).where(MlOpenEntry.symbol == event.get('symbol')))
+            session.execute(
+                delete(MlOpenEntry)
+                .where(MlOpenEntry.mode == str(event.get('mode') or 'paper').lower())
+                .where(MlOpenEntry.symbol == event.get('symbol'))
+            )
 
     def _resolve_outcome_entry_link(self, session, event):
         """Relie une sortie a la meilleure entree ML ouverte quand le lien direct manque."""
@@ -3661,7 +3822,8 @@ class MLLiveLogger:
         if not symbol:
             return
 
-        open_entry = session.get(MlOpenEntry, symbol)
+        mode = str(event.get('mode') or 'paper').lower()
+        open_entry = session.get(MlOpenEntry, (mode, symbol))
         if open_entry and open_entry.entry_id:
             event['entry_id'] = open_entry.entry_id
             event['label_status'] = 'closed'
@@ -3671,6 +3833,7 @@ class MLLiveLogger:
         candidates = session.scalars(
             select(DecisionLog)
             .where(DecisionLog.action_type == 'ENTRY')
+            .where(DecisionLog.mode == mode)
             .where(DecisionLog.symbol == symbol)
             .where(DecisionLog.decision == 'accepted')
             .where(~DecisionLog.event_id.in_(linked_outcomes))
@@ -3681,11 +3844,13 @@ class MLLiveLogger:
             event['entry_id'] = candidates[0].event_id
             event['label_status'] = 'closed_relinked'
 
-    def record_telegram_message(self, message_id, text, timestamp=None, direction='outgoing'):
+    def record_telegram_message(self, message_id, text, timestamp=None, direction='outgoing', mode=None):
+        mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
         event = {
             'event_id': self._new_id('telegram'),
             'event_type': 'telegram_message',
             'timestamp': datetime.now().isoformat(),
+            'mode': mode,
             'telegram_ts': self._clean(timestamp),
             'message_id': str(message_id) if message_id is not None else None,
             'direction': direction,
@@ -3698,6 +3863,7 @@ class MLLiveLogger:
         session.merge(Notification(
             event_id=event.get('event_id'),
             timestamp=event.get('timestamp'),
+            mode=event.get('mode'),
             telegram_ts=event.get('telegram_ts'),
             message_id=event.get('message_id'),
             direction=event.get('direction'),
@@ -4022,8 +4188,9 @@ class MLLiveLogger:
         expected_price=None,
         executed_price=None,
         slippage_pct=None,
+        mode='paper',
     ):
-        """Persist monotonic execution-stage latencies for live attribution."""
+        """Persist monotonic execution-stage latencies inside one trading mode."""
         try:
             t = dict(trace or {})
             def _ms(a, b):
@@ -4043,6 +4210,7 @@ class MLLiveLogger:
             row = ExecutionLatency(
                 latency_id=self._new_id('latency'),
                 timestamp=now_iso(),
+                mode=str(mode or 'paper').lower(),
                 symbol=str(symbol or ''),
                 side=str(side or ''),
                 order_type=str(order_type or ''),
@@ -4259,7 +4427,7 @@ class MLLiveLogger:
                 pass
             return []
 
-    def record_crypto_score(self, symbol, score, price):
+    def record_crypto_score(self, symbol, score, price, mode='paper'):
         try:
             now = now_iso()
             score_id = self._new_id('score')
@@ -4267,6 +4435,7 @@ class MLLiveLogger:
                 session.add(CryptoScore(
                     score_id=score_id,
                     timestamp=now,
+                    mode=str(mode or 'paper').lower(),
                     symbol=symbol,
                     score=int(score),
                     price=self._clean(price),
@@ -4278,34 +4447,48 @@ class MLLiveLogger:
         except Exception:
             return None
 
-    def get_crypto_scores(self, symbol, since_iso=None, limit=2000):
+    def get_crypto_scores(self, symbol, since_iso=None, limit=2000, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                query = select(CryptoScore).where(CryptoScore.symbol == symbol)
+                query = (
+                    select(CryptoScore)
+                    .where(CryptoScore.mode == mode)
+                    .where(CryptoScore.symbol == symbol)
+                )
                 if since_iso:
                     query = query.where(CryptoScore.timestamp >= since_iso)
                 rows = session.scalars(
                     query.order_by(CryptoScore.timestamp.asc()).limit(int(limit))
                 ).all()
             return [
-                {'timestamp': r.timestamp, 'symbol': r.symbol, 'score': r.score, 'price': r.price}
+                {'timestamp': r.timestamp, 'mode': r.mode, 'symbol': r.symbol, 'score': r.score, 'price': r.price}
                 for r in rows
             ]
         except Exception:
             return []
 
     def save_live_status(self, status):
+        """Persist runtime/WebSocket status under the trading mode that produced it."""
         if not isinstance(status, dict):
             return False
         try:
             now = now_iso()
+            mode = str(
+                status.get('trading_mode')
+                or status.get('mode')
+                or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+            ).lower()
+            if mode not in ('paper', 'live'):
+                mode = 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
             symbols = status.get('symbols') if isinstance(status.get('symbols'), dict) else {}
             payload = {
                 'timestamp': status.get('timestamp'),
                 'exchange': status.get('exchange'),
                 'connected': bool(status.get('connected')),
                 'running': bool(status.get('running')),
-                'mode': status.get('mode'),
+                'mode': mode,
+                'connection_mode': status.get('connection_mode'),
                 'reconnect_attempts': status.get('reconnect_attempts'),
                 'queue_size': status.get('queue_size'),
                 'queue_maxsize': status.get('queue_maxsize'),
@@ -4318,9 +4501,10 @@ class MLLiveLogger:
                 ],
             }
             with self._orm_session() as session:
-                row = session.get(BotAppState, 'live_status')
+                state_key = f'live_status:{mode}'
+                row = session.get(BotAppState, state_key)
                 if not row:
-                    row = BotAppState(state_key='live_status', created_at=now)
+                    row = BotAppState(state_key=state_key, created_at=now)
                     session.add(row)
                 row.state_value = json.dumps(payload, ensure_ascii=False)
                 row.updated_at = now
@@ -4331,9 +4515,9 @@ class MLLiveLogger:
                     normalized_symbol = self._normalize_live_symbol(symbol)
                     if not normalized_symbol:
                         continue
-                    live_row = session.get(Crypto, ('paper', normalized_symbol))
+                    live_row = session.get(Crypto, (mode, normalized_symbol))
                     if not live_row:
-                        live_row = Crypto(mode='paper', symbol=normalized_symbol, created_at=now, updated_at=now)
+                        live_row = Crypto(mode=mode, symbol=normalized_symbol, created_at=now, updated_at=now)
                         session.add(live_row)
                     price = self._clean(data.get('price'))
                     live_row.price = price
@@ -4361,28 +4545,44 @@ class MLLiveLogger:
                     )
                     live_row.ws_connected = 1 if status.get('connected') else 0
                     live_row.updated_at = now
-
                 session.commit()
             return True
         except Exception:
             return False
 
-    def get_live_status(self):
+    def get_live_status(self, mode='paper'):
+        """Load only status/symbol rows belonging to the requested trading mode."""
         try:
+            mode = str(mode or 'paper').lower()
+            if mode not in ('paper', 'live'):
+                mode = 'paper'
             with self._orm_session() as session:
-                row = session.get(BotAppState, 'live_status')
+                row = session.get(BotAppState, f'live_status:{mode}')
                 payload = {}
                 if row and row.state_value:
                     try:
                         payload = json.loads(row.state_value)
                     except Exception:
                         payload = {}
+                elif not row:
+                    # One-time compatibility with the retired unscoped key. Never expose
+                    # it if its recorded trading mode disagrees with the requested mode.
+                    legacy = session.get(BotAppState, 'live_status')
+                    if legacy and legacy.state_value:
+                        try:
+                            legacy_payload = json.loads(legacy.state_value)
+                        except Exception:
+                            legacy_payload = {}
+                        if str(legacy_payload.get('mode') or '').lower() == mode:
+                            payload = legacy_payload
+
                 symbol_rows = session.scalars(
                     select(Crypto)
-                    .where(Crypto.mode == 'paper')
+                    .where(Crypto.mode == mode)
                     .order_by(Crypto.symbol.asc())
                 ).all()
                 subscriptions = payload.get('subscribed_symbols') or [item.symbol for item in symbol_rows]
+
             symbols = {}
             for item in symbol_rows:
                 data = {
@@ -4411,7 +4611,8 @@ class MLLiveLogger:
                 'exchange': payload.get('exchange'),
                 'connected': bool(payload.get('connected')),
                 'running': bool(payload.get('running')),
-                'mode': payload.get('mode'),
+                'mode': mode,
+                'connection_mode': payload.get('connection_mode'),
                 'reconnect_attempts': payload.get('reconnect_attempts'),
                 'queue_size': payload.get('queue_size'),
                 'queue_maxsize': payload.get('queue_maxsize'),
@@ -4423,16 +4624,17 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def save_daily_stats(self, stats):
+    def save_daily_stats(self, stats, mode='paper'):
         if not isinstance(stats, dict):
             return False
         try:
             now = now_iso()
+            mode = str(mode or 'paper').lower()
             stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
                 if not row:
-                    row = BotDailyStat(stat_date=stat_date, created_at=now)
+                    row = BotDailyStat(mode=mode, stat_date=stat_date, created_at=now)
                     session.add(row)
                 row.trades_count = int(stats.get('trades_count') or 0)
                 row.total_loss = self._clean(stats.get('total_loss') or 0)
@@ -4450,11 +4652,12 @@ class MLLiveLogger:
         except Exception:
             return False
 
-    def load_daily_stats(self, stat_date=None):
+    def load_daily_stats(self, stat_date=None, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
             if not row:
                 return {}
             result = {
@@ -4474,12 +4677,18 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def load_open_entries(self):
+    def load_open_entries(self, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                rows = session.scalars(select(MlOpenEntry).order_by(MlOpenEntry.symbol.asc())).all()
+                rows = session.scalars(
+                    select(MlOpenEntry)
+                    .where(MlOpenEntry.mode == mode)
+                    .order_by(MlOpenEntry.symbol.asc())
+                ).all()
             return {
                 row.symbol: {
+                    'mode': row.mode,
                     'entry_id': row.entry_id,
                     'symbol': row.symbol,
                     'opened_at': row.opened_at,
@@ -4492,11 +4701,12 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason):
-        """Enregistre les métriques de microstructure et d'exécution dans MlOpenEntry (Phase 7)."""
+    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason, mode='paper'):
+        """Enregistre les métriques d'exécution sur l'entrée ouverte du mode actif."""
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                row = session.get(MlOpenEntry, str(symbol))
+                row = session.get(MlOpenEntry, (mode, str(symbol)))
                 if row:
                     row.expected_price = self._clean(expected_price)
                     row.requested_price = self._clean(requested_price)
@@ -4509,16 +4719,17 @@ class MLLiveLogger:
         except Exception:
             return False
 
-    def save_daily_stats(self, stats):
+    def save_daily_stats(self, stats, mode='paper'):
         if not isinstance(stats, dict):
             return False
         try:
             now = now_iso()
+            mode = str(mode or 'paper').lower()
             stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
                 if not row:
-                    row = BotDailyStat(stat_date=stat_date, created_at=now)
+                    row = BotDailyStat(mode=mode, stat_date=stat_date, created_at=now)
                     session.add(row)
                 row.trades_count = int(stats.get('trades_count') or 0)
                 row.total_loss = self._clean(stats.get('total_loss') or 0)
@@ -4536,11 +4747,12 @@ class MLLiveLogger:
         except Exception:
             return False
 
-    def load_daily_stats(self, stat_date=None):
+    def load_daily_stats(self, stat_date=None, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
             with self._orm_session() as session:
-                row = session.get(BotDailyStat, stat_date)
+                row = session.get(BotDailyStat, (mode, stat_date))
             if not row:
                 return {}
             result = {
@@ -4560,12 +4772,18 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def load_open_entries(self):
+    def load_open_entries(self, mode='paper'):
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                rows = session.scalars(select(MlOpenEntry).order_by(MlOpenEntry.symbol.asc())).all()
+                rows = session.scalars(
+                    select(MlOpenEntry)
+                    .where(MlOpenEntry.mode == mode)
+                    .order_by(MlOpenEntry.symbol.asc())
+                ).all()
             return {
                 row.symbol: {
+                    'mode': row.mode,
                     'entry_id': row.entry_id,
                     'symbol': row.symbol,
                     'opened_at': row.opened_at,
@@ -4578,11 +4796,12 @@ class MLLiveLogger:
         except Exception:
             return {}
 
-    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason):
-        """Enregistre les métriques de microstructure et d'exécution dans MlOpenEntry (Phase 7)."""
+    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason, mode='paper'):
+        """Enregistre les métriques d'exécution sur l'entrée ouverte du mode actif."""
         try:
+            mode = str(mode or 'paper').lower()
             with self._orm_session() as session:
-                row = session.get(MlOpenEntry, str(symbol))
+                row = session.get(MlOpenEntry, (mode, str(symbol)))
                 if row:
                     row.expected_price = self._clean(expected_price)
                     row.requested_price = self._clean(requested_price)
@@ -4658,8 +4877,9 @@ class MLLiveLogger:
             print(f"⚠️ Erreur backup_db: {e}")
             return None
 
-    def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None):
-        """Enregistre un événement de gouvernance dans la table unifiée governance_logs."""
+    def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None, mode=None):
+        """Enregistre un événement de gouvernance strictement rattaché à un mode."""
+        mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -4670,6 +4890,7 @@ class MLLiveLogger:
                     session.add(GovernanceLog(
                         gov_id=gov_id,
                         timestamp=now,
+                        mode=mode,
                         event_type=str(event_type),
                         source_model=str(source_model) if source_model else None,
                         target_model=str(target_model) if target_model else None,

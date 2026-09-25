@@ -2791,7 +2791,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     target_model='champion_backup' if restored else 'none',
                     metrics={'safe_fallback_mode': True, 'restored_backup': restored},
                     trigger_type='auto',
-                    reason=reason
+                    reason=reason,
+                    mode='paper' if self.paper_trading else 'live'
                 )
 
             if hasattr(self, 'notifier') and self.notifier:
@@ -2840,7 +2841,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     target_model=None,
                     metrics=metrics,
                     trigger_type='auto',
-                    reason=f"Health status {previous or 'UNKNOWN'} -> {status}" if status_changed else f"Health status {status}"
+                    reason=f"Health status {previous or 'UNKNOWN'} -> {status}" if status_changed else f"Health status {status}",
+                    mode='paper' if self.paper_trading else 'live'
                 )
 
             if should_notify and getattr(self, 'notifier', None):
@@ -2856,7 +2858,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         target_model='operator',
                         metrics={'critical_count': self._health_critical_count, 'safe_fallback_enabled': self.health_safe_fallback_enabled},
                         trigger_type='auto',
-                        reason='Health check critique detecte'
+                        reason='Health check critique detecte',
+                        mode='paper' if self.paper_trading else 'live'
                     )
                 if (
                     self.health_safe_fallback_enabled
@@ -2967,12 +2970,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         env['PYTHONIOENCODING'] = 'utf-8'
                         try:
                             log_fh = open(replay_log_path, 'w', encoding='utf-8', errors='replace')
+                            active_mode = 'paper' if self.paper_trading else 'live'
                             self._ml_live_analysis_process = subprocess.Popen(
-                                [sys.executable, script_path],
+                                [sys.executable, script_path, '--mode', active_mode],
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env,
                             )
                         except Exception:
-                            self._ml_live_analysis_process = subprocess.Popen([sys.executable, script_path])
+                            active_mode = 'paper' if self.paper_trading else 'live'
+                            self._ml_live_analysis_process = subprocess.Popen(
+                                [sys.executable, script_path, '--mode', active_mode]
+                            )
         except Exception as e:
             print(f"⚠️ Erreur run_ml_live_analysis_if_due: {e}")
 
@@ -3000,7 +3007,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         source_model='runtime',
                         target_model='challenger',
                         trigger_type='auto',
-                        reason='Script train_and_evaluate_ml_model.py introuvable'
+                        reason='Script train_and_evaluate_ml_model.py introuvable',
+                        mode='paper' if self.paper_trading else 'live'
                     )
                 return False
 
@@ -3013,6 +3021,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'),
                 '--trigger',
                 'auto',
+                '--mode',
+                'paper' if self.paper_trading else 'live',
             ]
             if getattr(self, 'ml_auto_retrain_check_only', True):
                 command.append('--check-only')
@@ -3020,7 +3030,25 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 command.append('--fast')
 
             self._last_ml_auto_retrain = now
-            self._ml_auto_retrain_process = subprocess.Popen(command)
+            active_mode = 'paper' if self.paper_trading else 'live'
+            env = os.environ.copy()
+            env['ML_GOVERNANCE_MODE'] = active_mode
+            env['PYTHONUNBUFFERED'] = '1'
+            env['PYTHONIOENCODING'] = 'utf-8'
+            training_log_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                f"ml_training_{active_mode}.log",
+            )
+            try:
+                log_fh = open(training_log_path, 'a', encoding='utf-8', errors='replace')
+                self._ml_auto_retrain_process = subprocess.Popen(
+                    command,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            except Exception:
+                self._ml_auto_retrain_process = subprocess.Popen(command, env=env)
             if getattr(self, 'ml_live_logger', None):
                 self.ml_live_logger.record_governance_event(
                     event_type='auto_retraining_started',
@@ -3033,7 +3061,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         'pid': self._ml_auto_retrain_process.pid,
                     },
                     trigger_type='auto',
-                    reason='Retraining planifie lance en arriere-plan'
+                    reason='Retraining planifie lance en arriere-plan',
+                    mode='paper' if self.paper_trading else 'live'
                 )
             return True
         except Exception as e:
@@ -3075,7 +3104,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     target_model='safe_fallback',
                     metrics=signals,
                     trigger_type='auto',
-                    reason=reason
+                    reason=reason,
+                    mode='paper' if self.paper_trading else 'live'
                 )
             return self.trigger_safe_fallback_mode(reason=reason)
         except Exception as e:
@@ -3103,13 +3133,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 import sqlite3 as _sqlite3
                 conn = _sqlite3.connect(self.ml_live_logger.sqlite_file)
                 cur = conn.cursor()
+                active_mode = 'paper' if self.paper_trading else 'live'
                 rows = cur.execute("""
                     SELECT pnl
                     FROM ml_trade_outcomes
-                    WHERE pnl IS NOT NULL
+                    WHERE mode=? AND pnl IS NOT NULL
                     ORDER BY timestamp DESC
                     LIMIT 10
-                """).fetchall()
+                """, (active_mode,)).fetchall()
                 losses = 0
                 for (pnl,) in rows:
                     if float(pnl or 0.0) < 0:
@@ -3121,9 +3152,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 drift = cur.execute("""
                     SELECT status
                     FROM ml_drift_alerts
+                    WHERE mode=?
                     ORDER BY generated_at DESC
                     LIMIT 1
-                """).fetchone()
+                """, (active_mode,)).fetchone()
                 if drift:
                     signals['drift_status'] = drift[0]
                 conn.close()
@@ -3465,7 +3497,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             self._last_score_append[symbol] = now
             
             if getattr(self, 'ml_live_logger', None):
-                self.ml_live_logger.record_crypto_score(symbol, price, score)
+                self.ml_live_logger.record_crypto_score(
+                    symbol,
+                    score,
+                    price,
+                    mode='paper' if self.paper_trading else 'live',
+                )
                 
         except Exception as e:
             print(f"⚠️ Erreur lors de l'historisation du score pour {symbol}: {e}")

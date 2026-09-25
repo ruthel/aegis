@@ -64,7 +64,7 @@ export function LiveView({ status, ml }: { status: StatusPayload; ml: MlStatus }
 function MetricsStrip({ status }: { status: StatusPayload }) {
   const stats = status.stats || {}
   const viewMode = asString(status.balance?.view_mode ?? status.bot?.view_mode ?? status.bot?.mode, 'paper')
-  const balanceLabel = viewMode === 'live' ? 'Solde Live' : viewMode === 'all' ? 'Solde Total' : 'Solde Paper'
+  const balanceLabel = viewMode === 'live' ? 'Solde Live' : 'Solde Paper'
   const totalTrades = Number(stats.total_trades || 0)
   const daysActive = Number(stats.days_active || 0)
   const avgStake = Number(stats.avg_stake || 0)

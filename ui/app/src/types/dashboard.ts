@@ -1,5 +1,5 @@
 export type View = 'live' | 'analytics' | 'trades' | 'ledger' | 'console' | 'config'
-export type DataViewMode = 'paper' | 'live' | 'all'
+export type DataViewMode = 'paper' | 'live'
 export type JsonMap = Record<string, unknown>
 
 export type BotControl = {

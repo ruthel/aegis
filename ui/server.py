@@ -22,8 +22,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / 'data'
 ENV_DASHBOARD = ROOT / '.env'
-BOT_LOG_FILE = ROOT / 'bot.log'
-REPLAY_LOG_FILE = ROOT / 'ml_replay.log'
+PAPER_BOT_LOG_FILE = ROOT / 'bot_paper.log'
+LIVE_BOT_LOG_FILE = ROOT / 'bot_live.log'
+PAPER_ML_TRAINING_LOG_FILE = ROOT / 'ml_training_paper.log'
+LIVE_ML_TRAINING_LOG_FILE = ROOT / 'ml_training_live.log'
+PAPER_REPLAY_LOG_FILE = ROOT / 'ml_replay_paper.log'
+LIVE_REPLAY_LOG_FILE = ROOT / 'ml_replay_live.log'
+
+def bot_log_file(mode=None):
+    mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
+    return PAPER_BOT_LOG_FILE if mode == 'paper' else LIVE_BOT_LOG_FILE
+
+def replay_log_file(mode=None):
+    mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
+    return PAPER_REPLAY_LOG_FILE if mode == 'paper' else LIVE_REPLAY_LOG_FILE
+
+def ml_training_log_file(mode=None):
+    mode = str(mode or active_trading_mode()).lower()
+    return PAPER_ML_TRAINING_LOG_FILE if mode == 'paper' else LIVE_ML_TRAINING_LOG_FILE
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
 BOT_START_LOCK = threading.Lock()
@@ -120,20 +136,22 @@ def db_logger():
 def latest_model_evaluations(limit=5):
     try:
         import sqlite3
+        mode = active_trading_mode()
         conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
         conn.row_factory = sqlite3.Row
         rows = conn.execute("""
-            SELECT timestamp, event_type, source_model, target_model, metrics_json, trigger_type, reason
+            SELECT timestamp, mode, event_type, source_model, target_model, metrics_json, trigger_type, reason
             FROM governance_logs
-            WHERE event_type IN (
+            WHERE mode=?
+              AND event_type IN (
                 'promotion_guardrails_evaluated',
                 'promotion_rejected',
                 'promotion_checked',
                 'promotion'
-            )
+              )
             ORDER BY timestamp DESC
             LIMIT ?
-        """, (int(limit),)).fetchall()
+        """, (mode, int(limit))).fetchall()
         conn.close()
         evaluations = []
         for row in rows:
@@ -146,6 +164,7 @@ def latest_model_evaluations(limit=5):
                     metrics = {'raw': raw_metrics}
             evaluations.append({
                 'timestamp': row['timestamp'],
+                'mode': row['mode'],
                 'event_type': row['event_type'],
                 'source_model': row['source_model'],
                 'target_model': row['target_model'],
@@ -160,14 +179,8 @@ def latest_model_evaluations(limit=5):
 
 def latest_sizing_recommendations(limit=12, view_mode=None):
     try:
-        mode = view_mode or current_view_mode()
+        mode = active_trading_mode()
         with db_logger() as logger:
-            if mode == 'all':
-                rows = []
-                for item_mode in ('paper', 'live'):
-                    rows.extend(logger.get_latest_sizing_recommendations(mode=item_mode, limit=limit))
-                rows.sort(key=lambda item: str(item.get('timestamp') or ''), reverse=True)
-                return rows[:int(limit)]
             return logger.get_latest_sizing_recommendations(mode=mode, limit=limit)
     except Exception:
         return []
@@ -177,17 +190,8 @@ def latest_sizing_by_symbol(view_mode=None):
     """Dernière recommandation de sizing par symbole (une par paire, jamais masquée
     par une paire plus active). En mode 'all', on garde la plus récente entre paper et live."""
     try:
-        mode = view_mode or current_view_mode()
+        mode = active_trading_mode()
         with db_logger() as logger:
-            if mode == 'all':
-                merged = {}
-                for item_mode in ('paper', 'live'):
-                    per_symbol = logger.get_latest_sizing_recommendation_per_symbol(mode=item_mode)
-                    for symbol, rec in per_symbol.items():
-                        existing = merged.get(symbol)
-                        if existing is None or str(rec.get('timestamp') or '') > str(existing.get('timestamp') or ''):
-                            merged[symbol] = rec
-                return merged
             return logger.get_latest_sizing_recommendation_per_symbol(mode=mode)
     except Exception:
         return {}
@@ -607,6 +611,7 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
         if not script_path.exists():
             return {'ok': False, 'running': False, 'reason': 'script_missing', 'status': current}
 
+        training_mode = active_trading_mode()
         command = [
             sys.executable,
             str(script_path),
@@ -616,6 +621,8 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
             os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'),
             '--trigger',
             trigger,
+            '--mode',
+            training_mode,
         ]
         if check_only:
             command.append('--check-only')
@@ -623,10 +630,12 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
             command.append('--fast')
 
         env = os.environ.copy()
+        env['ML_GOVERNANCE_MODE'] = training_mode
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
-        BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+        training_log_file = ml_training_log_file(training_mode)
+        training_log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(training_log_file, 'a', encoding='utf-8', errors='replace') as log:
             log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ML retraining {trigger} started: {' '.join(command)}\n")
             process = subprocess.Popen(
                 command,
@@ -643,6 +652,7 @@ def start_ml_retraining(trigger='manual', check_only=False, fast=False):
             'command': ' '.join(command),
             'status': 'running',
             'trigger': trigger,
+            'mode': training_mode,
             'check_only': bool(check_only),
             'fast': bool(fast),
             'exit_code': None,
@@ -782,6 +792,7 @@ def bot_status_payload(force=False):
         'pid': tracked.get('pid') if running else None,
         'started_at': tracked.get('started_at'),
         'mode': 'subprocess',
+        'trading_mode': tracked.get('trading_mode') or active_trading_mode(),
     }
     BOT_STATUS_CACHE['timestamp'] = now
     BOT_STATUS_CACHE['payload'] = payload
@@ -853,7 +864,7 @@ def start_bot_process():
         if os.name == 'nt':
             python_exe = python_exe.replace('python.exe', 'pythonw.exe')
         command = [python_exe, str(ROOT / 'run.py')]
-        BOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        bot_log_file().parent.mkdir(parents=True, exist_ok=True)
 
         creationflags = 0
         if os.name == 'nt':
@@ -867,7 +878,7 @@ def start_bot_process():
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUNBUFFERED'] = '1'
 
-        with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+        with open(bot_log_file(), 'a', encoding='utf-8', errors='replace') as log:
             process = subprocess.Popen(
                 command,
                 cwd=str(ROOT),
@@ -883,6 +894,7 @@ def start_bot_process():
             'pid': process.pid,
             'started_at': datetime.now().isoformat(),
             'command': ' '.join(command),
+            'trading_mode': active_trading_mode(),
         }
         state_saved = write_bot_control_state(payload)
         for _ in range(50):
@@ -1020,15 +1032,13 @@ def active_trading_mode():
 
 
 def current_view_mode():
-    raw = active_trading_mode()
-    if has_request_context():
-        raw = (request.args.get('view_mode') or request.args.get('mode') or raw).lower()
-    return raw if raw in {'paper', 'live', 'all'} else active_trading_mode()
+    """The UI is intentionally pinned to the bot's active trading mode."""
+    return active_trading_mode()
 
 
 def modes_for_view(view_mode=None):
-    mode = view_mode or current_view_mode()
-    return ['paper', 'live'] if mode == 'all' else [mode]
+    """Never merge paper/live records in an operational UI request."""
+    return [active_trading_mode()]
 
 
 def active_state_source(view_mode=None):
@@ -1063,8 +1073,8 @@ def _tag_mode(items, mode):
 def load_accounting_state(fallback=None, view_mode=None):
     """Charge l'état UI directement depuis orders/fills/balances."""
     fallback = fallback or {'positions': []}
-    selected_view = view_mode or current_view_mode()
-    selected_modes = modes_for_view(selected_view)
+    selected_view = active_trading_mode()
+    selected_modes = [selected_view]
     try:
         with db_logger() as logger:
             conn = logger._get_conn()
@@ -1097,29 +1107,12 @@ def load_accounting_state(fallback=None, view_mode=None):
                     }
                 balances_by_mode[mode_key] = balances
                 usd_balance = balances.get('USD') or balances.get('USDT') or balances.get('USDC') or {}
-                if selected_view != 'all' and usd_balance:
+                if usd_balance:
                     display_balance = round(float(usd_balance.get('free') or 0.0), 2)
             state['positions'] = merged_positions
             state['pending_orders'] = merged_pending_orders
             state['balances_by_mode'] = balances_by_mode
-            if selected_view == 'all':
-                merged_balances = {}
-                for balances in balances_by_mode.values():
-                    for asset, row in balances.items():
-                        target = merged_balances.setdefault(asset, {
-                            'free': 0.0,
-                            'used': 0.0,
-                            'locked': 0.0,
-                            'total': 0.0,
-                        })
-                        target['free'] += float(row.get('free') or 0.0)
-                        target['used'] += float(row.get('used') or 0.0)
-                        target['locked'] += float(row.get('locked') or 0.0)
-                        target['total'] += float(row.get('total') or 0.0)
-                state['balances'] = merged_balances
-                display_balance = round(sum(float((balances_by_mode.get(mode, {}).get('USD') or balances_by_mode.get(mode, {}).get('USDT') or balances_by_mode.get(mode, {}).get('USDC') or {}).get('free') or 0.0) for mode in selected_modes), 2)
-            else:
-                state['balances'] = balances_by_mode.get(selected_modes[0], {})
+            state['balances'] = balances_by_mode.get(selected_modes[0], {})
             if display_balance is not None:
                 state['paper_balance'] = display_balance
             elif selected_view != 'paper':
@@ -1453,7 +1446,7 @@ def support_touch(state):
 def important_logs():
     keywords = ('error', 'erreur', 'permission denied', 'failed', 'echou')
     lines = []
-    for line in tail_lines(ROOT / 'bot.log', 200):
+    for line in tail_lines(bot_log_file(), 200):
         if any(keyword in line.lower() for keyword in keywords):
             lines.append(line.strip())
     return lines[-40:]
@@ -1463,7 +1456,7 @@ def live_status():
     logger = None
     try:
         logger = db_logger()
-        data = logger.get_live_status()
+        data = logger.get_live_status(mode=active_trading_mode())
         if data:
             return data
     except Exception:
@@ -1637,18 +1630,20 @@ def _enrich_trades_with_ml_confidence(trades):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
+        active_mode = active_trading_mode()
+
         def get_ml_buy_prob(symbol, ts_str):
             try:
                 if not ts_str:
                     return None
                 row = cursor.execute(
-                    "SELECT confidence FROM decision_logs WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
-                    (symbol, str(ts_str))
+                    "SELECT confidence FROM decision_logs WHERE mode=? AND action_type='ENTRY' AND symbol=? AND timestamp<=? AND decision='accepted' ORDER BY timestamp DESC LIMIT 1",
+                    (active_mode, symbol, str(ts_str))
                 ).fetchone()
                 if not row:
                     row = cursor.execute(
-                        "SELECT confidence FROM decision_logs WHERE action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
-                        (symbol, str(ts_str))
+                        "SELECT confidence FROM decision_logs WHERE mode=? AND action_type='ENTRY' AND symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1",
+                        (active_mode, symbol, str(ts_str))
                     ).fetchone()
                 return round(float(row[0]), 1) if row and row[0] is not None else None
             except Exception:
@@ -1663,22 +1658,24 @@ def _enrich_trades_with_ml_confidence(trades):
                 row = cursor.execute(
                     """
                     SELECT p_continue, confidence, reason FROM decision_logs
-                    WHERE UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
+                    WHERE mode=?
+                      AND UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
                       AND symbol IN (?, ?)
-                      AND (created_at <= ? OR timestamp <= ?)
-                    ORDER BY created_at DESC, timestamp DESC LIMIT 1
+                      AND timestamp <= ?
+                    ORDER BY timestamp DESC LIMIT 1
                     """,
-                    (sym_usd, sym_usdt, str(ts_str), str(ts_str))
+                    (active_mode, sym_usd, sym_usdt, str(ts_str))
                 ).fetchone()
                 if not row:
                     row = cursor.execute(
                         """
                         SELECT p_continue, confidence, reason FROM decision_logs
-                        WHERE UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
+                        WHERE mode=?
+                          AND UPPER(action_type) IN ('EXIT', 'EXIT_DECISION', 'SELL')
                           AND symbol IN (?, ?)
-                        ORDER BY created_at DESC, timestamp DESC LIMIT 1
+                        ORDER BY timestamp DESC LIMIT 1
                         """,
-                        (sym_usd, sym_usdt)
+                        (active_mode, sym_usd, sym_usdt)
                     ).fetchone()
                 if row:
                     p_cont, conf, reason = row
@@ -2262,20 +2259,14 @@ def compute_next_buy_forecast(state):
 
 
 def dashboard_status_payload(view_mode=None):
-    view_mode = view_mode or current_view_mode()
+    view_mode = active_trading_mode()
     state = load_accounting_state({'positions': []}, view_mode=view_mode)
-    mode_key = active_trading_mode() if view_mode == 'all' else view_mode
+    mode_key = view_mode
     live = live_status()
     with db_logger() as logger:
-        if view_mode == 'all':
-            raw_decisions = []
-            for item_mode in ('paper', 'live'):
-                raw_decisions.extend(logger.get_decision_journal(item_mode, 300))
-            raw_decisions.sort(key=lambda item: str(item.get('timestamp') or ''))
-        else:
-            raw_decisions = logger.get_decision_journal(mode_key, 300)
+        raw_decisions = logger.get_decision_journal(mode_key, 300)
         decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], 20)
-        total_decisions = sum(logger.count_decision_journal(item_mode) for item_mode in modes_for_view(view_mode))
+        total_decisions = logger.count_decision_journal(mode_key)
     positions = weighted_positions(
         state.get('positions', []),
         state.get('trailing_stops'),
@@ -2409,25 +2400,20 @@ def api_decisions():
         except ValueError:
             limit = 80
 
-    view_mode = current_view_mode()
-    mode_key = active_trading_mode() if view_mode == 'all' else view_mode
+    mode_key = active_trading_mode()
     with db_logger() as logger:
-        if view_mode == 'all':
-            raw_decisions = []
-            fetch_limit = limit if limit == 100000 else max(limit * 20, limit)
-            for item_mode in ('paper', 'live'):
-                raw_decisions.extend(logger.get_decision_journal(item_mode, fetch_limit))
-            raw_decisions.sort(key=lambda item: str(item.get('timestamp') or ''))
-        elif limit == 100000:
-            raw_decisions = logger.get_decision_journal(mode_key, limit)
-        else:
-            raw_decisions = logger.get_decision_journal(mode_key, max(limit * 20, limit))
-        decisions = compact_dashboard_decisions([entry for entry in raw_decisions if is_dashboard_decision(entry)], limit)
-        total_count = sum(logger.count_decision_journal(item_mode) for item_mode in modes_for_view(view_mode))
+        fetch_limit = limit if limit == 100000 else max(limit * 20, limit)
+        raw_decisions = logger.get_decision_journal(mode_key, fetch_limit)
+        decisions = compact_dashboard_decisions(
+            [entry for entry in raw_decisions if is_dashboard_decision(entry)],
+            limit,
+        )
+        total_count = logger.count_decision_journal(mode_key)
 
     return jsonify({
         'decisions': decisions,
-        'total_count': total_count
+        'total_count': total_count,
+        'mode': mode_key,
     })
 
 
@@ -2469,8 +2455,14 @@ def api_config_update():
         next_paper = updates['PAPER_TRADING']
         if current_paper != next_paper:
             status = bot_status_payload(force=True)
+            replay_status = ml_replay_status_payload()
+            retrain_status = ml_retrain_status()
             if status.get('running'):
                 errors['PAPER_TRADING'] = 'arretez le bot avant de changer le mode trading'
+            elif replay_status.get('running'):
+                errors['PAPER_TRADING'] = 'arretez le replay ML du mode actif avant de changer de mode'
+            elif retrain_status.get('running'):
+                errors['PAPER_TRADING'] = 'attendez la fin du retraining/promotion avant de changer de mode'
             elif next_paper == 'False' and not exchange_keys_configured():
                 errors['PAPER_TRADING'] = 'cles API exchange manquantes pour activer le live'
 
@@ -2556,14 +2548,16 @@ def api_bot_console():
     lines_count = request.args.get('lines', '500')
     if lines_count == 'all':
         try:
-            all_lines = BOT_LOG_FILE.read_text(encoding='utf-8', errors='replace').splitlines() if BOT_LOG_FILE.exists() else []
+            log_file = bot_log_file()
+            all_lines = log_file.read_text(encoding='utf-8', errors='replace').splitlines() if log_file.exists() else []
         except Exception:
             all_lines = []
         return jsonify({'lines': all_lines, 'total': len(all_lines)})
     lines_count = int(lines_count)
-    lines = tail_lines(BOT_LOG_FILE, lines_count)
+    log_file = bot_log_file()
+    lines = tail_lines(log_file, lines_count)
     try:
-        file_size = BOT_LOG_FILE.stat().st_size if BOT_LOG_FILE.exists() else 0
+        file_size = log_file.stat().st_size if log_file.exists() else 0
     except Exception:
         file_size = 0
     return jsonify({'lines': [l.rstrip() for l in lines], 'total': file_size})
@@ -2716,10 +2710,10 @@ def compute_ml_analytics(state, positions, paper_balance, meta_perf):
 def ml_status_payload(view_mode=None):
     """Endpoint pour le Core ML Engine avec statistiques complètes et prévisions"""
     global ML_PREDS_CACHE
-    view_mode = view_mode or current_view_mode()
+    view_mode = active_trading_mode()
     state = load_bot_state(
         {'positions': [], 'ml_predictions': {}},
-        mode=active_trading_mode() if view_mode == 'all' else view_mode
+        mode=view_mode
     )
     ml_preds = state.get('ml_predictions', {})
     clean_ml_preds = sanitize_ml_predictions(ml_preds)
@@ -2781,7 +2775,11 @@ def api_analytics_scores():
     cutoff = datetime.now() - timedelta(hours=hours)
     try:
         with db_logger() as logger:
-            results = logger.get_crypto_scores(symbol, since_iso=cutoff.isoformat())
+            results = logger.get_crypto_scores(
+                symbol,
+                since_iso=cutoff.isoformat(),
+                mode=active_trading_mode(),
+            )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
         
@@ -2972,8 +2970,8 @@ def api_support_touch_backtest_status():
     })
 
 
-# ===== REPLAY DES REFUS ML (analyse de performance live + rejeu des refus) =====
-REPLAY_PROCESS = None
+# ===== REPLAY DES REFUS ML (strictement séparé paper/live) =====
+REPLAY_PROCESSES = {'paper': None, 'live': None}
 
 
 def ml_replay_stats():
@@ -2992,11 +2990,20 @@ def ml_replay_stats():
         import sqlite3
         conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
         conn.row_factory = sqlite3.Row
+        active_mode = active_trading_mode()
         stats['total_rejected'] = conn.execute(
-            "SELECT COUNT(*) FROM decision_logs WHERE action_type='ENTRY' AND decision='rejected'"
+            "SELECT COUNT(*) FROM decision_logs WHERE mode=? AND action_type='ENTRY' AND decision='rejected'",
+            (active_mode,),
         ).fetchone()[0]
         by_status = conn.execute(
-            "SELECT replay_status, COUNT(*) n FROM ml_rejected_replay_results GROUP BY replay_status"
+            """
+            SELECT r.replay_status, COUNT(*) n
+            FROM ml_rejected_replay_results r
+            JOIN decision_logs d ON d.event_id=r.entry_id
+            WHERE d.mode=?
+            GROUP BY r.replay_status
+            """,
+            (active_mode,),
         ).fetchall()
         for row in by_status:
             if row['replay_status'] == 'replayed':
@@ -3005,7 +3012,14 @@ def ml_replay_stats():
                 stats['pending'] += row['n']
         stats['remaining'] = max(0, stats['total_rejected'] - stats['replayed'])
         last = conn.execute(
-            "SELECT generated_at, rejected_replayed FROM ml_analysis_runs ORDER BY generated_at DESC LIMIT 1"
+            """
+            SELECT generated_at, rejected_replayed
+            FROM ml_analysis_runs
+            WHERE mode=?
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            (active_mode,),
         ).fetchone()
         if last:
             stats['last_run_at'] = last['generated_at']
@@ -3025,17 +3039,18 @@ def ml_replay_stats():
 
 
 def ml_replay_status_payload():
-    global REPLAY_PROCESS
+    mode = active_trading_mode()
+    process = REPLAY_PROCESSES.get(mode)
     running = False
     exit_code = None
-    if REPLAY_PROCESS:
-        poll_res = REPLAY_PROCESS.poll()
+    if process:
+        poll_res = process.poll()
         if poll_res is None:
             running = True
         else:
             exit_code = poll_res
-            REPLAY_PROCESS = None
-    payload = {'running': running, 'exit_code': exit_code}
+            REPLAY_PROCESSES[mode] = None
+    payload = {'running': running, 'exit_code': exit_code, 'mode': mode}
     payload.update(ml_replay_stats())
     return payload
 
@@ -3049,9 +3064,10 @@ def api_ml_replay_status():
 
 @app.route('/api/ml/replay/start', methods=['POST'])
 def api_ml_replay_start():
-    global REPLAY_PROCESS
-    if REPLAY_PROCESS and REPLAY_PROCESS.poll() is None:
-        return jsonify({'ok': False, 'error': 'Un replay est déjà en cours', **ml_replay_status_payload()}), 400
+    mode = active_trading_mode()
+    current_process = REPLAY_PROCESSES.get(mode)
+    if current_process and current_process.poll() is None:
+        return jsonify({'ok': False, 'error': f'Un replay {mode} est déjà en cours', **ml_replay_status_payload()}), 400
 
     payload = request.get_json(silent=True) or {}
     # Permet de forcer un plafond de replay plus élevé pour rattraper le backlog en un run.
@@ -3062,6 +3078,8 @@ def api_ml_replay_start():
         str(ROOT / 'scripts' / 'analyze_ml_live_performance.py'),
         '--db',
         str(aegis_db_path()),
+        '--mode',
+        mode,
     ]
     if max_replay:
         try:
@@ -3071,40 +3089,41 @@ def api_ml_replay_start():
 
     try:
         # Sortie non bufferisée + UTF-8 pour que la progression apparaisse en direct
-        # dans bot.log (donc dans la console web) au lieu d'un dump en fin de run.
+        # dans le log de replay dédié au lieu d'un dump en fin de run.
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
         env['PYTHONIOENCODING'] = 'utf-8'
         replay_scope = f"backlog complet (plafond {int(max_replay)})" if max_replay else "lot standard"
-        REPLAY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # Log DÉDIÉ au replay (mode 'w' = un nouveau run repart d'un fichier propre) pour
-        # ne PAS mélanger la progression du replay avec les logs du bot dans bot.log.
-        replay_log = open(REPLAY_LOG_FILE, 'w', encoding='utf-8', errors='replace')
+        mode_replay_log = replay_log_file(mode)
+        mode_replay_log.parent.mkdir(parents=True, exist_ok=True)
+        # Un fichier par mode: même après plusieurs bascules UI, paper et live restent isolés.
+        replay_log = open(mode_replay_log, 'w', encoding='utf-8', errors='replace')
         replay_log.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé manuellement ({replay_scope})...\n")
         replay_log.flush()
-        # Trace courte dans bot.log juste pour signaler le lancement (sans la progression).
+        # Trace courte dans le log du mode actif juste pour signaler le lancement (sans la progression).
         try:
-            with open(BOT_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
+            with open(bot_log_file(), 'a', encoding='utf-8', errors='replace') as log:
                 log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé ({replay_scope}). Progression dans l'onglet Replay.\n")
         except Exception:
             pass
-        REPLAY_PROCESS = subprocess.Popen(
+        REPLAY_PROCESSES[mode] = subprocess.Popen(
             command,
             cwd=str(ROOT),
             stdout=replay_log,
             stderr=subprocess.STDOUT,
             env=env,
         )
-        return jsonify({'ok': True, 'pid': REPLAY_PROCESS.pid, **ml_replay_status_payload()})
+        return jsonify({'ok': True, 'pid': REPLAY_PROCESSES[mode].pid, **ml_replay_status_payload()})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/ml/replay/logs', methods=['GET'])
 def api_ml_replay_logs():
-    """Retourne les logs du run de replay courant (fichier dédié, non mélangé)."""
+    """Retourne uniquement les logs replay du mode actif."""
     lines_count = int(request.args.get('lines', '200'))
-    lines = tail_lines(REPLAY_LOG_FILE, lines_count) if REPLAY_LOG_FILE.exists() else []
+    log_file = replay_log_file(active_trading_mode())
+    lines = tail_lines(log_file, lines_count) if log_file.exists() else []
     response = jsonify({'ok': True, 'lines': [l.rstrip() for l in lines]})
     response.headers['Cache-Control'] = 'no-store'
     return response
@@ -3112,25 +3131,25 @@ def api_ml_replay_logs():
 
 @app.route('/api/ml/replay/stop', methods=['POST'])
 def api_ml_replay_stop():
-    """Arrête le replay en cours. Les refus déjà rejoués et commités restent en base
-    (le rattrapage reprendra là où il s'est arrêté au prochain lancement)."""
-    global REPLAY_PROCESS
+    """Arrête uniquement le replay du mode actif."""
+    mode = active_trading_mode()
+    process = REPLAY_PROCESSES.get(mode)
     stopped = False
-    if REPLAY_PROCESS and REPLAY_PROCESS.poll() is None:
+    if process and process.poll() is None:
         try:
-            REPLAY_PROCESS.terminate()
+            process.terminate()
             try:
-                REPLAY_PROCESS.wait(timeout=5)
+                process.wait(timeout=5)
             except Exception:
-                REPLAY_PROCESS.kill()
+                process.kill()
             stopped = True
         except Exception as e:
             return jsonify({'ok': False, 'error': str(e), **ml_replay_status_payload()}), 500
         finally:
-            REPLAY_PROCESS = None
+            REPLAY_PROCESSES[mode] = None
         try:
-            with open(REPLAY_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
-                log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🛑 Replay arrêté manuellement. Les refus déjà rejoués sont conservés.\n")
+            with open(replay_log_file(mode), 'a', encoding='utf-8', errors='replace') as log:
+                log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🛑 Replay {mode} arrêté manuellement. Les refus déjà rejoués sont conservés.\n")
         except Exception:
             pass
     return jsonify({'ok': True, 'stopped': stopped, **ml_replay_status_payload()})

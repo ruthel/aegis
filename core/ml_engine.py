@@ -1162,13 +1162,20 @@ class MLEngine:
                 pass
         os.replace(tmp, path)
 
+    def _grid_mode(self) -> str:
+        value = str(
+            os.getenv('ML_GOVERNANCE_MODE')
+            or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+        ).lower()
+        return value if value in ('paper', 'live') else 'paper'
+
     def _grid_cache_paths(self, model_type: str) -> Tuple[str, str]:
         cache_dir = os.getenv(
             'ML_GRID_CACHE_DIR',
             os.path.join(self.model_dir, 'ml_search'),
         )
         os.makedirs(cache_dir, exist_ok=True)
-        stem = f"entry_{model_type}"
+        stem = f"entry_{model_type}_{self._grid_mode()}"
         return (
             os.path.join(cache_dir, f"{stem}_checkpoint.json"),
             os.path.join(cache_dir, f"{stem}_best.json"),
@@ -1216,6 +1223,7 @@ class MLEngine:
         ).hexdigest()
         return {
             'version': 1,
+            'trading_mode': self._grid_mode(),
             'feature_schema_hash': self.feature_schema_hash(),
             'model_type': model_type,
             'param_grid_hash': grid_hash,
@@ -1237,14 +1245,17 @@ class MLEngine:
 
         try:
             import sqlite3
+            mode = self._grid_mode()
             con = sqlite3.connect(db_file)
             row = con.execute(
                 """
                 SELECT drift_status, live_win_rate, calibration_mae
                 FROM ml_analysis_runs
+                WHERE mode=?
                 ORDER BY generated_at DESC
                 LIMIT 1
-                """
+                """,
+                (mode,),
             ).fetchone()
             con.close()
             if not row:

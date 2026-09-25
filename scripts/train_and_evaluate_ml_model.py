@@ -80,7 +80,13 @@ def aggregate_ohlcv(klines, group_size):
     return grouped
 
 
-def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl_pct=0.0):
+def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl_pct=0.0, mode=None):
+    mode = str(
+        mode
+        or os.getenv('ML_GOVERNANCE_MODE')
+        or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+    ).lower()
+    mode = mode if mode in ('paper', 'live') else 'paper'
     if not db_path or not os.path.exists(db_path):
         return [], [], [], [], []
 
@@ -88,14 +94,16 @@ def load_phase5_replay_samples(db_path, feature_names, max_samples=1000, min_pnl
     con.row_factory = sqlite3.Row
     rows = con.execute(
         """
-        SELECT entry_id, pnl_pct, would_win, timestamp
-        FROM ml_rejected_replay_results
-        WHERE replay_status = 'replayed'
-          AND pnl_pct IS NOT NULL
-        ORDER BY timestamp ASC
+        SELECT r.entry_id, r.pnl_pct, r.would_win, r.timestamp
+        FROM ml_rejected_replay_results r
+        JOIN decision_logs d ON d.event_id = r.entry_id
+        WHERE d.mode=?
+          AND r.replay_status = 'replayed'
+          AND r.pnl_pct IS NOT NULL
+        ORDER BY r.timestamp ASC
         LIMIT ?
         """,
-        (int(max_samples),)
+        (mode, int(max_samples))
     ).fetchall()
 
     neutral_defaults = {
@@ -901,7 +909,7 @@ def generate_exit_training_samples(
     )
 
 
-def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use_grid_search=None, use_lightgbm=None):
+def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use_grid_search=None, use_lightgbm=None, mode=None):
     """Entraîne le modèle Challenger d'Entrée sur l'historique configuré et le sauvegarde dans aegis_challenger.joblib.
     
     Args:
@@ -909,6 +917,13 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         use_lightgbm: Force LightGBM (None = utilise env ML_USE_LIGHTGBM, défaut True)
     """
     try:
+        mode = str(
+            mode
+            or os.getenv('ML_GOVERNANCE_MODE')
+            or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+        ).lower()
+        mode = mode if mode in ('paper', 'live') else 'paper'
+        os.environ['ML_GOVERNANCE_MODE'] = mode
         challenger_path = os.path.join(output_dir, 'aegis_challenger.joblib')
         champion_path = os.path.join(output_dir, 'aegis_model.joblib')
 
@@ -1141,7 +1156,11 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         replay_weight_loss = float(os.getenv('ML_REPLAY_TRAIN_WEIGHT_LOSS', '1.0'))
         try:
             r_samples, r_labels, r_weights, r_timestamps, r_pnls = load_phase5_replay_samples(
-                replay_db, ml_engine.feature_names, max_samples=replay_max, min_pnl_pct=replay_min_pnl
+                replay_db,
+                ml_engine.feature_names,
+                max_samples=replay_max,
+                min_pnl_pct=replay_min_pnl,
+                mode=mode,
             )
         except Exception as e:
             print(f"  ⚠️ Replay samples ignorés (erreur lecture): {e}")
@@ -1183,6 +1202,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         
         ml_engine.model_metadata = {
             **dict(getattr(ml_engine, 'model_metadata', {}) or {}),
+            'training_mode': mode,
             'training_start': datetime.fromtimestamp(float(np.min(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
             'training_end': datetime.fromtimestamp(float(np.max(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
             'data_provider': '+'.join(sorted(_TRAINING_DATA_PROVIDERS)) if _TRAINING_DATA_PROVIDERS else 'unknown',
@@ -1262,13 +1282,20 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         return False
 
 
-def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type='auto', fast_mode=False):
+def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type='auto', fast_mode=False, mode=None):
     """Train the challenger, then delegate ALL promotion policy to promote_challenger.
 
     Keeping a single promotion implementation prevents auto-retraining from bypassing
     the same-opportunity shadow guardrails used by manual promotion.
     """
     load_dotenv('.env', override=True)
+    mode = str(
+        mode
+        or os.getenv('ML_GOVERNANCE_MODE')
+        or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')
+    ).lower()
+    mode = mode if mode in ('paper', 'live') else 'paper'
+    os.environ['ML_GOVERNANCE_MODE'] = mode
     db_file = db_file or os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3')
 
     print("=" * 70)
@@ -1279,6 +1306,7 @@ def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type=
         output_dir=model_dir,
         db_file=db_file,
         fast_mode=fast_mode,
+        mode=mode,
     )
     if not ok:
         print("❌ Échec de l'entraînement Challenger.")
@@ -1292,6 +1320,7 @@ def run_pipeline(model_dir='data', db_file=None, check_only=False, trigger_type=
             check_only=check_only,
             force=False,
             trigger_type=trigger_type,
+            mode=mode,
         )
     )
 
@@ -1301,6 +1330,12 @@ if __name__ == '__main__':
     parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
     parser.add_argument('--check-only', action='store_true', help="Vérifie les garde-fous sans promouvoir")
     parser.add_argument('--trigger', default='manual', help="auto ou manual")
+    parser.add_argument(
+        '--mode',
+        choices=('paper', 'live'),
+        default=None,
+        help="Mode dont les replays/garde-fous sont autorisés à influencer ce run.",
+    )
     parser.add_argument('--fast', action='store_true', help="Mode rapide de test")
     parser.add_argument('--no-grid', action='store_true', help="Désactive Grid Search (activé par défaut)")
     parser.add_argument('--no-lightgbm', action='store_true', help="Utilise RandomForest au lieu de LightGBM")
@@ -1315,4 +1350,11 @@ if __name__ == '__main__':
     if args.no_lightgbm:
         os.environ['ML_USE_LIGHTGBM'] = 'false'
 
-    run_pipeline(model_dir=args.dir, db_file=args.db, check_only=args.check_only, trigger_type=args.trigger, fast_mode=args.fast)
+    run_pipeline(
+        model_dir=args.dir,
+        db_file=args.db,
+        check_only=args.check_only,
+        trigger_type=args.trigger,
+        fast_mode=args.fast,
+        mode=args.mode,
+    )
