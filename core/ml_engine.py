@@ -926,10 +926,11 @@ class MLEngine:
         except Exception:
             return float(probability)
 
-    def predict_win_probability_from_features(self, features: np.ndarray) -> float:
-        """Predict calibrated P_win from an already-built feature vector."""
+    def predict_win_probability_components_from_features(self, features: np.ndarray) -> dict:
+        """Return raw and calibrated P_win from an already-built feature vector."""
+        fallback = {'raw_p_win': 50.0, 'p_win': 50.0}
         if not self.is_trained or self.model is None or features is None:
-            return 50.0
+            return fallback
         try:
             aligned = self._align_features_for_loaded_model(np.asarray(features, dtype=np.float64))
             X = aligned.reshape(1, -1)
@@ -938,10 +939,17 @@ class MLEngine:
             probs = self.model.predict_proba(X)[0]
             raw = float(probs[1]) if len(probs) > 1 else 0.5
             calibrated = self._apply_calibrator(self.probability_calibrator, raw)
-            return round(max(0.0, min(1.0, calibrated)) * 100.0, 1)
+            return {
+                'raw_p_win': round(max(0.0, min(1.0, raw)) * 100.0, 1),
+                'p_win': round(max(0.0, min(1.0, calibrated)) * 100.0, 1),
+            }
         except Exception as e:
             self.logger.error(f"Erreur prédiction P_win depuis features: {e}")
-            return 50.0
+            return fallback
+
+    def predict_win_probability_from_features(self, features: np.ndarray) -> float:
+        """Predict calibrated P_win from an already-built feature vector."""
+        return float(self.predict_win_probability_components_from_features(features).get('p_win', 50.0))
 
     def train_edge_model(self, X: np.ndarray, y_net_pnl: np.ndarray, sample_weight: Optional[np.ndarray] = None, use_lightgbm: bool = True) -> bool:
         """Predict expected net PnL (%) for candidate entries using temporal validation."""
