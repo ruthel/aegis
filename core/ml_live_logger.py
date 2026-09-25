@@ -265,8 +265,8 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_analysis_runs', 'mode', 'TEXT')
                 self._ensure_column(conn, 'ml_prediction_calibration', 'mode', 'TEXT')
                 self._ensure_column(conn, 'ml_drift_alerts', 'mode', 'TEXT')
-        self._ensure_column(conn, 'notifications', 'mode', 'TEXT')
-        self._ensure_column(conn, 'governance_logs', 'mode', 'TEXT')
+                self._ensure_column(conn, 'notifications', 'mode', 'TEXT')
+                self._ensure_column(conn, 'governance_logs', 'mode', 'TEXT')
                 # Renommer la table ml_raw_events en sys_audit si besoin
                 try:
                     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
