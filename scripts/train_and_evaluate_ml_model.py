@@ -1156,7 +1156,11 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         replay_weight_loss = float(os.getenv('ML_REPLAY_TRAIN_WEIGHT_LOSS', '1.0'))
         try:
             r_samples, r_labels, r_weights, r_timestamps, r_pnls = load_phase5_replay_samples(
-                replay_db, ml_engine.feature_names, max_samples=replay_max, min_pnl_pct=replay_min_pnl
+                replay_db,
+                ml_engine.feature_names,
+                max_samples=replay_max,
+                min_pnl_pct=replay_min_pnl,
+                mode=mode,
             )
         except Exception as e:
             print(f"  ⚠️ Replay samples ignorés (erreur lecture): {e}")
@@ -1326,6 +1330,12 @@ if __name__ == '__main__':
     parser.add_argument('--db', default=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
     parser.add_argument('--check-only', action='store_true', help="Vérifie les garde-fous sans promouvoir")
     parser.add_argument('--trigger', default='manual', help="auto ou manual")
+    parser.add_argument(
+        '--mode',
+        choices=('paper', 'live'),
+        default=None,
+        help="Mode dont les replays/garde-fous sont autorisés à influencer ce run.",
+    )
     parser.add_argument('--fast', action='store_true', help="Mode rapide de test")
     parser.add_argument('--no-grid', action='store_true', help="Désactive Grid Search (activé par défaut)")
     parser.add_argument('--no-lightgbm', action='store_true', help="Utilise RandomForest au lieu de LightGBM")
