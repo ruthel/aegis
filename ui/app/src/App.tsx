@@ -123,7 +123,7 @@ function App() {
     function connectWs() {
       if (!isMounted) return
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${proto}://${window.location.host}/ws/live?view_mode=${encodeURIComponent(viewMode)}`)
+      ws = new WebSocket(`${proto}://${window.location.host}/ws/live`)
       ws.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data) as { __type?: string; payload?: unknown; live?: unknown }
@@ -297,7 +297,7 @@ function TopToolbar({
             </span>
           </div>
           <span className="inline-flex h-[30px] items-center rounded-full border border-border bg-secondary px-3 text-[11px] font-bold text-emerald-400">
-            Vue live
+            Vue {asString(bot?.view_mode ?? bot?.mode, 'paper')}
           </span>
         </div>
 
