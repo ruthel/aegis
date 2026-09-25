@@ -994,8 +994,8 @@ def is_dashboard_decision(entry):
         return decision in {'FORCE_EXIT', 'SELL', 'EXIT'}
     if reason.startswith(LEGACY_DECISION_PREFIXES):
         return False
-    if action == 'buy' and not entry.get('allowed') and not metrics.get('ml_decision'):
-        return reason in {'order_failed'}
+    if action == 'buy':
+        return True
     return True
 
 
