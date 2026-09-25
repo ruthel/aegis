@@ -781,6 +781,7 @@ def bot_status_payload(force=False):
         'pid': tracked.get('pid') if running else None,
         'started_at': tracked.get('started_at'),
         'mode': 'subprocess',
+        'trading_mode': tracked.get('trading_mode') or active_trading_mode(),
     }
     BOT_STATUS_CACHE['timestamp'] = now
     BOT_STATUS_CACHE['payload'] = payload
@@ -882,6 +883,7 @@ def start_bot_process():
             'pid': process.pid,
             'started_at': datetime.now().isoformat(),
             'command': ' '.join(command),
+            'trading_mode': active_trading_mode(),
         }
         state_saved = write_bot_control_state(payload)
         for _ in range(50):
@@ -2442,8 +2444,14 @@ def api_config_update():
         next_paper = updates['PAPER_TRADING']
         if current_paper != next_paper:
             status = bot_status_payload(force=True)
+            replay_status = ml_replay_status_payload()
+            retrain_status = ml_retrain_status()
             if status.get('running'):
                 errors['PAPER_TRADING'] = 'arretez le bot avant de changer le mode trading'
+            elif replay_status.get('running'):
+                errors['PAPER_TRADING'] = 'arretez le replay ML du mode actif avant de changer de mode'
+            elif retrain_status.get('running'):
+                errors['PAPER_TRADING'] = 'attendez la fin du retraining/promotion avant de changer de mode'
             elif next_paper == 'False' and not exchange_keys_configured():
                 errors['PAPER_TRADING'] = 'cles API exchange manquantes pour activer le live'
 
