@@ -2791,7 +2791,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     target_model='champion_backup' if restored else 'none',
                     metrics={'safe_fallback_mode': True, 'restored_backup': restored},
                     trigger_type='auto',
-                    reason=reason
+                    reason=reason,
+                    mode='paper' if self.paper_trading else 'live'
                 )
 
             if hasattr(self, 'notifier') and self.notifier:
@@ -2856,7 +2857,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         target_model='operator',
                         metrics={'critical_count': self._health_critical_count, 'safe_fallback_enabled': self.health_safe_fallback_enabled},
                         trigger_type='auto',
-                        reason='Health check critique detecte'
+                        reason='Health check critique detecte',
+                        mode='paper' if self.paper_trading else 'live'
                     )
                 if (
                     self.health_safe_fallback_enabled
@@ -3004,7 +3006,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         source_model='runtime',
                         target_model='challenger',
                         trigger_type='auto',
-                        reason='Script train_and_evaluate_ml_model.py introuvable'
+                        reason='Script train_and_evaluate_ml_model.py introuvable',
+                        mode='paper' if self.paper_trading else 'live'
                     )
                 return False
 
@@ -3055,7 +3058,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         'pid': self._ml_auto_retrain_process.pid,
                     },
                     trigger_type='auto',
-                    reason='Retraining planifie lance en arriere-plan'
+                    reason='Retraining planifie lance en arriere-plan',
+                    mode='paper' if self.paper_trading else 'live'
                 )
             return True
         except Exception as e:
@@ -3097,7 +3101,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     target_model='safe_fallback',
                     metrics=signals,
                     trigger_type='auto',
-                    reason=reason
+                    reason=reason,
+                    mode='paper' if self.paper_trading else 'live'
                 )
             return self.trigger_safe_fallback_mode(reason=reason)
         except Exception as e:
@@ -3144,9 +3149,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 drift = cur.execute("""
                     SELECT status
                     FROM ml_drift_alerts
+                    WHERE mode=?
                     ORDER BY generated_at DESC
                     LIMIT 1
-                """).fetchone()
+                """, (active_mode,)).fetchone()
                 if drift:
                     signals['drift_status'] = drift[0]
                 conn.close()
