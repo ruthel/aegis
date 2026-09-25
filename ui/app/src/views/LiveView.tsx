@@ -22,7 +22,6 @@ import {
   formatLivePercent,
   formatLivePrice,
   formatLiveVolumeUsd,
-  formatSignedPct,
   liveSymbolItem,
   num,
   pct,
