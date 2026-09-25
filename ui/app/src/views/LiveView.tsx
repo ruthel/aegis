@@ -29,7 +29,7 @@ import {
   supportBySymbolMap,
 } from '@/lib/formatters'
 import { postJson } from '@/lib/api'
-import { MetricCard, SplitMetricCard, EntryBox, MlAnalyticsTile, QuoteBox } from '@/components/ui/shared'
+import { MetricCard, SplitMetricCard, EntryBox, QuoteBox } from '@/components/ui/shared'
 import type { JsonMap, MlStatus, StatusPayload } from '@/types/dashboard'
 
 const pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
@@ -47,8 +47,7 @@ export function LiveView({ status, ml }: { status: StatusPayload; ml: MlStatus }
         </div>
       </div>
       <Positions positions={status.positions || []} live={status.live} />
-      <EntryContext status={status} />
-      <CoreMlEngine ml={ml} positions={status.positions || []} />
+      <DecisionEngine status={status} ml={ml} positions={status.positions || []} />
       <div className="grid gap-4 xl:grid-cols-12">
         <div className="xl:col-span-7">
           <DecisionLog decisions={status.decisions || []} />
@@ -440,9 +439,21 @@ function Positions({ positions, live }: { positions: JsonMap[]; live?: StatusPay
   )
 }
 
-function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] }) {
+function DecisionEngine({
+  status,
+  ml,
+  positions,
+}: {
+  status: StatusPayload
+  ml: MlStatus
+  positions: JsonMap[]
+}) {
+  const context = status.market_context || {}
+  const support = status.support_touch || {}
+  const supportBySymbol = supportBySymbolMap(support)
   const predictions = ml.live_predictions || {}
   const analytics = ml.analytics || {}
+
   const positionBySymbol = useMemo(() => {
     const mapped: Record<string, JsonMap> = {}
     positions.forEach((position) => {
@@ -454,248 +465,267 @@ function CoreMlEngine({ ml, positions }: { ml: MlStatus; positions: JsonMap[] })
     return mapped
   }, [positions])
 
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <CardTitle className="flex items-center gap-2">
-              <Power className="h-4 w-4 text-primary" />
-              Core ML Engine
-              <Badge variant={ml.is_trained ? 'success' : 'danger'} className="ml-1">
-                {ml.is_trained ? 'Filtre Actif (En Direct)' : 'Non entraîné'}
-              </Badge>
-              <Badge variant={ml.sizing_model_active ? 'success' : 'warning'} className="ml-1">
-                {ml.sizing_model_active ? 'Sizing ML actif' : 'Sizing standard'}
-              </Badge>
-            </CardTitle>
-            <span className="text-[11px] text-muted-foreground">
-              Entraîné sur {ml.total_samples || 0} trades 2026 · sizing {ml.sizing_n_features || 0} features
-            </span>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
-          {pairs.map((symbol) => {
-            const item = predictions[symbol] || {}
-            const sizing = (item.sizing || {}) as JsonMap
-            const openPosition = positionBySymbol[symbol] || positionBySymbol[symbol.replace('/', '')]
-            const exitRec = (openPosition?.exit_recommendation || {}) as JsonMap
-            const mlExit = (exitRec.ml_exit || {}) as JsonMap
-            const inSellMode = Boolean(openPosition)
-            const pWin = Number(item.p_win ?? 0)
-            const pContinue = Number(
-              mlExit.p_continue ??
-                asString(exitRec.reason).match(/ml_continue_([\d.]+)%/)?.[1] ??
-                0,
-            )
-            const rec = asString(item.recommendation, 'NEUTRAL')
-            const exitDecision = asString(exitRec.decision, 'HOLD').toUpperCase()
-            const variant = inSellMode
-              ? exitDecision === 'FORCE_EXIT' ? 'danger' : 'success'
-              : rec === 'BUY_HIGH_CONFIDENCE' ? 'success' : rec === 'REJECT_RISK' ? 'danger' : 'warning'
-            const label = inSellMode
-              ? exitDecision === 'FORCE_EXIT' ? 'VENTE ML' : 'POSITION OUVERTE'
-              : rec === 'BUY_HIGH_CONFIDENCE'
-                ? 'ACHAT RECOMMANDÉ'
-                : rec === 'REJECT_RISK'
-                  ? 'RISQUE ÉLEVÉ (<50%)'
-                  : 'NEUTRE (50-65%)'
-            const color = inSellMode
-              ? exitDecision === 'FORCE_EXIT' ? '#ef4444' : '#10b981'
-              : rec === 'BUY_HIGH_CONFIDENCE' ? '#10b981' : rec === 'REJECT_RISK' ? '#ef4444' : '#f59e0b'
-            const shownProbability = inSellMode ? pContinue : pWin
-            return (
-              <div
-                key={symbol}
-                className="rounded-lg border border-border bg-background/80 p-3"
-                style={{ borderLeft: `3px solid ${color}` }}
-              >
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <strong className="text-[13px]">{symbol}</strong>
-                  <Badge variant={variant} className="px-2 py-0.5 text-[10px]">{label}</Badge>
-                </div>
-                <div className="mb-1 flex justify-between text-[11px]">
-                  <span className="text-muted-foreground">
-                    {inSellMode ? 'Probabilité de continuer (P_continue)' : 'Probabilité de Gain (P_win)'}
-                  </span>
-                  <span className="font-black" style={{ color }}>{pct(shownProbability, 1)}</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full transition-all"
-                    style={{ width: `${Math.max(0, Math.min(100, shownProbability))}%`, background: color }}
-                  />
-                </div>
-                <div className="mt-3 flex justify-between text-[10px] text-muted-foreground">
-                  <span>
-                    {inSellMode
-                      ? `Décision sortie: ${exitDecision}`
-                      : `Seuil Requis: ${num(item.min_probability ?? ml.min_probability, 0)}%`}
-                  </span>
-                  {inSellMode && <span>PnL net {formatSignedPct(openPosition?.pnl_net_pct ?? exitRec.net_pnl_pct, 2)}</span>}
-                </div>
-                {!inSellMode && sizing.sizing_factor !== undefined && (
-                  <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-border/70 bg-black/15 px-2 py-1.5 text-[10px]">
-                    <span className="text-muted-foreground">Sizing</span>
-                    <span className="font-black text-emerald-300">
-                      {num(sizing.sizing_factor, 2)}x · {num(sizing.final_position_size_usd, 2)} USD
-                    </span>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+  const lastAnalysis = useMemo(() => {
+    const timestamps = Object.values(predictions)
+      .map((item) => asString((item as JsonMap).timestamp, ''))
+      .filter(Boolean)
+      .sort((a, b) => Date.parse(b) - Date.parse(a))
+    return timestamps[0] || asString(status.bot?.last_update, '')
+  }, [predictions, status.bot?.last_update])
 
-        <div className="mt-4 border-t border-border pt-3">
-          <h3 className="mb-3 text-[11px] font-bold uppercase text-muted-foreground">
-            Analytics Quantitatives & Prévisions IA (Dataset 2026)
-          </h3>
-          <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
-            <MlAnalyticsTile
-              label="Précision Hors-Échantillon"
-              value={analytics.test_precision != null ? `${num(analytics.test_precision, 1)}% Test` : '--'}
-              tone="good"
-            />
-            <MlAnalyticsTile
-              label="Gain / Perte Moyen Net"
-              value={
-                analytics.avg_win != null || analytics.avg_loss != null
-                  ? `+${num(analytics.avg_win, 2)}% / -${num(analytics.avg_loss, 2)}%`
-                  : '--'
-              }
-            />
-            <MlAnalyticsTile
-              label="Risk-Reward & Profit Factor"
-              value={
-                analytics.risk_reward != null || analytics.profit_factor != null
-                  ? `${num(analytics.risk_reward, 2)}x (PF ${num(analytics.profit_factor, 2)})`
-                  : '--'
-              }
-              tone="info"
-            />
-            <MlAnalyticsTile
-              label="PnL Net Cumulé"
-              value={
-                analytics.cum_pnl_2026 != null
-                  ? `${Number(analytics.cum_pnl_2026) >= 0 ? '+' : ''}${num(analytics.cum_pnl_2026, 2)} $`
-                  : '--'
-              }
-            />
-            <MlAnalyticsTile label="Meilleur Jour Découvert" value={asString(analytics.best_day, '--')} tone="warn" />
-            <MlAnalyticsTile label="Heures Idéales Trading" value={asString(analytics.best_hours, '--')} />
-          </div>
-          {Number(analytics.total_closed_trades ?? 0) < 30 && (
-            <p className="mt-2 text-[10px] text-muted-foreground">
-              Échantillon limité ({num(analytics.total_closed_trades, 0)} trades fermés) — ces métriques se stabiliseront avec plus de trades.
-            </p>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function EntryContext({ status }: { status: StatusPayload }) {
-  const context = status.market_context || {}
-  const support = status.support_touch || {}
-  const supportBySymbol = supportBySymbolMap(support)
   const runBacktest = async () => {
     await postJson<JsonMap>('/api/support_touch/run_backtest')
   }
+
   return (
     <Card>
       <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <CardTitle>Contexte d'entrée</CardTitle>
-            <span className="text-[11px] text-muted-foreground">
-              {status.support_touch?.last_run
-                ? `Backtest ${formatDateWithRelative(status.support_touch.last_run)}`
-                : 'Backtest --'}
-            </span>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <Power className="h-4 w-4 text-cyan-300" />
+                Moteur de décision Aegis
+              </CardTitle>
+              <Badge variant={ml.is_trained ? 'success' : 'danger'}>
+                {ml.is_trained ? 'Filtre ML actif' : 'ML non entraîné'}
+              </Badge>
+              <Badge variant={ml.sizing_model_active ? 'success' : 'warning'}>
+                {ml.sizing_model_active ? 'Sizing ML actif' : 'Sizing standard'}
+              </Badge>
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+              <span>{ml.total_samples || 0} trades d'entraînement</span>
+              <span>{ml.sizing_n_features || 0} features sizing</span>
+              {analytics.test_precision != null && <span>Précision test {num(analytics.test_precision, 1)}%</span>}
+              <span>Seuil global {num(ml.min_probability, 0)}%</span>
+              <span>{lastAnalysis ? `Dernière analyse ${formatDateWithRelative(lastAnalysis)}` : 'Dernière analyse --'}</span>
+              <span>
+                {status.support_touch?.last_run
+                  ? `Backtest ${formatDateWithRelative(status.support_touch.last_run)}`
+                  : 'Backtest --'}
+              </span>
+            </div>
           </div>
           <Button variant="outline" size="sm" onClick={() => void runBacktest()}>
             <RefreshCw className="h-3.5 w-3.5" />
-            Lancer Backtest
+            Backtest
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(300px,1fr))]">
-        {pairs.map((symbol) => {
-          const ctx = context[symbol] || {}
-          const st = supportBySymbol[symbol] || supportBySymbol[symbol.replace('/', '')] || {}
-          const regime = abbreviateRegime(ctx.symbol_regime ?? st.regime ?? 'UNKNOWN')
-          const knife = Boolean(ctx.falling_knife_active ?? (ctx.falling_knife as JsonMap | undefined)?.is_falling)
-          const symbolBear = Boolean(ctx.symbol_bear || ctx.bear_mode)
-          const isBull = regime.includes('BULL') || regime.includes('UP')
-          const isBear = regime.includes('BEAR') || regime.includes('DOWN') || symbolBear || knife
-          const topGradient = isBear
-            ? 'linear-gradient(90deg,#fbbf24,#fb7185)'
-            : isBull
-              ? 'linear-gradient(90deg,#34d399,#2dd4bf)'
-              : 'linear-gradient(90deg,#60a5fa,#6366f1)'
-          const modeBadge = isBear ? 'BEAR' : isBull ? 'BULL' : regime.includes('SIDE') ? 'RANGE' : 'UNKNOWN'
-          const momentum = ctx.symbol_momentum_percent ?? ctx.btc_momentum_percent
-          const retour = Boolean(ctx.reversal_confirmed ?? (ctx.reversal as JsonMap | undefined)?.confirmed)
-          return (
-            <section
-              key={symbol}
-              className="relative overflow-hidden rounded-lg border border-white/[0.055] bg-[linear-gradient(135deg,rgba(23,27,32,0.62),rgba(17,20,24,0.86))] p-3.5 transition-transform hover:-translate-y-px hover:border-white/15"
-            >
-              <div className="absolute inset-x-0 top-0 h-[3px]" style={{ background: topGradient }} />
-              <header className="mb-3 flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="m-0 text-[14px] font-black leading-tight">{symbol}</h3>
-                  <div className="mt-0.5 text-[12px] font-semibold text-muted-foreground">{abbreviateRegime(ctx.btc_regime ?? '--')}</div>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <Badge variant={isBear ? 'danger' : isBull ? 'success' : 'warning'} className="min-h-5 px-2 text-[9px]">
-                    {modeBadge}
-                  </Badge>
-                </div>
-              </header>
 
-              <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2.5">
-                <div className="min-w-0">
-                  <div className="mb-2 text-[9px] font-black uppercase text-muted-foreground">Support Touch</div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <EntryBox label="Trades" value={st.trades} />
-                    <EntryBox label="Win" value={st.win_rate !== undefined ? pct(st.win_rate, 1) : '--'} />
-                    <EntryBox label="Total" value={st.total_pnl_percent !== undefined ? formatSignedPct(st.total_pnl_percent, 2) : st.total_pnl !== undefined ? formatSignedPct(st.total_pnl, 2) : '--'} />
-                    <EntryBox label="Moy." value={st.avg_pnl_percent !== undefined ? formatSignedPct(st.avg_pnl_percent, 2) : st.avg_pnl !== undefined ? formatSignedPct(st.avg_pnl, 2) : '--'} />
-                  </div>
-                </div>
+      <CardContent>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {pairs.map((symbol) => {
+            const ctx = context[symbol] || {}
+            const st = supportBySymbol[symbol] || supportBySymbol[symbol.replace('/', '')] || {}
+            const item = predictions[symbol] || predictions[symbol.replace('/', '')] || {}
+            const openPosition = positionBySymbol[symbol] || positionBySymbol[symbol.replace('/', '')]
+            const exitRec = (openPosition?.exit_recommendation || {}) as JsonMap
+            const mlExit = (exitRec.ml_exit || {}) as JsonMap
 
-                <div className="min-w-0">
-                  <div className="mb-2 text-[9px] font-black uppercase text-muted-foreground">Régime Marché</div>
-                  <div className="mb-2 flex items-center justify-between rounded-md border border-white/[0.04] bg-white/[0.018] px-2.5 py-2">
-                    <div>
-                      <span className="block text-[9px] uppercase text-muted-foreground">Symbole</span>
-                      <strong className={cn('block text-[14px] font-black', isBear ? 'text-rose-300' : isBull ? 'text-emerald-300' : 'text-amber-300')}>
-                        {regime}
-                      </strong>
+            const regime = abbreviateRegime(ctx.symbol_regime ?? st.regime ?? 'UNKNOWN')
+            const knife = Boolean(ctx.falling_knife_active ?? (ctx.falling_knife as JsonMap | undefined)?.is_falling)
+            const symbolBear = Boolean(ctx.symbol_bear || ctx.bear_mode)
+            const isBull = regime.includes('BULL') || regime.includes('UP')
+            const isBear = regime.includes('BEAR') || regime.includes('DOWN') || symbolBear || knife
+            const regimeLabel = isBear ? 'BEAR' : isBull ? 'BULL' : regime.includes('SIDE') || regime.includes('RANGE') ? 'RANGE' : 'NEUTRE'
+
+            const momentum = Number(ctx.symbol_momentum_percent ?? ctx.btc_momentum_percent ?? 0)
+            const strengthBase = Math.abs(momentum) >= 1 ? 'STRONG' : Math.abs(momentum) >= 0.25 ? 'MEDIUM' : 'WEAK'
+            const signalStrength = `${regimeLabel} ${strengthBase}`
+
+            const reversal = Boolean(ctx.reversal_confirmed ?? (ctx.reversal as JsonMap | undefined)?.confirmed)
+            const returnAllowed = reversal && !knife
+            const trigger = knife
+              ? 'Falling knife détecté'
+              : reversal
+                ? 'Retour / reversal confirmé'
+                : Number(st.trades || 0) > 0
+                  ? 'Contexte support surveillé'
+                  : 'Aucun trigger confirmé'
+
+            const pWin = Number(item.p_win ?? 0)
+            const threshold = Number(item.min_probability ?? ml.min_probability ?? 0)
+            const mlConfidenceRaw = item.ml_confidence ?? item.confidence ?? item.model_confidence
+            const mlConfidence = mlConfidenceRaw == null ? null : Number(mlConfidenceRaw)
+            const recommendation = asString(item.recommendation, 'NEUTRAL')
+            const thresholdReached = pWin >= threshold && threshold > 0
+
+            const exitDecision = asString(exitRec.decision ?? mlExit.decision, 'HOLD').toUpperCase()
+            const inSellMode = Boolean(openPosition)
+            const finalDecision = inSellMode
+              ? exitDecision === 'FORCE_EXIT' || exitDecision === 'SELL' || exitDecision === 'EXIT'
+                ? 'SELL'
+                : 'MONITOR'
+              : recommendation === 'BUY_HIGH_CONFIDENCE'
+                ? 'BUY'
+                : recommendation === 'REJECT_RISK'
+                  ? 'REJECT'
+                  : 'WAIT'
+
+            const finalVariant =
+              finalDecision === 'BUY' ? 'success'
+                : finalDecision === 'SELL' || finalDecision === 'REJECT' ? 'danger'
+                  : 'warning'
+
+            const modelStatus =
+              recommendation === 'BUY_HIGH_CONFIDENCE' ? 'FAVORABLE'
+                : recommendation === 'REJECT_RISK' ? 'RISKY'
+                  : 'NEUTRE'
+
+            const modelVariant =
+              modelStatus === 'FAVORABLE' ? 'success'
+                : modelStatus === 'RISKY' ? 'danger'
+                  : 'warning'
+
+            const reason = inSellMode
+              ? finalDecision === 'SELL'
+                ? asString(exitRec.reason ?? mlExit.reason, 'Sortie ML validée')
+                : 'Position ouverte · surveillance ML'
+              : finalDecision === 'BUY'
+                ? 'Conditions ML validées'
+                : finalDecision === 'REJECT'
+                  ? 'Risque ML trop élevé'
+                  : !thresholdReached
+                    ? 'Confiance sous le seuil'
+                    : knife
+                      ? 'Risque marché détecté'
+                      : !reversal
+                        ? 'Setup incomplet'
+                        : 'Momentum insuffisant'
+
+            const topTone = finalDecision === 'BUY'
+              ? 'bg-emerald-400'
+              : finalDecision === 'SELL' || finalDecision === 'REJECT'
+                ? 'bg-rose-400'
+                : 'bg-amber-400'
+
+            return (
+              <section
+                key={symbol}
+                className="relative min-w-0 overflow-hidden rounded-lg border border-white/[0.07] bg-[linear-gradient(145deg,rgba(25,30,36,0.96),rgba(16,20,25,0.98))] p-3 shadow-sm"
+              >
+                <div className={cn('absolute inset-x-0 top-0 h-[2px]', topTone)} />
+
+                <header className="mb-2.5 flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-[16px] font-black leading-tight">{symbol}</h3>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <Badge variant={isBear ? 'danger' : isBull ? 'success' : 'warning'} className="px-1.5 py-0.5 text-[8.5px]">
+                        {regimeLabel}
+                      </Badge>
+                      <Badge variant="secondary" className="px-1.5 py-0.5 text-[8.5px]">
+                        {signalStrength}
+                      </Badge>
                     </div>
-                    <span className={cn('rounded-full border px-2 py-1 text-[10px] font-black', Number(momentum || 0) >= 0 ? 'border-emerald-400/25 bg-emerald-500/15 text-emerald-300' : 'border-rose-400/25 bg-rose-500/15 text-rose-300')}>
-                      {momentum !== undefined ? formatLivePercent(momentum, 3) : '--'}
+                  </div>
+                  <Badge variant={modelVariant} className="shrink-0 px-1.5 py-0.5 text-[8.5px]">
+                    {modelStatus}
+                  </Badge>
+                </header>
+
+                <div className="mb-2 rounded-md border border-white/[0.05] bg-black/15 px-2.5 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="block text-[8.5px] font-bold uppercase tracking-wide text-muted-foreground">Contexte / trigger</span>
+                      <strong className="mt-0.5 block truncate text-[10.5px]">{trigger}</strong>
+                    </div>
+                    <span className={cn(
+                      'shrink-0 rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold tabular-nums',
+                      momentum >= 0
+                        ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-300'
+                        : 'border-rose-400/20 bg-rose-500/10 text-rose-300'
+                    )}>
+                      {formatLivePercent(momentum, 2, true)}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <EntryBox label="Protection" value={`${num(ctx.trade_multiplier ?? 1, 2)}x`} tone="good" />
-                    <EntryBox label="Retour" value={retour ? 'OUI' : 'NON'} tone={retour ? 'good' : undefined} />
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <EntryBox label="Trades" value={st.trades ?? '--'} />
+                  <EntryBox label="Win rate" value={st.win_rate !== undefined ? pct(st.win_rate, 1) : '--'} />
+                  <EntryBox
+                    label="Rend. moy."
+                    value={st.avg_pnl_percent !== undefined ? formatSignedPct(st.avg_pnl_percent, 2) : st.avg_pnl !== undefined ? formatSignedPct(st.avg_pnl, 2) : '--'}
+                  />
+                  <EntryBox label="Protection" value={`${num(ctx.trade_multiplier ?? 1, 2)}x`} tone={Number(ctx.trade_multiplier ?? 1) >= 1 ? 'good' : undefined} />
+                </div>
+
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                  <EntryBox label="Retour" value={returnAllowed ? 'OUI' : 'NON'} tone={returnAllowed ? 'good' : undefined} />
+                  <EntryBox
+                    label="Confiance ML"
+                    value={mlConfidence == null || !Number.isFinite(mlConfidence) ? '--' : pct(mlConfidence, 1)}
+                    tone={mlConfidence != null && mlConfidence >= threshold ? 'good' : undefined}
+                  />
+                </div>
+
+                <div className="mt-2.5 rounded-md border border-cyan-400/10 bg-cyan-400/[0.035] p-2.5">
+                  <div className="flex items-end justify-between gap-2">
+                    <div>
+                      <span className="block text-[8.5px] font-bold uppercase tracking-wide text-cyan-200/60">ML Probability</span>
+                      <strong className={cn(
+                        'block text-[20px] font-black leading-none tabular-nums',
+                        thresholdReached ? 'text-emerald-300' : pWin < 50 ? 'text-rose-300' : 'text-amber-300'
+                      )}>
+                        {pct(pWin, 1)}
+                      </strong>
+                    </div>
+                    <div className="text-right">
+                      <span className="block text-[8.5px] text-muted-foreground">Seuil</span>
+                      <strong className="text-[11px] tabular-nums">{pct(threshold, 0)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="relative mt-2 h-1.5 overflow-visible rounded-full bg-muted">
+                    <div
+                      className={cn(
+                        'h-full rounded-full transition-all',
+                        thresholdReached ? 'bg-emerald-400' : pWin < 50 ? 'bg-rose-400' : 'bg-amber-400'
+                      )}
+                      style={{ width: `${Math.max(0, Math.min(100, pWin))}%` }}
+                    />
+                    {threshold > 0 && threshold < 100 && (
+                      <span
+                        className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-cyan-200/80"
+                        style={{ left: `${threshold}%` }}
+                      />
+                    )}
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between text-[8.5px]">
+                    <span className={thresholdReached ? 'font-bold text-emerald-300' : 'font-bold text-amber-300'}>
+                      {thresholdReached ? 'Above threshold' : 'Below threshold'}
+                    </span>
+                    {inSellMode && (
+                      <span className="text-muted-foreground">Position ouverte</span>
+                    )}
                   </div>
                 </div>
-              </div>
 
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                <Badge variant={knife ? 'danger' : 'secondary'} className="min-h-5 px-2 text-[9px]">Knife: {knife ? 'OUI' : 'NON'}</Badge>
-                <Badge variant="success" className="min-h-5 px-2 text-[9px]">Plein Régime</Badge>
-              </div>
-            </section>
-          )
-        })}
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <span className="block text-[8.5px] font-black uppercase tracking-[0.12em] text-muted-foreground">Décision Aegis</span>
+                      <strong className={cn(
+                        'block text-[18px] font-black leading-tight',
+                        finalDecision === 'BUY' ? 'text-emerald-300'
+                          : finalDecision === 'SELL' || finalDecision === 'REJECT' ? 'text-rose-300'
+                            : 'text-amber-300'
+                      )}>
+                        {finalDecision}
+                      </strong>
+                    </div>
+                    <Badge variant={finalVariant} className="px-2 py-1 text-[9px]">
+                      {thresholdReached ? 'SEUIL OK' : 'SEUIL NON'}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 truncate text-[9.5px] text-muted-foreground" title={reason}>{reason}</p>
+                </div>
+              </section>
+            )
+          })}
+        </div>
       </CardContent>
     </Card>
   )
