@@ -552,17 +552,35 @@ function DecisionEngine({
             const recommendation = asString(item.recommendation, 'NEUTRAL')
             const thresholdReached = pWin >= threshold && threshold > 0
 
+            const latestDecision = [...(status.decisions || [])]
+              .reverse()
+              .find((decision) => asString(decision.symbol) === symbol && asString(decision.action).toLowerCase() === 'buy')
+            const latestDecisionAllowed = latestDecision?.allowed === true
+            const latestDecisionReason = latestDecision ? asString(latestDecision.reason, '') : ''
+
             const exitDecision = asString(exitRec.decision ?? mlExit.decision, 'HOLD').toUpperCase()
             const inSellMode = Boolean(openPosition)
+            const transientWaitReasons = [
+              'symbol_cooldown_active',
+              'execution_cooldown_active',
+              'execution_spread_too_wide',
+              'bot_paused',
+            ]
             const finalDecision = inSellMode
               ? exitDecision === 'FORCE_EXIT' || exitDecision === 'SELL' || exitDecision === 'EXIT'
                 ? 'SELL'
                 : 'MONITOR'
-              : recommendation === 'BUY_HIGH_CONFIDENCE'
+              : latestDecisionAllowed
                 ? 'BUY'
-                : recommendation === 'REJECT_RISK'
-                  ? 'REJECT'
-                  : 'WAIT'
+                : latestDecision
+                  ? transientWaitReasons.includes(latestDecisionReason)
+                    ? 'WAIT'
+                    : 'REJECT'
+                  : recommendation === 'BUY_HIGH_CONFIDENCE'
+                    ? 'MONITOR'
+                    : recommendation === 'REJECT_RISK'
+                      ? 'REJECT'
+                      : 'WAIT'
 
             const finalVariant =
               finalDecision === 'BUY' ? 'success'
@@ -583,17 +601,19 @@ function DecisionEngine({
               ? finalDecision === 'SELL'
                 ? asString(exitRec.reason ?? mlExit.reason, 'Sortie ML validée')
                 : 'Position ouverte · surveillance ML'
-              : finalDecision === 'BUY'
-                ? 'Conditions ML validées'
-                : finalDecision === 'REJECT'
-                  ? 'Risque ML trop élevé'
-                  : !thresholdReached
-                    ? 'Confiance sous le seuil'
-                    : knife
-                      ? 'Risque marché détecté'
-                      : !reversal
-                        ? 'Setup incomplet'
-                        : 'Momentum insuffisant'
+              : latestDecision
+                ? decisionReasonTitle(latestDecision.reason)
+                : finalDecision === 'MONITOR'
+                  ? 'ML favorable · validation complète en attente'
+                  : finalDecision === 'REJECT'
+                    ? 'Risque ML trop élevé'
+                    : !thresholdReached
+                      ? 'Confiance sous le seuil'
+                      : knife
+                        ? 'Risque marché détecté'
+                        : !reversal
+                          ? 'Setup incomplet'
+                          : 'Momentum insuffisant'
 
             const topTone = finalDecision === 'BUY'
               ? 'bg-emerald-400'

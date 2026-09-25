@@ -2172,6 +2172,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         cooldown_remaining = self.get_symbol_cooldown_remaining(symbol)
         if cooldown_remaining > 0:
+            self.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='symbol_cooldown_active',
+                metrics={
+                    'price': current_price,
+                    'cooldown_remaining_seconds': cooldown_remaining,
+                },
+                throttle_seconds=30,
+            )
             return
         
         # 1. VÉRIFICATIONS ABSOLUES DE SÉCURITÉ (CAPITAL / BEAR CONTEXT)
@@ -2209,6 +2220,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         # 1B. Vérifier position existante et capital
         if not self.can_open_position(symbol):
+            self.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='position_or_capital_blocked',
+                metrics={'price': current_price},
+                throttle_seconds=60,
+            )
             return
 
         support_check = self.check_support_touch(symbol, current_price)
@@ -2898,10 +2917,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             allowed = kwargs.get('allowed', confidence if isinstance(confidence, bool) else None)
             metrics = kwargs.get('metrics', features)
             
-            # Si le 4ème argument positionnel est une chaîne de caractères, c'est 'reason' et non 'p_win'
-            if isinstance(p_win, str) and not reason:
-                reason = p_win
-                p_win = None
+            # Compatibilité avec les appels historiques:
+            # record_decision(symbol, action, allowed, reason, metrics_dict, ...)
+            if isinstance(p_win, str):
+                if isinstance(reason, dict) and features is None:
+                    features = reason
+                    reason = p_win
+                    p_win = None
+                elif not reason:
+                    reason = p_win
+                    p_win = None
 
             final_features = metrics if isinstance(metrics, dict) else (features if isinstance(features, dict) else {})
             
@@ -3350,6 +3375,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         """Exécute l'achat avec exécution intelligente et microstructure de marché (Phase 7)."""
         # Vérifier si le bot est en pause (via Telegram)
         if getattr(self, 'paused', False):
+            self.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='bot_paused',
+                metrics={'price': current_price},
+                throttle_seconds=30,
+            )
             return False
         
         if hasattr(self, 'execution_manager') and self.execution_manager:
