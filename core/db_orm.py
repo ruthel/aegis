@@ -334,9 +334,14 @@ class MlOpenEntry(Base):
     amount: Mapped[float | None] = mapped_column(Float)
     expected_price: Mapped[float | None] = mapped_column(Float)
     requested_price: Mapped[float | None] = mapped_column(Float)
+    executed_price: Mapped[float | None] = mapped_column(Float)
     slippage_pct: Mapped[float | None] = mapped_column(Float)
     spread_pct: Mapped[float | None] = mapped_column(Float)
     order_type: Mapped[str | None] = mapped_column(Text)
+    execution_side: Mapped[str | None] = mapped_column(Text)
+    execution_amount: Mapped[float | None] = mapped_column(Float)
+    execution_success: Mapped[int | None] = mapped_column(Integer)
+    execution_reason: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[float | None] = mapped_column(Float)
 
 
