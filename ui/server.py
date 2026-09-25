@@ -1096,7 +1096,7 @@ def load_accounting_state(fallback=None, view_mode=None):
                     }
                 balances_by_mode[mode_key] = balances
                 usd_balance = balances.get('USD') or balances.get('USDT') or balances.get('USDC') or {}
-                if selected_view != 'all' and usd_balance:
+                if usd_balance:
                     display_balance = round(float(usd_balance.get('free') or 0.0), 2)
             state['positions'] = merged_positions
             state['pending_orders'] = merged_pending_orders
