@@ -125,7 +125,7 @@ Sizing :
 - journalise les recommandations dans `ml_sizing_recommendations`;
 - les replays comparatifs sont stockes dans `ml_sizing_backtests`.
 
-Les anciens verrous metier comme Support Touch, falling knife, bear mode, HTF ou timing ne sont plus des blocages durs redondants. Ils sont principalement injectes comme features ML.
+`falling_knife_without_reversal`, le score crypto minimal et le signal technique minimal restent des garde-fous d'entrée déterministes avant le ML. Les autres contextes (Support Touch, bear mode, HTF, timing, régimes) alimentent principalement les features ML. Le pipeline d'entrée est fail-closed : toute exception dans la chaîne ML bloque l'achat.
 
 ## Donnees et SQLite
 
@@ -166,7 +166,7 @@ Tables principales :
 | `notifications` | messages Telegram entrants/sortants |
 | `sys_audit` | audit technique minimal des evenements |
 | `ml_feature_values` | features ML en lignes `event_id/feature_name/value` |
-| `ml_open_entries` | entrees ouvertes liees a leur future sortie |
+| `ml_open_entries` | lineage ML d'une unique entree logique ouverte par `(mode, symbole)`; ce n'est pas la source comptable des positions |
 | `ml_trade_outcomes` | resultat final des trades |
 | `ml_model_metadata` | metadata du modele entraine |
 | `ml_feature_importances` | importances de features |
@@ -198,17 +198,9 @@ Les fichiers JSON runtime ne sont plus la source de verite. Les vieux scripts sc
 
 Fichier : `ui/server.py`
 
-### Mode trading vs mode de vue
+### Mode trading actif
 
-Deux notions sont separees :
-
-| Notion | Effet |
-|--------|------|
-| Mode trading (`paper` / `live`) | Determine ou le bot execute réellement ses ordres. |
-| Mode de vue (`paper` / `live` / `all`) | Filtre uniquement les donnees affichees dans l'UI. |
-
-Le selecteur global de la toolbar React change seulement le mode de vue. Il ne bascule jamais le bot entre paper et live.
-Les endpoints principaux acceptent `?view_mode=paper|live|all` : `/api/status`, `/api/analytics`, `/api/trades`, `/api/ledger`, `/api/ml_status` et le WebSocket `/ws/live`.
+Le serveur expose un seul mode opérationnel à la fois : `paper` ou `live`. Le dashboard suit le mode actif côté serveur; il ne fusionne plus les deux modes et n'utilise plus `view_mode=all` comme vue opérationnelle. Les lectures SQLite, Telegram, analytics, replay et gouvernance restent strictement filtrées par le mode actif.
 
 Routes pages SPA :
 
