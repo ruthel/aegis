@@ -37,6 +37,9 @@ class NotificationManager:
         self.bot_ref = None
         self.daily_stats = {'start_balance': 0, 'trades': [], 'start_time': None}
         self._last_update_id = None
+        self._telegram_poll_thread = None
+        self._telegram_poll_running = False
+        self._telegram_last_error = None
         
     def _active_mode(self):
         """Mode du bot auquel CE notifier est attaché; jamais déduit d'une vue UI."""
@@ -107,16 +110,58 @@ class NotificationManager:
             return []
 
     def set_bot(self, bot):
-        """Référence au bot pour status périodique et écoute des commandes"""
+        """Référence au bot et démarre un unique listener Telegram."""
         self.bot_ref = bot
-        if self.enabled:
-            # Lancer l'écouteur de commandes Telegram en arrière-plan
-            threading.Thread(target=self._poll_telegram_commands, daemon=True).start()
+        if not self.enabled:
+            print("ℹ️ Telegram désactivé: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID manquant ou invalide.")
+            return
+        if self._telegram_poll_thread and self._telegram_poll_thread.is_alive():
+            return
+        self._telegram_poll_thread = threading.Thread(
+            target=self._poll_telegram_commands,
+            daemon=True,
+            name='telegram-polling',
+        )
+        self._telegram_poll_thread.start()
         
     def _poll_telegram_commands(self):
-        """Boucle d'écoute (long-polling) des commandes Telegram"""
+        """Boucle d'écoute (long-polling) des commandes Telegram."""
         offset = 0
-        
+        self._telegram_poll_running = True
+
+        # Ce projet utilise getUpdates, donc supprimer un éventuel webhook résiduel.
+        try:
+            base = f"https://api.telegram.org/bot{self.telegram_token}"
+            me = requests.get(f"{base}/getMe", timeout=5)
+            if me.status_code != 200 or not me.json().get('ok'):
+                self._telegram_last_error = f"getMe HTTP {me.status_code}: {me.text[:300]}"
+                print(f"❌ Telegram indisponible: {self._telegram_last_error}")
+                self._telegram_poll_running = False
+                return
+
+            webhook = requests.get(f"{base}/getWebhookInfo", timeout=5)
+            webhook_data = webhook.json().get('result', {}) if webhook.status_code == 200 else {}
+            if webhook_data.get('url'):
+                delete_resp = requests.post(
+                    f"{base}/deleteWebhook",
+                    data={'drop_pending_updates': 'false'},
+                    timeout=5,
+                )
+                if delete_resp.status_code != 200 or not delete_resp.json().get('ok'):
+                    self._telegram_last_error = f"deleteWebhook HTTP {delete_resp.status_code}: {delete_resp.text[:300]}"
+                    print(f"❌ Telegram webhook non supprimé: {self._telegram_last_error}")
+                    self._telegram_poll_running = False
+                    return
+                print("✅ Telegram: webhook résiduel supprimé, passage en long-polling.")
+
+            username = (me.json().get('result') or {}).get('username') or 'bot'
+            print(f"✅ Telegram listener actif: @{username} | chat autorisé {self.chat_id}")
+        except Exception as exc:
+            self._telegram_last_error = f"initialisation: {exc}"
+            print(f"❌ Telegram listener non démarré: {exc}")
+            self._telegram_poll_running = False
+            return
+
         # Consommer tous les anciens messages en attente au démarrage pour ne pas les réexécuter
         try:
             init_url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates"
@@ -142,11 +187,22 @@ class NotificationManager:
                 response = requests.get(url, params=params, timeout=25)
                 
                 if response.status_code != 200:
+                    body = response.text[:500]
+                    self._telegram_last_error = f"getUpdates HTTP {response.status_code}: {body}"
+                    if response.status_code == 409:
+                        print(
+                            "❌ Telegram 409 Conflict: un autre processus utilise probablement "
+                            "getUpdates avec le même bot. Arrêtez l'autre instance Aegis/bot."
+                        )
+                    else:
+                        print(f"⚠️ Telegram polling: {self._telegram_last_error}")
                     time.sleep(5)
                     continue
-                    
+
                 data = response.json()
                 if not data.get('ok'):
+                    self._telegram_last_error = f"getUpdates API: {str(data)[:500]}"
+                    print(f"⚠️ Telegram polling: {self._telegram_last_error}")
                     time.sleep(5)
                     continue
                     
@@ -162,8 +218,10 @@ class NotificationManager:
                     
                     # Sécurité : N'accepter que les messages provenant du chat_id autorisé
                     if chat_id != self.chat_id:
+                        if text.startswith('/'):
+                            print(f"⚠️ Telegram commande ignorée depuis chat_id non autorisé: {chat_id}")
                         continue
-                        
+
                     if text:
                         msg_id = message.get('message_id')
                         msg_date = message.get('date')
@@ -171,8 +229,9 @@ class NotificationManager:
                     
                     if text.startswith('/'):
                         parts = text.split()
-                        command = parts[0].lower()
+                        command = parts[0].lower().split('@', 1)[0]
                         args = parts[1:] if len(parts) > 1 else []
+                        print(f"📥 Telegram commande reçue: {command} {' '.join(args)}".rstrip())
                         # Ne jamais bloquer la boucle getUpdates sur une commande lente
                         # (Kraken, SQLite, génération de graphique, etc.).
                         threading.Thread(
@@ -985,33 +1044,82 @@ class NotificationManager:
             return False
 
     def notify(self, message, emoji="🤖"):
-        full_text = f"{emoji} {message}".strip() if emoji else message
+        """Envoie un message Telegram avec diagnostics et découpage sûr."""
+        full_text = f"{emoji} {message}".strip() if emoji else str(message)
         if not self.enabled:
             print(f"📢 {full_text}")
             return False
-            
-        def _send():
-            try:
-                url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
-                data = {
-                    'chat_id': self.chat_id,
-                    'text': full_text,
-                    'parse_mode': 'HTML'
-                }
-                response = requests.post(url, data=data, timeout=5)
-                if response.status_code == 200:
-                    res_json = response.json()
-                    if res_json.get('ok') and 'result' in res_json:
-                        msg_id = res_json['result'].get('message_id')
-                        ts = res_json['result'].get('date')
-                        self.save_telegram_message_history(msg_id, full_text, ts)
-            except Exception as e:
-                print(f"📢 {full_text}")
 
-        import threading
-        threading.Thread(target=_send, daemon=True).start()
+        def _chunks(text, limit=3900):
+            text = str(text or '')
+            if len(text) <= limit:
+                return [text]
+            parts = []
+            remaining = text
+            while remaining:
+                if len(remaining) <= limit:
+                    parts.append(remaining)
+                    break
+                cut = remaining.rfind('\n', 0, limit)
+                if cut < int(limit * 0.5):
+                    cut = limit
+                parts.append(remaining[:cut])
+                remaining = remaining[cut:].lstrip('\n')
+            return parts
+
+        def _send():
+            url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+            for index, chunk in enumerate(_chunks(full_text)):
+                try:
+                    data = {
+                        'chat_id': self.chat_id,
+                        'text': chunk,
+                        'parse_mode': 'HTML'
+                    }
+                    response = requests.post(url, data=data, timeout=8)
+                    payload = {}
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        payload = {}
+
+                    if response.status_code == 200 and payload.get('ok'):
+                        result = payload.get('result') or {}
+                        self.save_telegram_message_history(
+                            result.get('message_id'),
+                            chunk,
+                            result.get('date')
+                        )
+                        continue
+
+                    # Un tag HTML mal formé ne doit jamais faire disparaître la réponse.
+                    description = str(payload.get('description') or response.text or '')[:500]
+                    print(
+                        f"⚠️ Telegram sendMessage échec HTTP {response.status_code}: {description}"
+                    )
+                    self._telegram_last_error = (
+                        f"sendMessage HTTP {response.status_code}: {description}"
+                    )
+                    fallback = requests.post(
+                        url,
+                        data={'chat_id': self.chat_id, 'text': chunk},
+                        timeout=8,
+                    )
+                    if fallback.status_code != 200:
+                        print(
+                            f"❌ Telegram fallback texte échoué HTTP {fallback.status_code}: "
+                            f"{fallback.text[:500]}"
+                        )
+                        return False
+                except Exception as exc:
+                    self._telegram_last_error = f"sendMessage exception: {exc}"
+                    print(f"❌ Telegram envoi impossible: {exc}")
+                    return False
+            return True
+
+        threading.Thread(target=_send, daemon=True, name='telegram-send').start()
         return True
-    
+
     def notify_trade_buy(self, symbol, amount, price, total, signal_data):
         """Notification achat avec contexte"""
         crypto = symbol.split('/')[0]
