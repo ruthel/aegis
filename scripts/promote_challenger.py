@@ -253,6 +253,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
             metrics={'challenger_compatible': False},
             trigger_type=trigger_type,
             reason=reason,
+            mode=mode,
         )
         logger.close()
         return False
@@ -483,13 +484,13 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
             reason = f"Garde-fous non satisfaits: {', '.join(failed)}"
         print(f"\n⛔ PROMOTION REFUSÉE : {reason}")
         print("   Astuce: relance avec --force, ou ajuste ML_PROMOTION_MIN_*_DELTA dans .env")
-        logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
+        logger.record_governance_event('promotion_rejected', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason, mode=mode)
         logger.close()
         return False
 
     if check_only:
         print("\n🔍 Mode --check-only : validé, promotion NON appliquée.")
-        logger.record_governance_event('promotion_checked', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason="Validation sans promotion")
+        logger.record_governance_event('promotion_checked', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason="Validation sans promotion", mode=mode)
         logger.close()
         return True
 
@@ -513,7 +514,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     print(f"  ✅ NOUVEAU CHAMPION PROMU : {champion_path}")
 
     reason = f"Promotion directe (Precision {chall_prec:.1f}%, Acc {chall_acc:.1f}%{', forcée' if force else ''})"
-    logger.record_governance_event('promotion', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason)
+    logger.record_governance_event('promotion', source_model='challenger', target_model='champion', metrics=metrics_data, trigger_type=trigger_type, reason=reason, mode=mode)
 
     try:
         notifier = NotificationManager()
