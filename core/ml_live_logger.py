@@ -1385,9 +1385,14 @@ class MLLiveLogger:
                     amount REAL,
                     expected_price REAL,
                     requested_price REAL,
+                    executed_price REAL,
                     slippage_pct REAL,
                     spread_pct REAL,
                     order_type TEXT,
+                    execution_side TEXT,
+                    execution_amount REAL,
+                    execution_success INTEGER,
+                    execution_reason TEXT,
                     duration_ms REAL,
                     PRIMARY KEY (mode, symbol)
                 )
@@ -1397,8 +1402,9 @@ class MLLiveLogger:
                 f"""
                 INSERT OR REPLACE INTO ml_open_entries_mode_migration
                 (mode, symbol, entry_id, opened_at, order_id, price, amount,
-                 expected_price, requested_price, slippage_pct, spread_pct,
-                 order_type, duration_ms)
+                 expected_price, requested_price, executed_price, slippage_pct, spread_pct,
+                 order_type, execution_side, execution_amount, execution_success,
+                 execution_reason, duration_ms)
                 SELECT
                     {mode_expr},
                     {expr('symbol', "''")},
@@ -1409,9 +1415,14 @@ class MLLiveLogger:
                     {expr('amount')},
                     {expr('expected_price')},
                     {expr('requested_price')},
+                    {expr('executed_price')},
                     {expr('slippage_pct')},
                     {expr('spread_pct')},
                     {expr('order_type')},
+                    {expr('execution_side')},
+                    {expr('execution_amount')},
+                    {expr('execution_success')},
+                    {expr('execution_reason')},
                     {expr('duration_ms')}
                 FROM ml_open_entries
                 WHERE {expr('symbol', "''")} <> ''
