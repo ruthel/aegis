@@ -417,7 +417,18 @@ class TradingMixin:
                 conn = self.ml_live_logger._get_conn()
                 mode = 'paper' if self.paper_trading else 'live'
                 rows = conn.execute(
-                    "SELECT symbol, price, amount FROM ml_open_entries WHERE mode=?",
+                    """
+                    SELECT
+                        o.symbol,
+                        o.price,
+                        o.amount,
+                        o.opened_at,
+                        o.entry_id,
+                        d.confidence
+                    FROM ml_open_entries o
+                    LEFT JOIN decision_logs d ON d.event_id = o.entry_id
+                    WHERE o.mode=?
+                    """,
                     (mode,),
                 ).fetchall()
                 for r in rows:
@@ -428,7 +439,10 @@ class TradingMixin:
                         open_pos[sym] = {
                             'amount': qty,
                             'cost': qty * price,
-                            'entry_price': price
+                            'entry_price': price,
+                            'opened_at': r[3],
+                            'entry_id': r[4],
+                            'ml_buy_prob': r[5],
                         }
         except Exception:
             pass
@@ -455,7 +469,17 @@ class TradingMixin:
                     price = float(p.get('price', 0.0) or p.get('avg_entry_price', 0.0) or 0.0)
                     cost = float(p.get('cost', qty * price) or (qty * price))
                     if qty > 0 and symbol not in open_pos:
-                        open_pos[symbol] = {'amount': qty, 'cost': cost, 'entry_price': price}
+                        open_pos[symbol] = {
+                            'amount': qty,
+                            'cost': cost,
+                            'entry_price': price,
+                            'opened_at': p.get('timestamp') or p.get('created_at') or p.get('buy_time'),
+                            'entry_id': p.get('entry_id'),
+                            'ml_buy_prob': p.get('ml_buy_prob') or p.get('entry_p_win'),
+                            'highest_price': p.get('highest_price'),
+                            'stop_price': p.get('stop_price'),
+                            'trailing_active': p.get('trailing_active'),
+                        }
 
             # 3. Source complémentaire : trailing_stop_manager
             if hasattr(self, 'trailing_stop_manager') and hasattr(self.trailing_stop_manager, 'positions'):
@@ -464,7 +488,16 @@ class TradingMixin:
                         qty = float(pdata.get('amount', 0.0) or pdata.get('position_size_crypto', 0.0) or 0.0)
                         price = float(pdata.get('entry_price', 0.0) or pdata.get('buy_price', 0.0) or pdata.get('price', 0.0) or 0.0)
                         if qty > 0:
-                            open_pos[sym] = {'amount': qty, 'cost': qty * price, 'entry_price': price}
+                            open_pos[sym] = {
+                                'amount': qty,
+                                'cost': qty * price,
+                                'entry_price': price,
+                                'opened_at': pdata.get('created_at') or pdata.get('buy_time'),
+                                'ml_buy_prob': pdata.get('ml_buy_prob') or pdata.get('entry_p_win'),
+                                'highest_price': pdata.get('highest_price'),
+                                'stop_price': pdata.get('stop_price'),
+                                'trailing_active': pdata.get('trailing_active'),
+                            }
 
         except Exception as e:
             print(f"⚠️ Erreur get_open_positions: {e}")
