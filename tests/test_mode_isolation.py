@@ -199,17 +199,30 @@ class ModeIsolationAndCheckpointTests(unittest.TestCase):
         missing = sorted(called - defined)
         self.assertEqual(missing, [], f"ui/server.py appelle des méthodes logger absentes: {missing}")
 
-    def test_removed_target_head_does_not_reappear_in_runtime_surfaces(self):
-        for rel in (
+    def test_removed_target_prediction_head_does_not_reappear(self):
+        # "target_model" is still a valid governance field meaning the destination
+        # of a promotion/rollback (challenger -> champion, runtime -> operator).
+        # What was removed is the old P_target predictive ML head.
+        predictive_surfaces = (
             "core/ml_engine.py",
             "core/trading_bot.py",
             "core/managers/notification.py",
             "scripts/train_and_evaluate_ml_model.py",
-            "ui/server.py",
-        ):
+        )
+        forbidden = (
+            "train_target_model",
+            "predict_target(",
+            "self.target_model",
+            "self.target_scaler",
+            "target_feature_names",
+            "p_target",
+            "P_target",
+            "ML_TARGET_",
+        )
+        for rel in predictive_surfaces:
             source = self.read(rel)
-            self.assertNotIn("train_target_model", source, rel)
-            self.assertNotIn("target_model", source, rel)
+            for token in forbidden:
+                self.assertNotIn(token, source, f"{rel}: obsolete predictive target-head token {token}")
 
 
 if __name__ == "__main__":
