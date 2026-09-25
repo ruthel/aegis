@@ -25,11 +25,16 @@ ENV_DASHBOARD = ROOT / '.env'
 PAPER_BOT_LOG_FILE = ROOT / 'bot_paper.log'
 LIVE_BOT_LOG_FILE = ROOT / 'bot_live.log'
 ML_TRAINING_LOG_FILE = ROOT / 'ml_training.log'
-REPLAY_LOG_FILE = ROOT / 'ml_replay.log'
+PAPER_REPLAY_LOG_FILE = ROOT / 'ml_replay_paper.log'
+LIVE_REPLAY_LOG_FILE = ROOT / 'ml_replay_live.log'
 
 def bot_log_file(mode=None):
     mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
     return PAPER_BOT_LOG_FILE if mode == 'paper' else LIVE_BOT_LOG_FILE
+
+def replay_log_file(mode=None):
+    mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
+    return PAPER_REPLAY_LOG_FILE if mode == 'paper' else LIVE_REPLAY_LOG_FILE
 BOT_STATUS_CACHE = {'timestamp': 0.0, 'payload': None}
 ML_PREDS_CACHE = {}  # Dernières prédictions ML valides (jamais de valeurs hardcodées)
 BOT_START_LOCK = threading.Lock()
@@ -126,20 +131,22 @@ def db_logger():
 def latest_model_evaluations(limit=5):
     try:
         import sqlite3
+        mode = active_trading_mode()
         conn = sqlite3.connect(str(aegis_db_path()), timeout=5.0)
         conn.row_factory = sqlite3.Row
         rows = conn.execute("""
-            SELECT timestamp, event_type, source_model, target_model, metrics_json, trigger_type, reason
+            SELECT timestamp, mode, event_type, source_model, target_model, metrics_json, trigger_type, reason
             FROM governance_logs
-            WHERE event_type IN (
+            WHERE mode=?
+              AND event_type IN (
                 'promotion_guardrails_evaluated',
                 'promotion_rejected',
                 'promotion_checked',
                 'promotion'
-            )
+              )
             ORDER BY timestamp DESC
             LIMIT ?
-        """, (int(limit),)).fetchall()
+        """, (mode, int(limit))).fetchall()
         conn.close()
         evaluations = []
         for row in rows:
@@ -152,6 +159,7 @@ def latest_model_evaluations(limit=5):
                     metrics = {'raw': raw_metrics}
             evaluations.append({
                 'timestamp': row['timestamp'],
+                'mode': row['mode'],
                 'event_type': row['event_type'],
                 'source_model': row['source_model'],
                 'target_model': row['target_model'],
@@ -2943,8 +2951,8 @@ def api_support_touch_backtest_status():
     })
 
 
-# ===== REPLAY DES REFUS ML (analyse de performance live + rejeu des refus) =====
-REPLAY_PROCESS = None
+# ===== REPLAY DES REFUS ML (strictement séparé paper/live) =====
+REPLAY_PROCESSES = {'paper': None, 'live': None}
 
 
 def ml_replay_stats():
@@ -3012,17 +3020,18 @@ def ml_replay_stats():
 
 
 def ml_replay_status_payload():
-    global REPLAY_PROCESS
+    mode = active_trading_mode()
+    process = REPLAY_PROCESSES.get(mode)
     running = False
     exit_code = None
-    if REPLAY_PROCESS:
-        poll_res = REPLAY_PROCESS.poll()
+    if process:
+        poll_res = process.poll()
         if poll_res is None:
             running = True
         else:
             exit_code = poll_res
-            REPLAY_PROCESS = None
-    payload = {'running': running, 'exit_code': exit_code}
+            REPLAY_PROCESSES[mode] = None
+    payload = {'running': running, 'exit_code': exit_code, 'mode': mode}
     payload.update(ml_replay_stats())
     return payload
 
@@ -3036,9 +3045,10 @@ def api_ml_replay_status():
 
 @app.route('/api/ml/replay/start', methods=['POST'])
 def api_ml_replay_start():
-    global REPLAY_PROCESS
-    if REPLAY_PROCESS and REPLAY_PROCESS.poll() is None:
-        return jsonify({'ok': False, 'error': 'Un replay est déjà en cours', **ml_replay_status_payload()}), 400
+    mode = active_trading_mode()
+    current_process = REPLAY_PROCESSES.get(mode)
+    if current_process and current_process.poll() is None:
+        return jsonify({'ok': False, 'error': f'Un replay {mode} est déjà en cours', **ml_replay_status_payload()}), 400
 
     payload = request.get_json(silent=True) or {}
     # Permet de forcer un plafond de replay plus élevé pour rattraper le backlog en un run.
@@ -3050,7 +3060,7 @@ def api_ml_replay_start():
         '--db',
         str(aegis_db_path()),
         '--mode',
-        active_trading_mode(),
+        mode,
     ]
     if max_replay:
         try:
@@ -3065,10 +3075,10 @@ def api_ml_replay_start():
         env['PYTHONUNBUFFERED'] = '1'
         env['PYTHONIOENCODING'] = 'utf-8'
         replay_scope = f"backlog complet (plafond {int(max_replay)})" if max_replay else "lot standard"
-        REPLAY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # Log DÉDIÉ au replay (mode 'w' = un nouveau run repart d'un fichier propre) pour
-        # ne PAS mélanger la progression du replay avec les logs du bot actif.
-        replay_log = open(REPLAY_LOG_FILE, 'w', encoding='utf-8', errors='replace')
+        mode_replay_log = replay_log_file(mode)
+        mode_replay_log.parent.mkdir(parents=True, exist_ok=True)
+        # Un fichier par mode: même après plusieurs bascules UI, paper et live restent isolés.
+        replay_log = open(mode_replay_log, 'w', encoding='utf-8', errors='replace')
         replay_log.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé manuellement ({replay_scope})...\n")
         replay_log.flush()
         # Trace courte dans le log du mode actif juste pour signaler le lancement (sans la progression).
@@ -3077,23 +3087,24 @@ def api_ml_replay_start():
                 log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🔁 Replay des refus ML lancé ({replay_scope}). Progression dans l'onglet Replay.\n")
         except Exception:
             pass
-        REPLAY_PROCESS = subprocess.Popen(
+        REPLAY_PROCESSES[mode] = subprocess.Popen(
             command,
             cwd=str(ROOT),
             stdout=replay_log,
             stderr=subprocess.STDOUT,
             env=env,
         )
-        return jsonify({'ok': True, 'pid': REPLAY_PROCESS.pid, **ml_replay_status_payload()})
+        return jsonify({'ok': True, 'pid': REPLAY_PROCESSES[mode].pid, **ml_replay_status_payload()})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/ml/replay/logs', methods=['GET'])
 def api_ml_replay_logs():
-    """Retourne les logs du run de replay courant (fichier dédié, non mélangé)."""
+    """Retourne uniquement les logs replay du mode actif."""
     lines_count = int(request.args.get('lines', '200'))
-    lines = tail_lines(REPLAY_LOG_FILE, lines_count) if REPLAY_LOG_FILE.exists() else []
+    log_file = replay_log_file(active_trading_mode())
+    lines = tail_lines(log_file, lines_count) if log_file.exists() else []
     response = jsonify({'ok': True, 'lines': [l.rstrip() for l in lines]})
     response.headers['Cache-Control'] = 'no-store'
     return response
@@ -3101,25 +3112,25 @@ def api_ml_replay_logs():
 
 @app.route('/api/ml/replay/stop', methods=['POST'])
 def api_ml_replay_stop():
-    """Arrête le replay en cours. Les refus déjà rejoués et commités restent en base
-    (le rattrapage reprendra là où il s'est arrêté au prochain lancement)."""
-    global REPLAY_PROCESS
+    """Arrête uniquement le replay du mode actif."""
+    mode = active_trading_mode()
+    process = REPLAY_PROCESSES.get(mode)
     stopped = False
-    if REPLAY_PROCESS and REPLAY_PROCESS.poll() is None:
+    if process and process.poll() is None:
         try:
-            REPLAY_PROCESS.terminate()
+            process.terminate()
             try:
-                REPLAY_PROCESS.wait(timeout=5)
+                process.wait(timeout=5)
             except Exception:
-                REPLAY_PROCESS.kill()
+                process.kill()
             stopped = True
         except Exception as e:
             return jsonify({'ok': False, 'error': str(e), **ml_replay_status_payload()}), 500
         finally:
-            REPLAY_PROCESS = None
+            REPLAY_PROCESSES[mode] = None
         try:
-            with open(REPLAY_LOG_FILE, 'a', encoding='utf-8', errors='replace') as log:
-                log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🛑 Replay arrêté manuellement. Les refus déjà rejoués sont conservés.\n")
+            with open(replay_log_file(mode), 'a', encoding='utf-8', errors='replace') as log:
+                log.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 🛑 Replay {mode} arrêté manuellement. Les refus déjà rejoués sont conservés.\n")
         except Exception:
             pass
     return jsonify({'ok': True, 'stopped': stopped, **ml_replay_status_payload()})
