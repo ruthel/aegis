@@ -40,22 +40,19 @@ type DashboardState = {
   runBotAction: (action: 'start' | 'stop' | 'restart') => Promise<void>
 }
 
-const VIEW_MODE_STORAGE_KEY = 'aegis:viewMode:v2'
-
 const isDataViewMode = (value: unknown): value is DataViewMode =>
-  value === 'live' || value === 'all' || value === 'paper'
+  value === 'live' || value === 'paper'
 
-const initialViewMode = (): DataViewMode => {
-  if (typeof window === 'undefined') return 'paper'
-  const value = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY)
-  return isDataViewMode(value) ? value : 'paper'
+const serverViewMode = (status: StatusPayload, fallback: DataViewMode = 'paper'): DataViewMode => {
+  const value = status.bot?.view_mode ?? status.bot?.mode
+  return isDataViewMode(value) ? value : fallback
 }
 
 export const useDashboardStore = create<DashboardState>()(
   persist(
     (set, get) => ({
       view: 'live',
-      viewMode: initialViewMode(),
+      viewMode: 'paper',
       status: {},
       ml: {},
       consoleData: {},
@@ -69,19 +66,26 @@ export const useDashboardStore = create<DashboardState>()(
       scoreHistory: {},
       loading: true,
       setView: (view) => set({ view }),
-      setViewMode: (viewMode) => {
-        if (typeof window !== 'undefined') window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode)
-        set({
-          viewMode,
-          analyticsLoaded: false,
-          tradesLoaded: false,
-          ledgerLoaded: false,
-          scoreHistory: {},
-        })
-      },
-      setStatus: (status) => set((current) => ({
-        status: typeof status === 'function' ? status(current.status) : status,
-      })),
+      setViewMode: (viewMode) => set({
+        viewMode,
+        analyticsLoaded: false,
+        tradesLoaded: false,
+        ledgerLoaded: false,
+        scoreHistory: {},
+      }),
+      setStatus: (status) => set((current) => {
+        const nextStatus = typeof status === 'function' ? status(current.status) : status
+        const nextMode = serverViewMode(nextStatus, current.viewMode)
+        const modeChanged = nextMode !== current.viewMode
+        return {
+          status: nextStatus,
+          viewMode: nextMode,
+          analyticsLoaded: modeChanged ? false : current.analyticsLoaded,
+          tradesLoaded: modeChanged ? false : current.tradesLoaded,
+          ledgerLoaded: modeChanged ? false : current.ledgerLoaded,
+          scoreHistory: modeChanged ? {} : current.scoreHistory,
+        }
+      }),
       setMl: (ml) => set({ ml }),
       setConsoleData: (consoleData) => set({ consoleData }),
       setConfig: (config) => set({ config }),
@@ -89,11 +93,20 @@ export const useDashboardStore = create<DashboardState>()(
       setTrades: (trades) => set({ trades, tradesLoaded: true }),
       setLedger: (ledger) => set({ ledger, ledgerLoaded: true }),
       refreshStatus: async () => {
-        const status = await getJson<StatusPayload>(`/api/status?view_mode=${encodeURIComponent(get().viewMode)}`)
-        set({ status })
+        const status = await getJson<StatusPayload>('/api/status')
+        const nextMode = serverViewMode(status, get().viewMode)
+        const modeChanged = nextMode !== get().viewMode
+        set({
+          status,
+          viewMode: nextMode,
+          analyticsLoaded: modeChanged ? false : get().analyticsLoaded,
+          tradesLoaded: modeChanged ? false : get().tradesLoaded,
+          ledgerLoaded: modeChanged ? false : get().ledgerLoaded,
+          scoreHistory: modeChanged ? {} : get().scoreHistory,
+        })
       },
       refreshMl: async () => {
-        const ml = await getJson<MlStatus>(`/api/ml_status?view_mode=${encodeURIComponent(get().viewMode)}`)
+        const ml = await getJson<MlStatus>('/api/ml_status')
         set({ ml })
       },
       refreshConsole: async (lines = 500) => {
@@ -106,17 +119,17 @@ export const useDashboardStore = create<DashboardState>()(
       },
       refreshAnalytics: async (options) => {
         if (!options?.force && get().analyticsLoaded) return
-        const analytics = await getJson<AnalyticsPayload>(`/api/analytics?view_mode=${encodeURIComponent(get().viewMode)}`)
+        const analytics = await getJson<AnalyticsPayload>('/api/analytics')
         set({ analytics, analyticsLoaded: true })
       },
       refreshTrades: async (options) => {
         if (!options?.force && get().tradesLoaded) return
-        const trades = await getJson<TradesPayload>(`/api/trades?view_mode=${encodeURIComponent(get().viewMode)}`)
+        const trades = await getJson<TradesPayload>('/api/trades')
         set({ trades, tradesLoaded: true })
       },
       refreshLedger: async (options) => {
         if (!options?.force && get().ledgerLoaded) return
-        const ledger = await getJson<LedgerPayload>(`/api/ledger?view_mode=${encodeURIComponent(get().viewMode)}`)
+        const ledger = await getJson<LedgerPayload>('/api/ledger')
         set({ ledger, ledgerLoaded: true })
       },
       refreshScoreHistory: async (symbol, hours, options) => {
@@ -145,18 +158,18 @@ export const useDashboardStore = create<DashboardState>()(
       },
       bootstrap: async () => {
         try {
-          const hasManualViewMode =
-            typeof window !== 'undefined' && isDataViewMode(window.localStorage.getItem(VIEW_MODE_STORAGE_KEY))
-          if (!hasManualViewMode) {
-            const status = await getJson<StatusPayload>('/api/status')
-            const serverMode = status.bot?.view_mode ?? status.bot?.mode
-            const nextViewMode = isDataViewMode(serverMode) ? serverMode : get().viewMode
-            set({ status, viewMode: nextViewMode })
-            const ml = await getJson<MlStatus>(`/api/ml_status?view_mode=${encodeURIComponent(nextViewMode)}`)
-            set({ ml })
-          } else {
-            await Promise.all([get().refreshStatus(), get().refreshMl()])
-          }
+          const status = await getJson<StatusPayload>('/api/status')
+          const nextViewMode = serverViewMode(status, get().viewMode)
+          set({
+            status,
+            viewMode: nextViewMode,
+            analyticsLoaded: false,
+            tradesLoaded: false,
+            ledgerLoaded: false,
+            scoreHistory: {},
+          })
+          const ml = await getJson<MlStatus>('/api/ml_status')
+          set({ ml })
         } finally {
           set({ loading: false })
         }
@@ -176,7 +189,6 @@ export const useDashboardStore = create<DashboardState>()(
     {
       name: 'aegis:dashboard:v1',
       partialize: (state) => ({
-        viewMode: state.viewMode,
         status: state.status,
         ml: state.ml,
         analytics: state.analytics,
