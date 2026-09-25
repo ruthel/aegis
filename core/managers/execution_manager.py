@@ -87,10 +87,29 @@ class ExecutionManager:
         # 1. Anti-Duplication & Safe Retry Check
         cooldown_remaining = self.bot.get_symbol_cooldown_remaining(symbol)
         if cooldown_remaining > 0:
+            self.bot.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='execution_cooldown_active',
+                metrics={
+                    'price': current_price,
+                    'cooldown_remaining_seconds': cooldown_remaining,
+                },
+                throttle_seconds=30,
+            )
             return False
 
         if not self.bot.can_open_position(symbol):
             print(f"❌ Smart Execution: Position déjà ouverte ou verrouillée sur {symbol}")
+            self.bot.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='execution_position_blocked',
+                metrics={'price': current_price},
+                throttle_seconds=60,
+            )
             return False
 
         # 2. Spread-Aware Execution
@@ -105,6 +124,18 @@ class ExecutionManager:
                 None, None, micro.get('spread_pct'), position_data.get('position_size_crypto', 0),
                 (time.time() - start_time) * 1000.0, False, 'spread_still_too_wide'
             )
+            self.bot.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='execution_spread_too_wide',
+                metrics={
+                    'price': current_price,
+                    'spread_pct': micro.get('spread_pct'),
+                    'max_spread_pct': self.max_allowed_spread_pct,
+                },
+                throttle_seconds=30,
+            )
             return False
         expected_price = current_price
         requested_price = micro['ask']
@@ -118,9 +149,32 @@ class ExecutionManager:
                 self.bot.set_symbol_cooldown(symbol, self.bot.symbol_failure_cooldown_seconds, reason='invalid_order_size')
             except Exception:
                 pass
+            self.bot.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='execution_invalid_order_size',
+                metrics={
+                    'price': current_price,
+                    'position_size_crypto': size_crypto,
+                    'position_size_usd': final_position_usd,
+                },
+                throttle_seconds=60,
+            )
             return False
         if hasattr(self.bot, 'capital_manager') and not self.bot.capital_manager.can_open_new_position(symbol, final_position_usd):
             print(f"❌ Smart Execution: Garde-fou capital refuse {symbol} ({final_position_usd:.2f} USD)")
+            self.bot.record_decision(
+                symbol,
+                action_type='buy',
+                allowed=False,
+                reason='execution_capital_blocked',
+                metrics={
+                    'price': current_price,
+                    'position_size_usd': final_position_usd,
+                },
+                throttle_seconds=60,
+            )
             return False
 
         # 4. Adaptive Order Selection (Market Taker vs Limit Maker)
