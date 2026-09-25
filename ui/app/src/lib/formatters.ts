@@ -274,6 +274,12 @@ export function decisionReasonTitle(reason: unknown): string {
     buy_executed: 'Achat exécuté',
   }
   const key = String(reason || '').split(':')[0]
+  if (key.startsWith('technical_action_')) {
+    return `Signal technique ${key.replace('technical_action_', '')}`
+  }
+  if (key.startsWith('ml_reject_risk_')) {
+    return 'P_win sous le seuil ML'
+  }
   return labels[key] || key.replaceAll('_', ' ') || '--'
 }
 
@@ -314,6 +320,12 @@ export function decisionExplanation(item: JsonMap): string {
   if (key === 'symbol_cooldown_active') {
     return `Le bot attend avant de retrader cette paire. Temps restant: ${durationText(metrics.cooldown_remaining_seconds)}.`
   }
+  if (key.startsWith('technical_action_')) {
+    const action = key.replace('technical_action_', '') || 'UNKNOWN'
+    const confidence = metrics.confidence !== undefined ? ` Confiance technique ${metricNumber(metrics.confidence)}%` : ''
+    const threshold = metrics.min_confidence !== undefined ? ` / seuil ${metricNumber(metrics.min_confidence)}%` : ''
+    return `Le filtre technique a renvoyé ${action}. Seuls BUY ou STRONG_BUY autorisent le passage vers le ML.${confidence}${threshold}. P_win n'a donc pas été évalué. Aucun cooldown de trading n'est créé par ce rejet.`
+  }
   if (key === 'technical_signal_below_threshold' || key === 'technical_confidence_below_threshold' || key === 'technical_signal_confidence_below_threshold') {
     return `Le filtre technique a rejeté l'entrée avant le ML. Confiance technique ${metricNumber(metrics.confidence)}% / seuil ${metricNumber(metrics.min_confidence)}%.`
   }
@@ -348,7 +360,10 @@ export function decisionMetricChips(item: JsonMap): string[] {
   if (mlInputs.technical_action) chips.push(`Signal ${asString(mlInputs.technical_action)}`)
   if (mlInputs.support_touch) chips.push('Support ML')
   if (metrics.reject_cooldown_seconds !== undefined)
-    chips.push(`Cooldown ${durationText(metrics.reject_cooldown_seconds)}`)
+    chips.push(`Cooldown réel ${durationText(metrics.reject_cooldown_seconds)}`)
+  const reason = String(item.reason || '')
+  if (reason.startsWith('technical_action_') || reason === 'technical_confidence_below_threshold')
+    chips.push('Pas de cooldown trading')
   return chips
 }
 
