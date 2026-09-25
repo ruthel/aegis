@@ -366,6 +366,11 @@ class NotificationManager:
             msg += "• /cooldown &lt;SYM&gt; &lt;min&gt; - Cooldown manuel\n"
             msg += "• /restart - Redémarrer le bot"
             self.notify(msg, "")
+        else:
+            self.notify(
+                f"⚠️ Commande inconnue: <code>{command}</code>\nUtilisez /help pour voir les commandes disponibles.",
+                ""
+            )
         
     def save_telegram_message_history(self, message_id, text, timestamp=None, direction="outgoing"):
         """Enregistre tout message Telegram dans SQLite."""
@@ -386,11 +391,17 @@ class NotificationManager:
             return "⚠️ Bot non disponible"
         
         bot = self.bot_ref
-        balance = bot.balance_manager.get_balance()
-        usd_free = balance.get('USD', {}).get('free', 0)
-        
+        balance = bot.balance_manager.get_balance(force_refresh=not bot.paper_trading)
+        usd_data = balance.get('USD', {}) or {}
+        usd_free = float(usd_data.get('free') or 0.0)
+        usd_used = float(usd_data.get('used') or usd_data.get('locked') or 0.0)
+        usd_total = usd_free + usd_used
+
         msg = f"{self._mode_badge()}\n💰 <b>SOLDE DÉTAILLÉ</b>\n\n"
-        msg += f"💵 <b>USD</b>: {usd_free:.2f} $\n\n"
+        msg += f"💵 <b>USD</b>: {usd_total:.2f} $"
+        if usd_used > 0:
+            msg += f" (libre {usd_free:.2f} / bloqué {usd_used:.2f})"
+        msg += "\n\n"
         
         total_crypto_value = 0
         pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
@@ -405,15 +416,18 @@ class NotificationManager:
                 symbol = f"{pair[:3]}/{pair[3:]}"
             
             crypto = symbol.split('/')[0]
-            amount = balance.get(crypto, {}).get('free', 0)
-            
+            asset_data = balance.get(crypto, {}) or {}
+            amount = float(asset_data.get('free') or 0.0) + float(
+                asset_data.get('used') or asset_data.get('locked') or 0.0
+            )
+
             if amount > 0.000001:
                 price = bot.get_price(symbol)
                 value = amount * price
                 total_crypto_value += value
                 msg += f"🪙 <b>{crypto}</b>: {amount:.6f} (~{value:.2f} $)\n"
         
-        total = usd_free + total_crypto_value
+        total = usd_total + total_crypto_value
         msg += f"\n📊 <b>TOTAL</b>: {total:.2f} $"
         
         return msg
@@ -553,103 +567,137 @@ class NotificationManager:
             return f"⚠️ Erreur health check : {e}"
     
     def _execute_force_sell(self, symbol_arg):
-        """Force la vente d'une position"""
+        """Force la vente d'une position en respectant la source de vérité du mode actif."""
         if not self.bot_ref:
             return "⚠️ Bot non disponible"
-        
+
         bot = self.bot_ref
-        
-        # Trouver le symbole complet
+        symbol_arg = str(symbol_arg or '').upper().strip()
+
         symbol = None
         pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
         for pair in pairs:
             pair = pair.strip()
             if '/' in pair:
-                s = pair
+                candidate = pair
             elif pair.endswith('USD'):
-                s = f"{pair[:-3]}/{pair[-3:]}"
+                candidate = f"{pair[:-3]}/{pair[-3:]}"
             else:
-                s = f"{pair[:3]}/{pair[3:]}"
-            
-            if s.startswith(symbol_arg + '/') or s.split('/')[0] == symbol_arg:
-                symbol = s
+                candidate = f"{pair[:3]}/{pair[3:]}"
+            if candidate.split('/')[0].upper() == symbol_arg:
+                symbol = candidate
                 break
-        
+
         if not symbol:
             return f"⚠️ Symbole {symbol_arg} non trouvé dans les paires tradées"
-        
-        # Vérifier qu'il y a une position ouverte
-        positions = getattr(bot, 'state', {}).get('positions', [])
-        position = None
-        for p in positions:
-            if p.get('symbol') == symbol and p.get('status') == 'open':
-                position = p
-                break
-        
-        if not position:
-            return f"⚠️ Aucune position ouverte sur {symbol_arg}"
-        
-        # Exécuter la vente
+
         try:
-            amount = position.get('amount', 0)
-            price = bot.get_price(symbol)
-            
             if bot.paper_trading:
-                # Vente paper
-                result = bot.sell_market(symbol, amount, reason='telegram_force_sell')
+                active_positions = [
+                    p for p in getattr(bot, 'state', {}).get('positions', [])
+                    if isinstance(p, dict)
+                    and p.get('symbol') == symbol
+                    and p.get('side') == 'buy'
+                    and not p.get('closed_at')
+                    and not p.get('exit_price')
+                    and str(p.get('status') or '').lower() != 'closed'
+                ]
+                amount = sum(
+                    float(p.get('amount') or p.get('position_size_crypto') or 0.0)
+                    for p in active_positions
+                )
             else:
-                # Vente live
-                result = bot.sell_market(symbol, amount, reason='telegram_force_sell')
-            
-            if result:
-                return f"✅ <b>VENTE FORCÉE</b>\n\n🪙 {symbol_arg}\n💰 {amount:.6f}\n💵 ~{amount * price:.2f} $\n\n<i>Ordre envoyé avec succès</i>"
-            else:
-                return f"⚠️ Échec de la vente de {symbol_arg}"
-        except Exception as e:
-            return f"⚠️ Erreur vente : {e}"
-    
+                # Réconcilier d'abord les ventes manuelles / poussières avec Kraken.
+                if hasattr(bot, 'sync_positions_from_exchange'):
+                    bot.sync_positions_from_exchange()
+
+                # Libérer d'éventuels sell limits avant une sortie forcée.
+                if hasattr(bot, '_cancel_sell_orders_for_symbol'):
+                    if not bot._cancel_sell_orders_for_symbol(symbol):
+                        return (
+                            f"⚠️ Impossible de forcer la vente de {symbol_arg}: "
+                            "annulation des ordres Kraken non confirmée."
+                        )
+
+                balance = bot.balance_manager.get_balance(force_refresh=True)
+                asset = balance.get(symbol.split('/')[0], {}) or {}
+                amount = float(asset.get('free') or 0.0)
+
+            if amount <= 0:
+                return f"⚠️ Aucune quantité vendable sur {symbol_arg}"
+
+            price = float(bot.get_price(symbol) or 0.0)
+            try:
+                min_cost = float(bot.get_min_amount(symbol)['min_cost'] or 0.0)
+            except Exception:
+                min_cost = 0.0
+            if price > 0 and min_cost > 0 and amount * price < min_cost:
+                return (
+                    f"⚠️ {symbol_arg} ne contient plus qu'une poussière non tradable "
+                    f"(~{amount * price:.4f} $, minimum {min_cost:.2f} $)."
+                )
+
+            result = bot.sell_market(symbol, amount, reason='telegram_force_sell')
+            if not result:
+                return f"⚠️ Échec ou fill non confirmé pour la vente de {symbol_arg}"
+
+            if bot.paper_trading:
+                return (
+                    f"✅ <b>VENTE FORCÉE PAPER</b>\n\n"
+                    f"🪙 {symbol_arg}\n💰 {amount:.6f}\n"
+                    f"💵 ~{amount * price:.2f} $\n\n"
+                    "<i>Vente simulée exécutée.</i>"
+                )
+
+            # sell_market() ne retourne un succès live qu'après confirmation Kraken.
+            return (
+                f"✅ <b>VENTE FORCÉE LIVE CONFIRMÉE</b>\n\n"
+                f"🪙 {symbol_arg}\n💰 {amount:.6f}\n"
+                f"💵 ~{amount * price:.2f} $\n\n"
+                "<i>Fill confirmé par Kraken.</i>"
+            )
+        except Exception as exc:
+            return f"⚠️ Erreur vente : {exc}"
+
     def _execute_add_cooldown(self, symbol_arg, minutes):
-        """Ajoute un cooldown manuel sur un symbole"""
+        """Ajoute un cooldown manuel via le mécanisme officiel du bot."""
         if not self.bot_ref:
             return "⚠️ Bot non disponible"
-        
+
         bot = self.bot_ref
-        
-        # Trouver le symbole complet
+        symbol_arg = str(symbol_arg or '').upper().strip()
+        if int(minutes) <= 0:
+            return "⚠️ La durée doit être supérieure à 0 minute"
+
         symbol = None
         pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
         for pair in pairs:
             pair = pair.strip()
             if '/' in pair:
-                s = pair
+                candidate = pair
             elif pair.endswith('USD'):
-                s = f"{pair[:-3]}/{pair[-3:]}"
+                candidate = f"{pair[:-3]}/{pair[-3:]}"
             else:
-                s = f"{pair[:3]}/{pair[3:]}"
-            
-            if s.startswith(symbol_arg + '/') or s.split('/')[0] == symbol_arg:
-                symbol = s
+                candidate = f"{pair[:3]}/{pair[3:]}"
+            if candidate.split('/')[0].upper() == symbol_arg:
+                symbol = candidate
                 break
-        
+
         if not symbol:
             return f"⚠️ Symbole {symbol_arg} non trouvé dans les paires tradées"
-        
-        # Ajouter le cooldown
+
         try:
-            cooldown_until = time.time() + (minutes * 60)
-            
-            # Utiliser le système de cooldown existant
-            if hasattr(bot, 'cooldowns'):
-                bot.cooldowns[symbol] = cooldown_until
-            elif hasattr(bot, 'state') and 'cooldowns' in bot.state:
-                bot.state['cooldowns'][symbol] = cooldown_until
-            else:
-                return f"⚠️ Système de cooldown non disponible"
-            
-            end_time = datetime.fromtimestamp(cooldown_until).strftime('%H:%M:%S')
-            return f"⏳ <b>COOLDOWN AJOUTÉ</b>\n\n🪙 {symbol_arg}\n⏰ Durée: {minutes} min\n🔚 Fin: {end_time}"
-        except Exception as e:
-            return f"⚠️ Erreur cooldown : {e}"
+            if not hasattr(bot, 'set_symbol_cooldown'):
+                return "⚠️ Système de cooldown non disponible"
+            seconds = int(minutes) * 60
+            bot.set_symbol_cooldown(symbol, seconds=seconds, reason='telegram_manual_cooldown')
+            end_time = datetime.fromtimestamp(time.time() + seconds).strftime('%H:%M:%S')
+            return (
+                f"⏳ <b>COOLDOWN AJOUTÉ</b>\n\n"
+                f"🪙 {symbol_arg}\n⏰ Durée: {minutes} min\n🔚 Fin: {end_time}"
+            )
+        except Exception as exc:
+            return f"⚠️ Erreur cooldown : {exc}"
 
     def _generate_pnl_chart(self, days=30):
         """Génère un graphique du PnL NET cumulé sur X jours"""
