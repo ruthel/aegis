@@ -1,5 +1,6 @@
 import ast
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -9,6 +10,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, text, update
+
+LOGGER = logging.getLogger(__name__)
 
 from core.db_orm import (
     Base,
@@ -247,9 +250,14 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'decision_logs', 'duration_ms', 'REAL')
                 self._ensure_column(conn, 'ml_open_entries', 'expected_price', 'REAL')
                 self._ensure_column(conn, 'ml_open_entries', 'requested_price', 'REAL')
+                self._ensure_column(conn, 'ml_open_entries', 'executed_price', 'REAL')
                 self._ensure_column(conn, 'ml_open_entries', 'slippage_pct', 'REAL')
                 self._ensure_column(conn, 'ml_open_entries', 'spread_pct', 'REAL')
                 self._ensure_column(conn, 'ml_open_entries', 'order_type', 'TEXT')
+                self._ensure_column(conn, 'ml_open_entries', 'execution_side', 'TEXT')
+                self._ensure_column(conn, 'ml_open_entries', 'execution_amount', 'REAL')
+                self._ensure_column(conn, 'ml_open_entries', 'execution_success', 'INTEGER')
+                self._ensure_column(conn, 'ml_open_entries', 'execution_reason', 'TEXT')
                 self._ensure_column(conn, 'ml_open_entries', 'duration_ms', 'REAL')
                 self._ensure_column(conn, 'ml_sizing_recommendations', 'p_continue', 'REAL')
                 self._ensure_column(conn, 'ml_sizing_recommendations', 'raw_sizing_factor', 'REAL')
@@ -2633,8 +2641,14 @@ class MLLiveLogger:
                 elif event_type == 'telegram_message':
                     self._insert_telegram_message(session, event)
                 session.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.exception(
+                "SQLite event persistence failed: type=%s symbol=%s mode=%s",
+                event.get('event_type') if isinstance(event, dict) else None,
+                event.get('symbol') if isinstance(event, dict) else None,
+                event.get('mode') if isinstance(event, dict) else None,
+                exc_info=exc,
+            )
 
     def _should_store_decision_log(self, event):
         event_type = event.get('event_type')
@@ -4722,104 +4736,14 @@ class MLLiveLogger:
                 if row:
                     row.expected_price = self._clean(expected_price)
                     row.requested_price = self._clean(requested_price)
+                    row.executed_price = self._clean(executed_price)
                     row.slippage_pct = self._clean(slippage_pct)
                     row.spread_pct = self._clean(spread_pct)
                     row.order_type = str(order_type)
-                    row.duration_ms = self._clean(duration_ms)
-                    session.commit()
-            return True
-        except Exception:
-            return False
-
-    def save_daily_stats(self, stats, mode='paper'):
-        if not isinstance(stats, dict):
-            return False
-        try:
-            now = now_iso()
-            mode = str(mode or 'paper').lower()
-            stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
-            with self._orm_session() as session:
-                row = session.get(BotDailyStat, (mode, stat_date))
-                if not row:
-                    row = BotDailyStat(mode=mode, stat_date=stat_date, created_at=now)
-                    session.add(row)
-                row.trades_count = int(stats.get('trades_count') or 0)
-                row.total_loss = self._clean(stats.get('total_loss') or 0)
-                row.total_profit = self._clean(stats.get('total_profit') or 0)
-                row.emergency_stop = 1 if stats.get('emergency_stop') else 0
-                # Persistance des compteurs gagnants/perdants (tolérance si colonne absente)
-                try:
-                    row.winning_trades_count = int(stats.get('winning_trades_count') or 0)
-                    row.losing_trades_count = int(stats.get('losing_trades_count') or 0)
-                except Exception:
-                    pass
-                row.updated_at = now
-                session.commit()
-            return True
-        except Exception:
-            return False
-
-    def load_daily_stats(self, stat_date=None, mode='paper'):
-        try:
-            mode = str(mode or 'paper').lower()
-            stat_date = stat_date or datetime.now().strftime('%Y-%m-%d')
-            with self._orm_session() as session:
-                row = session.get(BotDailyStat, (mode, stat_date))
-            if not row:
-                return {}
-            result = {
-                'date': row.stat_date,
-                'trades_count': row.trades_count or 0,
-                'total_loss': row.total_loss or 0,
-                'total_profit': row.total_profit or 0,
-                'emergency_stop': bool(row.emergency_stop),
-            }
-            # Charger les compteurs persistés si la colonne existe
-            try:
-                result['winning_trades_count'] = row.winning_trades_count or 0
-                result['losing_trades_count'] = row.losing_trades_count or 0
-            except Exception:
-                pass
-            return result
-        except Exception:
-            return {}
-
-    def load_open_entries(self, mode='paper'):
-        try:
-            mode = str(mode or 'paper').lower()
-            with self._orm_session() as session:
-                rows = session.scalars(
-                    select(MlOpenEntry)
-                    .where(MlOpenEntry.mode == mode)
-                    .order_by(MlOpenEntry.symbol.asc())
-                ).all()
-            return {
-                row.symbol: {
-                    'mode': row.mode,
-                    'entry_id': row.entry_id,
-                    'symbol': row.symbol,
-                    'opened_at': row.opened_at,
-                    'order_id': row.order_id,
-                    'price': row.price,
-                    'amount': row.amount,
-                }
-                for row in rows
-            }
-        except Exception:
-            return {}
-
-    def log_execution_metric(self, symbol, side, order_type, expected_price, requested_price, executed_price, slippage_pct, spread_pct, amount, duration_ms, success, reason, mode='paper'):
-        """Enregistre les métriques d'exécution sur l'entrée ouverte du mode actif."""
-        try:
-            mode = str(mode or 'paper').lower()
-            with self._orm_session() as session:
-                row = session.get(MlOpenEntry, (mode, str(symbol)))
-                if row:
-                    row.expected_price = self._clean(expected_price)
-                    row.requested_price = self._clean(requested_price)
-                    row.slippage_pct = self._clean(slippage_pct)
-                    row.spread_pct = self._clean(spread_pct)
-                    row.order_type = str(order_type)
+                    row.execution_side = str(side or '')
+                    row.execution_amount = self._clean(amount)
+                    row.execution_success = 1 if success else 0
+                    row.execution_reason = str(reason or '')
                     row.duration_ms = self._clean(duration_ms)
                     session.commit()
             return True
