@@ -2606,7 +2606,7 @@ def sanitize_ml_predictions(predictions):
             continue
 
         row = {}
-        for key in ('symbol', 'p_win', 'recommendation', 'min_probability', 'timestamp'):
+        for key in ('symbol', 'p_win', 'raw_p_win', 'recommendation', 'min_probability', 'timestamp'):
             value = item.get(key)
             if value is not None:
                 row[key] = value
