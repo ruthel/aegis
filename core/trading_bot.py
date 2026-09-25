@@ -3301,7 +3301,6 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return True
 
         try:
-            # Fast path: vérifier si on a des ordres sell trackés en mémoire pour ce symbole
             target_sym = str(symbol).replace('/', '').upper()
             tracked_sell_ids = [
                 oid for oid, od in getattr(self, 'pending_orders', {}).items()
@@ -3309,26 +3308,82 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 and od.get('side') == 'sell'
                 and od.get('status') in ('opened', None)
             ]
-            
-            if not tracked_sell_ids:
-                # Aucun ordre sell tracké -> skip l'appel API coûteux
+
+            # En live, Kraken est la source de vérité. Même si la mémoire locale ne
+            # contient rien, vérifier les ordres réellement ouverts sur l'exchange.
+            exchange_open = self.safe_request(self.exchange.fetch_open_orders, symbol) or []
+            exchange_sell_ids = {
+                str(order.get('id'))
+                for order in exchange_open
+                if str(order.get('side') or '').lower() == 'sell' and order.get('id') is not None
+            }
+            candidate_ids = set(str(oid) for oid in tracked_sell_ids) | exchange_sell_ids
+
+            if not candidate_ids:
                 return True
-            
-            # Annuler uniquement les ordres trackés (évite fetch_open_orders)
-            for order_id in tracked_sell_ids:
+
+            canceled_ids = set()
+            failed_ids = set()
+
+            for order_id in candidate_ids:
                 try:
-                    self.safe_request(self.exchange.cancel_order, order_id, symbol)
+                    result = self.safe_request(self.exchange.cancel_order, order_id, symbol)
+                    # Vérifier ensuite l'état réel. Un retour API seul ne suffit pas.
+                    confirmed_canceled = False
+                    try:
+                        fetched = self.safe_request(self.exchange.fetch_order, order_id, symbol)
+                        status = str((fetched or {}).get('status') or '').lower()
+                        confirmed_canceled = status in {'canceled', 'cancelled', 'closed'}
+                    except Exception:
+                        pass
+
+                    if not confirmed_canceled:
+                        try:
+                            still_open = self.safe_request(self.exchange.fetch_open_orders, symbol) or []
+                            open_ids = {str(o.get('id')) for o in still_open if o.get('id') is not None}
+                            confirmed_canceled = order_id not in open_ids
+                        except Exception:
+                            confirmed_canceled = False
+
+                    if confirmed_canceled:
+                        canceled_ids.add(order_id)
+                    else:
+                        failed_ids.add(order_id)
                 except Exception:
-                    pass
-                if order_id in self.pending_orders:
-                    del self.pending_orders[order_id]
-            
-            # Mettre à jour les positions en mémoire
+                    failed_ids.add(order_id)
+
+            # Mutation locale uniquement pour les annulations confirmées par Kraken.
+            for order_id in canceled_ids:
+                self.pending_orders.pop(order_id, None)
+
             for p in reversed(self.state.get('positions', [])):
                 p_sym = str(p.get('symbol', '')).replace('/', '').upper()
-                if p_sym == target_sym and p.get('side') == 'sell' and p.get('status') == 'opened':
+                order_id = str(p.get('order_id') or '')
+                if (
+                    p_sym == target_sym
+                    and p.get('side') == 'sell'
+                    and p.get('status') == 'opened'
+                    and order_id in canceled_ids
+                ):
                     p['status'] = 'canceled'
-            
+
+            self.save_state()
+
+            if failed_ids:
+                print(
+                    f"⚠️ Annulation Kraken non confirmée pour {symbol}: "
+                    f"{', '.join(sorted(failed_ids))}. État local conservé."
+                )
+                self.record_decision(
+                    symbol,
+                    action_type='sell',
+                    allowed=False,
+                    reason='exchange_cancel_unconfirmed',
+                    metrics={'order_ids': sorted(failed_ids)},
+                    throttle_seconds=0,
+                )
+                return False
+
             return True
         except Exception as e:
             print(f"⚠️ Impossible d'annuler les ordres de vente {symbol}: {e}")
