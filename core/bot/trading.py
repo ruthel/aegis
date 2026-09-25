@@ -616,7 +616,7 @@ class TradingMixin:
                                 metrics={'price': price, 'order_id': order.get('id'), 'side': 'buy'},
                                 throttle_seconds=0
                             )
-                        return order
+                        return None
                 exec_price = float(execution['price'])
                 exec_amount = float(execution['amount'] or 0.0)
                 if exec_amount <= 0 or exec_price <= 0:
@@ -744,7 +744,7 @@ class TradingMixin:
                 exec_amount = float(execution['amount'] or 0.0)
                 if exec_amount <= 0 or exec_price <= 0:
                     print(f"⚠️ Exécution SELL invalide pour {symbol}: amount={exec_amount}, price={exec_price}")
-                    return order
+                    return None
                 self._record_live_order_accounting(symbol, 'sell', exec_amount, exec_price, order, order_type='market', filled=True)
                 # Mettre à jour la position sell existante → 'executed' au lieu d'insérer un doublon
                 updated = False
