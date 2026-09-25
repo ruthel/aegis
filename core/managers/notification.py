@@ -47,6 +47,41 @@ class NotificationManager:
     def _mode_badge(self):
         return '🧪 PAPER' if self._active_mode() == 'paper' else '💸 LIVE'
 
+    def _open_orders_for_active_mode(self, symbol):
+        """Retourne uniquement les ordres du mode du bot attaché."""
+        if not self.bot_ref:
+            return []
+        bot = self.bot_ref
+        target = str(symbol or '').replace('/', '').upper()
+
+        if self._active_mode() == 'paper':
+            out = []
+            pending = getattr(bot, 'pending_orders', {}) or {}
+            for item in pending.values():
+                raw = item.get('order') if isinstance(item, dict) and isinstance(item.get('order'), dict) else item
+                if not isinstance(raw, dict):
+                    continue
+                raw_symbol = str(
+                    raw.get('symbol')
+                    or (item.get('symbol') if isinstance(item, dict) else '')
+                    or ''
+                ).replace('/', '').upper()
+                if raw_symbol and raw_symbol != target:
+                    continue
+                status = str(raw.get('status') or 'open').lower()
+                if status in ('closed', 'canceled', 'cancelled', 'filled'):
+                    continue
+                out.append(dict(raw))
+            return out
+
+        exchange = getattr(bot, 'exchange', None)
+        if exchange is None or not hasattr(exchange, 'fetch_open_orders'):
+            return []
+        try:
+            return exchange.fetch_open_orders(symbol) or []
+        except Exception:
+            return []
+
     def set_bot(self, bot):
         """Référence au bot pour status périodique et écoute des commandes"""
         self.bot_ref = bot
@@ -354,7 +389,7 @@ class NotificationManager:
         balance = bot.balance_manager.get_balance()
         usd_free = balance.get('USD', {}).get('free', 0)
         
-        msg = "💰 <b>SOLDE DÉTAILLÉ</b>\n\n"
+        msg = f"{self._mode_badge()}\n💰 <b>SOLDE DÉTAILLÉ</b>\n\n"
         msg += f"💵 <b>USD</b>: {usd_free:.2f} $\n\n"
         
         total_crypto_value = 0
@@ -513,7 +548,7 @@ class NotificationManager:
         try:
             results = health_mgr.run_checks()
             summary = health_mgr.get_summary_text(results)
-            return summary
+            return f"{self._mode_badge()}\n{summary}"
         except Exception as e:
             return f"⚠️ Erreur health check : {e}"
     
@@ -1394,7 +1429,7 @@ class NotificationManager:
                     })
                     total_value += value
 
-        msg = f"🤖 {BOT_NAME} | {datetime.now().strftime('%d/%m %H:%M')}\n\n"
+        msg = f"{self._mode_badge()}\n🤖 {BOT_NAME} | {datetime.now().strftime('%d/%m %H:%M')}\n\n"
         msg += f"💼 <b>Portfolio</b> ({total_value:.2f}$)\n"
         msg += f"┆\n├─ USD: <code>{usd:.2f}$</code>\n"
         
@@ -1438,7 +1473,7 @@ class NotificationManager:
         for item in portfolio_items:
             if item['has_orders']:
                 try:
-                    open_orders = bot.exchange.fetch_open_orders(f"{item['crypto']}/USD")
+                    open_orders = self._open_orders_for_active_mode(f"{item['crypto']}/USD")
                     if open_orders:
                         msg += f"\n📋 Ordres {item['crypto']}\n"
                         for j, order in enumerate(open_orders):
