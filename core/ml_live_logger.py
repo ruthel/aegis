@@ -265,6 +265,8 @@ class MLLiveLogger:
                 self._ensure_column(conn, 'ml_analysis_runs', 'mode', 'TEXT')
                 self._ensure_column(conn, 'ml_prediction_calibration', 'mode', 'TEXT')
                 self._ensure_column(conn, 'ml_drift_alerts', 'mode', 'TEXT')
+        self._ensure_column(conn, 'notifications', 'mode', 'TEXT')
+        self._ensure_column(conn, 'governance_logs', 'mode', 'TEXT')
                 # Renommer la table ml_raw_events en sys_audit si besoin
                 try:
                     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
@@ -3842,11 +3844,13 @@ class MLLiveLogger:
             event['entry_id'] = candidates[0].event_id
             event['label_status'] = 'closed_relinked'
 
-    def record_telegram_message(self, message_id, text, timestamp=None, direction='outgoing'):
+    def record_telegram_message(self, message_id, text, timestamp=None, direction='outgoing', mode=None):
+        mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
         event = {
             'event_id': self._new_id('telegram'),
             'event_type': 'telegram_message',
             'timestamp': datetime.now().isoformat(),
+            'mode': mode,
             'telegram_ts': self._clean(timestamp),
             'message_id': str(message_id) if message_id is not None else None,
             'direction': direction,
@@ -3859,6 +3863,7 @@ class MLLiveLogger:
         session.merge(Notification(
             event_id=event.get('event_id'),
             timestamp=event.get('timestamp'),
+            mode=event.get('mode'),
             telegram_ts=event.get('telegram_ts'),
             message_id=event.get('message_id'),
             direction=event.get('direction'),
@@ -4872,8 +4877,9 @@ class MLLiveLogger:
             print(f"⚠️ Erreur backup_db: {e}")
             return None
 
-    def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None):
-        """Enregistre un événement de gouvernance dans la table unifiée governance_logs."""
+    def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None, mode=None):
+        """Enregistre un événement de gouvernance strictement rattaché à un mode."""
+        mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -4884,6 +4890,7 @@ class MLLiveLogger:
                     session.add(GovernanceLog(
                         gov_id=gov_id,
                         timestamp=now,
+                        mode=mode,
                         event_type=str(event_type),
                         source_model=str(source_model) if source_model else None,
                         target_model=str(target_model) if target_model else None,
