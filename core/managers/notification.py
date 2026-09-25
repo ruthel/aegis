@@ -1430,9 +1430,23 @@ class NotificationManager:
                 return f"{amount:.3f}".rstrip('0').rstrip('.')
         
         bot = self.bot_ref
-        balance = bot.balance_manager.get_balance()
-        usd = balance.get('USD', balance.get('USD', {})).get('free', 0)
-        
+        if not bot:
+            return "⚠️ Bot non disponible"
+
+        # En LIVE, synchroniser d'abord l'état local avec Kraken puis rafraîchir
+        # le solde afin que /status reflète l'exchange au moment de la demande.
+        if not bot.paper_trading and hasattr(bot, 'sync_positions_from_exchange'):
+            try:
+                bot.sync_positions_from_exchange()
+            except Exception:
+                pass
+
+        balance = bot.balance_manager.get_balance(force_refresh=not bot.paper_trading)
+        usd_data = balance.get('USD', {}) or {}
+        usd_free = float(usd_data.get('free') or 0.0)
+        usd_locked = float(usd_data.get('used') or usd_data.get('locked') or 0.0)
+        usd = usd_free + usd_locked
+
         # Portfolio avec détail des ordres et P&L
         portfolio_items = []
         total_value = usd
@@ -1441,7 +1455,9 @@ class NotificationManager:
             symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
             crypto = symbol.split('/')[0]
             free = balance.get(crypto, {}).get('free', 0)
-            locked = balance.get(crypto, {}).get('used', 0)
+            asset_data = balance.get(crypto, {}) or {}
+            free = float(asset_data.get('free') or 0.0)
+            locked = float(asset_data.get('used') or asset_data.get('locked') or 0.0)
             total = free + locked
             
             if total > 0.00001:
@@ -1479,7 +1495,10 @@ class NotificationManager:
 
         msg = f"{self._mode_badge()}\n🤖 {BOT_NAME} | {datetime.now().strftime('%d/%m %H:%M')}\n\n"
         msg += f"💼 <b>Portfolio</b> ({total_value:.2f}$)\n"
-        msg += f"┆\n├─ USD: <code>{usd:.2f}$</code>\n"
+        msg += f"┆\n├─ USD: <code>{usd:.2f}$</code>"
+        if usd_locked > 0:
+            msg += f" <i>(libre {usd_free:.2f} / bloqué {usd_locked:.2f})</i>"
+        msg += "\n"
         
         for i, item in enumerate(portfolio_items):
             is_last = (i == len(portfolio_items) - 1)
@@ -1592,8 +1611,13 @@ class NotificationManager:
         """Construit le message d'affichage des positions ouvertes en attente de vente."""
         try:
             from ui.server import load_bot_state, live_status, weighted_positions
-            
+
             if self.bot_ref and hasattr(self.bot_ref, 'state'):
+                if not self.bot_ref.paper_trading and hasattr(self.bot_ref, 'sync_positions_from_exchange'):
+                    try:
+                        self.bot_ref.sync_positions_from_exchange()
+                    except Exception:
+                        pass
                 state = self.bot_ref.state
             else:
                 state = load_bot_state({'positions': []}, mode=self._active_mode())
