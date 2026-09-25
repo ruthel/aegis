@@ -1396,13 +1396,27 @@ def open_sell_orders(pending_orders=None, cryptos=None):
     return sorted(items, key=lambda row: (row.get('symbol') or '', row.get('timestamp') or ''))
 
 
-def cooldowns(state):
+def cooldowns(state, decisions=None):
     now = datetime.now().timestamp()
     items = []
+    decisions = decisions or []
     for symbol, cooldown_until in state.get('symbol_cooldowns', {}).items():
         remaining = max(0, int(float(cooldown_until or 0) - now))
-        if remaining > 0:
-            items.append({'symbol': symbol, 'remaining_seconds': remaining})
+        if remaining <= 0:
+            continue
+        reason = None
+        for decision in reversed(decisions):
+            if decision.get('symbol') != symbol:
+                continue
+            candidate = str(decision.get('reason') or '')
+            if candidate and candidate not in {'symbol_cooldown_active', 'execution_cooldown_active'}:
+                reason = candidate
+                break
+        items.append({
+            'symbol': symbol,
+            'remaining_seconds': remaining,
+            'reason': reason or 'cooldown_active',
+        })
     return sorted(items, key=lambda item: item['symbol'])
 
 
@@ -2300,7 +2314,7 @@ def dashboard_status_payload(view_mode=None):
         'stats': stats,
         'positions': positions,
         'sell_orders': sell_orders,
-        'cooldowns': cooldowns(state),
+        'cooldowns': cooldowns(state, decisions),
         'market_context': state.get('market_context', {}),
         'live': live,
         'support_touch': support_touch(state),
