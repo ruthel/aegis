@@ -4139,7 +4139,8 @@ class MLLiveLogger:
                     self._trim_decision_logs(session, mode=entry.get('mode') or mode, max_entries=max_entries)
                     session.commit()
             return True
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Decision Log SQLite write failed: {e}")
             return False
 
     def record_shadow_prediction(
@@ -4291,7 +4292,8 @@ class MLLiveLogger:
                     },
                 })
             return items
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Decision Log SQLite read failed: {e}")
             return []
 
     @staticmethod
