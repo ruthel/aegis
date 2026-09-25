@@ -47,6 +47,20 @@ class NotificationManager:
     def _mode_badge(self):
         return '🧪 PAPER' if self._active_mode() == 'paper' else '💸 LIVE'
 
+    def _refresh_live_state(self, include_positions=True, include_history=True):
+        """Rafraîchit l'état LIVE depuis Kraken avant une réponse Telegram."""
+        bot = self.bot_ref
+        if not bot or getattr(bot, 'paper_trading', True):
+            return
+        try:
+            if include_positions and hasattr(bot, 'sync_positions_from_exchange'):
+                bot.sync_positions_from_exchange()
+                return
+            if include_history and hasattr(bot, 'sync_trade_history'):
+                bot.sync_trade_history()
+        except Exception:
+            pass
+
     def _open_orders_for_active_mode(self, symbol):
         """Retourne uniquement les ordres du mode du bot attaché."""
         if not self.bot_ref:
@@ -168,6 +182,10 @@ class NotificationManager:
                     self.notify("⚠️ Bot non disponible", "")
                     return
                 self.bot_ref.paused = True
+                if hasattr(self.bot_ref, 'state'):
+                    self.bot_ref.state['paused'] = True
+                if hasattr(self.bot_ref, 'save_state'):
+                    self.bot_ref.save_state()
                 self.notify("⏸️ <b>Bot en PAUSE</b>\n\nLe trading est suspendu. Les positions ouvertes restent surveillées.\nUtilisez /resume pour reprendre.", "")
             except Exception as e:
                 self.notify(f"⚠️ Erreur pause : {e}", "")
@@ -178,6 +196,10 @@ class NotificationManager:
                     self.notify("⚠️ Bot non disponible", "")
                     return
                 self.bot_ref.paused = False
+                if hasattr(self.bot_ref, 'state'):
+                    self.bot_ref.state['paused'] = False
+                if hasattr(self.bot_ref, 'save_state'):
+                    self.bot_ref.save_state()
                 self.notify("▶️ <b>Bot ACTIF</b>\n\nLe trading a repris normalement.", "")
             except Exception as e:
                 self.notify(f"⚠️ Erreur resume : {e}", "")
@@ -255,7 +277,7 @@ class NotificationManager:
                 upcoming.sort(key=lambda x: x[0])
                 next_events = upcoming[:5]
                 
-                msg = "📅 <b>ÉVÉNEMENTS MACRO PROGRAMMÉS (2026)</b>\n\n"
+                msg = f"{self._mode_badge()}\n📅 <b>ÉVÉNEMENTS MACRO PROGRAMMÉS (2026)</b>\n\n"
                 if next_events:
                     for i, (event_ts, item, local_dt) in enumerate(next_events):
                         event_type = item['event']
@@ -391,6 +413,7 @@ class NotificationManager:
             return "⚠️ Bot non disponible"
         
         bot = self.bot_ref
+        self._refresh_live_state(include_positions=True, include_history=True)
         balance = bot.balance_manager.get_balance(force_refresh=not bot.paper_trading)
         usd_data = balance.get('USD', {}) or {}
         usd_free = float(usd_data.get('free') or 0.0)
@@ -437,6 +460,7 @@ class NotificationManager:
         if not self.bot_ref:
             return "⚠️ Bot non disponible"
         
+        self._refresh_live_state(include_positions=True, include_history=True)
         try:
             from ui.server import compute_trade_history, load_accounting_state
             state = load_accounting_state({'positions': []}, view_mode=self._active_mode())
@@ -501,6 +525,7 @@ class NotificationManager:
             return "⚠️ Bot non disponible"
         
         bot = self.bot_ref
+        self._refresh_live_state(include_positions=True, include_history=True)
         ml_engine = getattr(bot, 'ml_engine', None)
         
         msg = f"{self._mode_badge()}\n🧠 <b>STATUT ML</b>\n\n"
@@ -554,6 +579,7 @@ class NotificationManager:
             return "⚠️ Bot non disponible"
         
         bot = self.bot_ref
+        self._refresh_live_state(include_positions=True, include_history=True)
         health_mgr = getattr(bot, 'health_manager', None)
         
         if not health_mgr:
@@ -1684,6 +1710,7 @@ class NotificationManager:
 
     def _build_history_message(self):
         """Construit le message d'affichage de l'historique des trades fermés."""
+        self._refresh_live_state(include_positions=True, include_history=True)
         try:
             from ui.server import compute_trade_history, load_bot_state
             state = load_bot_state({'positions': []}, mode=self._active_mode())
