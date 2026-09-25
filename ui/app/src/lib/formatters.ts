@@ -324,7 +324,9 @@ export function decisionExplanation(item: JsonMap): string {
     const action = key.replace('technical_action_', '') || 'UNKNOWN'
     const confidence = metrics.confidence !== undefined ? ` Confiance technique ${metricNumber(metrics.confidence)}%` : ''
     const threshold = metrics.min_confidence !== undefined ? ` / seuil ${metricNumber(metrics.min_confidence)}%` : ''
-    return `Le filtre technique a renvoyé ${action}. Seuls BUY ou STRONG_BUY autorisent le passage vers le ML.${confidence}${threshold}. P_win n'a donc pas été évalué. Aucun cooldown de trading n'est créé par ce rejet.`
+    const adjusted = metrics.adjusted_strength !== undefined ? ` Force ajustée ${metricNumber(metrics.adjusted_strength, 3)}` : ''
+    const trend = metrics.dominant_trend ? `, tendance dominante ${asString(metrics.dominant_trend)}` : ''
+    return `Le filtre technique a renvoyé ${action}. Seuls BUY ou STRONG_BUY autorisent le passage vers le ML.${confidence}${threshold}.${adjusted}${trend}. P_win n'a donc pas été évalué. Aucun cooldown de trading n'est créé par ce rejet.`
   }
   if (key === 'technical_signal_below_threshold' || key === 'technical_confidence_below_threshold' || key === 'technical_signal_confidence_below_threshold') {
     return `Le filtre technique a rejeté l'entrée avant le ML. Confiance technique ${metricNumber(metrics.confidence)}% / seuil ${metricNumber(metrics.min_confidence)}%.`
@@ -351,6 +353,14 @@ export function decisionMetricChips(item: JsonMap): string[] {
     chips.push(
       `Confiance ${metricNumber(metrics.confidence)}% / ${metricNumber(metrics.min_confidence)}%`,
     )
+  if (metrics.adjusted_strength !== undefined)
+    chips.push(`Force ajustée ${metricNumber(metrics.adjusted_strength, 3)}`)
+  if (metrics.dominant_trend)
+    chips.push(`Tendance ${asString(metrics.dominant_trend)}`)
+  if (Array.isArray(metrics.active_timeframes) && metrics.active_timeframes.length)
+    chips.push(`TF ${metrics.active_timeframes.join(' / ')}`)
+  if (Array.isArray(metrics.technical_signals) && metrics.technical_signals.length)
+    chips.push(...metrics.technical_signals.slice(0, 3).map((signal) => asString(signal)))
   if (mlDecision.p_win !== undefined)
     chips.push(`P_win ${metricNumber(mlDecision.p_win)}% / ${metricNumber(mlDecision.min_p_win)}%`)
   if (mlDecision.p_continue !== undefined)
