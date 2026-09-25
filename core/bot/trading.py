@@ -795,7 +795,7 @@ class TradingMixin:
                     hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
                 
                 if hasattr(self, 'notifier'):
-                    self.notifier.notify_trade_sell(symbol, exec_amount, exec_price, exec_amount * exec_price, buy_price or exec_price, pnl or 0, hold_time)
+                    self.notifier.notify_trade_sell(symbol, exec_amount, exec_price, exec_amount * exec_price, buy_price or exec_price, pnl or 0, hold_time, reason=reason or 'market_sell')
 
                 if hasattr(self, 'record_decision'):
                     self.record_decision(
@@ -1228,7 +1228,7 @@ class TradingMixin:
                     delta = self._elapsed_since_iso(buy_positions[-1]['timestamp'])
                     hours = delta.total_seconds() / 3600
                     hold_time = f"{int(hours)}h {int((hours % 1) * 60)}min" if hours >= 1 else f"{int(hours * 60)}min"
-                self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time)
+                self.notifier.notify_trade_sell(symbol, amount, price, amount * price, buy_price or price, pnl or 0, hold_time, reason='confirmed_exchange_sell')
 
             if hasattr(self, 'record_ml_exit_learning_sample'):
                 self.record_ml_exit_learning_sample(
