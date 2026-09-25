@@ -75,6 +75,27 @@ class ModeIsolationAndCheckpointTests(unittest.TestCase):
             self.assertTrue(Path(checkpoint_path).exists())
             self.assertTrue(Path(best_path).exists())
 
+    def test_grid_cache_files_are_separate_per_mode(self):
+        from core.ml_engine import MLEngine
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(os.environ, {
+                'ML_GRID_CACHE_DIR': td,
+                'ML_GOVERNANCE_MODE': 'paper',
+            }, clear=False):
+                engine = MLEngine(model_dir=td)
+                paper_checkpoint, paper_best = engine._grid_cache_paths('lightgbm')
+            with patch.dict(os.environ, {
+                'ML_GRID_CACHE_DIR': td,
+                'ML_GOVERNANCE_MODE': 'live',
+            }, clear=False):
+                engine = MLEngine(model_dir=td)
+                live_checkpoint, live_best = engine._grid_cache_paths('lightgbm')
+
+        self.assertNotEqual(paper_checkpoint, live_checkpoint)
+        self.assertNotEqual(paper_best, live_best)
+        self.assertIn('paper', Path(paper_checkpoint).name)
+        self.assertIn('live', Path(live_checkpoint).name)
+
     def test_dashboard_has_single_server_owned_trading_mode(self):
         store = self.read("ui/app/src/store/dashboard-store.ts")
         types = self.read("ui/app/src/types/dashboard.ts")
@@ -96,11 +117,21 @@ class ModeIsolationAndCheckpointTests(unittest.TestCase):
         self.assertIn("LIVE_BOT_LOG_FILE", server)
         self.assertIn("PAPER_REPLAY_LOG_FILE", server)
         self.assertIn("LIVE_REPLAY_LOG_FILE", server)
+        self.assertIn("PAPER_ML_TRAINING_LOG_FILE", server)
+        self.assertIn("LIVE_ML_TRAINING_LOG_FILE", server)
         self.assertIn("return [active_trading_mode()]", server)
         self.assertIn("WHERE mode=?", server)
         self.assertNotIn("selected_view != 'all'", server)
         self.assertIn("arretez le replay ML du mode actif avant de changer de mode", server)
         self.assertIn("attendez la fin du retraining/promotion avant de changer de mode", server)
+
+    def test_training_replay_samples_are_mode_scoped(self):
+        training = self.read("scripts/train_and_evaluate_ml_model.py")
+        self.assertIn("JOIN decision_logs d ON d.event_id = r.entry_id", training)
+        self.assertIn("WHERE d.mode=?", training)
+        self.assertIn("mode=mode", training)
+        self.assertIn("parser.add_argument(", training)
+        self.assertIn("'--mode'", training)
 
     def test_telegram_status_and_history_are_scoped_to_notifier_mode(self):
         notification = self.read("core/managers/notification.py")
@@ -111,6 +142,36 @@ class ModeIsolationAndCheckpointTests(unittest.TestCase):
         self.assertIn("telegram_last_daily_status_day:{self._active_mode()}", notification)
         self.assertIn("mode=self._active_mode()", notification)
         self.assertIn("if trading_mode == 'live':", notification)
+
+    def test_telegram_paper_open_orders_do_not_hit_exchange(self):
+        from core.managers.notification import NotificationManager
+
+        class Exchange:
+            def fetch_open_orders(self, symbol):
+                raise AssertionError("paper Telegram status must not query live exchange orders")
+
+        bot = type("Bot", (), {})()
+        bot.paper_trading = True
+        bot.exchange = Exchange()
+        bot.pending_orders = {
+            "paper-order": {
+                "symbol": "BTC/USD",
+                "order": {
+                    "id": "paper-order",
+                    "symbol": "BTC/USD",
+                    "side": "sell",
+                    "type": "limit",
+                    "price": 110.0,
+                    "status": "open",
+                },
+            }
+        }
+
+        manager = NotificationManager()
+        manager.bot_ref = bot
+        orders = manager._open_orders_for_active_mode("BTC/USD")
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["id"], "paper-order")
 
     def test_safe_fallback_drift_is_mode_scoped(self):
         source = self.read("core/trading_bot.py")
