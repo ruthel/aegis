@@ -163,6 +163,12 @@ class TradingMixin:
         if self.paper_trading or not getattr(self, 'ml_live_logger', None) or not order:
             return
         try:
+            if filled:
+                status = str(order.get('status') or '').lower()
+                exchange_filled = float(order.get('filled') or 0.0)
+                has_trades = bool(order.get('trades')) if isinstance(order.get('trades'), list) else False
+                if status not in {'closed', 'filled'} and exchange_filled <= 0 and not has_trades:
+                    return
             order_id = str(order.get('id') or f'live_{side}_{symbol.replace("/", "")}_{time.time_ns()}')
             self.ml_live_logger.record_order_transaction(
                 symbol,
@@ -309,6 +315,62 @@ class TradingMixin:
 
         return execution
 
+    def _confirm_live_order_execution(self, symbol, order, side=None):
+        """Confirme un fill live auprès de l'exchange avant toute mutation locale.
+
+        En live, une quantité demandée n'est jamais considérée comme remplie sans
+        preuve Kraken: status closed/filled, filled > 0 ou trade associé à l'order id.
+        """
+        if self.paper_trading:
+            return self._extract_execution_details(order, 0.0, 0.0)
+        if not order or not getattr(self, 'exchange', None):
+            return None
+
+        order_id = str(order.get('id') or '')
+        snapshots = [order]
+
+        if order_id and hasattr(self.exchange, 'fetch_order'):
+            for delay in (0.15, 0.5, 1.5, 3.0):
+                try:
+                    if delay:
+                        time.sleep(delay)
+                    fetched = self.safe_request(self.exchange.fetch_order, order_id, symbol)
+                    if fetched:
+                        snapshots.append(fetched)
+                except Exception:
+                    pass
+
+        for snapshot in reversed(snapshots):
+            status = str(snapshot.get('status') or '').lower()
+            filled = float(snapshot.get('filled') or 0.0)
+            if filled > 0 or status in {'closed', 'filled'}:
+                execution = self._extract_execution_details(snapshot, 0.0, 0.0)
+                if float(execution.get('amount') or 0.0) > 0 and float(execution.get('price') or 0.0) > 0:
+                    return execution
+
+        if order_id and hasattr(self.exchange, 'fetch_my_trades'):
+            try:
+                since = None
+                timestamp = order.get('timestamp') or order.get('lastTradeTimestamp')
+                if timestamp:
+                    since = int(max(0, float(timestamp) - 120000))
+                trades = self.safe_request(self.exchange.fetch_my_trades, symbol, since, 50) or []
+                matches = []
+                for trade in trades:
+                    trade_order_id = str(trade.get('order') or trade.get('orderId') or '')
+                    if trade_order_id != order_id:
+                        continue
+                    if side and str(trade.get('side') or '').lower() != str(side).lower():
+                        continue
+                    matches.append(trade)
+                if matches:
+                    execution = self._extract_execution_details({'trades': matches}, 0.0, 0.0)
+                    if float(execution.get('amount') or 0.0) > 0 and float(execution.get('price') or 0.0) > 0:
+                        return execution
+            except Exception:
+                pass
+
+        return None
     def _sell_limit_arm_distance_pct(self):
         try:
             return max(0.0, float(os.getenv('SELL_LIMIT_ARM_DISTANCE_PCT', '0.30')))
@@ -539,9 +601,27 @@ class TradingMixin:
                 print(f"✅ {action_text} exécuté: {amount:.6f} {symbol}")
             
             if order:
-                execution = self._resolve_exchange_execution(symbol, order, amount, price, side='buy')
+                if self.paper_trading:
+                    execution = self._resolve_exchange_execution(symbol, order, amount, price, side='buy')
+                else:
+                    execution = self._confirm_live_order_execution(symbol, order, side='buy')
+                    if not execution:
+                        print(f"⚠️ LIVE BUY non confirmé par Kraken pour {symbol} (order {order.get('id')}). Aucun fill/position locale enregistré.")
+                        if hasattr(self, 'record_decision'):
+                            self.record_decision(
+                                symbol=symbol,
+                                action='buy',
+                                allowed=False,
+                                reason='exchange_fill_unconfirmed',
+                                metrics={'price': price, 'order_id': order.get('id'), 'side': 'buy'},
+                                throttle_seconds=0
+                            )
+                        return order
                 exec_price = float(execution['price'])
-                exec_amount = float(execution['amount'] or amount)
+                exec_amount = float(execution['amount'] or 0.0)
+                if exec_amount <= 0 or exec_price <= 0:
+                    print(f"⚠️ Exécution BUY invalide pour {symbol}: amount={exec_amount}, price={exec_price}")
+                    return order
                 fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
                 if fee_rate <= 0:
                     fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
@@ -644,9 +724,27 @@ class TradingMixin:
                 order = self.safe_request(self.exchange.create_market_sell_order, symbol, amount)
             
             if order:
-                execution = self._resolve_exchange_execution(symbol, order, amount, price, side='sell')
+                if self.paper_trading:
+                    execution = self._resolve_exchange_execution(symbol, order, amount, price, side='sell')
+                else:
+                    execution = self._confirm_live_order_execution(symbol, order, side='sell')
+                    if not execution:
+                        print(f"⚠️ LIVE SELL non confirmé par Kraken pour {symbol} (order {order.get('id')}). La position locale reste ouverte.")
+                        if hasattr(self, 'record_decision'):
+                            self.record_decision(
+                                symbol=symbol,
+                                action='sell',
+                                allowed=False,
+                                reason='exchange_fill_unconfirmed',
+                                metrics={'price': price, 'order_id': order.get('id'), 'side': 'sell'},
+                                throttle_seconds=0
+                            )
+                        return order
                 exec_price = float(execution['price'])
-                exec_amount = float(execution['amount'] or amount)
+                exec_amount = float(execution['amount'] or 0.0)
+                if exec_amount <= 0 or exec_price <= 0:
+                    print(f"⚠️ Exécution SELL invalide pour {symbol}: amount={exec_amount}, price={exec_price}")
+                    return order
                 self._record_live_order_accounting(symbol, 'sell', exec_amount, exec_price, order, order_type='market', filled=True)
                 # Mettre à jour la position sell existante → 'executed' au lieu d'insérer un doublon
                 updated = False
