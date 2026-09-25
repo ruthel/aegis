@@ -546,6 +546,8 @@ function DecisionEngine({
                   : 'Aucun trigger confirmé'
 
             const pWin = Number(item.p_win ?? 0)
+            const rawPWinValue = item.raw_p_win
+            const rawPWin = rawPWinValue == null ? null : Number(rawPWinValue)
             const threshold = Number(item.min_probability ?? ml.min_probability ?? 0)
             const mlConfidenceRaw = item.ml_confidence ?? item.confidence ?? item.model_confidence
             const mlConfidence = mlConfidenceRaw == null ? null : Number(mlConfidenceRaw)
@@ -695,6 +697,11 @@ function DecisionEngine({
                     <div className="text-right">
                       <span className="block text-[8.5px] text-muted-foreground">Seuil</span>
                       <strong className="text-[11px] tabular-nums">{pct(threshold, 0)}</strong>
+                      {rawPWin != null && Number.isFinite(rawPWin) && (
+                        <span className="mt-0.5 block text-[8px] text-muted-foreground">
+                          Brut {pct(rawPWin, 1)}
+                        </span>
+                      )}
                     </div>
                   </div>
 
