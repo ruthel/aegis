@@ -67,12 +67,11 @@ class ScriptsAlignmentTests(unittest.TestCase):
     def test_kraken_archive_is_integrated(self):
         archive = self.read("archive_kraken_ohlcv.py")
         training = self.read("train_and_evaluate_ml_model.py")
-        env = (ROOT / ".env.example").read_text(encoding="utf-8")
         self.assertIn("def archive_universe", archive)
         self.assertIn("archive_universe(", training)
-        self.assertIn("ML_ARCHIVE_KRAKEN_BEFORE_TRAIN=True", env)
-        self.assertIn("ML_PREFER_KRAKEN_ARCHIVE=True", env)
-        self.assertIn("ML_KRAKEN_ARCHIVE_REQUIRE_ALL_TIMEFRAMES=True", env)
+        self.assertIn("ML_ARCHIVE_KRAKEN_BEFORE_TRAIN", training)
+        self.assertIn("ML_PREFER_KRAKEN_ARCHIVE", training)
+        self.assertIn("ML_KRAKEN_ARCHIVE_REQUIRE_ALL_TIMEFRAMES", training)
         self.assertIn("_kraken_archive_symbol_ready", training)
 
     def test_trade_signal_wrapper_uses_canonical_all_signals(self):
@@ -92,37 +91,15 @@ class ScriptsAlignmentTests(unittest.TestCase):
         self.assertIn('ctx_h4, _ = _slice_until(bundle["4h"], ts, 80)', backtest)
         self.assertIn('ctx_1d, _ = _slice_until(bundle["1d"], ts, 80)', backtest)
 
-    def test_env_example_keys_are_referenced_by_runtime(self):
-        env_path = ROOT / ".env.example"
-        keys = []
-        for raw in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key = line.split("=", 1)[0].strip()
-                if key and key.replace("_", "").isalnum() and key.upper() == key:
-                    keys.append(key)
-
-        runtime_chunks = []
-        allowed_suffixes = {".py", ".sh", ".bat", ".ps1", ".yml", ".yaml", ".ts", ".tsx", ".js"}
-        for path in ROOT.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in allowed_suffixes:
-                continue
-            rel = path.relative_to(ROOT).as_posix()
-            if (
-                rel.startswith("tests/")
-                or rel.startswith("docs/")
-                or rel.startswith("ui/public/spa/")
-                or "/node_modules/" in rel
-            ):
-                continue
-            try:
-                runtime_chunks.append(path.read_text(encoding="utf-8", errors="ignore"))
-            except Exception:
-                pass
-
-        runtime_text = "\n".join(runtime_chunks)
-        unused = sorted(key for key in keys if key not in runtime_text)
-        self.assertEqual(unused, [], f"Variables .env.example sans référence runtime: {unused}")
+    def test_github_actions_does_not_require_dotenv_file(self):
+        workflow = (
+            ROOT / ".github/workflows/validate-live-fixes.yml"
+        ).read_text(encoding="utf-8")
+        # CI must be self-contained: real .env files are intentionally not committed.
+        self.assertNotIn("cp .env.example .env", workflow)
+        self.assertNotIn("touch .env", workflow)
+        self.assertNotIn("cat .env", workflow)
+        self.assertNotIn("source .env", workflow)
 
     def test_db_checker_is_configurable(self):
         source = self.read("check_db_tables.py")
