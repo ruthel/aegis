@@ -2841,7 +2841,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     target_model=None,
                     metrics=metrics,
                     trigger_type='auto',
-                    reason=f"Health status {previous or 'UNKNOWN'} -> {status}" if status_changed else f"Health status {status}"
+                    reason=f"Health status {previous or 'UNKNOWN'} -> {status}" if status_changed else f"Health status {status}",
+                    mode='paper' if self.paper_trading else 'live'
                 )
 
             if should_notify and getattr(self, 'notifier', None):
