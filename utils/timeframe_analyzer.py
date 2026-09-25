@@ -352,9 +352,15 @@ class TimeframeAnalyzer:
         adjusted_confidence = base_confidence + profile['confidence_adjustment']
         adjusted_confidence = max(0, min(100, adjusted_confidence))
         
+        trends = [analysis['trend'] for analysis in timeframe_analysis.values()]
+        trend_consistency = trends.count(dominant_trend) / len(trends) if trends else 0.0
+        adjusted_strength = avg_strength * trend_consistency
+
         return {
             'action': action,
             'strength': avg_strength,
+            'adjusted_strength': adjusted_strength,
+            'trend_consistency': trend_consistency,
             'confidence': round(adjusted_confidence, 1),
             'base_confidence': base_confidence,
             'dominant_trend': dominant_trend,
@@ -629,28 +635,46 @@ class TimeframeAnalyzer:
         return rsi
     
     def calculate_macd(self, prices, fast=12, slow=26, signal=9):
-        """Calcule le MACD"""
-        if len(prices) < slow:
+        """Calcule un MACD standard avec une vraie série MACD et sa ligne signal."""
+        if len(prices) < slow + signal - 1:
             return None, None, None
-            
-        prices = np.array(prices)
-        
-        # EMA rapide et lente
-        ema_fast = self.calculate_ema(prices, fast)
-        ema_slow = self.calculate_ema(prices, slow)
-        
-        if ema_fast is None or ema_slow is None:
+
+        values = [float(value) for value in prices]
+
+        def ema_series(series, period):
+            if len(series) < period:
+                return []
+            multiplier = 2.0 / (period + 1.0)
+            initial = float(np.mean(series[:period]))
+            result = [None] * (period - 1) + [initial]
+            current = initial
+            for value in series[period:]:
+                current = (float(value) * multiplier) + (current * (1.0 - multiplier))
+                result.append(current)
+            return result
+
+        fast_ema = ema_series(values, fast)
+        slow_ema = ema_series(values, slow)
+        if not fast_ema or not slow_ema:
             return None, None, None
-            
-        # Ligne MACD
-        macd_line = ema_fast - ema_slow
-        
-        # Signal line (EMA du MACD)
-        signal_line = self.calculate_ema([macd_line], signal)
-        
-        # Histogramme
-        histogram = macd_line - (signal_line or 0)
-        
+
+        macd_values = []
+        for index in range(slow - 1, len(values)):
+            fast_value = fast_ema[index] if index < len(fast_ema) else None
+            slow_value = slow_ema[index] if index < len(slow_ema) else None
+            if fast_value is not None and slow_value is not None:
+                macd_values.append(float(fast_value) - float(slow_value))
+
+        if len(macd_values) < signal:
+            return None, None, None
+
+        signal_values = ema_series(macd_values, signal)
+        signal_line = signal_values[-1] if signal_values else None
+        if signal_line is None:
+            return None, None, None
+
+        macd_line = macd_values[-1]
+        histogram = macd_line - signal_line
         return macd_line, signal_line, histogram
     
     def calculate_ema(self, prices, period):
