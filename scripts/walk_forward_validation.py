@@ -12,6 +12,8 @@ import os
 import sys
 import argparse
 import tempfile
+from utils.currency import make_symbol
+
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -255,7 +257,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
     decision_threshold = float(os.getenv('ML_MIN_PROBABILITY', '50.0'))
 
     btc_history = fetch_symbol_history_2026(
-        None, 'BTC/USD', timeframe='15m', start_date=start_date
+        None, make_symbol('BTC'), timeframe='15m', start_date=start_date
     )
 
     all_samples = []
@@ -267,7 +269,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
 
     for symbol in pairs:
         print(f"📥 {symbol}: chargement multi-timeframe...")
-        klines_15m = btc_history if symbol == 'BTC/USD' else fetch_symbol_history_2026(
+        klines_15m = btc_history if symbol == make_symbol('BTC') else fetch_symbol_history_2026(
             None, symbol, timeframe='15m', start_date=start_date
         )
         if len(klines_15m) < 200:
@@ -550,7 +552,7 @@ def run_walk_forward_validation(pairs, train_days=90, test_days=30, step_days=30
 
 def main():
     parser = argparse.ArgumentParser(description='Walk-Forward Validation Aegis')
-    parser.add_argument('--pairs', default='BTC/USD,ETH/USD,SOL/USD,ADA/USD')
+    parser.add_argument('--pairs', default=",".join(make_symbol(base) for base in ("BTC", "ETH", "SOL", "ADA")))
     parser.add_argument('--train-days', type=int, default=90)
     parser.add_argument('--test-days', type=int, default=30)
     parser.add_argument('--step-days', type=int, default=30)
