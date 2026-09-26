@@ -3308,6 +3308,22 @@ class MLLiveLogger:
                 str(row[0] or ''),
             ),
         )
+        dust_reconciled_at = {}
+        if mode == 'live':
+            try:
+                for dust_symbol, dust_ts in conn.execute(
+                    """
+                    SELECT symbol, MAX(timestamp)
+                    FROM sys_audit
+                    WHERE mode='live' AND event_type='position_reconciled_dust'
+                    GROUP BY symbol
+                    """
+                ).fetchall():
+                    if dust_symbol and dust_ts:
+                        dust_reconciled_at[self._normalize_live_symbol(dust_symbol)] = dust_ts
+            except Exception:
+                dust_reconciled_at = {}
+
         buy_remaining = {}
         buy_closed_at = {}
         buy_queues = {}
@@ -3345,6 +3361,16 @@ class MLLiveLogger:
             status_text = str(status or '').lower()
             bot_status = 'opened' if status_text == 'open' else 'executed' if status_text == 'filled' else status
             position_closed_at = buy_closed_at.get(order_id) if side_text == 'buy' else closed_at
+
+            # Une réconciliation dust est une clôture de représentation, pas un
+            # trade. Elle ne touche ni orders/fills ni le PnL réalisé, mais elle
+            # empêche l'UI et le risque de ressusciter un ancien achat comme ouvert.
+            if side_text == 'buy' and not position_closed_at and mode == 'live':
+                dust_ts = dust_reconciled_at.get(normalized_symbol)
+                if dust_ts and _parse_accounting_ts(dust_ts) >= _row_ts(row):
+                    position_closed_at = dust_ts
+                    bot_status = 'external_reconciled_dust'
+
             positions.append({
                 'symbol': self._normalize_live_symbol(symbol),
                 'side': side_text,
@@ -4728,6 +4754,56 @@ class MLLiveLogger:
             return result
         except Exception:
             return {}
+
+    def reconcile_open_entry_as_dust(
+        self,
+        symbol,
+        mode='live',
+        actual_amount=None,
+        actual_value=None,
+        reason='dust_no_position',
+    ):
+        """Retire un lineage ouvert devenu dust sans créer de faux exit outcome."""
+        mode = str(mode or 'live').lower()
+        symbol = str(symbol or '')
+        if not symbol:
+            return False
+        try:
+            entry_id = None
+            removed = False
+            with self._orm_session() as session:
+                row = session.get(MlOpenEntry, (mode, symbol))
+                if row:
+                    entry_id = row.entry_id
+                    session.delete(row)
+                    removed = True
+                if entry_id:
+                    decision = session.get(DecisionLog, entry_id)
+                    if decision:
+                        decision.label_status = 'reconciled_dust'
+                session.commit()
+
+            if removed:
+                self.append_event({
+                    'event_id': self._new_id('position_reconciled_dust'),
+                    'event_type': 'position_reconciled_dust',
+                    'timestamp': datetime.now().isoformat(),
+                    'mode': mode,
+                    'symbol': symbol,
+                    'entry_id': entry_id,
+                    'actual_amount': self._clean(actual_amount),
+                    'actual_value': self._clean(actual_value),
+                    'reason': str(reason or 'dust_no_position'),
+                })
+            return removed
+        except Exception as exc:
+            LOGGER.exception(
+                "Dust reconciliation failed: symbol=%s mode=%s",
+                symbol,
+                mode,
+                exc_info=exc,
+            )
+            return False
 
     def load_open_entries(self, mode='paper'):
         try:

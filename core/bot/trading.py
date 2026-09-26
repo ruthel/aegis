@@ -503,6 +503,24 @@ class TradingMixin:
 
         except Exception as e:
             print(f"⚠️ Erreur get_open_positions: {e}")
+
+        # En live, la vérité finale vient du holding Kraken réellement tradable.
+        # Cela empêche ml_open_entries/state/trailing de ressusciter une position dust.
+        if not getattr(self, 'paper_trading', True) and open_pos:
+            truth_getter = getattr(self, '_get_live_position_tradeability', None)
+            if callable(truth_getter):
+                try:
+                    balance = self.balance_manager.get_balance(skip_ledger_sync=True)
+                    for symbol in list(open_pos.keys()):
+                        status = truth_getter(symbol, balance=balance, current_price=None)
+                        if not status.get('tradeable'):
+                            open_pos.pop(symbol, None)
+                            reconciler = getattr(self, '_reconcile_live_dust_position', None)
+                            if callable(reconciler):
+                                reconciler(symbol, status=status, balance=balance)
+                except Exception:
+                    # Fail-safe: ne jamais effacer une position sur simple erreur réseau.
+                    pass
         return open_pos
 
     def _close_buy_positions(self, symbol, amount, exit_price):

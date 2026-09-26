@@ -45,6 +45,7 @@ from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
+from utils.position_truth import classify_position_tradeability
 from utils.currency import get_quote_currency, get_quote_balance, make_symbol, normalize_symbol, quote_asset_for_symbol
 from core.managers.execution_manager import ExecutionManager
 from core.managers.health_manager import HealthManager
@@ -1426,6 +1427,21 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return None
 
         try:
+            # En live, la balance Kraken est la vérité. Une entrée locale restante
+            # avec seulement du dust ne doit jamais produire un EXIT_DECISION.
+            if not self.paper_trading:
+                live_status = self._get_live_position_tradeability(
+                    symbol,
+                    current_price=current_price,
+                )
+                if not live_status.get('tradeable'):
+                    self._reconcile_live_dust_position(
+                        symbol,
+                        status=live_status,
+                        current_price=current_price,
+                    )
+                    return None
+
             position_data = self.trailing_stop_manager.positions[symbol]
             
             # Protection: ne pas évaluer sortie ML avant X minutes (défaut 15 = 1 bougie)
@@ -1614,7 +1630,26 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if not hasattr(self, 'trailing_stop_manager') or not self.trailing_stop_manager:
             return
         open_pos = self.get_open_positions()
+        live_balance = None
+        if not self.paper_trading and open_pos:
+            try:
+                live_balance = self.balance_manager.get_balance(skip_ledger_sync=True)
+            except Exception:
+                live_balance = None
         for symbol, data in open_pos.items():
+            if not self.paper_trading:
+                live_status = self._get_live_position_tradeability(
+                    symbol,
+                    balance=live_balance,
+                    current_price=None,
+                )
+                if not live_status.get('tradeable'):
+                    self._reconcile_live_dust_position(
+                        symbol,
+                        status=live_status,
+                        balance=live_balance,
+                    )
+                    continue
             if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
                 entry_price = float(data.get('entry_price', 0.0) or 0.0)
                 amount = float(data.get('amount', 0.0) or 0.0)
@@ -3308,6 +3343,124 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 time.sleep(retry_delay)
         return None
 
+    def _get_live_position_tradeability(self, symbol, balance=None, current_price=None, force_refresh=False):
+        """Retourne la vérité économique d'une position live à partir de Kraken.
+
+        En live, une entrée locale/ML n'est pas une position ouverte si le holding
+        réel (free + used) est sous min_amount ou min_cost. En cas de prix
+        indisponible, on échoue prudemment en considérant un montant non trivial
+        comme encore tradable.
+        """
+        if self.paper_trading:
+            return {
+                'tradeable': True,
+                'reason': 'paper_mode',
+                'amount': None,
+                'value': None,
+                'min_amount': 0.0,
+                'min_cost': 0.0,
+            }
+
+        if balance is None:
+            balance = self.balance_manager.get_balance(
+                force_refresh=force_refresh,
+                skip_ledger_sync=True,
+            )
+        base_currency = str(symbol).split('/')[0]
+        asset_balance = (balance or {}).get(base_currency, {}) or {}
+        free_amount = float(asset_balance.get('free') or 0.0)
+        used_amount = float(asset_balance.get('used') or asset_balance.get('locked') or 0.0)
+        total_amount = max(0.0, free_amount + used_amount)
+
+        limits = self.get_min_amount(symbol) or {}
+        min_amount = float(limits.get('min_amount') or 0.0)
+        min_cost = float(limits.get('min_cost') or 0.0)
+
+        price = current_price
+        if price is None:
+            try:
+                price = self.get_price(symbol)
+            except Exception:
+                price = 0.0
+
+        status = classify_position_tradeability(
+            total_amount,
+            price,
+            min_amount=min_amount,
+            min_cost=min_cost,
+        )
+        status.update({
+            'symbol': symbol,
+            'base_currency': base_currency,
+            'free_amount': free_amount,
+            'used_amount': used_amount,
+        })
+        return status
+
+    def _reconcile_live_dust_position(self, symbol, status=None, current_price=None, balance=None):
+        """Nettoie les trackers locaux lorsqu'une position live n'est plus tradable.
+
+        Aucun faux trade de sortie n'est créé: on ferme uniquement le lineage
+        ouvert et les trackers runtime comme position externe réconciliée/dust.
+        """
+        if self.paper_trading:
+            return False
+
+        status = status or self._get_live_position_tradeability(
+            symbol,
+            balance=balance,
+            current_price=current_price,
+        )
+        if status.get('tradeable'):
+            return False
+
+        now_iso = datetime.now().isoformat()
+        reason = str(status.get('reason') or 'dust_no_position')
+
+        trailing_manager = getattr(self, 'trailing_stop_manager', None)
+        if trailing_manager and symbol in getattr(trailing_manager, 'positions', {}):
+            trailing_manager.remove_position(symbol)
+
+        recommendations = getattr(self, 'state', {}).get('exit_recommendations')
+        if isinstance(recommendations, dict):
+            recommendations.pop(symbol, None)
+
+        changed = False
+        for position in getattr(self, 'state', {}).get('positions', []):
+            if not isinstance(position, dict):
+                continue
+            if position.get('symbol') != symbol or position.get('side') != 'buy':
+                continue
+            if position.get('closed_at') or position.get('exit_price'):
+                continue
+            position['closed_at'] = now_iso
+            position['status'] = 'external_reconciled_dust'
+            position['close_reason'] = reason
+            position['exchange_remaining_amount'] = float(status.get('amount') or 0.0)
+            position['exchange_remaining_value'] = status.get('value')
+            changed = True
+
+        logger = getattr(self, 'ml_live_logger', None)
+        if logger and hasattr(logger, 'reconcile_open_entry_as_dust'):
+            try:
+                logger.reconcile_open_entry_as_dust(
+                    symbol,
+                    mode='live',
+                    actual_amount=status.get('amount'),
+                    actual_value=status.get('value'),
+                    reason=reason,
+                )
+            except Exception:
+                pass
+
+        if changed:
+            try:
+                self.save_state()
+            except Exception:
+                pass
+
+        return True
+
     def can_open_position(self, symbol):
         """Vérifie si on peut ouvrir une position - IGNORE LA POUSSIÈRE + vérifie capital et positions ouvertes"""
         from utils.market_analyzer import MarketAnalyzer
@@ -3361,19 +3514,19 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             balance = self.balance_manager.get_balance(force_refresh=True)
             crypto = symbol.split('/')[0]
             
-            free_amount = balance.get(crypto, {}).get('free', 0)
-            locked_amount = balance.get(crypto, {}).get('used', 0)
-            total_holding = free_amount + locked_amount
-            
-            if total_holding > 0.00001:
-                current_price = self.get_price(symbol)
-                position_value = total_holding * current_price
-                min_cost = self.get_min_amount(symbol)['min_cost']
-                
-                if position_value < min_cost:
-                    return True  # Poussière ignorée
-                
+            live_status = self._get_live_position_tradeability(
+                symbol,
+                balance=balance,
+                current_price=None,
+            )
+            if live_status.get('tradeable'):
                 return False  # Position réelle déjà ouverte, bloquer
+            # Dust / absence de holding: ne doit pas bloquer une nouvelle entrée.
+            self._reconcile_live_dust_position(
+                symbol,
+                status=live_status,
+                balance=balance,
+            )
             
             usd_available = self.capital_manager.get_available_cash_quote() if hasattr(self.capital_manager, 'get_available_cash_quote') else get_quote_balance(balance).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']

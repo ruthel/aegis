@@ -162,13 +162,50 @@ class CapitalManager:
             if logger:
                 conn = logger._get_conn()
                 positions = logger._positions_from_accounting(conn, mode)
-                return [
+                open_positions = [
                     p for p in positions
                     if isinstance(p, dict)
                     and p.get('side') == 'buy'
                     and not p.get('closed_at')
                     and str(p.get('status') or '').lower() in {'opened', 'open', 'executed', 'filled', 'closed'}
                 ]
+
+                # En live, les lignes comptables/ML ne doivent jamais compter
+                # comme positions si Kraken ne détient plus qu'un reliquat dust.
+                if mode == 'live' and open_positions:
+                    truth_getter = getattr(self.bot, '_get_live_position_tradeability', None)
+                    if callable(truth_getter):
+                        try:
+                            balance = self.bot.balance_manager.get_balance(skip_ledger_sync=True)
+                            status_by_symbol = {}
+                            filtered = []
+                            for position in open_positions:
+                                symbol = position.get('symbol')
+                                if not symbol:
+                                    continue
+                                if symbol not in status_by_symbol:
+                                    status_by_symbol[symbol] = truth_getter(
+                                        symbol,
+                                        balance=balance,
+                                        current_price=None,
+                                    )
+                                status = status_by_symbol[symbol]
+                                if status.get('tradeable'):
+                                    filtered.append(position)
+                                else:
+                                    reconciler = getattr(self.bot, '_reconcile_live_dust_position', None)
+                                    if callable(reconciler):
+                                        reconciler(
+                                            symbol,
+                                            status=status,
+                                            balance=balance,
+                                        )
+                            return filtered
+                        except Exception:
+                            # Fail-safe: une erreur de vérification ne doit pas
+                            # faire disparaître une vraie position du risque.
+                            return open_positions
+                return open_positions
         except Exception:
             pass
 
