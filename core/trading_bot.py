@@ -112,6 +112,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.market_context_cache_seconds = int(os.getenv('MARKET_CONTEXT_CACHE_SECONDS', '300'))
         self.market_context_cache = {}
         self._rest_kline_cache = {}
+        self._rest_ticker_cache = {}
+        self._rest_ticker_cache_lock = threading.Lock()
+        self._last_rest_ticker_request_ts = 0.0
         self.support_touch_adaptive_filter = os.getenv('SUPPORT_TOUCH_ADAPTIVE_FILTER', 'True').lower() == 'true'
         self.support_touch_backtest_interval = 5 * 60
         self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_SOURCE', 'data/aegis_db.sqlite3')
@@ -1188,6 +1191,35 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     return False
         return True
     
+    def _get_rest_ticker_cached(self, symbol, force_refresh=False):
+        """Fallback REST Kraken borné pour éviter une rafale quand le WS tombe."""
+        now = time.time()
+        ttl = max(0.25, float(os.getenv('TICKER_REST_CACHE_TTL_SECONDS', '2')))
+        key = str(symbol)
+        cached = self._rest_ticker_cache.get(key)
+        if not force_refresh and cached and (now - cached.get('timestamp', 0.0)) <= ttl:
+            return cached.get('ticker')
+
+        with self._rest_ticker_cache_lock:
+            now = time.time()
+            cached = self._rest_ticker_cache.get(key)
+            if not force_refresh and cached and (now - cached.get('timestamp', 0.0)) <= ttl:
+                return cached.get('ticker')
+
+            min_interval = max(0.0, float(os.getenv('TICKER_REST_MIN_INTERVAL_SECONDS', '0.35')))
+            elapsed = now - float(self._last_rest_ticker_request_ts or 0.0)
+            if min_interval > 0 and elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+
+            ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
+            self._last_rest_ticker_request_ts = time.time()
+            if ticker:
+                self._rest_ticker_cache[key] = {
+                    'timestamp': self._last_rest_ticker_request_ts,
+                    'ticker': ticker,
+                }
+            return ticker
+
     def get_price(self, symbol, force_refresh=False):
         # WebSocket temps réel - PRIORITÉ ABSOLUE
         if hasattr(self, 'websocket') and self.websocket.is_connected():
@@ -1195,9 +1227,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if ws_price is not None:
                 return ws_price
         
-        # Fallback API REST si WebSocket déconnecté
+        # Fallback API REST si WebSocket déconnecté. Le cache court + pacing
+        # évitent une tempête d'appels pendant une panne/reconnexion Kraken.
         try:
-            ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
+            ticker = self._get_rest_ticker_cached(symbol, force_refresh=force_refresh)
             return ticker['last']
         except Exception as e:
             print(f"❌ Erreur prix {symbol}: {e}")
@@ -1215,9 +1248,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if ws_ticker is not None:
                 return ws_ticker
         
-        # TOUJOURS utiliser les vraies données exchange (même en paper trading)
+        # TOUJOURS utiliser les vraies données exchange (même en paper trading),
+        # mais via le fallback borné pour respecter les limites Kraken.
         try:
-            return self.safe_request(self.exchange.fetch_ticker, symbol)
+            return self._get_rest_ticker_cached(symbol)
         except Exception as e:
             print(f"❌ Erreur ticker {symbol}: {e}")
             # Fallback seulement en cas d'erreur critique
