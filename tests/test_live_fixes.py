@@ -480,6 +480,37 @@ class LiveFixTests(unittest.TestCase):
             )
             self.assertIn("ETH/USD", logger.load_open_entries(mode="live"))
 
+            order_id = logger.record_order_transaction(
+                "ETH/USD",
+                "buy",
+                0.01,
+                price=3000.0,
+                status="open",
+                mode="live",
+                source="dust-test",
+            )
+            logger.record_fill_transaction(
+                order_id,
+                "ETH/USD",
+                "buy",
+                0.01,
+                3000.0,
+                fee_amount=0.0,
+                mode="live",
+                source="dust-test",
+                write_ledger=False,
+                recalculate_balances=False,
+            )
+            before_positions = logger._positions_from_accounting(logger._get_conn(), "live")
+            self.assertTrue(
+                any(
+                    p.get("symbol") == "ETH/USD"
+                    and p.get("side") == "buy"
+                    and not p.get("closed_at")
+                    for p in before_positions
+                )
+            )
+
             removed = logger.reconcile_open_entry_as_dust(
                 "ETH/USD",
                 mode="live",
@@ -501,6 +532,16 @@ class LiveFixTests(unittest.TestCase):
             ).fetchone()[0]
             self.assertEqual(outcomes, 0)
             self.assertEqual(audits, 1)
+
+            after_positions = logger._positions_from_accounting(conn, "live")
+            reconciled_position = next(
+                p for p in after_positions
+                if p.get("symbol") == "ETH/USD"
+                and p.get("side") == "buy"
+                and p.get("order_id") == order_id
+            )
+            self.assertEqual(reconciled_position.get("status"), "external_reconciled_dust")
+            self.assertTrue(reconciled_position.get("closed_at"))
             logger.close()
 
     def test_execution_spread_uses_websocket_bid_ask(self):
