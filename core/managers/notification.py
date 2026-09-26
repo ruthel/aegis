@@ -4,7 +4,7 @@ import time
 import threading
 import io
 from concurrent.futures import ThreadPoolExecutor
-from utils.currency import get_quote_currency, get_quote_balance, make_symbol, normalize_symbol
+from utils.currency import get_quote_currency, get_quote_balance, get_trading_pairs, make_symbol, normalize_symbol
 from datetime import datetime, timedelta
 from config import BOT_NAME
 
@@ -513,22 +513,17 @@ class NotificationManager:
         usd_total = usd_free + usd_used
 
         msg = f"{self._mode_badge()}\n💰 <b>SOLDE DÉTAILLÉ</b>\n\n"
-        msg += f"💵 <b>{get_quote_currency()}</b>: {usd_total:.2f} $"
+        msg += f"💵 <b>{get_quote_currency()}</b>: {usd_total:.2f} {get_quote_currency()}"
         if usd_used > 0:
             msg += f" (libre {usd_free:.2f} / bloqué {usd_used:.2f})"
         msg += "\n\n"
         
         total_crypto_value = 0
-        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        pairs = get_trading_pairs()
         
         for pair in pairs:
             pair = pair.strip()
-            if '/' in pair:
-                symbol = pair
-            elif pair.endswith('USD'):
-                symbol = f"{pair[:-3]}/{pair[-3:]}"
-            else:
-                symbol = f"{pair[:3]}/{pair[3:]}"
+            symbol = normalize_symbol(pair)
             
             crypto = symbol.split('/')[0]
             asset_data = balance.get(crypto, {}) or {}
@@ -540,10 +535,10 @@ class NotificationManager:
                 price = bot.get_price(symbol)
                 value = amount * price
                 total_crypto_value += value
-                msg += f"🪙 <b>{crypto}</b>: {amount:.6f} (~{value:.2f} $)\n"
+                msg += f"🪙 <b>{crypto}</b>: {amount:.6f} (~{value:.2f} {get_quote_currency()})\n"
         
         total = usd_total + total_crypto_value
-        msg += f"\n📊 <b>TOTAL</b>: {total:.2f} $"
+        msg += f"\n📊 <b>TOTAL</b>: {total:.2f} {get_quote_currency()}"
         
         return msg
     
@@ -599,7 +594,7 @@ class NotificationManager:
         
         def fmt_pnl(pnl):
             emoji = "🟢" if pnl >= 0 else "🔴"
-            return f"{emoji} {pnl:+.2f} $"
+            return f"{emoji} {pnl:+.2f} {get_quote_currency()}"
         
         msg = f"{self._mode_badge()}\n📈 <b>PERFORMANCE P&L</b>\n\n"
         msg += f"📅 <b>Aujourd'hui</b>\n"
@@ -693,15 +688,10 @@ class NotificationManager:
         symbol_arg = str(symbol_arg or '').upper().strip()
 
         symbol = None
-        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        pairs = get_trading_pairs()
         for pair in pairs:
             pair = pair.strip()
-            if '/' in pair:
-                candidate = pair
-            elif pair.endswith('USD'):
-                candidate = f"{pair[:-3]}/{pair[-3:]}"
-            else:
-                candidate = f"{pair[:3]}/{pair[3:]}"
+            candidate = normalize_symbol(pair)
             if candidate.split('/')[0].upper() == symbol_arg:
                 symbol = candidate
                 break
@@ -752,7 +742,7 @@ class NotificationManager:
             if price > 0 and min_cost > 0 and amount * price < min_cost:
                 return (
                     f"⚠️ {symbol_arg} ne contient plus qu'une poussière non tradable "
-                    f"(~{amount * price:.4f} $, minimum {min_cost:.2f} $)."
+                    f"(~{amount * price:.4f} {get_quote_currency()}, minimum {min_cost:.2f} {get_quote_currency()})."
                 )
 
             result = bot.sell_market(symbol, amount, reason='telegram_force_sell')
@@ -763,7 +753,7 @@ class NotificationManager:
                 return (
                     f"✅ <b>VENTE FORCÉE PAPER</b>\n\n"
                     f"🪙 {symbol_arg}\n💰 {amount:.6f}\n"
-                    f"💵 ~{amount * price:.2f} $\n\n"
+                    f"💵 ~{amount * price:.2f} {get_quote_currency()}\n\n"
                     "<i>Vente simulée exécutée.</i>"
                 )
 
@@ -771,7 +761,7 @@ class NotificationManager:
             return (
                 f"✅ <b>VENTE FORCÉE LIVE CONFIRMÉE</b>\n\n"
                 f"🪙 {symbol_arg}\n💰 {amount:.6f}\n"
-                f"💵 ~{amount * price:.2f} $\n\n"
+                f"💵 ~{amount * price:.2f} {get_quote_currency()}\n\n"
                 "<i>Fill confirmé par Kraken.</i>"
             )
         except Exception as exc:
@@ -788,15 +778,10 @@ class NotificationManager:
             return "⚠️ La durée doit être supérieure à 0 minute"
 
         symbol = None
-        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        pairs = get_trading_pairs()
         for pair in pairs:
             pair = pair.strip()
-            if '/' in pair:
-                candidate = pair
-            elif pair.endswith('USD'):
-                candidate = f"{pair[:-3]}/{pair[-3:]}"
-            else:
-                candidate = f"{pair[:3]}/{pair[3:]}"
+            candidate = normalize_symbol(pair)
             if candidate.split('/')[0].upper() == symbol_arg:
                 symbol = candidate
                 break
@@ -898,7 +883,7 @@ class NotificationManager:
         plt.xticks(rotation=0)  # Pas d'inclinaison
         
         # Annotation du total
-        ax.annotate(f'{total:+.2f} $', xy=(sorted_dates[-1], cumulative[-1]), 
+        ax.annotate(f'{total:+.2f} {get_quote_currency()}', xy=(sorted_dates[-1], cumulative[-1]), 
                     xytext=(10, 0), textcoords='offset points',
                     color=color, fontsize=12, fontweight='bold')
         
@@ -919,23 +904,18 @@ class NotificationManager:
         
         bot = self.bot_ref
         balance = bot.balance_manager.get_balance()
-        usd = balance.get('USD', {}).get('free', 0)
+        usd = get_quote_balance(balance).get('free', 0)
         
         labels = [get_quote_currency()]
         sizes = [usd]
         colors = ['#4ecdc4']
         
-        pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
+        pairs = get_trading_pairs()
         color_map = {'BTC': '#f7931a', 'ETH': '#627eea', 'SOL': '#00ffa3', 'ADA': '#0033ad'}
         
         for pair in pairs:
             pair = pair.strip()
-            if '/' in pair:
-                symbol = pair
-            elif pair.endswith('USD'):
-                symbol = f"{pair[:-3]}/{pair[-3:]}"
-            else:
-                symbol = f"{pair[:3]}/{pair[3:]}"
+            symbol = normalize_symbol(pair)
             
             crypto = symbol.split('/')[0]
             amount = balance.get(crypto, {}).get('free', 0) + balance.get(crypto, {}).get('used', 0)
@@ -1442,9 +1422,9 @@ class NotificationManager:
         balance = bot.balance_manager.get_balance()
         current_balance = get_quote_balance(balance).get('free', 0)
         
-        # Calculer capital total (USD + cryptos)
+        # Calculer capital total (quote + cryptos)
         total_value = current_balance
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(','):
+        for pair in get_trading_pairs():
             symbol = normalize_symbol(pair)
             crypto = symbol.split('/')[0]
             amount = balance.get(crypto, {}).get('free', 0)
@@ -1615,7 +1595,7 @@ class NotificationManager:
         portfolio_items = []
         total_value = usd
         
-        for pair in os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(','):
+        for pair in get_trading_pairs():
             symbol = normalize_symbol(pair)
             crypto = symbol.split('/')[0]
             free = balance.get(crypto, {}).get('free', 0)
@@ -1640,7 +1620,7 @@ class NotificationManager:
                             pnl_brut = (price - avg_buy_price) * total
                             pnl_net = pnl_brut - total_fees
                             pnl_pct = (pnl_net / cost_basis) * 100 if cost_basis > 0 else 0
-                            pnl_display = f" • {pnl_pct:+.2f}% ({pnl_net:+.2f}$)"
+                            pnl_display = f" • {pnl_pct:+.2f}% ({pnl_net:+.2f}{get_quote_currency()})"
                         else:
                             pnl_display = ""
                     except:
@@ -1658,8 +1638,8 @@ class NotificationManager:
                     total_value += value
 
         msg = f"{self._mode_badge()}\n🤖 {BOT_NAME} | {datetime.now().strftime('%d/%m %H:%M')}\n\n"
-        msg += f"💼 <b>Portfolio</b> ({total_value:.2f}$)\n"
-        msg += f"┆\n├─ {get_quote_currency()}: <code>{usd:.2f}$</code>"
+        msg += f"💼 <b>Portfolio</b> ({total_value:.2f}{get_quote_currency()})\n"
+        msg += f"┆\n├─ {get_quote_currency()}: <code>{usd:.2f}{get_quote_currency()}</code>"
         if usd_locked > 0:
             msg += f" <i>(libre {usd_free:.2f} / bloqué {usd_locked:.2f})</i>"
         msg += "\n"
@@ -1685,11 +1665,11 @@ class NotificationManager:
         msg += f"\n📈 <b>Performance</b>\n"
         stats = self._get_historical_performance()
         if stats:
-            msg += f"├─ P&L: {stats['total_pnl']:+.2f}$\n"
+            msg += f"├─ P&L: {stats['total_pnl']:+.2f}{get_quote_currency()}\n"
             msg += f"├─ Trades: {stats['total_trades']} ({stats['winrate']:.0f}% win)\n"
             msg += f"└─ Best: {stats['best_trade']:+.2f}$"
         else:
-            msg += f"├─ P&L: +0.00$\n"
+            msg += f"├─ P&L: +0.00{get_quote_currency()}\n"
             msg += f"├─ Trades: 0\n"
             msg += f"└─ Aucun trade"
         
