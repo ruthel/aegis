@@ -82,6 +82,21 @@ def main():
     import os as _os
     _os.makedirs('data', exist_ok=True)
 
+    # Charger .env AVANT toute initialisation DB: AEGIS_QUOTE_CURRENCY doit
+    # être connue avant les migrations et la création des account_id.
+    load_dotenv('.env', override=True)
+
+    from scripts.migrate_quote_currency import migrate_quote_currency_database
+    try:
+        migration = migrate_quote_currency_database()
+        print(
+            f"🗄️ DB migration OK — quote={migration['quote_currency']} "
+            f"| integrity={migration['integrity']}"
+        )
+    except Exception as exc:
+        print(f"❌ Migration DB impossible: {type(exc).__name__}: {exc}")
+        sys.exit(1)
+
     from core.ml_live_logger import MLLiveLogger
     process_logger = MLLiveLogger(data_dir='data', sqlite_file=_os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
 
@@ -106,10 +121,7 @@ def main():
         'started_at': datetime.now().isoformat(),
         'command': ' '.join(sys.argv) or 'run.py',
     })
-    
-    # Charger la configuration locale en dernier pour les secrets non versionnés.
-    load_dotenv('.env', override=True)
-    
+
     # Import du bot (après vérification config)
     try:
         from core.trading_bot import TradingBot
