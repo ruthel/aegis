@@ -13,7 +13,6 @@ Optional:
 import argparse
 import json
 import os
-from utils.currency import normalize_symbol
 import sys
 from datetime import datetime, timezone
 
@@ -22,16 +21,13 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from utils.currency import normalize_symbol as normalize_pair
 from utils.pattern_analyzer import PatternAnalyzer
 
 
 def normalize_symbol(pair):
-    pair = pair.strip()
-    if '/' in pair:
-        return pair
-    if '/' not in pair:
-        return normalize_symbol(pair)
-    return pair
+    """Compat wrapper around the centralized BASE/QUOTE normalizer."""
+    return normalize_pair(pair)
 
 
 def to_kline(row):
