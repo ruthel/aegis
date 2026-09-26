@@ -4,6 +4,7 @@ import os
 import time
 
 from utils.currency import normalize_symbol
+from utils.position_truth import classify_position_tradeability
 
 class SyncMixin:
     """Mixin pour la synchronisation avec l'exchange spot."""
@@ -87,15 +88,22 @@ class SyncMixin:
 
                 try:
                     current_price = float(self.get_price(symbol) or 0.0)
-                    min_cost = float(self.get_min_amount(symbol)['min_cost'] or 0.0)
+                    limits = self.get_min_amount(symbol) or {}
+                    min_amount = float(limits.get('min_amount') or 0.0)
+                    min_cost = float(limits.get('min_cost') or 0.0)
                 except Exception:
                     current_price = 0.0
+                    min_amount = 0.0
                     min_cost = 0.0
 
-                exchange_value = exchange_total * current_price if current_price > 0 else 0.0
-                is_dust = exchange_total <= 1e-12 or (
-                    min_cost > 0 and current_price > 0 and exchange_value < min_cost
+                tradeability = classify_position_tradeability(
+                    exchange_total,
+                    current_price,
+                    min_amount=min_amount,
+                    min_cost=min_cost,
                 )
+                exchange_value = tradeability.get('value') or 0.0
+                is_dust = not tradeability.get('tradeable')
 
                 # Rien à rapprocher si Aegis ne connaît aucune position active.
                 if not active_buys:
@@ -206,8 +214,16 @@ class SyncMixin:
                         )
                         try:
                             price = float(self.get_price(symbol) or 0.0)
-                            min_cost = float(self.get_min_amount(symbol)['min_cost'] or 0.0)
-                            if total <= 1e-12 or (price > 0 and min_cost > 0 and total * price < min_cost):
+                            limits = self.get_min_amount(symbol) or {}
+                            min_amount = float(limits.get('min_amount') or 0.0)
+                            min_cost = float(limits.get('min_cost') or 0.0)
+                            status = classify_position_tradeability(
+                                total,
+                                price,
+                                min_amount=min_amount,
+                                min_cost=min_cost,
+                            )
+                            if not status.get('tradeable'):
                                 trailing_manager.remove_position(symbol)
                         except Exception:
                             pass
