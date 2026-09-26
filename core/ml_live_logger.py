@@ -225,6 +225,8 @@ class MLLiveLogger:
                 self._migrate_support_touch_results(conn)
                 self._migrate_bot_state_rows(conn)
                 self._migrate_bot_state_columns(conn)
+                self._ensure_column(conn, 'bot_state', 'quote_currency', 'TEXT')
+                conn.execute("UPDATE bot_state SET quote_currency='USD' WHERE quote_currency IS NULL OR TRIM(quote_currency)='' ")
                 self._migrate_bot_process_to_bot_state(conn)
                 self._ensure_cryptos_columns(conn)
                 self._ensure_column(conn, 'bot_market_context', 'symbol_regime', 'TEXT')
@@ -2038,6 +2040,7 @@ class MLLiveLogger:
                 """
                 CREATE TABLE bot_state (
                     mode TEXT PRIMARY KEY,
+                    quote_currency TEXT,
                     paper_balance REAL,
                     initial_balance REAL,
                     updated_at TEXT NOT NULL,
@@ -2049,8 +2052,8 @@ class MLLiveLogger:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO bot_state
-                    (mode, paper_balance, initial_balance, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    (mode, quote_currency, paper_balance, initial_balance, created_at, updated_at)
+                    VALUES (?, 'USD', ?, ?, ?, ?)
                     """,
                     (
                         mode,
@@ -2232,7 +2235,7 @@ class MLLiveLogger:
             if not table_exists:
                 return
             columns = [row[1] for row in conn.execute('PRAGMA table_info(bot_state)')]
-            expected = ['mode', 'paper_balance', 'initial_balance', 'updated_at', 'created_at']
+            expected = ['mode', 'quote_currency', 'paper_balance', 'initial_balance', 'updated_at', 'created_at']
             if columns == expected:
                 return
             old_name = f"bot_state_sparse_legacy_{int(time.time() * 1000)}"
@@ -2241,6 +2244,7 @@ class MLLiveLogger:
                 """
                 CREATE TABLE bot_state (
                     mode TEXT PRIMARY KEY,
+                    quote_currency TEXT,
                     paper_balance REAL,
                     initial_balance REAL,
                     updated_at TEXT NOT NULL,
@@ -2249,6 +2253,7 @@ class MLLiveLogger:
                 """
             )
             select_columns = {
+                'quote_currency': 'quote_currency' if 'quote_currency' in columns else "'USD'",
                 'paper_balance': 'paper_balance' if 'paper_balance' in columns else 'NULL',
                 'initial_balance': 'initial_balance' if 'initial_balance' in columns else 'NULL',
                 'updated_at': 'updated_at' if 'updated_at' in columns else "datetime('now')",
@@ -3449,6 +3454,7 @@ class MLLiveLogger:
                 ).all()
 
             state = {
+                'quote_currency': str(state_row.quote_currency or 'USD').upper(),
                 'paper_balance': state_row.paper_balance,
                 'initial_balance': state_row.initial_balance,
             }
@@ -3646,6 +3652,7 @@ class MLLiveLogger:
                         if not row:
                             row = BotState(mode=key, created_at=now, updated_at=now)
                             session.add(row)
+                        row.quote_currency = get_quote_currency()
                         row.paper_balance = self._clean(clean_state.get('paper_balance'))
                         row.initial_balance = self._clean(clean_state.get('initial_balance'))
                         row.updated_at = now
