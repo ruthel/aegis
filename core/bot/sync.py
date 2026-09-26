@@ -3,6 +3,8 @@ from datetime import datetime
 import os
 import time
 
+from utils.currency import normalize_symbol
+
 class SyncMixin:
     """Mixin pour la synchronisation avec l'exchange spot."""
 
@@ -59,8 +61,7 @@ class SyncMixin:
             for pair in trading_pairs:
                 raw = pair.strip()
                 symbol = raw if '/' in raw else (
-                    f"{raw[:-3]}/{raw[-3:]}" if raw.endswith('USD')
-                    else f"{raw[:3]}/{raw[3:]}"
+                    normalize_symbol(raw)
                 )
                 base_currency = symbol.split('/')[0]
 
@@ -197,10 +198,7 @@ class SyncMixin:
                 if trailing_manager:
                     for pair in trading_pairs:
                         raw = pair.strip()
-                        symbol = raw if '/' in raw else (
-                            f"{raw[:-3]}/{raw[-3:]}" if raw.endswith('USD')
-                            else f"{raw[:3]}/{raw[3:]}"
-                        )
+                        symbol = normalize_symbol(raw)
                         base_currency = symbol.split('/')[0]
                         asset_balance = balance.get(base_currency, {}) or {}
                         total = float(asset_balance.get('free') or 0.0) + float(
@@ -224,7 +222,7 @@ class SyncMixin:
             all_open_order_ids = set()
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
+                symbol = normalize_symbol(pair)
                 open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                 
                 for order in open_orders:
@@ -261,7 +259,7 @@ class SyncMixin:
                 existing_order_ids.update(str(trade_id) for trade_id in position.get('trade_ids', []))
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
+                symbol = normalize_symbol(pair)
                 trades = self.safe_request(self.exchange.fetch_my_trades, symbol, limit=50)
                 
                 for trade in trades:

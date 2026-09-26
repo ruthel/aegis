@@ -13,6 +13,7 @@ Optional:
 import argparse
 import json
 import os
+from utils.currency import normalize_symbol
 import sys
 from datetime import datetime, timezone
 
@@ -28,8 +29,8 @@ def normalize_symbol(pair):
     pair = pair.strip()
     if '/' in pair:
         return pair
-    if pair.endswith('USD'):
-        return f"{pair[:-3]}/USD"
+    if '/' not in pair:
+        return normalize_symbol(pair)
     return pair
 
 

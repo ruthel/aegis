@@ -19,6 +19,7 @@ interface LineChartProps {
   yAxisTitle?: string
   xAxisTitle?: string
   timeRange?: TimeRange
+  currency?: string
 }
 
 function gridIntervalForRange(range: TimeRange): am5.time.ITimeInterval {
@@ -40,9 +41,10 @@ function labelFormatForRange(range: TimeRange): string {
 function LineChartBase({
   data,
   color = '#34d399',
-  yAxisTitle = 'P&L Net Cumulé ($ USD)',
+  yAxisTitle = 'P&L Net Cumulé',
   xAxisTitle = 'Événements & Trades (N° Événement)',
   timeRange = '30d',
+  currency = 'USD',
 }: LineChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const rootRef = useRef<am5.Root | null>(null)
@@ -106,7 +108,7 @@ function LineChartBase({
     const yAxis = chart.yAxes.push(
       am5xy.ValueAxis.new(root, {
         renderer: yRenderer,
-        numberFormat: "$#,###.00 USD",
+        numberFormat: "#,###.00",
       }),
     )
 
@@ -126,7 +128,7 @@ function LineChartBase({
 
     const tooltip = am5.Tooltip.new(root, {
       getFillFromSprite: false,
-      labelText: "[#ffffff][bold]{event}[/]\nP&L Net: [bold]{valueY} USD[/]\nSolde: [bold]{balance} USD[/][/]",
+      labelText: `[#ffffff][bold]{event}[/]\nP&L Net: [bold]{valueY} ${currency}[/]\nSolde: [bold]{balance} ${currency}[/][/]`,
     })
     tooltip.label.setAll({
       fill: am5.color(0xffffff),
@@ -164,7 +166,7 @@ function LineChartBase({
       xAxisRef.current = null
       seriesRef.current = null
     }
-  }, [yAxisTitle, xAxisTitle, timeRange])
+  }, [yAxisTitle, xAxisTitle, timeRange, currency])
 
   useEffect(() => {
     const series = seriesRef.current

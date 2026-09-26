@@ -5,6 +5,7 @@ from config import TRADING_PAIRS
 import statistics
 import numpy as np
 from core.ml_live_logger import MLLiveLogger
+from utils.currency import get_quote_currency, make_symbol
 
 class RiskManager:
     def __init__(self, max_daily_trades=50, max_daily_loss=100, emergency_stop_loss=500, max_daily_losing_trades=None):
@@ -318,7 +319,7 @@ class RiskManager:
         try:
             from utils.timeframe_analyzer import TimeframeAnalyzer
             analyzer = TimeframeAnalyzer()
-            return analyzer.get_confidence_threshold(symbol or 'BTC/USD', volatility, None, None)
+            return analyzer.get_confidence_threshold(symbol or make_symbol('BTC'), volatility, None, None)
         except:
             if volatility >= 4.0:
                 return 25
@@ -381,7 +382,7 @@ class RiskManager:
     def _calculate_correlation_adjustment(self, symbol):
         """Ajustement selon corrélation avec BTC"""
         try:
-            if symbol == 'BTC/USD':
+            if symbol == make_symbol('BTC'):
                 return 0
             
             correlation = self._calculate_btc_correlation(symbol, days=30)
@@ -567,7 +568,7 @@ class RiskManager:
             volatility = self._get_symbol_volatility(symbol, bot)
             correlation_tf = self.get_optimal_timeframe(symbol, 'correlation', volatility)
             
-            btc_klines = bot.get_klines('BTC/USD', days, correlation_tf)
+            btc_klines = bot.get_klines(make_symbol('BTC'), days, correlation_tf)
             symbol_klines = bot.get_klines(symbol, days, correlation_tf)
             
             if len(btc_klines) < days or len(symbol_klines) < days:
@@ -601,11 +602,11 @@ class RiskManager:
                 else:
                     return 0
             
-            btc_volatility = self._get_symbol_volatility('BTC/USD', bot)
+            btc_volatility = self._get_symbol_volatility(make_symbol('BTC'), bot)
             momentum_tf = '1h' if btc_volatility >= 3.0 else '1d'
             period = 24 if momentum_tf == '1h' else 7
             
-            btc_klines = bot.get_klines('BTC/USD', period, momentum_tf)
+            btc_klines = bot.get_klines(make_symbol('BTC'), period, momentum_tf)
             if len(btc_klines) < period:
                 return 0
             
@@ -683,7 +684,7 @@ class RiskManager:
     
     def _get_momentum_thresholds(self, symbol, volatility):
         """Seuils momentum adaptatifs selon crypto et volatilité"""
-        if symbol in ['BTC/USD', 'ETH/USD']:
+        if symbol in [make_symbol('BTC'), make_symbol('ETH')]:
             return {
                 'bull_strong': 0.05,
                 'bull_weak': 0,
@@ -700,9 +701,9 @@ class RiskManager:
     
     def _get_correlation_thresholds(self, symbol):
         """Seuils corrélation adaptatifs selon crypto"""
-        if symbol in ['BTC/USD']:
+        if symbol in [make_symbol('BTC')]:
             return {'high': 0.9, 'medium': 0.7, 'low': 0.5}
-        elif symbol in ['ETH/USD']:
+        elif symbol in [make_symbol('ETH')]:
             return {'high': 0.8, 'medium': 0.6, 'low': 0.4}
         else:
             return {'high': 0.7, 'medium': 0.5, 'low': 0.3}
@@ -883,8 +884,8 @@ class CorrelationManager:
     def __init__(self, max_correlated_positions=2):
         self.max_correlated_positions = max_correlated_positions
         self.crypto_groups = {
-            'major': ['BTC/USD', 'ETH/USD'],
-            'altcoins': ['SOL/USD', 'ADA/USD']
+            'major': [make_symbol('BTC'), make_symbol('ETH')],
+            'altcoins': [make_symbol('SOL'), make_symbol('ADA')]
         }
     
     def can_open_position(self, symbol, bot):
@@ -899,7 +900,7 @@ class CorrelationManager:
             position_value = current_holding * bot.get_price(symbol)
             min_trade_value = bot.get_min_amount(symbol)['min_cost']
             if position_value >= min_trade_value:
-                print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} USD)")
+                print(f"🔴 {base_currency} bloqué: position ouverte {current_holding:.6f} ({position_value:.2f} {get_quote_currency()})")
                 return False
         
         # Trouver le groupe de la crypto

@@ -4,17 +4,13 @@ import os
 
 import ccxt
 from core.exchange.base import ExchangeBase
+from utils.currency import get_quote_currency, make_symbol, normalize_symbol as normalize_pair
 
 
-# Mapping des symboles Kraken vers format standard
+# Mapping standard des principaux actifs vers la quote Aegis active
 KRAKEN_SYMBOL_MAP = {
-    'BTC/USD': 'BTC/USD',
-    'ETH/USD': 'ETH/USD',
-    'SOL/USD': 'SOL/USD',
-    'ADA/USD': 'ADA/USD',
-    'ADA/USD': 'ADA/USD',
-    'DOT/USD': 'DOT/USD',
-    'AVAX/USD': 'AVAX/USD',
+    make_symbol(base): make_symbol(base)
+    for base in ('BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'AVAX')
 }
 
 
@@ -217,13 +213,8 @@ class KrakenClient(ExchangeBase):
         return ws_pair.replace('XBT', 'BTC')
 
     def normalize_symbol(self, pair):
-        """BTCUSD -> BTC/USD"""
-        if '/' in pair:
-            return pair
-        for quote in ['USDT', 'USDC', 'USD', 'CAD', 'BTC', 'ETH']:
-            if pair.endswith(quote):
-                return f"{pair[:-len(quote)]}/{quote}"
-        return pair
+        """BTCUSD/BTC-CAD style compact symbols -> BASE/QUOTE."""
+        return normalize_pair(pair)
 
     def get_market_limits(self, symbol):
         try:
@@ -240,9 +231,9 @@ class KrakenClient(ExchangeBase):
             pass
         # Fallback minimums Kraken
         fallback = {
-            'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
-            'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
-            'SOL/USD': {'min_amount': 0.01, 'min_cost': 0.5},
-            'ADA/USD': {'min_amount': 0.01, 'min_cost': 0.5},
+            make_symbol('BTC'): {'min_amount': 0.0001, 'min_cost': 0.5},
+            make_symbol('ETH'): {'min_amount': 0.001, 'min_cost': 0.5},
+            make_symbol('SOL'): {'min_amount': 0.01, 'min_cost': 0.5},
+            make_symbol('ADA'): {'min_amount': 0.01, 'min_cost': 0.5},
         }
         return fallback.get(symbol, {'min_amount': 0.001, 'min_cost': 0.5})

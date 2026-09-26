@@ -23,6 +23,19 @@ FRONTEND_SRC = FRONTEND_DIR / 'src'
 FRONTEND_DIST = ROOT / 'ui' / 'public' / 'spa'
 FRONTEND_INDEX = FRONTEND_DIST / 'index.html'
 
+# Migration DB centrale avant d'importer le serveur UI ou de lancer le bot.
+# Idempotente: elle est volontairement conservée et exécutée à chaque démarrage.
+from scripts.migrate_quote_currency import migrate_quote_currency_database
+try:
+    _migration = migrate_quote_currency_database()
+    print(
+        f"🗄️ DB → OK (quote={_migration['quote_currency']}, "
+        f"integrity={_migration['integrity']})"
+    )
+except Exception as exc:
+    print(f"❌ DB → Migration impossible: {type(exc).__name__}: {exc}")
+    sys.exit(1)
+
 def _latest_mtime(path: Path) -> float:
     if not path.exists():
         return 0.0

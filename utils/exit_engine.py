@@ -1,5 +1,6 @@
 import time
 import os
+from utils.currency import make_symbol
 import json
 from datetime import datetime
 import numpy as np
@@ -135,7 +136,7 @@ class ExitDecisionEngine:
             score -= 15  # Weak RSI (<35)
 
         # 6. BTC Context Alignment (Up to +15 / -15 pts)
-        if btc_klines and len(btc_klines) >= 3 and symbol != 'BTC/USD':
+        if btc_klines and len(btc_klines) >= 3 and symbol != make_symbol('BTC'):
             btc_closes = [float(k['close']) for k in btc_klines]
             btc_change = ((btc_closes[-1] - btc_closes[-3]) / btc_closes[-3]) * 100
             if btc_change > 0.1:

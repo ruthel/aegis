@@ -15,7 +15,7 @@ type DayRow = {
   winRate: number
 }
 
-function DailyBarChartBase({ data }: { data: DayRow[] }) {
+function DailyBarChartBase({ data, currency = 'USD' }: { data: DayRow[]; currency?: string }) {
   const ref = useRef<HTMLDivElement | null>(null)
   const xAxisRef = useRef<am5xy.CategoryAxis<am5xy.AxisRenderer> | null>(null)
   const seriesRef = useRef<am5xy.ColumnSeries | null>(null)
@@ -56,7 +56,7 @@ function DailyBarChartBase({ data }: { data: DayRow[] }) {
     const yAxis = chart.yAxes.push(
       am5xy.ValueAxis.new(root, {
         renderer: yRenderer,
-        numberFormat: '+$#,###.0000|$#,###.0000',
+        numberFormat: '+#,###.0000|-#,###.0000',
       }),
     )
 
@@ -66,7 +66,7 @@ function DailyBarChartBase({ data }: { data: DayRow[] }) {
 
     const tooltip = am5.Tooltip.new(root, {
       getFillFromSprite: false,
-      labelText: '[bold #ffffff]{day}[/]\nP&L: [bold]{valueY.formatNumber("+$#,###.0000|$#,###.0000")} USD[/]\n{trades} trade(s) · {winRate}% win',
+      labelText: `[bold #ffffff]{day}[/]\nP&L: [bold]{valueY.formatNumber("+#,###.0000|-#,###.0000")} ${currency}[/]\n{trades} trade(s) · {winRate}% win`,
     })
     tooltip.label.setAll({ fill: am5.color(0xffffff), fontSize: 12 })
     tooltip.get('background')?.setAll({
@@ -108,7 +108,7 @@ function DailyBarChartBase({ data }: { data: DayRow[] }) {
       return am5.Bullet.new(root, {
         locationY: 1,
         sprite: am5.Label.new(root, {
-          text: '{valueY.formatNumber("+$#.00|$#.00")}',
+          text: '{valueY.formatNumber("+#.00|-#.00")}',
           fill: am5.color(0xffffff),
           fontSize: 10,
           fontWeight: '700',
@@ -126,7 +126,7 @@ function DailyBarChartBase({ data }: { data: DayRow[] }) {
       seriesRef.current = null
       root.dispose()
     }
-  }, [])
+  }, [currency])
 
   useEffect(() => {
     xAxisRef.current?.data.setAll(data)

@@ -10,6 +10,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+from utils.currency import get_quote_currency, get_quote_balance, make_symbol, normalize_symbol
+
 class MarketAnalyzer:
     """Calculs de marché centralisés - Tout-en-un"""
     
@@ -186,14 +188,14 @@ class MarketAnalyzer:
         """AMÉLIORATION 3: Seuils adaptatifs par crypto"""
         # Seuils basés sur données historiques réelles
         crypto_thresholds = {
-            'BTC/USD': {'very_low': 0.12, 'low': 0.25, 'medium': 0.50, 'high': 1.0},
-            'ETH/USD': {'very_low': 0.15, 'low': 0.30, 'medium': 0.60, 'high': 1.2},
-            'SOL/USD': {'very_low': 0.25, 'low': 0.50, 'medium': 1.0, 'high': 2.0},
-            'ADA/USD': {'very_low': 0.18, 'low': 0.35, 'medium': 0.70, 'high': 1.4},
-            'ADA/USD': {'very_low': 0.20, 'low': 0.40, 'medium': 0.80, 'high': 1.6},
-            'DOT/USD': {'very_low': 0.22, 'low': 0.45, 'medium': 0.90, 'high': 1.8},
-            'MATIC/USD': {'very_low': 0.30, 'low': 0.60, 'medium': 1.2, 'high': 2.4},
-            'AVAX/USD': {'very_low': 0.28, 'low': 0.55, 'medium': 1.1, 'high': 2.2}
+            make_symbol('BTC'): {'very_low': 0.12, 'low': 0.25, 'medium': 0.50, 'high': 1.0},
+            make_symbol('ETH'): {'very_low': 0.15, 'low': 0.30, 'medium': 0.60, 'high': 1.2},
+            make_symbol('SOL'): {'very_low': 0.25, 'low': 0.50, 'medium': 1.0, 'high': 2.0},
+            make_symbol('ADA'): {'very_low': 0.18, 'low': 0.35, 'medium': 0.70, 'high': 1.4},
+            make_symbol('ADA'): {'very_low': 0.20, 'low': 0.40, 'medium': 0.80, 'high': 1.6},
+            make_symbol('DOT'): {'very_low': 0.22, 'low': 0.45, 'medium': 0.90, 'high': 1.8},
+            make_symbol('MATIC'): {'very_low': 0.30, 'low': 0.60, 'medium': 1.2, 'high': 2.4},
+            make_symbol('AVAX'): {'very_low': 0.28, 'low': 0.55, 'medium': 1.1, 'high': 2.2}
         }
         
         return crypto_thresholds.get(symbol, {
@@ -862,13 +864,13 @@ class MarketAnalyzer:
     
     def calculate_correlation_score(self, bot, symbol):
         """Score corrélation avec BTC (0-15 points)"""
-        if symbol == 'BTC/USD':
+        if symbol == make_symbol('BTC'):
             return 15  # BTC = référence
         
         try:
             # Klines 7 jours pour corrélation fiable
             symbol_klines = bot.get_klines(symbol, 168, '1h')  # 7j en 1h
-            btc_klines = bot.get_klines('BTC/USD', 168, '1h')
+            btc_klines = bot.get_klines(make_symbol('BTC'), 168, '1h')
             
             if len(symbol_klines) < 50 or len(btc_klines) < 50:
                 return 10  # Score neutre si pas assez de données
@@ -929,9 +931,9 @@ class MarketAnalyzer:
                 return 10
             
             # Estimation spread selon crypto (données de marché)
-            if symbol in ['BTC/USD', 'ETH/USD']:
+            if symbol in [make_symbol('BTC'), make_symbol('ETH')]:
                 estimated_spread = 0.01  # 0.01%
-            elif symbol in ['ADA/USD', 'SOL/USD']:
+            elif symbol in [make_symbol('ADA'), make_symbol('SOL')]:
                 estimated_spread = 0.02  # 0.02%
             else:
                 estimated_spread = 0.05  # 0.05%
@@ -1116,14 +1118,14 @@ class MarketAnalyzer:
         """Score Market Cap (0-10 points) - Taille relative"""
         # Ranking approximatif des cryptos par market cap
         market_cap_ranking = {
-            'BTC/USD': 1,   # #1
-            'ETH/USD': 2,   # #2
-            'ADA/USD': 4,   # #4
-            'SOL/USD': 5,   # #5
-            'ADA/USD': 10,  # #10
-            'DOT/USD': 15,  # #15
-            'MATIC/USD': 20, # #20
-            'AVAX/USD': 25   # #25
+            make_symbol('BTC'): 1,   # #1
+            make_symbol('ETH'): 2,   # #2
+            make_symbol('ADA'): 4,   # #4
+            make_symbol('SOL'): 5,   # #5
+            make_symbol('ADA'): 10,  # #10
+            make_symbol('DOT'): 15,  # #15
+            make_symbol('MATIC'): 20, # #20
+            make_symbol('AVAX'): 25   # #25
         }
         
         rank = market_cap_ranking.get(symbol, 100)
@@ -1540,7 +1542,7 @@ class MarketAnalyzer:
             volatility = self.calculate_volatility(klines, symbol, websocket_manager)
         
         base_points = self._get_base_volatility_points(volatility)
-        crypto_multiplier = 1.2 if symbol in ['BTC/USD', 'ETH/USD'] else 1.0
+        crypto_multiplier = 1.2 if symbol in [make_symbol('BTC'), make_symbol('ETH')] else 1.0
         
         return int(base_points * crypto_multiplier)
     
@@ -1697,16 +1699,16 @@ class MarketAnalyzer:
         
         # Calculer limites dynamiques selon capital
         balance = bot.balance_manager.get_balance()
-        total_capital = balance.get('USD', balance.get('USD', {})).get('free', 0)
+        total_capital = get_quote_balance(balance).get('free', 0)
         
         limits = self.get_position_limits(total_capital)
         self.max_tradeable = limits['max_tradeable_cryptos']
         
         balance = bot.balance_manager.get_balance()
-        usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
+        usd_available = get_quote_balance(balance).get('free', 0)
         
         if usd_available <= 0:
-            print(f"⚠️ Balance USD: 0 - Aucune crypto tradable")
+            print(f"⚠️ Balance quote: 0 - Aucune crypto tradable")
             return []
         
         scores = []
@@ -1715,7 +1717,7 @@ class MarketAnalyzer:
         
         def analyze_pair(pair):
             """Analyse un symbole en parallèle"""
-            symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
+            symbol = normalize_symbol(pair)
             base_currency = symbol.split('/')[0]
             
             min_cost = bot.get_min_amount(symbol)['min_cost']
@@ -1802,7 +1804,7 @@ class MarketAnalyzer:
             top_display = []
             for c in scores[:self.max_tradeable]:
                 if c['score'] >= dynamic_min_score:
-                    crypto = c['symbol'].replace('/USD', '')
+                    crypto = c['symbol'].split('/')[0]
                     score = int(c['score'])
                     vol_score = c.get('volatility', 0)
                     
@@ -1860,7 +1862,7 @@ class MarketAnalyzer:
     def _get_dynamic_weights(self, symbol, market_conditions=None):
         """Pondération adaptative selon crypto ET conditions de marché - 20 Facteurs Pro"""
         # Nouvelle pondération avec 20 facteurs
-        if symbol in ['BTC/USD', 'ETH/USD']:
+        if symbol in [make_symbol('BTC'), make_symbol('ETH')]:
             base_weights = {
                 'rsi': 0.15, 'support_resistance': 0.12, 'orderbook': 0.08,
                 'correlation': 0.10, 'volume_profile': 0.09, 'multi_timeframe': 0.08,
@@ -2030,7 +2032,7 @@ class MarketAnalyzer:
         if not bot or not hasattr(bot, 'positions') or not bot.positions:
             return 0
         
-        existing_symbols = [pos.get('symbol', '').replace('USD', '') for pos in bot.positions]
+        existing_symbols = [pos.get('symbol', '').split('/')[0] for pos in bot.positions]
         
         correlation_groups = {
             'MAJOR': ['BTC', 'ETH'],
@@ -2039,7 +2041,7 @@ class MarketAnalyzer:
             'MEME': ['DOGE', 'SHIB', 'PEPE']
         }
         
-        current_symbol = symbol.replace('USD', '')
+        current_symbol = symbol.split('/')[0]
         current_group = None
         
         for group, symbols in correlation_groups.items():

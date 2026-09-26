@@ -2,6 +2,8 @@
 import time
 import os
 
+from utils.currency import get_quote_currency, get_quote_balance, get_trading_pairs, is_quote_asset, split_symbol
+
 class BalanceManager:
     """Gestionnaire centralisé pour les soldes spot et paper."""
     
@@ -18,8 +20,8 @@ class BalanceManager:
         
     def _get_allowed_assets(self):
         """Récupère la liste des cryptos autorisées depuis TRADING_PAIRS"""
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD').split(',')
-        allowed_assets = set(['USD', 'USDT', 'USDC', 'CAD'])
+        trading_pairs = get_trading_pairs()
+        allowed_assets = set([get_quote_currency(), 'USD', 'USDT', 'USDC', 'CAD', 'EUR', 'GBP', 'AUD', 'JPY'])
         extra_assets = os.getenv('EXTRA_BALANCE_ASSETS', '')
         for asset in extra_assets.split(','):
             asset = asset.strip().upper()
@@ -30,7 +32,7 @@ class BalanceManager:
             if '/' in pair:
                 base = pair.split('/')[0]
             else:
-                base = pair.replace('USDT', '').replace('USD', '')
+                base, _ = split_symbol(pair)
             allowed_assets.add(base)
         
         return allowed_assets
@@ -136,7 +138,7 @@ class BalanceManager:
                             'used': float(locked or 0.0),
                             'total': float(total or 0.0),
                         }
-                    usd = balance.get('USD') or balance.get('USDT')
+                    usd = get_quote_balance(balance)
                     if usd:
                         self.bot.paper_balance = round(float(usd.get('free') or 0.0), 2)
                     return balance
@@ -145,7 +147,7 @@ class BalanceManager:
 
         """Reconstruit la balance paper depuis l'USD simulé et l'état des positions."""
         balance = {
-            'USD': {
+            get_quote_currency(): {
                 'free': self.bot.paper_balance,
                 'used': 0,
                 'total': self.bot.paper_balance
@@ -176,7 +178,7 @@ class BalanceManager:
                     asset_balance['free'] -= amount
 
         for asset, data in balance.items():
-            if asset in ('USD', 'USDT'):
+            if is_quote_asset(asset):
                 continue
             data['free'] = max(0, data['free'])
             data['total'] = data['free'] + data.get('used', 0)
@@ -238,7 +240,7 @@ class BalanceManager:
             
             return filtered_balance
         else:
-            return {'USD': {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
+            return {get_quote_currency(): {'free': self.bot.paper_balance, 'used': 0, 'total': self.bot.paper_balance}}
     
     def get_all_balances(self):
         """Récupère les soldes spot limités aux TRADING_PAIRS."""
@@ -251,7 +253,7 @@ class BalanceManager:
             
         try:
             balance = self.get_balance()
-            available = (balance.get('USD') or balance.get('USDT') or {}).get('free', 0)
+            available = get_quote_balance(balance).get('free', 0)
             needed_balance = trade_amount * 1.2
             
             if available < needed_balance:
@@ -267,7 +269,7 @@ class BalanceManager:
         """Calcule le solde spot total en USD."""
         try:
             spot_balance = self.get_balance()
-            spot_usd = (spot_balance.get('USD') or spot_balance.get('USDT') or {}).get('free', 0)
+            spot_usd = get_quote_balance(spot_balance).get('free', 0)
             
             return {
                 'total': spot_usd,

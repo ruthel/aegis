@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import ccxt
 from dotenv import load_dotenv
+from utils.currency import make_symbol
 
 
 def _path(root, symbol, timeframe):
@@ -68,7 +69,7 @@ def archive_universe(pairs=None, timeframes=None, root=None, keep=None):
     Public OHLCV only, rate limiting delegated to CCXT. Failures are isolated per
     symbol/timeframe so an unavailable market never aborts model training.
     """
-    pairs = pairs or ["BTC/USD", "ETH/USD", "SOL/USD", "ADA/USD"]
+    pairs = pairs or [make_symbol(base) for base in ("BTC", "ETH", "SOL", "ADA")]
     timeframes = timeframes or ["5m", "15m", "1h", "4h", "1d"]
     root = root or os.getenv("ML_KRAKEN_ARCHIVE_DIR", "data/kraken_ohlcv")
     keep = int(keep or os.getenv("ML_TRAINING_MAX_CANDLES", "330000"))
@@ -93,7 +94,7 @@ def archive_universe(pairs=None, timeframes=None, root=None, keep=None):
 def main():
     load_dotenv(".env", override=True)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pairs", default="BTC/USD,ETH/USD,SOL/USD,ADA/USD")
+    parser.add_argument("--pairs", default=",".join(make_symbol(base) for base in ("BTC", "ETH", "SOL", "ADA")))
     parser.add_argument("--timeframes", default="5m,15m,1h,4h,1d")
     args = parser.parse_args()
 

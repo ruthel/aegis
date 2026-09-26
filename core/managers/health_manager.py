@@ -77,13 +77,23 @@ class HealthManager:
 
         try:
             ws = self.bot.websocket
-            is_alive = hasattr(ws, 'is_alive') and ws.is_alive()
-            is_connected = getattr(ws, 'connected', True) or (callable(getattr(ws, 'is_connected', None)) and ws.is_connected())
-            
-            if is_alive or is_connected:
-                return {'status': 'OK', 'message': 'WebSocket connecté et actif', 'details': {'alive': True}}
-            else:
-                return {'status': 'WARN', 'message': 'WebSocket déconnecté ou inactif', 'details': {'alive': False}}
+            is_alive = bool(
+                (hasattr(ws, 'is_alive') and ws.is_alive())
+                or (getattr(ws, 'ws_thread', None) and ws.ws_thread.is_alive())
+            )
+            checker = getattr(ws, 'is_connected', None)
+            is_connected = bool(checker()) if callable(checker) else bool(getattr(ws, 'connected', False))
+            details = {'alive': is_alive, 'connected': is_connected}
+            status_getter = getattr(ws, 'get_connection_status', None)
+            if callable(status_getter):
+                try:
+                    details.update(status_getter())
+                except Exception:
+                    pass
+
+            if is_connected:
+                return {'status': 'OK', 'message': 'WebSocket connecté et actif', 'details': details}
+            return {'status': 'WARN', 'message': 'WebSocket déconnecté, périmé ou en reconnexion', 'details': details}
         except Exception as e:
             return {'status': 'WARN', 'message': f"Incapacité de vérifier WS: {e}", 'details': {}}
 

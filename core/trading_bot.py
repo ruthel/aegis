@@ -45,6 +45,7 @@ from utils.market_analyzer import MarketAnalyzer
 from utils.capital_manager import CapitalManager
 from utils.exit_engine import ExitDecisionEngine
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
+from utils.currency import get_quote_currency, get_quote_balance, make_symbol, normalize_symbol, quote_asset_for_symbol
 from core.managers.execution_manager import ExecutionManager
 from core.managers.health_manager import HealthManager
 from core.ml_live_logger import MLLiveLogger
@@ -111,6 +112,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         self.market_context_cache_seconds = int(os.getenv('MARKET_CONTEXT_CACHE_SECONDS', '300'))
         self.market_context_cache = {}
         self._rest_kline_cache = {}
+        self._rest_ticker_cache = {}
+        self._rest_ticker_cache_lock = threading.Lock()
+        self._last_rest_ticker_request_ts = 0.0
         self.support_touch_adaptive_filter = os.getenv('SUPPORT_TOUCH_ADAPTIVE_FILTER', 'True').lower() == 'true'
         self.support_touch_backtest_interval = 5 * 60
         self.support_touch_backtest_file = os.getenv('SUPPORT_TOUCH_BACKTEST_SOURCE', 'data/aegis_db.sqlite3')
@@ -276,8 +280,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     pair_clean = pair.strip()
                     if '/' in pair_clean:
                         symbol = pair_clean
-                    elif pair_clean.endswith('USD'):
-                        symbol = f"{pair_clean[:-3]}/USD"
+                    elif pair_clean.endswith(get_quote_currency()):
+                        symbol = normalize_symbol(pair_clean)
                     elif pair_clean.endswith('USDT'):
                         symbol = f"{pair_clean[:-4]}/USDT"
                     else:
@@ -410,7 +414,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if not klines or len(klines) < 20:
                 return None
 
-            btc_klines = self.get_klines('BTC/USD', 30, tf) if symbol != 'BTC/USD' else None
+            btc_klines = self.get_klines(make_symbol('BTC'), 30, tf) if symbol != make_symbol('BTC') else None
             fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
             if fee_rate <= 0:
                 fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.4')) / 100.0
@@ -750,11 +754,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return regime in ['BEAR', 'BEAR_WEAK', 'BEAR_STRONG', 'SIDEWAYS_DOWN']
 
     def _normalize_symbol(self, pair):
-        pair = pair.strip()
-        if '/' in pair:
-            return pair
-        if pair.endswith('USD'): return f"{pair[:-3]}/USD"
-        return pair
+        return normalize_symbol(pair)
 
     def _sanitize_realtime_price(self, symbol, price):
         """Valide qu'un tick temps reel correspond bien au bid/ask de sa paire."""
@@ -876,7 +876,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         except Exception:
             symbol_regime = 'UNKNOWN'
         try:
-            btc_regime = self.risk_manager._detect_market_regime('BTC/USD')
+            btc_regime = self.risk_manager._detect_market_regime(make_symbol('BTC'))
         except Exception:
             btc_regime = 'UNKNOWN'
         try:
@@ -890,7 +890,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         falling = self._detect_falling_knife(symbol)
         reversal = self._has_reversal_confirmation(symbol)
-        is_alt = symbol not in ('BTC/USD', 'BTC/USD')
+        is_alt = symbol not in (make_symbol('BTC'), make_symbol('BTC'))
         btc_bear = self._is_bear_regime(btc_regime) or btc_momentum <= -2
         symbol_bear = self._is_bear_regime(symbol_regime)
         bear_mode = symbol_bear or (is_alt and btc_bear)
@@ -1133,11 +1133,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 else:
                     exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
                     if exchange_name == 'kraken':
-                        min_costs = {'BTC/USD': 0.5, 'ETH/USD': 0.5, 'SOL/USD': 0.5, 'ADA/USD': 0.5}
-                        min_amounts = {'BTC/USD': 0.0001, 'ETH/USD': 0.001, 'SOL/USD': 0.01, 'ADA/USD': 0.1}
+                        min_costs = {make_symbol('BTC'): 0.5, make_symbol('ETH'): 0.5, make_symbol('SOL'): 0.5, make_symbol('ADA'): 0.5}
+                        min_amounts = {make_symbol('BTC'): 0.0001, make_symbol('ETH'): 0.001, make_symbol('SOL'): 0.01, make_symbol('ADA'): 0.1}
                     else:
-                        min_costs = {'BTC/USD': 15, 'ETH/USD': 10, 'SOL/USD': 8, 'ADA/USD': 12}
-                        min_amounts = {'BTC/USD': 0.00015, 'ETH/USD': 0.003, 'SOL/USD': 0.04, 'ADA/USD': 0.01}
+                        min_costs = {make_symbol('BTC'): 15, make_symbol('ETH'): 10, make_symbol('SOL'): 8, make_symbol('ADA'): 12}
+                        min_amounts = {make_symbol('BTC'): 0.00015, make_symbol('ETH'): 0.003, make_symbol('SOL'): 0.04, make_symbol('ADA'): 0.01}
                     self.min_amounts[symbol] = {
                         'min_amount': min_amounts.get(symbol, 0.001), 
                         'min_cost': min_costs.get(symbol, 0.5 if exchange_name == 'kraken' else 10)
@@ -1147,20 +1147,20 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 exchange_name = os.getenv('EXCHANGE', 'kraken').lower()
                 if exchange_name == 'kraken':
                     fallback_minimums = {
-                        'BTC/USD': {'min_amount': 0.0001, 'min_cost': 0.5},
-                        'ETH/USD': {'min_amount': 0.001, 'min_cost': 0.5},
-                        'SOL/USD': {'min_amount': 0.01, 'min_cost': 0.5},
-                        'ADA/USD': {'min_amount': 1.0, 'min_cost': 0.5},
+                        make_symbol('BTC'): {'min_amount': 0.0001, 'min_cost': 0.5},
+                        make_symbol('ETH'): {'min_amount': 0.001, 'min_cost': 0.5},
+                        make_symbol('SOL'): {'min_amount': 0.01, 'min_cost': 0.5},
+                        make_symbol('ADA'): {'min_amount': 1.0, 'min_cost': 0.5},
                     }
                 else:
                     fallback_minimums = {
-                        'BTC/USD': {'min_amount': 0.00001, 'min_cost': 15.0},
-                        'ETH/USD': {'min_amount': 0.0001, 'min_cost': 10.0},
-                        'SOL/USD': {'min_amount': 0.01, 'min_cost': 8.0},
-                        'ADA/USD': {'min_amount': 1.0, 'min_cost': 5.0},
-                        'DOT/USD': {'min_amount': 0.1, 'min_cost': 6.0},
-                        'MATIC/USD': {'min_amount': 1.0, 'min_cost': 3.0},
-                        'AVAX/USD': {'min_amount': 0.01, 'min_cost': 7.0}
+                        make_symbol('BTC'): {'min_amount': 0.00001, 'min_cost': 15.0},
+                        make_symbol('ETH'): {'min_amount': 0.0001, 'min_cost': 10.0},
+                        make_symbol('SOL'): {'min_amount': 0.01, 'min_cost': 8.0},
+                        make_symbol('ADA'): {'min_amount': 1.0, 'min_cost': 5.0},
+                        make_symbol('DOT'): {'min_amount': 0.1, 'min_cost': 6.0},
+                        make_symbol('MATIC'): {'min_amount': 1.0, 'min_cost': 3.0},
+                        make_symbol('AVAX'): {'min_amount': 0.01, 'min_cost': 7.0}
                     }
                 default_min = {'min_amount': 0.001, 'min_cost': 0.5 if exchange_name == 'kraken' else 1.0}
                 self.min_amounts[symbol] = fallback_minimums.get(symbol, default_min)
@@ -1179,18 +1179,47 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if cost > self.paper_balance:
                 print(f"⚠️ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
                 return False
-            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} USD")
+            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} {get_quote_currency()}")
             return True
         else:
             balance = self.balance_manager.get_balance()
-            if symbol.endswith('/USD') or symbol.endswith('/USD'):
-                quote = 'USD' if symbol.endswith('/USD') else 'USD'
+            if '/' in symbol:
+                quote = quote_asset_for_symbol(symbol)
                 available = balance.get(quote, {}).get('free', 0)
                 if cost > available:
                     shortage = cost - available
                     return False
         return True
     
+    def _get_rest_ticker_cached(self, symbol, force_refresh=False):
+        """Fallback REST Kraken borné pour éviter une rafale quand le WS tombe."""
+        now = time.time()
+        ttl = max(0.25, float(os.getenv('TICKER_REST_CACHE_TTL_SECONDS', '2')))
+        key = str(symbol)
+        cached = self._rest_ticker_cache.get(key)
+        if not force_refresh and cached and (now - cached.get('timestamp', 0.0)) <= ttl:
+            return cached.get('ticker')
+
+        with self._rest_ticker_cache_lock:
+            now = time.time()
+            cached = self._rest_ticker_cache.get(key)
+            if not force_refresh and cached and (now - cached.get('timestamp', 0.0)) <= ttl:
+                return cached.get('ticker')
+
+            min_interval = max(0.0, float(os.getenv('TICKER_REST_MIN_INTERVAL_SECONDS', '0.35')))
+            elapsed = now - float(self._last_rest_ticker_request_ts or 0.0)
+            if min_interval > 0 and elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+
+            ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
+            self._last_rest_ticker_request_ts = time.time()
+            if ticker:
+                self._rest_ticker_cache[key] = {
+                    'timestamp': self._last_rest_ticker_request_ts,
+                    'ticker': ticker,
+                }
+            return ticker
+
     def get_price(self, symbol, force_refresh=False):
         # WebSocket temps réel - PRIORITÉ ABSOLUE
         if hasattr(self, 'websocket') and self.websocket.is_connected():
@@ -1198,9 +1227,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if ws_price is not None:
                 return ws_price
         
-        # Fallback API REST si WebSocket déconnecté
+        # Fallback API REST si WebSocket déconnecté. Le cache court + pacing
+        # évitent une tempête d'appels pendant une panne/reconnexion Kraken.
         try:
-            ticker = self.safe_request(self.exchange.fetch_ticker, symbol)
+            ticker = self._get_rest_ticker_cached(symbol, force_refresh=force_refresh)
             return ticker['last']
         except Exception as e:
             print(f"❌ Erreur prix {symbol}: {e}")
@@ -1218,9 +1248,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if ws_ticker is not None:
                 return ws_ticker
         
-        # TOUJOURS utiliser les vraies données exchange (même en paper trading)
+        # TOUJOURS utiliser les vraies données exchange (même en paper trading),
+        # mais via le fallback borné pour respecter les limites Kraken.
         try:
-            return self.safe_request(self.exchange.fetch_ticker, symbol)
+            return self._get_rest_ticker_cached(symbol)
         except Exception as e:
             print(f"❌ Erreur ticker {symbol}: {e}")
             # Fallback seulement en cas d'erreur critique
@@ -1350,8 +1381,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         if '/' in symbol:
             formatted_symbol = symbol
-        elif symbol.endswith("USD"):
-            formatted_symbol = f"{symbol[:-3]}/USD"
+        elif symbol.endswith(get_quote_currency()):
+            formatted_symbol = normalize_symbol(symbol)
         else:
             formatted_symbol = symbol
 
@@ -1417,11 +1448,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             tf = os.getenv('MAIN_TIMEFRAME', '15m')
             
             # Fetch klines en parallèle (symbol + BTC) pour réduire la latence
-            if symbol != 'BTC/USD':
+            if symbol != make_symbol('BTC'):
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     fut_klines = executor.submit(self.get_klines, symbol, 30, tf)
-                    fut_btc = executor.submit(self.get_klines, 'BTC/USD', 30, tf)
+                    fut_btc = executor.submit(self.get_klines, make_symbol('BTC'), 30, tf)
                     klines = fut_klines.result()
                     btc_klines = fut_btc.result()
             else:
@@ -1833,7 +1864,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         fill_amount,
                         exec_price,
                         fee_amount=fee_amount,
-                        fee_asset='USD',
+                        fee_asset=quote_asset_for_symbol(symbol),
                         mode='paper',
                         source='paper_limit_fill',
                     )
@@ -1870,7 +1901,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                         fill_amount,
                         exec_price,
                         fee_amount=fee_amount,
-                        fee_asset='USD',
+                        fee_asset=quote_asset_for_symbol(symbol),
                         mode='paper',
                         source='paper_limit_fill',
                     )
@@ -2011,7 +2042,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 # Obtenir balance et cryptos tradables via le système de scoring
                 balance = self.balance_manager.get_balance()
-                usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
+                usd_available = get_quote_balance(balance).get('free', 0)
                 
                 # Utiliser le market_analyzer pour filtrer les cryptos tradables
                 stuck_positions = []
@@ -2696,7 +2727,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if final_size_usd <= 0 or final_size_crypto <= 0:
             print(
                 f"⛔ {crypto}: signal validé mais achat impossible "
-                f"(taille finale {final_size_usd:.2f} USD / {final_size_crypto:.8f}, capital/minimum exchange)"
+                f"(taille finale {final_size_usd:.2f} {get_quote_currency()} / {final_size_crypto:.8f}, capital/minimum exchange)"
             )
             self.record_decision(
                 symbol, 'buy', False, 'capital_or_exchange_minimum_blocked',
@@ -2770,7 +2801,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             intervals = []
             
             for pair in all_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
+                symbol = normalize_symbol(pair)
                 volatility = self.get_pair_volatility(symbol)
                 has_position = self.has_active_position(symbol)
                 hour = datetime.now().hour
@@ -3186,9 +3217,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if signals.get('consecutive_losses', 0) >= self.safe_fallback_consecutive_losses:
                 reasons.append(f"{signals['consecutive_losses']} pertes consecutives")
             if abs(signals.get('daily_loss_usd', 0.0)) >= self.safe_fallback_daily_loss_usd:
-                reasons.append(f"perte journaliere {signals['daily_loss_usd']:.2f} USD")
+                reasons.append(f"perte journaliere {signals['daily_loss_usd']:.2f} {get_quote_currency()}")
             if abs(signals.get('weekly_loss_usd', 0.0)) >= self.safe_fallback_weekly_loss_usd:
-                reasons.append(f"perte hebdo {signals['weekly_loss_usd']:.2f} USD")
+                reasons.append(f"perte hebdo {signals['weekly_loss_usd']:.2f} {get_quote_currency()}")
             if str(signals.get('drift_status') or '').lower() in self.safe_fallback_drift_statuses:
                 reasons.append(f"drift ML {signals.get('drift_status')}")
 
@@ -3283,7 +3314,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         
         # Gouvernance Risque Phase 10 : Perte hebdo & exposition globale
         if hasattr(self, 'risk_manager') and self.risk_manager.is_weekly_loss_exceeded():
-            print(f"🛑 GOUVERNANCE RISQUE: Perte hebdomadaire max atteinte ({self.risk_manager.get_weekly_loss():.2f} USD). Achats bloqués.")
+            print(f"🛑 GOUVERNANCE RISQUE: Perte hebdomadaire max atteinte ({self.risk_manager.get_weekly_loss():.2f} {get_quote_currency()}). Achats bloqués.")
             return False
 
         if hasattr(self, 'capital_manager'):
@@ -3320,7 +3351,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
             min_cost = self.get_min_amount(symbol)['min_cost']
             if self.paper_balance < min_cost:
-                return False  # Solde USD insuffisant -> BLOQUER
+                return False  # Solde de cotation insuffisant -> BLOQUER
 
             return True
 
@@ -3344,7 +3375,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 return False  # Position réelle déjà ouverte, bloquer
             
-            usd_available = self.capital_manager.get_available_cash_usd() if hasattr(self.capital_manager, 'get_available_cash_usd') else (balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}).get('free', 0)
+            usd_available = self.capital_manager.get_available_cash_quote() if hasattr(self.capital_manager, 'get_available_cash_quote') else get_quote_balance(balance).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']
             
             if usd_available < min_cost:
@@ -3494,7 +3525,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         try:
             balance = self.balance_manager.get_balance()
             usd_balance = (
-                (balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}).get('free', 0)
+                get_quote_balance(balance).get('free', 0)
             )
             
             if self.paper_trading:
@@ -3591,14 +3622,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def _execute_force_buy(self, symbol):
         """Force un achat en ignorant les filtres techniques, mais en validant le capital"""
         try:
-            # 1. Vérifier capital USD disponible
+            # 1. Vérifier le capital disponible dans la devise de cotation
             balance = self.balance_manager.get_balance(force_refresh=True)
-            quote = 'USD'
+            quote = get_quote_currency()
             usd_available = balance.get(quote, {}).get('free', 0) if not self.paper_trading else self.paper_balance
             
             min_cost = self.get_min_amount(symbol)['min_cost']
             if usd_available < min_cost:
-                print(f"❌ Impossible de forcer l'achat: Capital insuffisant ({usd_available:.2f} USD < min {min_cost:.2f} USD)")
+                print(f"❌ Impossible de forcer l'achat: Capital insuffisant ({usd_available:.2f} {get_quote_currency()} < min {min_cost:.2f} {get_quote_currency()})")
                 return
                 
             # 2. Calculer une taille manuelle neutre; les garde-fous capital restent appliques dans execute_buy.

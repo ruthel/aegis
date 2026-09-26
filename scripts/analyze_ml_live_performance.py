@@ -176,8 +176,7 @@ def compute_calibration(session, analysis_id, entries, mode='paper'):
 
 
 def normalize_symbol(symbol):
-    # Le bot trade en paires /USD réelles (Kraken live) et l'historique long vient de
-    # Coinbase, qui expose aussi des paires /USD. On NE convertit PLUS vers /USDT:
+    # Le bot et l'historique utilisent la quote Aegis active. On ne convertit vers /USDT que pour les anciens alias USD lorsque nécessaire:
     # c'était incorrect (marché différent, moins liquide) et source d'échecs de replay.
     return str(symbol or '').upper()
 

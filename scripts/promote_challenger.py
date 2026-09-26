@@ -16,6 +16,8 @@ import os
 import shutil
 import sqlite3
 import sys
+from utils.currency import get_quote_currency
+
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -399,7 +401,7 @@ def promote(model_dir='data', db_file=None, check_only=False, force=False, trigg
     print(f"  [3] Precision/Accuracy vs Champion (seuils {min_precision_delta:+.1f}%/{min_accuracy_delta:+.1f}%) : {'✅' if g3 else '❌'}")
     print(f"  [4] Max Drawdown ({max_dd:.2f}%) <= {max_drawdown_pct:.2f}% : {'✅' if g4 else '❌'}")
     print(f"  [5] Profit Factor ({profit_factor:.2f}) >= {min_profit_factor:.2f} : {'✅' if g5 else '❌'}")
-    print(f"  [6] PnL net ({net_pnl:.2f} USD) > 0 : {'✅' if g6 else '❌'}")
+    print(f"  [6] PnL net ({net_pnl:.2f} {get_quote_currency()}) > 0 : {'✅' if g6 else '❌'}")
     print(f"  [7] Calibration MAE ({calibration_mae if calibration_mae is not None else 'n/a'}) <= {max_calibration_mae:.1f} : {'✅' if g7 else '❌'}")
     print(f"  [8] Drift status ({drift_status_value}) autorisé : {'✅' if g8 else '❌'}")
     print(

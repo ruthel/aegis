@@ -46,6 +46,7 @@ class BotState(Base):
     __tablename__ = 'bot_state'
 
     mode: Mapped[str] = mapped_column(Text, primary_key=True)
+    quote_currency: Mapped[str | None] = mapped_column(Text)
     paper_balance: Mapped[float | None] = mapped_column(Float)
     initial_balance: Mapped[float | None] = mapped_column(Float)
     updated_at: Mapped[str] = mapped_column(Text)
