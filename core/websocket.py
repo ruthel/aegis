@@ -487,6 +487,13 @@ class WebSocketManager:
         if 'ping/pong timed out' not in message.lower():
             print(f"WS erreur: {message}")
         self.is_ws_connected = False
+        try:
+            if ws:
+                ws.close()
+        except Exception:
+            pass
+        if self.running:
+            self._schedule_reconnect(f'error:{message}')
 
     def on_close(self, ws, close_status_code, close_msg):
         """Gère une fermeture et délègue à un unique contrôleur de reconnexion."""
@@ -680,9 +687,19 @@ class WebSocketManager:
         return klines[-count:] if len(klines) >= count else klines
     
     def is_connected(self):
-        """Vérifie si WebSocket est connecté"""
+        """Vérifie transport + fraîcheur générale du flux WebSocket."""
         ws_thread_alive = getattr(self, 'ws_thread', None) and self.ws_thread.is_alive()
-        return bool(self.running and self.is_ws_connected and self.ws is not None and ws_thread_alive)
+        base_connected = bool(
+            self.running and self.is_ws_connected and self.ws is not None and ws_thread_alive
+        )
+        if not base_connected:
+            return False
+        last_message = float(getattr(self, 'last_message_ts', 0.0) or 0.0)
+        if last_message > 0:
+            stale_timeout = max(30.0, float(os.getenv('WS_STALE_TIMEOUT_SECONDS', '120')))
+            if time.time() - last_message > stale_timeout:
+                return False
+        return True
     
     def stop(self):
         """Arrête la connexion WebSocket"""
