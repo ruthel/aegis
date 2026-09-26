@@ -35,7 +35,20 @@ class WebSocketManager:
         self.reconnect_attempts = 0
         self.max_reconnect = 5
         self.balance_callback = None
-        self.last_connected_ts = time.time()
+        self.last_connected_ts = 0.0
+        self.connected_since_ts = 0.0
+        self.last_message_ts = 0.0
+        self.last_market_data_ts = 0.0
+        self.last_heartbeat_ts = 0.0
+        self.last_disconnect_ts = 0.0
+        self.last_disconnect_reason = None
+        self.last_close_code = None
+        self._rate_limited_until = 0.0
+        self._next_reconnect_ts = 0.0
+        self._reconnect_state_lock = threading.Lock()
+        self._reconnect_pending = False
+        self._reconnect_thread = None
+        self._reconnect_history = deque(maxlen=50)
         self.is_ws_connected = False
         self.listen_key = None
         self.exchange_client = None  # Référence au client exchange
@@ -75,22 +88,43 @@ class WebSocketManager:
 
     def _start_heartbeat(self):
         import threading as _th
+
         def _hb():
             while self.running:
+                now = time.time()
+                self._maybe_mark_connection_stable(now)
                 self.write_live_status()
-                # Watchdog: si aucun tick recu depuis 90s et qu'on est cense etre connecte, forcer reconnexion
-                if self.is_ws_connected and self.last_tick_ts:
-                    last_any_tick = max(self.last_tick_ts.values()) if self.last_tick_ts else 0
-                    if last_any_tick > 0 and (time.time() - last_any_tick) > 90:
-                        print(f"⚠️ Watchdog: aucun tick depuis {time.time() - last_any_tick:.0f}s — reconnexion forcée")
+
+                # Kraken peut garder une connexion parfaitement saine avec des
+                # heartbeats même quand aucun trade/ticker utile n'arrive. Le
+                # watchdog surveille donc TOUT message WebSocket, pas seulement
+                # les ticks de marché.
+                if self.is_ws_connected:
+                    last_activity = float(self.last_message_ts or self.last_connected_ts or 0.0)
+                    stale_timeout = max(30.0, float(os.getenv('WS_STALE_TIMEOUT_SECONDS', '120')))
+                    age = (now - last_activity) if last_activity > 0 else 0.0
+                    if age > stale_timeout:
+                        reason = f'watchdog_stale_{age:.0f}s'
+                        self.last_disconnect_reason = reason
+                        self.last_disconnect_ts = now
+                        print(
+                            f"⚠️ Watchdog WS: aucun message Kraken depuis {age:.0f}s "
+                            f"(seuil {stale_timeout:.0f}s) — reconnexion contrôlée"
+                        )
                         self.is_ws_connected = False
+                        current_ws = self.ws
                         try:
-                            if self.ws:
-                                self.ws.close()
+                            if current_ws:
+                                current_ws.close()
                         except Exception:
                             pass
-                        self.reconnect()
-                time.sleep(5)
+                        # on_close() déclenche normalement la reconnexion. Cet
+                        # appel de secours couvre le cas où close() ne rappelle
+                        # pas le callback; le verrou empêche les doublons.
+                        self._schedule_reconnect(reason)
+
+                time.sleep(max(1.0, float(os.getenv('WS_WATCHDOG_INTERVAL_SECONDS', '5'))))
+
         _th.Thread(target=_hb, daemon=True).start()
 
     def _start_worker(self):
@@ -111,12 +145,20 @@ class WebSocketManager:
         self.worker_thread.start()
         
     def connect(self):
-        """Établit la connexion WebSocket Kraken"""
+        """Établit une connexion WebSocket Kraken sans créer de doublon."""
+        if not self.running:
+            return False
+        if self.is_connected():
+            return True
         try:
             self._connect_kraken()
+            return True
         except Exception as e:
+            self.last_disconnect_reason = f'connect_error:{e}'
+            self.last_disconnect_ts = time.time()
             print(f"Erreur connexion WebSocket: {e}")
-            self.reconnect()
+            self._schedule_reconnect('connect_error')
+            return False
 
     def _connect_kraken(self):
         """Connexion WebSocket Kraken"""
@@ -124,29 +166,38 @@ class WebSocketManager:
             print(f"WS Kraken: connexion wss://ws.kraken.com avec {self.symbols}")
         url = "wss://ws.kraken.com"
 
-        self.ws = websocket.WebSocketApp(
+        ws_app = websocket.WebSocketApp(
             url,
             on_message=self.on_message_kraken,
             on_error=self.on_error,
             on_close=self.on_close,
             on_open=self._on_open_kraken
         )
+        self.ws = ws_app
 
         self.ws_thread = threading.Thread(
-            target=self.ws.run_forever,
+            target=ws_app.run_forever,
             kwargs={'ping_interval': 30, 'ping_timeout': 10}
         )
         self.ws_thread.daemon = True
         self.ws_thread.start()
 
     def _on_open_kraken(self, ws):
-        """Souscription aux channels Kraken à l'ouverture"""
+        """Souscription aux channels Kraken à l'ouverture."""
         import json as std_json
-        self.reconnect_attempts = 0
+        if ws is not self.ws:
+            return
+        now = time.time()
         self.is_ws_connected = True
-        self.last_connected_ts = time.time()
+        self.last_connected_ts = now
+        self.connected_since_ts = now
+        self.last_message_ts = now
+        self._next_reconnect_ts = 0.0
         if os.getenv('WS_CONNECTION_DEBUG', 'false').lower() == 'true':
-            print("WS Kraken: connexion ouverte, souscription...")
+            print(
+                f"WS Kraken: connexion ouverte, souscription... "
+                f"(tentatives consécutives={self.reconnect_attempts})"
+            )
 
         # Convertir symboles en format Kraken
         pairs = [normalize_pair(s) for s in self.symbols]
@@ -164,19 +215,36 @@ class WebSocketManager:
         ws.send(std_json.dumps({"event": "subscribe", "pair": pairs, "subscription": {"name": "ohlc", "interval": 1}}))
 
     def on_message_kraken(self, ws, message):
-        """Traite les messages WebSocket Kraken"""
+        """Traite les messages WebSocket Kraken et suit toute activité reçue."""
+        if ws is not self.ws:
+            return
+        now = time.time()
+        self.last_message_ts = now
         try:
             data = JSON_LOADS(message)
 
-            # Ignorer les messages système
+            # Les heartbeats prouvent que la connexion est vivante même en
+            # l'absence de tick de marché.
             if isinstance(data, dict):
                 event = data.get('event', '')
+                if event == 'heartbeat':
+                    self.last_heartbeat_ts = now
+                error_message = str(data.get('errorMessage') or '').strip()
+                if error_message:
+                    self.last_disconnect_reason = f'kraken:{error_message}'
+                    if self._looks_rate_limited(error_message):
+                        self._rate_limited_until = max(
+                            self._rate_limited_until,
+                            now + max(30.0, float(os.getenv('WS_RATE_LIMIT_BACKOFF_SECONDS', '120')))
+                        )
                 if event not in ('heartbeat', 'systemStatus', 'subscriptionStatus'):
-                    print(f"[WS SYS] {event} pair={data.get('pair','')} status={data.get('status','')} err={data.get('errorMessage','')}", flush=True)
+                    print(f"[WS SYS] {event} pair={data.get('pair','')} status={data.get('status','')} err={error_message}", flush=True)
                 return
 
             if not isinstance(data, list) or len(data) < 4:
                 return
+
+            self.last_market_data_ts = now
 
             channel = data[-2]
             pair = data[-1]
@@ -250,10 +318,14 @@ class WebSocketManager:
             print(f"[WS ERROR] {e}", flush=True)
     
     def on_open(self, ws):
-        """Callback à l'ouverture de la connexion"""
-        self.reconnect_attempts = 0
+        """Callback générique à l'ouverture de la connexion."""
+        if ws is not self.ws:
+            return
+        now = time.time()
         self.is_ws_connected = True
-        self.last_connected_ts = time.time()
+        self.last_connected_ts = now
+        self.connected_since_ts = now
+        self.last_message_ts = now
     
     def _process_price_update(self, symbol, current_price):
         """Logique commune de filtrage et dispatch des prix"""
@@ -320,6 +392,14 @@ class WebSocketManager:
                 'trading_mode': self.trading_mode,
                 'connection_mode': 'websocket' if self.is_connected() else 'rest_fallback',
                 'reconnect_attempts': self.reconnect_attempts,
+                'reconnect_pending': self._reconnect_pending,
+                'last_message': datetime.fromtimestamp(self.last_message_ts).isoformat() if self.last_message_ts else None,
+                'last_message_age_seconds': round(time.time() - self.last_message_ts, 2) if self.last_message_ts else None,
+                'last_market_data': datetime.fromtimestamp(self.last_market_data_ts).isoformat() if self.last_market_data_ts else None,
+                'last_heartbeat': datetime.fromtimestamp(self.last_heartbeat_ts).isoformat() if self.last_heartbeat_ts else None,
+                'last_disconnect_reason': self.last_disconnect_reason,
+                'last_close_code': self.last_close_code,
+                'next_reconnect_in_seconds': max(0.0, round(self._next_reconnect_ts - time.time(), 2)) if self._next_reconnect_ts else 0.0,
                 'queue_size': self.analysis_queue.qsize(),
                 'queue_maxsize': self.analysis_queue.maxsize,
                 'worker_alive': bool(self.worker_thread and self.worker_thread.is_alive()),
@@ -365,44 +445,154 @@ class WebSocketManager:
         """Définit le callback pour les changements de solde"""
         self.balance_callback = callback
     
+    @staticmethod
+    def _looks_rate_limited(message):
+        text = str(message or '').lower()
+        return any(token in text for token in (
+            'rate limit',
+            'rate-limit',
+            'exceeded msg rate',
+            'too many requests',
+            'too many connections',
+            'connection rate',
+        ))
+
+    def _maybe_mark_connection_stable(self, now=None):
+        now = float(now or time.time())
+        if not self.is_ws_connected or not self.connected_since_ts:
+            return False
+        stable_seconds = max(30.0, float(os.getenv('WS_STABLE_CONNECTION_SECONDS', '180')))
+        if self.reconnect_attempts > 0 and (now - self.connected_since_ts) >= stable_seconds:
+            self.reconnect_attempts = 0
+            self._reconnect_history.clear()
+            self._rate_limited_until = 0.0
+            if os.getenv('WS_CONNECTION_DEBUG', 'false').lower() == 'true':
+                print(f"✅ WS Kraken stable depuis {stable_seconds:.0f}s — backoff réinitialisé")
+            return True
+        return False
+
     def on_error(self, ws, error):
-        """Gere les erreurs WebSocket"""
+        """Enregistre les erreurs du socket courant sans lancer une seconde reconnexion."""
+        if ws is not self.ws:
+            return
         message = str(error)
+        now = time.time()
+        self.last_disconnect_reason = f'error:{message}'
+        self.last_disconnect_ts = now
+        if self._looks_rate_limited(message):
+            self._rate_limited_until = max(
+                self._rate_limited_until,
+                now + max(30.0, float(os.getenv('WS_RATE_LIMIT_BACKOFF_SECONDS', '120')))
+            )
         if 'ping/pong timed out' not in message.lower():
             print(f"WS erreur: {message}")
         self.is_ws_connected = False
-    
+
     def on_close(self, ws, close_status_code, close_msg):
-        """Gère la fermeture de connexion (silencieux)"""
+        """Gère une fermeture et délègue à un unique contrôleur de reconnexion."""
+        if ws is not self.ws:
+            return
         self.is_ws_connected = False
+        self.last_disconnect_ts = time.time()
+        self.last_close_code = close_status_code
+        reason = str(close_msg or self.last_disconnect_reason or 'closed')
+        self.last_disconnect_reason = reason
         if self.running:
-            self.reconnect()
-    
-    def _preload_after_reconnect(self):
-        """Recharge les klines apres reconnexion si exchange disponible"""
-        if self.exchange_client:
-            self.preload_klines(self.exchange_client)
+            self._schedule_reconnect(f'close:{close_status_code}:{reason}')
+
+    def _compute_reconnect_delay(self, now=None):
+        now = float(now or time.time())
+        base_delay = max(1.0, float(os.getenv('WS_RECONNECT_BASE_SECONDS', '2')))
+        max_delay = max(base_delay, float(os.getenv('WS_RECONNECT_MAX_SECONDS', '120')))
+        delay = min(max_delay, base_delay * (2 ** max(0, self.reconnect_attempts - 1)))
+
+        window_seconds = max(60.0, float(os.getenv('WS_CIRCUIT_WINDOW_SECONDS', '600')))
+        threshold = max(2, int(os.getenv('WS_CIRCUIT_RECONNECTS', '5')))
+        recent = [ts for ts in self._reconnect_history if now - ts <= window_seconds]
+        if len(recent) >= threshold:
+            delay = max(
+                delay,
+                max(30.0, float(os.getenv('WS_CIRCUIT_BACKOFF_SECONDS', '120')))
+            )
+        if self._rate_limited_until > now:
+            delay = max(delay, self._rate_limited_until - now)
+        return min(max_delay, delay) if self._rate_limited_until <= now else delay
+
+    def _schedule_reconnect(self, reason='unknown'):
+        if not self.running:
+            return False
+        with self._reconnect_state_lock:
+            if self._reconnect_pending:
+                return False
+            self._reconnect_pending = True
+            self.last_disconnect_reason = str(reason or 'unknown')
+            thread = threading.Thread(
+                target=self._reconnect_worker,
+                args=(self.last_disconnect_reason,),
+                daemon=True,
+                name='aegis-ws-reconnect',
+            )
+            self._reconnect_thread = thread
+            thread.start()
+            return True
+
+    def _reconnect_worker(self, reason):
+        connect_timeout = max(3.0, float(os.getenv('WS_CONNECT_TIMEOUT_SECONDS', '15')))
+        try:
+            while self.running and not self.is_connected():
+                self.is_ws_connected = False
+                self.reconnect_attempts += 1
+                now = time.time()
+                self._reconnect_history.append(now)
+                delay = self._compute_reconnect_delay(now)
+                self._next_reconnect_ts = now + delay
+
+                downtime = now - self.last_connected_ts if self.last_connected_ts else 0.0
+                print(
+                    f"⚠️ WS reconnexion dans {delay:.0f}s "
+                    f"(tentative {self.reconnect_attempts}, raison={reason}, "
+                    f"indisponible={downtime:.0f}s)"
+                )
+
+                deadline = time.time() + delay
+                while self.running and time.time() < deadline:
+                    time.sleep(min(0.5, max(0.0, deadline - time.time())))
+                if not self.running:
+                    return
+
+                # Ne jamais précharger toutes les paires REST à chaque reconnexion:
+                # les caches existants restent valides et TradingBot a son fallback REST.
+                self.connect()
+
+                open_deadline = time.time() + connect_timeout
+                while self.running and time.time() < open_deadline:
+                    if self.is_connected():
+                        self._next_reconnect_ts = 0.0
+                        return
+                    thread = getattr(self, 'ws_thread', None)
+                    if thread is not None and not thread.is_alive():
+                        break
+                    time.sleep(0.25)
+
+                reason = 'connect_timeout'
+                current_ws = self.ws
+                try:
+                    if current_ws:
+                        current_ws.close()
+                except Exception:
+                    pass
+        finally:
+            self._next_reconnect_ts = 0.0
+            with self._reconnect_state_lock:
+                self._reconnect_pending = False
+            # Une fermeture peut se produire exactement entre la dernière
+            # vérification et la libération du verrou.
+            if self.running and not self.is_connected():
+                self._schedule_reconnect(reason)
 
     def reconnect(self):
-        """Reconnexion automatique illimitée avec backoff exponentiel"""
-        self.is_ws_connected = False
-        self.reconnect_attempts += 1
-        
-        # Backoff exponentiel capé à 60 secondes
-        delay = min(60, 2 ** self.reconnect_attempts)
-        
-        downtime = time.time() - self.last_connected_ts
-        if downtime > 60:
-            print(f"⚠️ WS déconnecté depuis {downtime:.0f}s. Nouvelle tentative dans {delay}s (Tentative {self.reconnect_attempts})")
-        
-        time.sleep(delay)
-        
-        if self.running:
-            try:
-                self.connect()
-                self._preload_after_reconnect()
-            except Exception as e:
-                print(f"⚠️ Erreur reconnexion WS: {e}")
+        """API historique: planifie désormais une reconnexion sérialisée."""
+        return self._schedule_reconnect('manual')
                 
     def get_connection_status(self):
         """Retourne le statut actuel de la connexion WebSocket"""
@@ -413,7 +603,16 @@ class WebSocketManager:
         return {
             'connected': self.is_ws_connected,
             'last_connected': self.last_connected_ts,
+            'connected_since': self.connected_since_ts,
+            'last_message': self.last_message_ts,
+            'last_message_age_seconds': round(now - self.last_message_ts, 2) if self.last_message_ts else None,
+            'last_market_data': self.last_market_data_ts,
+            'last_heartbeat': self.last_heartbeat_ts,
+            'last_disconnect_reason': self.last_disconnect_reason,
+            'last_close_code': self.last_close_code,
             'reconnect_attempts': self.reconnect_attempts,
+            'reconnect_pending': self._reconnect_pending,
+            'next_reconnect_in_seconds': max(0.0, round(self._next_reconnect_ts - now, 2)) if self._next_reconnect_ts else 0.0,
             'downtime_seconds': downtime
         }
     
