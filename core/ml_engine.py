@@ -16,6 +16,8 @@ import hashlib
 import json
 import subprocess
 import numpy as np
+from utils.currency import get_quote_currency
+
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -198,6 +200,7 @@ class MLEngine:
             'training_start': metadata.get('training_start'),
             'training_end': metadata.get('training_end'),
             'data_provider': metadata.get('data_provider'),
+            'quote_currency': str(metadata.get('quote_currency') or get_quote_currency()).upper(),
             'fee_assumption_percent': float(os.getenv('TRADING_FEE_PERCENT', '0.4')),
             'ml_min_probability': float(os.getenv('ML_MIN_PROBABILITY', '50.0')),
         }
@@ -222,6 +225,23 @@ class MLEngine:
                 "Modèle refusé: feature schema incompatible (%s != %s)",
                 actual_hash,
                 expected_hash,
+            )
+            return False
+
+        runtime_quote = get_quote_currency()
+        model_quote = str(
+            contract.get('quote_currency')
+            or (data.get('model_metadata') or {}).get('quote_currency')
+            or ''
+        ).upper()
+        # Legacy models predate the quote field and were trained on USD.
+        if not model_quote:
+            model_quote = 'USD'
+        if model_quote != runtime_quote:
+            self.logger.error(
+                "Modèle refusé: quote currency incompatible (%s != %s)",
+                model_quote,
+                runtime_quote,
             )
             return False
 
