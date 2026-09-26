@@ -11,7 +11,7 @@ export type ScorePoint = {
   price: number
 }
 
-function ScoreHistoryChartBase({ data, intervalHours, periodHours }: { data: ScorePoint[]; intervalHours: number; periodHours: number }) {
+function ScoreHistoryChartBase({ data, intervalHours, periodHours, currency = 'USD' }: { data: ScorePoint[]; intervalHours: number; periodHours: number; currency?: string }) {
   const ref = useRef<HTMLDivElement | null>(null)
 
   useLayoutEffect(() => {
@@ -83,7 +83,7 @@ function ScoreHistoryChartBase({ data, intervalHours, periodHours }: { data: Sco
         fill: am5.color('#3b82f6'),
         tooltip: (() => {
           const tt = am5.Tooltip.new(root, {
-            labelText: '[#ffffff]{tooltipLabel}\nScore lissé: {score.formatNumber("#.0")}/100\nScore brut: {rawScore.formatNumber("#.0")}/100\nPrix: {price.formatNumber("#,###.00")} USD[/]',
+            labelText: `[#ffffff]{tooltipLabel}\nScore lissé: {score.formatNumber("#.0")}/100\nScore brut: {rawScore.formatNumber("#.0")}/100\nPrix: {price.formatNumber("#,###.00")} ${currency}[/]`,
           })
           tt.label.setAll({ fill: am5.color(0xffffff), fontSize: 12 })
           return tt
@@ -111,7 +111,7 @@ function ScoreHistoryChartBase({ data, intervalHours, periodHours }: { data: Sco
     chart.set('cursor', am5xy.XYCursor.new(root, { behavior: 'none' }))
 
     return () => root.dispose()
-  }, [data, intervalHours, periodHours])
+  }, [data, intervalHours, periodHours, currency])
 
   return <div ref={ref} className="h-[240px] w-full" />
 }
