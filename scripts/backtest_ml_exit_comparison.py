@@ -14,7 +14,6 @@ It is a model/backtest comparison, not an exchange microstructure simulator.
 import argparse
 import os
 import sys
-from utils.currency import make_symbol
 
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +22,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from utils.currency import make_symbol
 from core.ml_engine import MLEngine
 from core.signal_engine import SignalEngine
 from scripts.trade_signals import simulate_trade

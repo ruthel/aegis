@@ -13,7 +13,6 @@ Optional:
 import argparse
 import json
 import os
-from utils.currency import normalize_symbol
 import sys
 from datetime import datetime, timezone
 
@@ -22,16 +21,13 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from utils.currency import normalize_symbol as normalize_pair
 from utils.pattern_analyzer import PatternAnalyzer
 
 
 def normalize_symbol(pair):
-    pair = pair.strip()
-    if '/' in pair:
-        return pair
-    if '/' not in pair:
-        return normalize_symbol(pair)
-    return pair
+    """Compat wrapper around the centralized BASE/QUOTE normalizer."""
+    return normalize_pair(pair)
 
 
 def to_kline(row):
@@ -456,8 +452,8 @@ def parse_args():
     be_use_res_default = os.getenv('BREAKEVEN_USE_RESISTANCE', 'True').lower() == 'true'
     parser.add_argument('--breakeven-stop', action='store_true', default=be_enabled_default, help='Enable Breakeven Stop')
     parser.add_argument('--no-breakeven-stop', action='store_false', dest='breakeven_stop', help='Disable Breakeven Stop')
-    parser.add_argument('--breakeven-trigger', type=float, default=float(os.getenv('BREAKEVEN_TRIGGER_PROFIT_PCT', '1.5')), help='Breakeven trigger profit %')
-    parser.add_argument('--breakeven-lock', type=float, default=float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0')), help='Breakeven lock profit % (0=fees, 1=fees+1%)')
+    parser.add_argument('--breakeven-trigger', type=float, default=float(os.getenv('BREAKEVEN_TRIGGER_PROFIT_PCT', '1.5')), help='Breakeven trigger profit %%')
+    parser.add_argument('--breakeven-lock', type=float, default=float(os.getenv('BREAKEVEN_LOCK_PROFIT_PCT', '1.0')), help='Breakeven lock profit %% (0=fees, 1=fees+1%%)')
     parser.add_argument('--breakeven-use-resistance', action='store_true', default=be_use_res_default, help='Use dynamic Resistance level for Breakeven Stop')
     
     parser.add_argument('--output', default='data/aegis_db.sqlite3')

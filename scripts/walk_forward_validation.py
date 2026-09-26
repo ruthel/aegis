@@ -12,7 +12,6 @@ import os
 import sys
 import argparse
 import tempfile
-from utils.currency import make_symbol
 
 from datetime import datetime, timedelta, timezone
 
@@ -24,6 +23,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from utils.currency import make_symbol
 from core.ml_engine import MLEngine
 from scripts.train_and_evaluate_ml_model import (
     fetch_symbol_history_2026,

@@ -1,4 +1,7 @@
 import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -74,6 +77,38 @@ class ScriptsAlignmentTests(unittest.TestCase):
         self.assertIn("ML_PREFER_KRAKEN_ARCHIVE", training)
         self.assertIn("ML_KRAKEN_ARCHIVE_REQUIRE_ALL_TIMEFRAMES", training)
         self.assertIn("_kraken_archive_symbol_ready", training)
+
+    def test_currency_helpers_are_imported_after_project_path_bootstrap(self):
+        for path in SCRIPTS.glob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if "from utils.currency import" not in source:
+                continue
+            self.assertIn("sys.path.insert", source, path.name)
+            self.assertLess(
+                source.index("sys.path.insert"),
+                source.index("from utils.currency import"),
+                f"{path.name}: utils.currency imported before project root is available",
+            )
+
+    def test_trade_signals_is_runnable_outside_repo_root(self):
+        script = SCRIPTS / "trade_signals.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
+
+    def test_trade_signal_symbol_normalizer_does_not_recurse(self):
+        source = self.read("trade_signals.py")
+        self.assertIn("normalize_symbol as normalize_pair", source)
+        wrapper = source[source.index("def normalize_symbol"):source.index("def to_kline")]
+        self.assertIn("return normalize_pair(pair)", wrapper)
+        self.assertNotIn("return normalize_symbol(pair)", wrapper)
 
     def test_trade_signal_wrapper_uses_canonical_all_signals(self):
         source = self.read("trade_signals.py")
