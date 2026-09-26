@@ -17,6 +17,15 @@ from dotenv import load_dotenv
 from flask import Flask, has_request_context, jsonify, request, send_from_directory
 from flask_sock import Sock
 
+from utils.currency import (
+    get_quote_currency,
+    get_quote_balance,
+    is_quote_asset,
+    make_symbol,
+    normalize_symbol,
+    quote_asset_candidates,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -340,7 +349,7 @@ click.secho = lambda *args, **kwargs: None
 CONFIG_FIELDS = {
     'AUTO_START_BOT': {'type': 'bool', 'label': 'Auto-démarrage du moteur bot', 'section': 'Trading', 'restart': 'ui'},
     'PAPER_TRADING': {'type': 'bool', 'label': 'Paper trading', 'section': 'Trading', 'restart': 'bot'},
-    'TRADE_AMOUNT': {'type': 'float', 'label': 'Montant trade USD', 'section': 'Trading', 'min': 0.5, 'max': 10000, 'restart': 'bot'},
+    'TRADE_AMOUNT': {'type': 'float', 'label': f'Montant trade {get_quote_currency()}', 'section': 'Trading', 'min': 0.5, 'max': 10000, 'restart': 'bot'},
     'MAX_DAILY_TRADES': {'type': 'int', 'label': 'Trades max / jour', 'section': 'Risque', 'min': 0, 'max': 200, 'restart': 'bot'},
     'MAX_DAILY_LOSS': {'type': 'float', 'label': 'Perte max / jour', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
     'MAX_WEEKLY_LOSS': {'type': 'float', 'label': 'Perte max / semaine', 'section': 'Risque', 'min': 0, 'max': 100000, 'restart': 'bot'},
@@ -436,8 +445,8 @@ def normalize_pairs(value):
         pair = item.strip().upper().replace('-', '/')
         if not pair:
             continue
-        if '/' not in pair and pair.endswith('USD'):
-            pair = f"{pair[:-3]}/USD"
+        if '/' not in pair:
+            pair = normalize_symbol(pair)
         if not re.fullmatch(r'[A-Z0-9]{2,12}/[A-Z0-9]{2,12}', pair):
             raise ValueError(f'paire invalide: {item.strip()}')
         pairs.append(pair)
@@ -1106,7 +1115,7 @@ def load_accounting_state(fallback=None, view_mode=None):
                         'total': float(total or 0.0),
                     }
                 balances_by_mode[mode_key] = balances
-                usd_balance = balances.get('USD') or balances.get('USDT') or balances.get('USDC') or {}
+                usd_balance = get_quote_balance(balances)
                 if usd_balance:
                     display_balance = round(float(usd_balance.get('free') or 0.0), 2)
             state['positions'] = merged_positions
@@ -1668,7 +1677,7 @@ def _enrich_trades_with_ml_confidence(trades):
                 if not ts_str:
                     return None
                 sym_usd = symbol
-                sym_usdt = symbol.replace('/USD', '/USDT') if symbol.endswith('/USD') else symbol
+                sym_usdt = symbol.replace('/USD', '/USDT') if get_quote_currency() == 'USD' and symbol.endswith('/USD') else symbol
                 row = cursor.execute(
                     """
                     SELECT p_continue, confidence, reason FROM decision_logs
@@ -2130,23 +2139,23 @@ def compute_pnl_history(state):
 
     # Déterminer le solde initial selon le mode
     if view_mode == 'live':
-        # Mode live: solde total = USD + valeur des positions ouvertes
+        # Mode live: solde total = quote + valeur des positions ouvertes
         balances = state.get('balances', {})
-        usd_balance = balances.get('USD') or balances.get('USDT') or balances.get('USDC') or {}
+        usd_balance = get_quote_balance(balances)
         usd_cash = float(usd_balance.get('total') or usd_balance.get('free') or 0.0)
         
         # Ajouter la valeur des cryptos en portefeuille
         crypto_value = 0.0
         for asset, bal in balances.items():
-            if asset in ('USD', 'USDT', 'USDC'):
+            if is_quote_asset(asset):
                 continue
             amount = float(bal.get('total') or bal.get('free') or 0.0)
             if amount > 0:
                 # Estimer la valeur avec le prix actuel depuis live_status
                 live = live_status()
                 symbols = live.get('symbols', {})
-                pair = f"{asset}/USD"
-                price_data = symbols.get(pair) or symbols.get(f"{asset}USD") or {}
+                pair = make_symbol(asset)
+                price_data = symbols.get(pair) or symbols.get(make_symbol(asset).replace('/', '')) or {}
                 price = float(price_data.get('price') or 0.0)
                 crypto_value += amount * price
         
@@ -2328,17 +2337,17 @@ def dashboard_status_payload(view_mode=None):
     }
 
 
-def _balance_equity_usd(balances, live_symbols):
-    usd_assets = {'USD', 'USDT', 'USDC', 'ZUSD'}
+def _balance_equity_quote(balances, live_symbols):
+    quote_assets = set(quote_asset_candidates()) | ({'ZUSD'} if get_quote_currency() == 'USD' else set())
     total = 0.0
     for asset, row in (balances or {}).items():
         asset_text = str(asset or '').upper()
         amount = float((row or {}).get('total') or 0.0)
-        if asset_text in usd_assets:
+        if asset_text in quote_assets:
             total += amount
             continue
-        pair = f'{asset_text}/USD'
-        compact_pair = f'{asset_text}USD'
+        pair = make_symbol(asset_text)
+        compact_pair = pair.replace('/', '')
         quote = (live_symbols or {}).get(pair) or (live_symbols or {}).get(compact_pair) or {}
         price = float((quote or {}).get('price') or 0.0)
         if price > 0:
@@ -2356,13 +2365,13 @@ def _latest_live_capital_baseline():
                 SELECT balance_after
                 FROM ledger_entries
                 WHERE account_id=?
-                  AND asset IN ('USD', 'ZUSD', 'USDT', 'USDC')
+                  AND asset=?
                   AND entry_type NOT IN ('trade', 'fee')
                   AND balance_after IS NOT NULL
                 ORDER BY entry_ts DESC, created_at DESC
                 LIMIT 1
                 """,
-                (account_id,),
+                (account_id, get_quote_currency()),
             ).fetchone()
             if row and row[0] is not None:
                 return float(row[0])
@@ -2380,7 +2389,7 @@ def apply_live_balance_pnl(stats, state, live):
     """En live, le resume doit suivre l'equity Kraken plutot que le FIFO explicatif."""
     adjusted = dict(stats or {})
     balances = state.get('balances') or {}
-    equity = _balance_equity_usd(balances, (live or {}).get('symbols') or {})
+    equity = _balance_equity_quote(balances, (live or {}).get('symbols') or {})
     baseline = _latest_live_capital_baseline()
     if baseline is None or baseline <= 0:
         baseline = equity
@@ -2779,7 +2788,7 @@ def api_ml_status():
 @app.route('/api/analytics/scores')
 def api_analytics_scores():
     """Retourne l'historique des scores crypto pour une paire"""
-    symbol = request.args.get('symbol', 'BTC/USD')
+    symbol = request.args.get('symbol', make_symbol('BTC'))
     hours = request.args.get('hours', '24')
     try:
         hours = float(hours)
