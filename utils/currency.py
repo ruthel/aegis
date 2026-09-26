@@ -62,3 +62,26 @@ def get_quote_balance(balance: dict, quote: str | None = None) -> dict:
 
 def is_quote_asset(asset: str, quote: str | None = None) -> bool:
     return str(asset or "").upper() in quote_asset_candidates(quote)
+
+
+def get_trading_pairs(raw: str | None = None) -> list[str]:
+    """Return configured trading pairs.
+
+    Backward compatibility: legacy compact pairs ending in USD (BTCUSD, ETHUSD, ...)
+    are treated as base-asset declarations and remapped to AEGIS_QUOTE_CURRENCY.
+    Explicit slash pairs (BTC/USD) keep their explicit quote.
+    """
+    configured = str(raw if raw is not None else os.getenv("TRADING_PAIRS", "") or "").strip()
+    if not configured:
+        return [make_symbol(base) for base in ("BTC", "ETH", "SOL", "ADA")]
+    quote = get_quote_currency()
+    pairs = []
+    for item in configured.split(","):
+        token = str(item or "").strip().upper().replace("-", "/")
+        if not token:
+            continue
+        if "/" not in token and token.endswith("USD") and quote != "USD":
+            pairs.append(make_symbol(token[:-3], quote))
+        else:
+            pairs.append(normalize_symbol(token))
+    return list(dict.fromkeys(pairs))
