@@ -106,7 +106,7 @@ class ScriptsAlignmentTests(unittest.TestCase):
     def test_trade_signal_symbol_normalizer_does_not_recurse(self):
         source = self.read("trade_signals.py")
         self.assertIn("normalize_symbol as normalize_pair", source)
-        wrapper = source[source.index("def normalize_symbol"):source.index("def fetch_ohlcv")]
+        wrapper = source[source.index("def normalize_symbol"):source.index("def to_kline")]
         self.assertIn("return normalize_pair(pair)", wrapper)
         self.assertNotIn("return normalize_symbol(pair)", wrapper)
 
