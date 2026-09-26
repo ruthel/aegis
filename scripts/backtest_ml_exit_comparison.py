@@ -2,7 +2,7 @@
 
 This script is aligned with the current runtime:
 - unified .env
-- Kraken/USD symbol convention
+- Kraken BASE/QUOTE symbol convention
 - canonical SignalEngine.detect_best()
 - calibrated P_win
 - Expected Net PnL entry gate
@@ -14,6 +14,8 @@ It is a model/backtest comparison, not an exchange microstructure simulator.
 import argparse
 import os
 import sys
+from utils.currency import make_symbol
+
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -228,7 +230,7 @@ def build_entry_context(ml_engine, symbol, bundle, btc_15m, index, signal, fee_r
 def main():
     load_dotenv(".env", override=True)
     parser = argparse.ArgumentParser(description="Backtest Aegis: baseline vs ML exit/full entry stack")
-    parser.add_argument("--pairs", default="BTC/USD,ETH/USD,SOL/USD,ADA/USD")
+    parser.add_argument("--pairs", default=",".join(make_symbol(base) for base in ("BTC", "ETH", "SOL", "ADA")))
     parser.add_argument("--start-date", default=(datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d"))
     parser.add_argument("--max-hold-candles", type=int, default=int(os.getenv("ML_EXIT_MAX_HOLD_CANDLES", "960")))
     parser.add_argument("--fee-rate", type=float, default=float(os.getenv("TRADING_FEE_PERCENT", "0.4")) / 100.0)
@@ -243,11 +245,11 @@ def main():
     exit_engine = ExitDecisionEngine()
     signal_engine = SignalEngine(PatternAnalyzer(bot=None))
 
-    btc_15m = fetch_symbol_history_2026(None, "BTC/USD", "15m", args.start_date)
+    btc_15m = fetch_symbol_history_2026(None, make_symbol("BTC"), "15m", args.start_date)
     baseline, same_entries_ml_exit, full_stack = [], [], []
 
     for symbol in [p.strip() for p in args.pairs.split(",") if p.strip()]:
-        k15 = btc_15m if symbol == "BTC/USD" else fetch_symbol_history_2026(None, symbol, "15m", args.start_date)
+        k15 = btc_15m if symbol == make_symbol("BTC") else fetch_symbol_history_2026(None, symbol, "15m", args.start_date)
         k5 = fetch_symbol_history_2026(None, symbol, "5m", args.start_date)
         k1 = fetch_symbol_history_2026(None, symbol, "1h", args.start_date)
         k4 = aggregate_ohlcv(k1, 4)
