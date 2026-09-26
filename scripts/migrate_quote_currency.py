@@ -172,6 +172,10 @@ def migrate_quote_currency_database(db_path: str | os.PathLike[str] | None = Non
         restored_modes: list[str] = []
         seeded_modes: list[str] = []
 
+        # CREATE/UPDATE statements above may have opened an implicit sqlite3
+        # transaction (especially on subsequent idempotent runs). Close it before
+        # taking the explicit write lock for quote-state switching.
+        conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
