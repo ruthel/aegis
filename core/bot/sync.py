@@ -107,7 +107,22 @@ class SyncMixin:
 
                 # Rien à rapprocher si Aegis ne connaît aucune position active.
                 if not active_buys:
-                    if not is_dust and exchange_total > 0:
+                    if is_dust:
+                        reconciler = getattr(self, '_reconcile_live_dust_position', None)
+                        if callable(reconciler):
+                            reconciler(
+                                symbol,
+                                status={
+                                    **tradeability,
+                                    'symbol': symbol,
+                                    'base_currency': base_currency,
+                                    'free_amount': free_amount,
+                                    'used_amount': used_amount,
+                                },
+                                balance=balance,
+                                current_price=current_price,
+                            )
+                    elif exchange_total > 0:
                         last_trade = self.get_last_buy_from_history(symbol)
                         if last_trade:
                             restored = dict(last_trade)
@@ -146,10 +161,25 @@ class SyncMixin:
                                     'local_amount': local_total,
                                     'exchange_amount': exchange_total,
                                     'exchange_value': exchange_value,
+                                    'min_amount': min_amount,
                                     'min_cost': min_cost,
                                 },
                                 throttle_seconds=0,
                             )
+                    reconciler = getattr(self, '_reconcile_live_dust_position', None)
+                    if callable(reconciler):
+                        reconciler(
+                            symbol,
+                            status={
+                                **tradeability,
+                                'symbol': symbol,
+                                'base_currency': base_currency,
+                                'free_amount': free_amount,
+                                'used_amount': used_amount,
+                            },
+                            balance=balance,
+                            current_price=current_price,
+                        )
                     continue
 
                 tolerance = max(1e-12, exchange_total * 1e-8)
