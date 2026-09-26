@@ -1,7 +1,7 @@
 """Configuration centralisée du bot - variables système + fichiers locaux."""
 import os
 
-from utils.currency import get_quote_currency, make_symbol
+from utils.currency import get_quote_currency, get_trading_pairs, make_symbol
 from dotenv import load_dotenv
 
 load_dotenv('.env', override=True)
@@ -19,7 +19,7 @@ ACTIVE_API_SECRET = KRAKEN_API_SECRET
 TESTNET = os.getenv('TESTNET', 'True').lower() == 'true'
 
 # ===== TRADING =====
-TRADING_PAIRS = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
+TRADING_PAIRS = get_trading_pairs()
 
 TRADE_AMOUNT = float(os.getenv('TRADE_AMOUNT', '5'))
 
