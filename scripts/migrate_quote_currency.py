@@ -51,6 +51,28 @@ def _backup_once(db_path: Path) -> Path | None:
     return backup_path
 
 
+def _migration_already_applied(db_path: Path) -> bool:
+    if not db_path.exists() or db_path.stat().st_size <= 0:
+        return False
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        if not exists:
+            return False
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_id=?",
+                (MIGRATION_ID,),
+            ).fetchone()
+        )
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -73,8 +95,13 @@ def migrate_quote_currency_database(db_path: str | os.PathLike[str] | None = Non
         resolved = ROOT / resolved
     resolved.parent.mkdir(parents=True, exist_ok=True)
 
-    # Run the normal schema initializer first so every historical Aegis schema
-    # reaches the current baseline before the quote-specific migration.
+    # Backup BEFORE any logger/schema initializer can mutate the database.
+    # Only one backup is kept for this structural migration version.
+    pre_applied = _migration_already_applied(resolved)
+    backup_path = None if pre_applied else _backup_once(resolved)
+
+    # Run the normal schema initializer after the safety backup so every
+    # historical Aegis schema reaches the current baseline.
     from core.ml_live_logger import MLLiveLogger
 
     logger = MLLiveLogger(data_dir=str(resolved.parent), sqlite_file=str(resolved))
@@ -124,10 +151,8 @@ def migrate_quote_currency_database(db_path: str | os.PathLike[str] | None = Non
             "SELECT 1 FROM schema_migrations WHERE migration_id=?",
             (MIGRATION_ID,),
         ).fetchone()
-        backup_path = None
         if not structural_done:
             conn.commit()
-            backup_path = _backup_once(resolved)
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
