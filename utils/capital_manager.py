@@ -1,5 +1,5 @@
 """
-Capital Manager - Gestion Automatique de Tous Capitaux (8+ {get_quote_currency()})
+Capital Manager - Gestion Automatique de Tous Capitaux (8+ quote)
 Adaptation automatique selon le capital disponible + minimums exchange
 Intègre Dynamic Fees Manager et Dust Manager
 """
@@ -67,16 +67,16 @@ class CapitalManager:
     def _active_mode(self):
         return 'paper' if getattr(self.bot, 'paper_trading', True) else 'live'
 
-    def _total_balance_usd(self):
+    def _total_balance_quote(self):
         try:
             if getattr(self.bot, 'paper_trading', True):
                 return float(getattr(self.bot, 'paper_balance', 0.0) or 0.0)
-            # Capital total = {get_quote_currency()} libre + valeur des positions ouvertes en crypto
-            usd_free = 0.0
+            # Capital total = quote libre + valeur des positions ouvertes en crypto
+            quote_free = 0.0
             crypto_value = 0.0
             if hasattr(self.bot, 'balance_manager'):
                 balance = self.bot.balance_manager.get_balance()
-                usd_free = float(get_quote_balance(balance).get('free', 0) or 0)
+                quote_free = float(get_quote_balance(balance).get('free', 0) or 0)
                 # Ajouter la valeur de toutes les crypto detenues
                 trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD,ADAUSD').split(',')
                 for pair in trading_pairs:
@@ -96,14 +96,14 @@ class CapitalManager:
                             crypto_value += holding * float(price or 0)
                         except Exception:
                             pass
-            return usd_free + crypto_value
+            return quote_free + crypto_value
         except Exception:
             return 0.0
 
-    def get_max_total_exposure_pct(self, total_balance_usd=None):
+    def get_max_total_exposure_pct(self, total_balance_quote=None):
         """Plafond d'exposition dynamique selon la taille du capital."""
         try:
-            total = self._total_balance_usd() if total_balance_usd is None else float(total_balance_usd or 0.0)
+            total = self._total_balance_quote() if total_balance_quote is None else float(total_balance_quote or 0.0)
         except Exception:
             total = 0.0
         if total < 50:
@@ -114,10 +114,10 @@ class CapitalManager:
             return 70.0
         return 60.0
 
-    def get_max_position_exposure_pct(self, total_balance_usd=None):
+    def get_max_position_exposure_pct(self, total_balance_quote=None):
         """Plafond dynamique par position selon la taille du capital."""
         try:
-            total = self._total_balance_usd() if total_balance_usd is None else float(total_balance_usd or 0.0)
+            total = self._total_balance_quote() if total_balance_quote is None else float(total_balance_quote or 0.0)
         except Exception:
             total = 0.0
         if total < 50:
@@ -128,10 +128,10 @@ class CapitalManager:
             return 25.0
         return 15.0
 
-    def get_max_position_size_usd(self, total_balance_usd=None):
-        """Montant {get_quote_currency()} maximum autorisé pour une seule position."""
+    def get_max_position_size_quote(self, total_balance_quote=None):
+        """Montant quote maximum autorisé pour une seule position."""
         try:
-            total = self._total_balance_usd() if total_balance_usd is None else float(total_balance_usd or 0.0)
+            total = self._total_balance_quote() if total_balance_quote is None else float(total_balance_quote or 0.0)
         except Exception:
             total = 0.0
         if total <= 0:
@@ -139,11 +139,11 @@ class CapitalManager:
         return round(total * (self.get_max_position_exposure_pct(total) / 100.0), 2)
 
     def get_total_capital(self):
-        """Retourne le capital total du mode actif en equivalent {get_quote_currency()}."""
-        return round(self._total_balance_usd(), 2)
+        """Retourne le capital total du mode actif en equivalent quote."""
+        return round(self._total_balance_quote(), 2)
 
-    def get_available_cash_usd(self):
-        """Retourne le cash immédiatement utilisable pour les paires {get_quote_currency()}."""
+    def get_available_cash_quote(self):
+        """Retourne le cash immédiatement utilisable pour les paires quote."""
         try:
             if getattr(self.bot, 'paper_trading', True):
                 return float(getattr(self.bot, 'paper_balance', 0.0) or 0.0)
@@ -180,9 +180,9 @@ class CapitalManager:
         return []
 
     def get_trade_amount(self, symbol=None):
-        """Retourne le montant d'un trade en {get_quote_currency()} adapté au capital et au mode safe."""
+        """Retourne le montant d'un trade en quote adapté au capital et au mode safe."""
         try:
-            total_balance = self._total_balance_usd()
+            total_balance = self._total_balance_quote()
             config = self.get_adaptive_config(total_balance)
             trade_amount = float(config.get('trade_amount', 50.0))
             if getattr(self.bot, 'safe_fallback_mode', False):
@@ -191,7 +191,7 @@ class CapitalManager:
         except Exception:
             return 1.0
         
-    def get_adaptive_config(self, total_balance_usd):
+    def get_adaptive_config(self, total_balance_quote):
         """Configuration automatique selon le capital avec limites de positions"""
         
         # Récupérer les montants minimums de l'exchange
@@ -199,9 +199,9 @@ class CapitalManager:
         
         # Obtenir les limites de positions
         from utils.market_analyzer import MarketAnalyzer
-        limits = MarketAnalyzer.get_position_limits(total_balance_usd)
+        limits = MarketAnalyzer.get_position_limits(total_balance_quote)
         
-        max_exposure_pct = self.get_max_total_exposure_pct(total_balance_usd)
+        max_exposure_pct = self.get_max_total_exposure_pct(total_balance_quote)
         max_spot_allocation = max(0.0, min(1.0, max_exposure_pct / 100.0))
         configured_daily_loss = os.getenv('MAX_DAILY_LOSS')
         configured_max_positions = self._configured_int(
@@ -213,11 +213,11 @@ class CapitalManager:
             configured_max_positions * int(limits.get('max_tradeable_cryptos', 4))
         )
 
-        if total_balance_usd < 20:
-            # Mode Micro-Capital (8-20 {get_quote_currency()})
-            adaptive_daily_loss = max(10, total_balance_usd * 0.25)
+        if total_balance_quote < 20:
+            # Mode Micro-Capital (8-20 quote)
+            adaptive_daily_loss = max(10, total_balance_quote * 0.25)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 1), total_balance_usd * 0.15),
+                'trade_amount': max(min_amounts.get('min_trade', 1), total_balance_quote * 0.15),
                 'spot_allocation': max_spot_allocation,
                 'cash_reserve': 1.0 - max_spot_allocation,
                 'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
@@ -231,11 +231,11 @@ class CapitalManager:
                 'preferred_cryptos': ['DOGE', 'SHIB', 'PEPE']  # Volatiles
             }
             
-        elif total_balance_usd < 50:
-            # Mode Croissance (20-50 {get_quote_currency()})
-            adaptive_daily_loss = max(10, total_balance_usd * 0.20)
+        elif total_balance_quote < 50:
+            # Mode Croissance (20-50 quote)
+            adaptive_daily_loss = max(10, total_balance_quote * 0.20)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 2), total_balance_usd * 0.12),
+                'trade_amount': max(min_amounts.get('min_trade', 2), total_balance_quote * 0.12),
                 'spot_allocation': max_spot_allocation,
                 'cash_reserve': 1.0 - max_spot_allocation,
                 'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
@@ -249,12 +249,12 @@ class CapitalManager:
                 'preferred_cryptos': ['BTC', 'ETH', 'DOGE', 'SHIB']
             }
             
-        elif total_balance_usd < 200:
-            # Mode Équilibré (50-200 {get_quote_currency()})
-            adaptive_daily_loss = max(10, total_balance_usd * 0.15)
+        elif total_balance_quote < 200:
+            # Mode Équilibré (50-200 quote)
+            adaptive_daily_loss = max(10, total_balance_quote * 0.15)
             spot_allocation = min(0.95, max_spot_allocation)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 5), total_balance_usd * 0.08),
+                'trade_amount': max(min_amounts.get('min_trade', 5), total_balance_quote * 0.08),
                 'spot_allocation': spot_allocation,
                 'cash_reserve': 1.0 - spot_allocation,
                 'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
@@ -269,11 +269,11 @@ class CapitalManager:
             }
             
         else:
-            # Mode Professionnel (200+ {get_quote_currency()})
-            adaptive_daily_loss = max(20, total_balance_usd * 0.10)
+            # Mode Professionnel (200+ quote)
+            adaptive_daily_loss = max(20, total_balance_quote * 0.10)
             spot_allocation = min(0.85, max_spot_allocation)
             return {
-                'trade_amount': max(min_amounts.get('min_trade', 10), total_balance_usd * 0.05),
+                'trade_amount': max(min_amounts.get('min_trade', 10), total_balance_quote * 0.05),
                 'spot_allocation': spot_allocation,
                 'cash_reserve': 1.0 - spot_allocation,
                 'max_daily_loss': self._configured_float('MAX_DAILY_LOSS', adaptive_daily_loss) if configured_daily_loss is not None else adaptive_daily_loss,
@@ -287,7 +287,7 @@ class CapitalManager:
                 'preferred_cryptos': ['BTC', 'ETH', 'SOL', 'ADA', 'ADA']
             }
 
-    def can_open_new_position(self, symbol, new_position_usd) -> bool:
+    def can_open_new_position(self, symbol, new_position_quote) -> bool:
         """
         Gouvernance Risque Phase 10 :
         Vérifie que l'exposition globale ne dépasse pas le plafond dynamique du capital total
@@ -296,7 +296,7 @@ class CapitalManager:
         try:
             from utils.market_analyzer import MarketAnalyzer
 
-            total_balance = self._total_balance_usd()
+            total_balance = self._total_balance_quote()
             if total_balance <= 0:
                 print("CapitalManager: capital live indisponible ou nul, achat bloqué")
                 return False
@@ -327,7 +327,7 @@ class CapitalManager:
                 float(p.get('amount', 0) or 0) * float(p.get('price', 0) or 0)
                 for p in open_positions
             )
-            total_after_trade = current_exposure_usd + float(new_position_usd or 0)
+            total_after_trade = current_exposure_usd + float(new_position_quote or 0)
             max_allowed_usd = total_balance * (max_exposure_pct / 100.0)
 
             if total_after_trade > max_allowed_usd:
@@ -341,7 +341,7 @@ class CapitalManager:
     def get_total_exposure_ratio(self) -> float:
         """Retourne le ratio d'exposition globale du capital (ex: 0.15 pour 15%)."""
         try:
-            total_balance = self._total_balance_usd()
+            total_balance = self._total_balance_quote()
             if total_balance <= 0:
                 return 0.0
             total_exposure_usd = 0.0
@@ -452,7 +452,7 @@ class CapitalManager:
         # Affichage compact en une ligne
         aggressive = "AGR" if config['aggressive_mode'] else "CON"
         
-        print(f"💰 Capital: {total_balance:.0f} {get_quote_currency()} ({status}) | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
+        print(f"💰 Capital: {total_balance:.0f} quote ({status}) | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
         
         return config
     
@@ -467,7 +467,7 @@ class CapitalManager:
                 # En paper trading, utiliser paper_balance
                 total_balance = getattr(self.bot, 'paper_balance', 1000)
             else:
-                total_balance = self._total_balance_usd()
+                total_balance = self._total_balance_quote()
             
             # Obtenir et appliquer la configuration
             config = self.get_adaptive_config(total_balance)
@@ -494,7 +494,7 @@ class CapitalManager:
         # Affichage compact en une ligne avec mode
         aggressive = "AGR" if config['aggressive_mode'] else "CON"
         
-        print(f"💰 Capital: {total_balance:.0f} {get_quote_currency()} ({status}) [{mode_text}] | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
+        print(f"💰 Capital: {total_balance:.0f} quote ({status}) [{mode_text}] | Trade: {config['trade_amount']:.0f} | Spot: {config['spot_allocation']*100:.0f}% | Stop: {config['stop_loss_percent']:.1f}% | Mode: {aggressive}")
         
         return config
     
@@ -602,16 +602,30 @@ class CapitalManager:
         fees = self.get_real_trading_fees(symbol)
         return fees['maker'] if order_type == 'limit' else fees['taker']
     
-    def calculate_trade_cost(self, symbol, amount_usd, order_type='market'):
+    # Legacy API aliases: kept so older callers/plugins do not break.
+    # Values are expressed in AEGIS_QUOTE_CURRENCY, despite the historical suffix.
+    def get_available_cash_usd(self):
+        return self.get_available_cash_quote()
+
+    def get_max_position_size_usd(self, total_balance_usd=None):
+        return self.get_max_position_size_quote(total_balance_usd)
+
+    def _total_balance_usd(self):
+        return self._total_balance_quote()
+
+    def _get_usd_value(self, asset, amount):
+        return self._get_quote_value(asset, amount)
+
+    def calculate_trade_cost(self, symbol, amount_quote, order_type='market'):
         """Calcule coût total réel d'un trade"""
         fee_rate = self.get_fee_for_trade(symbol, order_type)
-        fee_cost = amount_usd * fee_rate
+        fee_cost = amount_quote * fee_rate
         
         return {
-            'amount': amount_usd,
+            'amount': amount_quote,
             'fee_rate': fee_rate,
             'fee_cost': fee_cost,
-            'total_cost': amount_usd + fee_cost,
+            'total_cost': amount_quote + fee_cost,
             'vip_level': self.vip_level
         }
     
@@ -651,10 +665,10 @@ class CapitalManager:
             
             symbol = make_symbol(asset)
             price = self.bot.get_price(symbol)
-            usd_value = amount * price
+            quote_value = amount * price
             dust_threshold = self.dust_thresholds_usd.get(asset, 0.50)
             
-            return usd_value < dust_threshold
+            return quote_value < dust_threshold
         except Exception as e:
             print(f"⚠️ Erreur vérification dust {asset}: {e}")
             return True
@@ -690,13 +704,13 @@ class CapitalManager:
             else:
                 dust_detected[asset] = {
                     'amount': total_amount,
-                    'usd_value': self._get_usd_value(asset, total_amount)
+                    'quote_value': self._get_quote_value(asset, total_amount)
                 }
         
         return filtered_balances, dust_detected
     
-    def _get_usd_value(self, asset, amount):
-        """Calcule la valeur {get_quote_currency()} d'un asset"""
+    def _get_quote_value(self, asset, amount):
+        """Calcule la valeur quote d'un asset"""
         try:
             if is_quote_asset(asset):
                 return amount
@@ -713,18 +727,18 @@ class CapitalManager:
             return
         
         print(f"🧹 DUST DÉTECTÉ (valeurs trop petites pour trader):")
-        total_dust_usd = 0
+        total_dust_quote = 0
         
         for asset, data in dust_detected.items():
             amount = data['amount']
-            usd_value = data['usd_value']
-            total_dust_usd += usd_value
+            quote_value = data['quote_value']
+            total_dust_quote += quote_value
             
-            print(f"   • {asset}: {amount:.8f} (~{usd_value:.4f} {get_quote_currency()})")
+            print(f"   • {asset}: {amount:.8f} (~{quote_value:.4f} quote)")
         
-        print(f"   Total dust: {total_dust_usd:.4f} {get_quote_currency()}")
+        print(f"   Total dust: {total_dust_quote:.4f} quote")
         
-        if total_dust_usd > 0.10:
+        if total_dust_quote > 0.10:
             print(f"   💡 Conseil: ignorer ou consolider ces petits montants manuellement sur l'exchange")
     
     def get_tradeable_balance(self, symbol):
@@ -772,7 +786,7 @@ class CapitalManager:
                 
                 print(f"❌ {base_currency}: Montant trop petit pour trader")
                 print(f"   Minimum: {minimums['min_amount']} {base_currency}")
-                print(f"   Coût minimum: {minimums['min_cost']} {get_quote_currency()}")
+                print(f"   Coût minimum: {minimums['min_cost']} quote")
                 
                 return False
             
