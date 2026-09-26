@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import tempfile
+import time
 import threading
 import unittest
 from collections import deque
@@ -259,6 +260,124 @@ class LiveFixTests(unittest.TestCase):
         self.assertFalse(ws.is_connected())
         ws.is_ws_connected = True
         self.assertTrue(ws.is_connected())
+
+    def _minimal_ws_manager(self):
+        ws = object.__new__(WebSocketManager)
+        ws.running = True
+        ws.is_ws_connected = False
+        ws.ws = None
+        ws.ws_thread = None
+        ws.reconnect_attempts = 0
+        ws.last_connected_ts = time.time() - 60
+        ws.connected_since_ts = 0.0
+        ws.last_message_ts = 0.0
+        ws.last_market_data_ts = 0.0
+        ws.last_heartbeat_ts = 0.0
+        ws.last_disconnect_ts = 0.0
+        ws.last_disconnect_reason = None
+        ws.last_close_code = None
+        ws._rate_limited_until = 0.0
+        ws._next_reconnect_ts = 0.0
+        ws._reconnect_state_lock = threading.Lock()
+        ws._reconnect_pending = False
+        ws._reconnect_thread = None
+        ws._reconnect_history = deque(maxlen=50)
+        return ws
+
+    def test_websocket_heartbeat_counts_as_connection_activity(self):
+        ws = self._minimal_ws_manager()
+        current = object()
+        ws.ws = current
+        before = time.time()
+        ws.on_message_kraken(current, '{"event":"heartbeat"}')
+        self.assertGreaterEqual(ws.last_message_ts, before)
+        self.assertEqual(ws.last_heartbeat_ts, ws.last_message_ts)
+
+    def test_websocket_reconnect_is_single_flight(self):
+        ws = self._minimal_ws_manager()
+
+        class ThreadStub:
+            def __init__(self, *args, **kwargs):
+                pass
+            def start(self):
+                pass
+
+        with patch("core.websocket.threading.Thread", ThreadStub):
+            self.assertTrue(ws._schedule_reconnect("first"))
+            self.assertFalse(ws._schedule_reconnect("duplicate"))
+        self.assertTrue(ws._reconnect_pending)
+
+    def test_websocket_open_does_not_reset_backoff_until_stable(self):
+        ws = self._minimal_ws_manager()
+        ws.reconnect_attempts = 4
+        ws.symbols = ["BTCUSD"]
+
+        class SocketStub:
+            def __init__(self):
+                self.messages = []
+            def send(self, message):
+                self.messages.append(message)
+
+        socket = SocketStub()
+        ws.ws = socket
+        ws._on_open_kraken(socket)
+        self.assertTrue(ws.is_ws_connected)
+        self.assertEqual(ws.reconnect_attempts, 4)
+        self.assertEqual(len(socket.messages), 3)
+
+        ws.connected_since_ts = time.time() - 200
+        ws._reconnect_history.extend([time.time() - 20, time.time() - 10])
+        with patch.dict(os.environ, {"WS_STABLE_CONNECTION_SECONDS": "30"}, clear=False):
+            self.assertTrue(ws._maybe_mark_connection_stable())
+        self.assertEqual(ws.reconnect_attempts, 0)
+        self.assertEqual(len(ws._reconnect_history), 0)
+
+    def test_websocket_stale_stream_is_not_reported_connected(self):
+        ws = self._minimal_ws_manager()
+        ws.ws = object()
+        ws.ws_thread = FakeThread()
+        ws.is_ws_connected = True
+        ws.last_message_ts = time.time() - 120
+        with patch.dict(os.environ, {"WS_STALE_TIMEOUT_SECONDS": "30"}, clear=False):
+            self.assertFalse(ws.is_connected())
+
+    def test_websocket_ignores_close_from_stale_socket(self):
+        ws = self._minimal_ws_manager()
+        current = object()
+        ws.ws = current
+        with patch.object(ws, "_schedule_reconnect") as schedule:
+            ws.on_close(object(), 1006, "old socket")
+        schedule.assert_not_called()
+
+    def test_rest_ticker_fallback_is_cached_during_ws_outage(self):
+        from core.trading_bot import TradingBot
+
+        class ExchangeStub:
+            def __init__(self):
+                self.calls = 0
+            def fetch_ticker(self, symbol):
+                self.calls += 1
+                return {"last": 123.45, "symbol": symbol}
+
+        bot = object.__new__(TradingBot)
+        bot.exchange = ExchangeStub()
+        bot.paper_trading = False
+        bot._rest_ticker_cache = {}
+        bot._rest_ticker_cache_lock = threading.Lock()
+        bot._last_rest_ticker_request_ts = 0.0
+        bot.safe_request = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+
+        with patch.dict(
+            os.environ,
+            {
+                "TICKER_REST_CACHE_TTL_SECONDS": "10",
+                "TICKER_REST_MIN_INTERVAL_SECONDS": "0",
+            },
+            clear=False,
+        ):
+            self.assertEqual(bot.get_price("BTC/USD"), 123.45)
+            self.assertEqual(bot.get_price("BTC/USD"), 123.45)
+        self.assertEqual(bot.exchange.calls, 1)
 
     def test_execution_spread_uses_websocket_bid_ask(self):
         bot = FakeBot()
