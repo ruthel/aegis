@@ -990,5 +990,92 @@ class LiveFixTests(unittest.TestCase):
             self.assertIn(field, logger)
 
 
+    def test_quote_currency_migration_archives_and_restores_state(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from scripts.migrate_quote_currency import migrate_quote_currency_database
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "aegis_test.sqlite3"
+            base_env = {
+                "ML_LIVE_SQLITE_FILE": str(db_path),
+                "PAPER_BALANCE": "1000",
+                "EXCHANGE": "kraken",
+            }
+
+            with patch.dict(os.environ, {**base_env, "AEGIS_QUOTE_CURRENCY": "USD"}, clear=False):
+                first = migrate_quote_currency_database(db_path)
+                self.assertEqual(first["quote_currency"], "USD")
+                con = sqlite3.connect(db_path)
+                con.execute(
+                    "UPDATE bot_state SET paper_balance=850, initial_balance=1000 WHERE mode='paper'"
+                )
+                con.commit()
+                con.close()
+
+            with patch.dict(os.environ, {**base_env, "AEGIS_QUOTE_CURRENCY": "CAD"}, clear=False):
+                cad = migrate_quote_currency_database(db_path)
+                self.assertEqual(cad["quote_currency"], "CAD")
+                con = sqlite3.connect(db_path)
+                row = con.execute(
+                    "SELECT quote_currency, paper_balance FROM bot_state WHERE mode='paper'"
+                ).fetchone()
+                self.assertEqual(row[0], "CAD")
+                self.assertEqual(float(row[1]), 1000.0)
+                archived_usd = con.execute(
+                    """
+                    SELECT paper_balance
+                    FROM bot_state_quote_archive
+                    WHERE mode='paper' AND quote_currency='USD'
+                    """
+                ).fetchone()
+                self.assertEqual(float(archived_usd[0]), 850.0)
+                accounts = {
+                    r[0]
+                    for r in con.execute("SELECT account_id FROM accounts").fetchall()
+                }
+                self.assertIn("paper:kraken:USD", accounts)
+                self.assertIn("paper:kraken:CAD", accounts)
+                con.execute(
+                    "UPDATE bot_state SET paper_balance=1200 WHERE mode='paper'"
+                )
+                con.commit()
+                con.close()
+
+            with patch.dict(os.environ, {**base_env, "AEGIS_QUOTE_CURRENCY": "USD"}, clear=False):
+                usd_again = migrate_quote_currency_database(db_path)
+                self.assertEqual(usd_again["quote_currency"], "USD")
+                con = sqlite3.connect(db_path)
+                row = con.execute(
+                    "SELECT quote_currency, paper_balance FROM bot_state WHERE mode='paper'"
+                ).fetchone()
+                self.assertEqual(row[0], "USD")
+                self.assertEqual(float(row[1]), 850.0)
+                archived_cad = con.execute(
+                    """
+                    SELECT paper_balance
+                    FROM bot_state_quote_archive
+                    WHERE mode='paper' AND quote_currency='CAD'
+                    """
+                ).fetchone()
+                self.assertEqual(float(archived_cad[0]), 1200.0)
+                integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
+                con.close()
+                self.assertEqual(integrity, "ok")
+
+    def test_startup_runs_quote_currency_migration_before_bot_logger(self):
+        source = (ROOT / "run.py").read_text(encoding="utf-8")
+        env_pos = source.index("load_dotenv('.env', override=True)")
+        migration_pos = source.index("migrate_quote_currency_database()")
+        logger_pos = source.index("process_logger = MLLiveLogger")
+        self.assertLess(env_pos, migration_pos)
+        self.assertLess(migration_pos, logger_pos)
+
+        start_source = (ROOT / "start.py").read_text(encoding="utf-8")
+        self.assertIn("migrate_quote_currency_database()", start_source)
+
+
 if __name__ == "__main__":
     unittest.main()
