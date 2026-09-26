@@ -16,7 +16,7 @@ type HourRow = {
   totalPnl: number
 }
 
-function HourlyBarChartBase({ data }: { data: HourRow[] }) {
+function HourlyBarChartBase({ data, currency = 'USD' }: { data: HourRow[]; currency?: string }) {
   const ref = useRef<HTMLDivElement | null>(null)
   const xAxisRef = useRef<am5xy.CategoryAxis<am5xy.AxisRenderer> | null>(null)
   const seriesRef = useRef<am5xy.ColumnSeries | null>(null)
@@ -61,7 +61,7 @@ function HourlyBarChartBase({ data }: { data: HourRow[] }) {
     const yAxis = chart.yAxes.push(
       am5xy.ValueAxis.new(root, {
         renderer: yRenderer,
-        numberFormat: "+$#,###.0000|$#,###.0000",
+        numberFormat: "+#,###.0000|-#,###.0000",
       }),
     )
 
@@ -71,7 +71,7 @@ function HourlyBarChartBase({ data }: { data: HourRow[] }) {
 
     const tooltip = am5.Tooltip.new(root, {
       getFillFromSprite: false,
-      labelText: '[bold #ffffff]{hourLabel}:00 UTC[/]\nP&L: [bold]{valueY.formatNumber("+$#,###.0000|$#,###.0000")} USD[/]\n{trades} trade(s) · {winRate}% win',
+      labelText: `[bold #ffffff]{hourLabel}:00 UTC[/]\nP&L: [bold]{valueY.formatNumber("+#,###.0000|-#,###.0000")} ${currency}[/]\n{trades} trade(s) · {winRate}% win`,
     })
     tooltip.label.setAll({ fill: am5.color(0xffffff), fontSize: 12 })
     tooltip.get('background')?.setAll({
@@ -118,7 +118,7 @@ function HourlyBarChartBase({ data }: { data: HourRow[] }) {
       seriesRef.current = null
       root.dispose()
     }
-  }, [])
+  }, [currency])
 
   useEffect(() => {
     xAxisRef.current?.data.setAll(data)
