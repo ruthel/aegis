@@ -6,6 +6,7 @@ from datetime import datetime
 from queue import Queue
 import websocket
 from core.ml_live_logger import MLLiveLogger
+from utils.currency import get_trading_pairs, normalize_symbol as normalize_pair
 
 websocket.enableTrace(False)
 
@@ -22,7 +23,7 @@ except ImportError:
 class WebSocketManager:
     def __init__(self, symbols=None):
         if symbols is None:
-            symbols = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD').split(',')
+            symbols = get_trading_pairs()
         self.symbols = [self._normalize_symbol(symbol) for symbol in symbols if symbol.strip()]
         self.prices = {}
         self.last_prices = {}
@@ -148,10 +149,7 @@ class WebSocketManager:
             print("WS Kraken: connexion ouverte, souscription...")
 
         # Convertir symboles en format Kraken
-        pairs = []
-        for s in self.symbols:
-            base = s.replace('USD', '')
-            pairs.append(f"{base}/USD")
+        pairs = [normalize_pair(s) for s in self.symbols]
 
         # Souscrire au ticker
         subscribe_msg = std_json.dumps({
@@ -453,11 +451,7 @@ class WebSocketManager:
         
         def fetch_symbol(symbol):
             try:
-                if symbol.endswith('USD'):
-                    base = symbol[:-3]
-                else:
-                    base = symbol
-                ccxt_symbol = f'{base}/USD'
+                ccxt_symbol = normalize_pair(symbol)
                 ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=count)
                 candles = [
                     {'timestamp': c[0], 'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4], 'volume': c[5]}
