@@ -1,6 +1,7 @@
 """Module d'analyse et prévisions pour le bot de trading"""
 from datetime import datetime
 from utils.market_analyzer import MarketAnalyzer
+from utils.currency import get_quote_currency, get_quote_balance
 
 import time
 import os
@@ -213,7 +214,7 @@ class AnalysisMixin:
         try:
             current_price = self.get_price(symbol)
             balance = self.balance_manager.get_balance()
-            usd_available = balance.get('USD', balance.get('USD', {})).get('free', 0)
+            usd_available = get_quote_balance(balance).get('free', 0)
             base_currency = symbol.split('/')[0]
             crypto_free = balance.get(base_currency, {}).get('free', 0)
             crypto_locked = balance.get(base_currency, {}).get('used', 0)
@@ -234,7 +235,7 @@ class AnalysisMixin:
             
             trade_amount = float(os.getenv('TRADE_AMOUNT', '8'))
             if usd_available < trade_amount:
-                return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usd_available:.2f} USD disponible'}
+                return {'status': 'NO_FUNDS', 'time_estimate': 'Fonds insuffisants', 'reason': f'{usd_available:.2f} {get_quote_currency()} disponible'}
             
             analysis = self.get_cached_analysis(symbol, current_price)
             signal = analysis['global_signal']
