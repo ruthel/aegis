@@ -9,6 +9,8 @@ Gère l'exécution optimale des ordres chez Kraken :
 """
 import time
 import os
+
+from utils.currency import get_quote_currency
 from datetime import datetime
 
 class ExecutionManager:
@@ -144,7 +146,7 @@ class ExecutionManager:
         size_crypto = position_data.get('position_size_crypto', 0)
         final_position_usd = float(size_crypto or 0.0) * float(current_price or 0.0)
         if float(size_crypto or 0.0) <= 0 or final_position_usd <= 0:
-            print(f"❌ Smart Execution: taille invalide sur {symbol} ({float(size_crypto or 0.0):.8f}, {final_position_usd:.2f} USD)")
+            print(f"❌ Smart Execution: taille invalide sur {symbol} ({float(size_crypto or 0.0):.8f}, {final_position_usd:.2f} {get_quote_currency()})")
             try:
                 self.bot.set_symbol_cooldown(symbol, self.bot.symbol_failure_cooldown_seconds, reason='invalid_order_size')
             except Exception:
@@ -163,7 +165,7 @@ class ExecutionManager:
             )
             return False
         if hasattr(self.bot, 'capital_manager') and not self.bot.capital_manager.can_open_new_position(symbol, final_position_usd):
-            print(f"❌ Smart Execution: Garde-fou capital refuse {symbol} ({final_position_usd:.2f} USD)")
+            print(f"❌ Smart Execution: Garde-fou capital refuse {symbol} ({final_position_usd:.2f} {get_quote_currency()})")
             self.bot.record_decision(
                 symbol,
                 action_type='buy',
@@ -193,7 +195,7 @@ class ExecutionManager:
         
         if order_type == 'limit' and not self.bot.paper_trading:
             limit_price = micro['bid']  # Poser au Bid pour frais Maker
-            print(f"⚡ {symbol}: Ordre LIMIT MAKER au Bid {limit_price:.2f} USD (Confiance ML: {ml_buy_prob:.1f}%)")
+            print(f"⚡ {symbol}: Ordre LIMIT MAKER au Bid {limit_price:.2f} {get_quote_currency()} (Confiance ML: {ml_buy_prob:.1f}%)")
             try:
                 latency_trace['order_send_ns'] = time.perf_counter_ns()
                 order = self.bot.exchange.create_limit_buy_order(
@@ -437,7 +439,7 @@ class ExecutionManager:
         position_count = len(existing_positions)
         
         slippage_str = f" | Slippage: {slippage_pct:+.2f}%" if abs(slippage_pct) > 0.01 else ""
-        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} USD ({executed_amount * executed_price:.1f} USD) [{order_type.upper()}]{slippage_str} | Stop {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
+        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} {get_quote_currency()} ({executed_amount * executed_price:.1f} {get_quote_currency()}) [{order_type.upper()}]{slippage_str} | Stop {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
 
         # Enregistrer dans SQLite
         self._log_execution(symbol, 'buy', order_type, expected_price, requested_price, executed_price, slippage_pct, micro['spread_pct'], executed_amount, exec_duration_ms, True, reason)
