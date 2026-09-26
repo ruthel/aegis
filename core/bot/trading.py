@@ -929,7 +929,7 @@ class TradingMixin:
             MIN_NOTIONAL = self.get_min_amount(symbol)['min_cost']
             
             if notional_value < MIN_NOTIONAL:
-                print(f"❌ Montant vente {notional_value:.2f} USD < minimum {MIN_NOTIONAL} {get_quote_currency()}")
+                print(f"❌ Montant vente {notional_value:.2f} {get_quote_currency()} < minimum {MIN_NOTIONAL} {get_quote_currency()}")
                 print(f"   Quantité: {amount:.8f} {crypto} × Prix: {price:.2f} = {notional_value:.2f} {get_quote_currency()}")
                 return None
             
@@ -1137,7 +1137,7 @@ class TradingMixin:
                 sell_fee = price * amount * self.trading_fee
                 total_fees = buy_fee + sell_fee
                 
-                print(f"💰 P&L: {pnl:+.2f} USD (Frais: -{total_fees:.4f} {get_quote_currency()})")
+                print(f"💰 P&L: {pnl:+.2f} {get_quote_currency()} (Frais: -{total_fees:.4f} {get_quote_currency()})")
                 
                 return pnl
         return None
@@ -1244,7 +1244,7 @@ class TradingMixin:
                         amount,
                         price,
                         fee_amount=execution.get('fee', 0),
-                        fee_asset='USD',
+                        fee_asset=quote_asset_for_symbol(symbol),
                         mode='live',
                         source='live_trade',
                         write_ledger=False,
@@ -1377,11 +1377,11 @@ class TradingMixin:
         current_holding = balance.get(base_currency, {}).get('free', 0)
         current_price = self.get_price(symbol)
         
-        # Calculer combien vendre pour obtenir les USD nécessaires
-        shortage = min_cost_needed - usd_available + 1  # +1 USD de marge
+        # Calculer combien vendre pour obtenir la devise de cotation nécessaire
+        shortage = min_cost_needed - usd_available + 1  # +1 unité de quote de marge
         amount_to_sell = shortage / current_price
         
-        print(f"   Besoin: {shortage:.2f} USD -> Vendre {amount_to_sell:.6f} {base_currency}")
+        print(f"   Besoin: {shortage:.2f} {get_quote_currency()} -> Vendre {amount_to_sell:.6f} {base_currency}")
         
         # Vérifier qu'on a assez à vendre
         if amount_to_sell > current_holding:
@@ -1403,7 +1403,7 @@ class TradingMixin:
                         self.safe_request(self.exchange.cancel_order, order['id'], symbol)
                         print(f"   ❌ Ordre de vente annulé: {order['price']:.2f}")
             
-            # 2. Vendre une partie au marché pour libérer des USD
+            # 2. Vendre une partie au marché pour libérer la devise de cotation
             print(f"   💰 Vente partielle: {amount_to_sell:.6f} {base_currency} à {current_price:.2f}")
             sell_order = self.sell_market(symbol, amount_to_sell)
             
