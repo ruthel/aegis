@@ -751,11 +751,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return regime in ['BEAR', 'BEAR_WEAK', 'BEAR_STRONG', 'SIDEWAYS_DOWN']
 
     def _normalize_symbol(self, pair):
-        pair = pair.strip()
-        if '/' in pair:
-            return pair
-        if pair.endswith('USD'): return f"{pair[:-3]}/USD"
-        return pair
+        return normalize_symbol(pair)
 
     def _sanitize_realtime_price(self, symbol, price):
         """Valide qu'un tick temps reel correspond bien au bid/ask de sa paire."""
@@ -1180,7 +1176,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if cost > self.paper_balance:
                 print(f"⚠️ Paper trading: Fonds insuffisants {cost:.2f} > {self.paper_balance:.2f}")
                 return False
-            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} USD")
+            print(f"🧠 Paper trading: Validation OK - Coût {cost:.2f} {get_quote_currency()}")
             return True
         else:
             balance = self.balance_manager.get_balance()
@@ -2697,7 +2693,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         if final_size_usd <= 0 or final_size_crypto <= 0:
             print(
                 f"⛔ {crypto}: signal validé mais achat impossible "
-                f"(taille finale {final_size_usd:.2f} USD / {final_size_crypto:.8f}, capital/minimum exchange)"
+                f"(taille finale {final_size_usd:.2f} {get_quote_currency()} / {final_size_crypto:.8f}, capital/minimum exchange)"
             )
             self.record_decision(
                 symbol, 'buy', False, 'capital_or_exchange_minimum_blocked',
@@ -3187,9 +3183,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if signals.get('consecutive_losses', 0) >= self.safe_fallback_consecutive_losses:
                 reasons.append(f"{signals['consecutive_losses']} pertes consecutives")
             if abs(signals.get('daily_loss_usd', 0.0)) >= self.safe_fallback_daily_loss_usd:
-                reasons.append(f"perte journaliere {signals['daily_loss_usd']:.2f} USD")
+                reasons.append(f"perte journaliere {signals['daily_loss_usd']:.2f} {get_quote_currency()}")
             if abs(signals.get('weekly_loss_usd', 0.0)) >= self.safe_fallback_weekly_loss_usd:
-                reasons.append(f"perte hebdo {signals['weekly_loss_usd']:.2f} USD")
+                reasons.append(f"perte hebdo {signals['weekly_loss_usd']:.2f} {get_quote_currency()}")
             if str(signals.get('drift_status') or '').lower() in self.safe_fallback_drift_statuses:
                 reasons.append(f"drift ML {signals.get('drift_status')}")
 
@@ -3321,7 +3317,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
             min_cost = self.get_min_amount(symbol)['min_cost']
             if self.paper_balance < min_cost:
-                return False  # Solde USD insuffisant -> BLOQUER
+                return False  # Solde de cotation insuffisant -> BLOQUER
 
             return True
 
@@ -3345,7 +3341,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 
                 return False  # Position réelle déjà ouverte, bloquer
             
-            usd_available = self.capital_manager.get_available_cash_usd() if hasattr(self.capital_manager, 'get_available_cash_usd') else get_quote_balance(balance).get('free', 0)
+            usd_available = self.capital_manager.get_available_cash_quote() if hasattr(self.capital_manager, 'get_available_cash_quote') else get_quote_balance(balance).get('free', 0)
             min_cost = self.get_min_amount(symbol)['min_cost']
             
             if usd_available < min_cost:
@@ -3592,14 +3588,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def _execute_force_buy(self, symbol):
         """Force un achat en ignorant les filtres techniques, mais en validant le capital"""
         try:
-            # 1. Vérifier capital USD disponible
+            # 1. Vérifier le capital disponible dans la devise de cotation
             balance = self.balance_manager.get_balance(force_refresh=True)
             quote = get_quote_currency()
             usd_available = balance.get(quote, {}).get('free', 0) if not self.paper_trading else self.paper_balance
             
             min_cost = self.get_min_amount(symbol)['min_cost']
             if usd_available < min_cost:
-                print(f"❌ Impossible de forcer l'achat: Capital insuffisant ({usd_available:.2f} USD < min {min_cost:.2f} {get_quote_currency()})")
+                print(f"❌ Impossible de forcer l'achat: Capital insuffisant ({usd_available:.2f} {get_quote_currency()} < min {min_cost:.2f} {get_quote_currency()})")
                 return
                 
             # 2. Calculer une taille manuelle neutre; les garde-fous capital restent appliques dans execute_buy.
