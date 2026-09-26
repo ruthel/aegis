@@ -16,13 +16,13 @@ import os
 import shutil
 import sqlite3
 import sys
-from utils.currency import get_quote_currency
 
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+from utils.currency import get_quote_currency
 
 from core.ml_engine import MLEngine
 from core.ml_live_logger import MLLiveLogger
