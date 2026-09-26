@@ -22,11 +22,12 @@ import {
 } from '@/components/ui/shared'
 import type { AnalyticsPayload, JsonMap, MlStatus } from '@/types/dashboard'
 
-const pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
+const pairsForQuote = (currency: string) => ['BTC', 'ETH', 'SOL', 'ADA'].map((base) => `${base}/${currency}`)
 
 type PnlTimeRange = '24h' | '7d' | '30d' | '90d' | 'all'
 
 export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: AnalyticsPayload }) {
+  const quoteCurrency = useDashboardStore((state) => state.status.bot?.quote_currency || 'USD')
   const advanced = analytics.advanced_metrics || {}
   const capital = analytics.capital_breakdown || {}
   const pnlHistory = analytics.pnl_history || {}
@@ -130,7 +131,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
           </div>
         </CardHeader>
         <CardContent>
-          <CapitalBreakdown capital={capital} />
+          <CapitalBreakdown capital={capital} currency={quoteCurrency} />
         </CardContent>
       </Card>
 
@@ -145,7 +146,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
                 </CardTitle>
                 <div className="flex flex-wrap items-center gap-4 pt-1.5 text-xs">
                   <span className="flex items-center gap-1.5 font-semibold text-emerald-400">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" /> Axe Y : P&L Net Cumulé ($ USD)
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" /> Axe Y : P&L Net Cumulé ({quoteCurrency})
                   </span>
                   <span className="flex items-center gap-1.5 font-semibold text-blue-400">
                     <span className="h-2 w-2 rounded-full bg-blue-400" /> Axe X : Chronologie Temporelle
@@ -170,10 +171,10 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
                 </div>
                 <div className="text-left sm:text-right">
                   <span className="text-xs font-semibold text-muted-foreground block">
-                    Solde initial : {num(pnlHistory.initial_balance, 2)} $ → Actuel : {num(pnlHistory.current_balance, 2)} $
+                    Solde initial : {num(pnlHistory.initial_balance, 2)} {quoteCurrency} → Actuel : {num(pnlHistory.current_balance, 2)} {quoteCurrency}
                   </span>
                   <span className={cn('text-xs font-bold', Number(pnlHistory.total_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400')}>
-                    P&L Total : {Number(pnlHistory.total_pnl || 0) >= 0 ? '+' : ''}{num(pnlHistory.total_pnl, 2)} USD
+                    P&L Total : {Number(pnlHistory.total_pnl || 0) >= 0 ? '+' : ''}{num(pnlHistory.total_pnl, 2)} {quoteCurrency}
                   </span>
                 </div>
               </div>
@@ -184,9 +185,10 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
               <LineChart
                 data={pnlPoints}
                 color={Number(pnlHistory.total_pnl || 0) >= 0 ? '#34d399' : '#fb7185'}
-                yAxisTitle="P&L Net Cumulé ($ USD)"
+                yAxisTitle={`P&L Net Cumulé (${quoteCurrency})`}
                 xAxisTitle="Chronologie Temporelle (Date & Durée)"
                 timeRange={pnlTimeRange}
+                currency={quoteCurrency}
               />
             ) : (
               <EmptyAnalytics text="Pas assez de trades enregistrés pour cette durée" />
@@ -200,7 +202,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
             <CardTitle>Historique des Scores Crypto</CardTitle>
           </CardHeader>
           <CardContent>
-            <ScoreHistoryPanel />
+            <ScoreHistoryPanel currency={quoteCurrency} />
           </CardContent>
         </Card>
 
@@ -212,7 +214,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <HourlyPnLBarChart rows={heatmap.by_hour || []} />
+            <HourlyPnLBarChart rows={heatmap.by_hour || []} currency={quoteCurrency} />
           </CardContent>
         </Card>
 
@@ -224,7 +226,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <DailyPnLBarChart rows={heatmap.by_day || []} />
+            <DailyPnLBarChart rows={heatmap.by_day || []} currency={quoteCurrency} />
           </CardContent>
         </Card>
 
@@ -246,7 +248,7 @@ export function AnalyticsView({ ml, analytics }: { ml: MlStatus; analytics: Anal
 
 // ─── CapitalBreakdown ─────────────────────────────────────────────────────
 
-function CapitalBreakdown({ capital }: { capital: JsonMap }) {
+function CapitalBreakdown({ capital, currency }: { capital: JsonMap; currency: string }) {
   const total = Number(capital.total_capital || 0)
   const available = Number(capital.available || 0)
   const positions = Number(capital.in_positions || 0)
@@ -265,10 +267,10 @@ function CapitalBreakdown({ capital }: { capital: JsonMap }) {
         </div>
       </div>
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Total" value={`${num(total, 2)} USD`} />
-        <Metric label="Disponible" value={`${num(available, 2)} USD`} />
-        <Metric label="Positions" value={`${num(positions, 2)} USD`} />
-        <Metric label="Limit Orders" value={`${num(limitOrders, 2)} USD`} />
+        <Metric label="Total" value={`${num(total, 2)} ${currency}`} />
+        <Metric label="Disponible" value={`${num(available, 2)} ${currency}`} />
+        <Metric label="Positions" value={`${num(positions, 2)} ${currency}`} />
+        <Metric label="Limit Orders" value={`${num(limitOrders, 2)} ${currency}`} />
       </div>
     </div>
   )
@@ -285,8 +287,9 @@ function scoreTooltipLabel(date: Date, compactTimeOnly: boolean): string {
   return `${month}/${day} ${hour}:${minute}`
 }
 
-function ScoreHistoryPanel() {
-  const [symbol, setSymbol] = useState('BTC/USD')
+function ScoreHistoryPanel({ currency }: { currency: string }) {
+  const pairs = pairsForQuote(currency)
+  const [symbol, setSymbol] = useState(pairs[0])
   const [hours, setHours] = useState('24')
   const scoreHistory = useDashboardStore((state) => state.scoreHistory)
   const refreshScoreHistory = useDashboardStore((state) => state.refreshScoreHistory)
@@ -356,7 +359,7 @@ function ScoreHistoryPanel() {
       </div>
       <div className="min-h-[240px] rounded-md bg-background p-4">
         {points.length >= 2 ? (
-          <ScoreHistoryChart data={points} intervalHours={labelSpacingHours} periodHours={selectedHours} />
+          <ScoreHistoryChart data={points} intervalHours={labelSpacingHours} periodHours={selectedHours} currency={currency} />
         ) : (
           <EmptyAnalytics text="Pas assez de scores historisés pour cette période" />
         )}
@@ -367,7 +370,7 @@ function ScoreHistoryPanel() {
 
 // ─── HourlyPnLBarChart ────────────────────────────────────────────────────
 
-function HourlyPnLBarChart({ rows }: { rows: JsonMap[] }) {
+function HourlyPnLBarChart({ rows, currency }: { rows: JsonMap[]; currency: string }) {
   if (!rows || !rows.length) return <EmptyAnalytics text="Aucun trade par heure à afficher" />
 
   const hourMap = new Map<number, JsonMap>()
@@ -401,7 +404,7 @@ function HourlyPnLBarChart({ rows }: { rows: JsonMap[] }) {
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Heure la Plus Profitable</div>
             <div className="text-xs font-bold text-emerald-400">
               {bestHour && bestHour.totalPnl > 0 ? (
-                <>{bestHour.hourLabel} : +{num(bestHour.totalPnl, 4)} USD ({bestHour.trades} trade{bestHour.trades > 1 ? 's' : ''})</>
+                <>{bestHour.hourLabel} : +{num(bestHour.totalPnl, 4)} {currency} ({bestHour.trades} trade{bestHour.trades > 1 ? 's' : ''})</>
               ) : (
                 'En attente de trades gagnants'
               )}
@@ -414,7 +417,7 @@ function HourlyPnLBarChart({ rows }: { rows: JsonMap[] }) {
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Heure la Moins Bonne</div>
             <div className="text-xs font-bold text-rose-400">
               {worstHour && worstHour.totalPnl < 0 ? (
-                <>{worstHour.hourLabel} : {num(worstHour.totalPnl, 4)} USD ({worstHour.trades} trade{worstHour.trades > 1 ? 's' : ''})</>
+                <>{worstHour.hourLabel} : {num(worstHour.totalPnl, 4)} {currency} ({worstHour.trades} trade{worstHour.trades > 1 ? 's' : ''})</>
               ) : (
                 'Aucune perte horaire'
               )}
@@ -423,14 +426,14 @@ function HourlyPnLBarChart({ rows }: { rows: JsonMap[] }) {
         </div>
       </div>
 
-      <HourlyBarChart data={fullHours} />
+      <HourlyBarChart data={fullHours} currency={currency} />
     </div>
   )
 }
 
 // ─── DailyPnLBarChart ─────────────────────────────────────────────────────
 
-function DailyPnLBarChart({ rows }: { rows: JsonMap[] }) {
+function DailyPnLBarChart({ rows, currency }: { rows: JsonMap[]; currency: string }) {
   if (!rows || !rows.length) return <EmptyAnalytics text="Aucun trade par jour à afficher" />
 
   const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -455,7 +458,7 @@ function DailyPnLBarChart({ rows }: { rows: JsonMap[] }) {
 
   return (
     <div className="pt-2">
-      <DailyBarChart data={fullDays} />
+      <DailyBarChart data={fullDays} currency={currency} />
     </div>
   )
 }
