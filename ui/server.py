@@ -2309,6 +2309,7 @@ def dashboard_status_payload(view_mode=None):
             'mode': active_trading_mode(),
             'view_mode': view_mode,
             'exchange': os.getenv('EXCHANGE', 'unknown'),
+            'quote_currency': get_quote_currency(),
             'state_file': active_state_source(mode_key),
             'last_update': state.get('last_update'),
             'control': bot_status_payload(),
