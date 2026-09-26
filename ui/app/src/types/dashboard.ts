@@ -14,6 +14,7 @@ export type StatusPayload = {
     mode?: string
     view_mode?: DataViewMode | string
     exchange?: string
+    quote_currency?: string
     last_update?: string
     control?: BotControl
   }
