@@ -708,7 +708,7 @@ class MLLiveLogger:
                         self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, gross, order_id, fill_id, symbol, description='sell_quote_credit', source=source)
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='sell_fee', source=source)
-                        usd_delta = gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
+                        usd_delta = gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
                 requested_amount = float(existing_order[1] or amount)
                 previous_filled = float(existing_order[2] or 0.0)
                 previous_avg = float(existing_order[3] or 0.0)
@@ -1004,7 +1004,7 @@ class MLLiveLogger:
                 totals[quote_asset] = totals.get(quote_asset, 0.0) + usd_diff
 
             for asset, total in sorted(totals.items()):
-                locked = min(max(locked_assets.get(asset, 0.0), 0.0), max(total, 0.0)) if asset != 'USD' else 0.0
+                locked = min(max(locked_assets.get(asset, 0.0), 0.0), max(total, 0.0)) if not is_quote_asset(asset) else 0.0
                 free = total - locked
                 conn.execute(
                     """
