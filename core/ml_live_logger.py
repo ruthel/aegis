@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, text, update
 
+from utils.currency import get_quote_currency, account_id as currency_account_id, is_quote_asset, make_symbol
+
 LOGGER = logging.getLogger(__name__)
 
 from core.db_orm import (
@@ -350,14 +352,14 @@ class MLLiveLogger:
 
     def _account_id(self, mode='paper'):
         exchange = os.getenv('EXCHANGE', 'kraken').lower()
-        return f'{mode}:{exchange}:USD'
+        return currency_account_id(mode, exchange)
 
     def _split_symbol_assets(self, symbol):
         value = self._normalize_live_symbol(symbol)
         if '/' in value:
             base, quote = value.split('/', 1)
             return base, quote
-        return value, 'USD'
+        return value, get_quote_currency()
 
     def _normalize_asset_code(self, asset):
         value = str(asset or '').upper()
@@ -468,7 +470,7 @@ class MLLiveLogger:
                 account_id,
                 mode,
                 os.getenv('EXCHANGE', 'kraken').lower(),
-                'USD',
+                get_quote_currency(),
                 f'{mode} account',
                 'active',
                 seed_balance,
@@ -508,7 +510,7 @@ class MLLiveLogger:
         }
         conn.execute("DELETE FROM balances WHERE account_id=?", (account_id,))
         for asset, total in sorted(totals.items()):
-            locked = min(max(locked_assets.get(asset, 0.0), 0.0), max(total, 0.0)) if asset != 'USD' else 0.0
+            locked = min(max(locked_assets.get(asset, 0.0), 0.0), max(total, 0.0)) if not is_quote_asset(asset) else 0.0
             free = total - locked
             conn.execute(
                 """
@@ -540,18 +542,18 @@ class MLLiveLogger:
         except Exception:
             pass
 
-    def record_account_deposit(self, amount, asset='USD', mode='paper', description='deposit'):
+    def record_account_deposit(self, amount, asset=None, mode='paper', description='deposit'):
         return self._record_account_cash_movement(amount, asset, mode, 'deposit', description)
 
-    def record_account_withdrawal(self, amount, asset='USD', mode='paper', description='withdrawal'):
+    def record_account_withdrawal(self, amount, asset=None, mode='paper', description='withdrawal'):
         return self._record_account_cash_movement(-abs(float(amount or 0.0)), asset, mode, 'withdrawal', description)
 
-    def _record_account_cash_movement(self, amount, asset='USD', mode='paper', entry_type='deposit', description=None):
+    def _record_account_cash_movement(self, amount, asset=None, mode='paper', entry_type='deposit', description=None):
         try:
             amount = float(amount or 0.0)
             if amount == 0:
                 return None
-            asset = str(asset or 'USD').upper()
+            asset = str(asset or get_quote_currency()).upper()
             now = now_iso()
             with self._lock:
                 conn = self._get_conn()
@@ -575,7 +577,7 @@ class MLLiveLogger:
                     description=description or entry_type,
                     source='accounting_transaction',
                 )
-                if asset == 'USD':
+                if is_quote_asset(asset):
                     state = conn.execute(
                         "SELECT paper_balance, created_at FROM bot_state WHERE mode=?",
                         (mode,),
@@ -700,7 +702,7 @@ class MLLiveLogger:
                         self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, amount, order_id, fill_id, symbol, description='buy_base_credit', source=source)
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='buy_fee', source=source)
-                        usd_delta = -gross - (fee_amount if fee_asset == quote == 'USD' else 0.0)
+                        usd_delta = -gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
                     else:
                         self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, -amount, order_id, fill_id, symbol, description='sell_base_debit', source=source)
                         self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, gross, order_id, fill_id, symbol, description='sell_quote_credit', source=source)
@@ -755,7 +757,7 @@ class MLLiveLogger:
                         """,
                         (now, now, account_id, symbol, order_id),
                     )
-                if write_ledger and quote == 'USD' and mode == 'paper':
+                if write_ledger and quote == get_quote_currency() and mode == 'paper':
                     state = conn.execute(
                         "SELECT paper_balance, created_at FROM bot_state WHERE mode=?",
                         (mode,),
@@ -845,7 +847,7 @@ class MLLiveLogger:
                     account_id,
                     mode,
                     os.getenv('EXCHANGE', 'kraken').lower(),
-                    'USD',
+                    get_quote_currency(),
                     f'{mode} account',
                     'active',
                     initial_balance,
@@ -868,7 +870,7 @@ class MLLiveLogger:
                 account_id,
                 state_created_at or now,
                 'deposit',
-                'USD',
+                get_quote_currency(),
                 initial_balance,
                 description='paper_seed_from_bot_state',
             )
@@ -986,19 +988,20 @@ class MLLiveLogger:
                     (account_id,),
                 ).fetchall()
             }
-            usd_diff = paper_balance - totals.get('USD', 0.0)
+            quote_asset = get_quote_currency()
+            usd_diff = paper_balance - totals.get(quote_asset, 0.0)
             if abs(usd_diff) >= 0.005:
                 self._insert_ledger_entry(
                     conn,
-                    f'{account_id}:reconcile:USD',
+                    f'{account_id}:reconcile:{quote_asset}',
                     account_id,
                     now,
                     'adjustment',
-                    'USD',
+                    quote_asset,
                     usd_diff,
                     description='balance_reconciliation_to_bot_state',
                 )
-                totals['USD'] = totals.get('USD', 0.0) + usd_diff
+                totals[quote_asset] = totals.get(quote_asset, 0.0) + usd_diff
 
             for asset, total in sorted(totals.items()):
                 locked = min(max(locked_assets.get(asset, 0.0), 0.0), max(total, 0.0)) if asset != 'USD' else 0.0
@@ -3106,7 +3109,8 @@ class MLLiveLogger:
                     (account_id, source, order_id),
                 ).fetchall()
                 amounts = {str(asset or '').upper(): float(amount or 0.0) for asset, amount in legs}
-                quote_amount = amounts.get('USD', 0.0)
+                quote_asset = get_quote_currency()
+                quote_amount = amounts.get(quote_asset, 0.0)
                 base_asset = None
                 base_amount = 0.0
                 for asset, amount in amounts.items():
@@ -3122,7 +3126,7 @@ class MLLiveLogger:
                     side = 'sell'
                 if not side:
                     continue
-                symbol = f'{base_asset}/USD'
+                symbol = make_symbol(base_asset, quote_asset)
                 amount = abs(base_amount)
                 price = abs(quote_amount) / amount if amount > 0 else 0.0
                 if price <= 0:
@@ -3153,9 +3157,9 @@ class MLLiveLogger:
                     INSERT OR REPLACE INTO fills
                     (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount,
                      fee_asset, source, source_position_idx, fill_ts, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, NULL, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
                     """,
-                    (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount, source, ts, ts, now),
+                    (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount, quote_asset, source, ts, ts, now),
                 )
                 if side == 'sell':
                     conn.execute(
