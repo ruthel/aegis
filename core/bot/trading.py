@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 import time
 import os
 
+from utils.currency import get_quote_currency, get_quote_balance, normalize_symbol, quote_asset_for_symbol
+
 class TradingMixin:
     """Mixin pour les opérations de trading"""
 
@@ -13,8 +15,8 @@ class TradingMixin:
             conn = self.ml_live_logger._get_conn()
             account_id = self.ml_live_logger._account_id('paper')
             row = conn.execute(
-                "SELECT free FROM balances WHERE account_id=? AND asset='USD'",
-                (account_id,),
+                "SELECT free FROM balances WHERE account_id=? AND asset=?",
+                (account_id, get_quote_currency()),
             ).fetchone()
             if row and row[0] is not None:
                 self.paper_balance = round(float(row[0]), 2)
@@ -197,7 +199,7 @@ class TradingMixin:
                     amount,
                     price,
                     fee_amount=fee_amount,
-                    fee_asset=execution.get('fee_asset') or 'USD',
+                    fee_asset=execution.get('fee_asset') or quote_asset_for_symbol(symbol),
                     mode='live',
                     source='live_trade',
                     write_ledger=False,
@@ -214,7 +216,7 @@ class TradingMixin:
             filled = float(order.get('filled') or order.get('amount') or fallback_amount or 0.0)
             cost = float(order.get('cost') or 0.0)
             fee_amount = 0.0
-            fee_asset = 'USD'
+            fee_asset = quote_asset_for_symbol(symbol)
 
             if trades:
                 trade_amount = 0.0
@@ -258,7 +260,7 @@ class TradingMixin:
                 'amount': float(fallback_amount or 0.0),
                 'cost': float(fallback_amount or 0.0) * float(fallback_price or 0.0),
                 'fee_amount': None,
-                'fee_asset': 'USD',
+                'fee_asset': quote_asset_for_symbol(symbol),
             }
 
     def _resolve_exchange_execution(self, symbol, order, fallback_amount, fallback_price, side=None):
@@ -392,7 +394,7 @@ class TradingMixin:
             return False
 
     def _calculate_fee_details(self, amount, sell_price, buy_price=None):
-        """Retourne les frais paper en USD pour audit des positions sell."""
+        """Retourne les frais paper dans la devise de cotation pour audit des positions sell."""
         fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
         amount = float(amount or 0)
         sell_price = float(sell_price or 0)
@@ -405,7 +407,7 @@ class TradingMixin:
             'buy_fee': buy_fee,
             'sell_fee': sell_fee,
             'fee': buy_fee + sell_fee,
-            'fee_currency': 'USD'
+            'fee_currency': quote_asset_for_symbol(symbol)
         }
 
     def get_open_positions(self):
@@ -570,7 +572,7 @@ class TradingMixin:
         
         if not self.paper_trading:
             balance = self.balance_manager.get_balance()
-            available = (balance.get('USD') or balance.get('USDT') or balance.get('USDC') or {}).get('free', 0)
+            available = get_quote_balance(balance).get('free', 0)
             if cost > available:
                 return None
         
@@ -601,7 +603,7 @@ class TradingMixin:
                     )
                     self.ml_live_logger.record_fill_transaction(
                         order_id, symbol, 'buy', paper_amount, paper_price,
-                        fee_amount=buy_fee, fee_asset='USD',
+                        fee_amount=buy_fee, fee_asset=quote_asset_for_symbol(symbol),
                         mode='paper', source='paper_trade'
                     )
                     self._refresh_paper_balance_from_accounting()
@@ -616,7 +618,7 @@ class TradingMixin:
                     'filled': paper_amount,
                     'cost': paper_cost,
                     'status': 'closed',
-                    'fee': {'cost': buy_fee, 'currency': 'USD'},
+                    'fee': {'cost': buy_fee, 'currency': quote_asset_for_symbol(symbol)},
                     'paper_execution': paper_exec,
                 }
                 price = paper_price
@@ -721,7 +723,7 @@ class TradingMixin:
                     )
                     self.ml_live_logger.record_fill_transaction(
                         order_id, symbol, 'sell', paper_amount, paper_price,
-                        fee_amount=sell_fee, fee_asset='USD',
+                        fee_amount=sell_fee, fee_asset=quote_asset_for_symbol(symbol),
                         mode='paper', source='paper_trade'
                     )
                     self._refresh_paper_balance_from_accounting()
@@ -735,7 +737,7 @@ class TradingMixin:
                     'filled': paper_amount,
                     'cost': revenue,
                     'status': 'closed',
-                    'fee': {'cost': sell_fee, 'currency': 'USD'},
+                    'fee': {'cost': sell_fee, 'currency': quote_asset_for_symbol(symbol)},
                     'paper_execution': paper_exec,
                 }
                 price = paper_price
@@ -882,7 +884,7 @@ class TradingMixin:
             return None
   
     def sell_limit(self, symbol, amount, price=None):
-        """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS + Validation 5 USD"""
+        """Ordre limite de vente avec prix cible intelligent + GARANTIE PROFIT APRÈS FRAIS + Validation 5 {get_quote_currency()}"""
         try:
             prediction = None
             crypto = symbol.split('/')[0]
@@ -927,8 +929,8 @@ class TradingMixin:
             MIN_NOTIONAL = self.get_min_amount(symbol)['min_cost']
             
             if notional_value < MIN_NOTIONAL:
-                print(f"❌ Montant vente {notional_value:.2f} USD < minimum {MIN_NOTIONAL} USD")
-                print(f"   Quantité: {amount:.8f} {crypto} × Prix: {price:.2f} = {notional_value:.2f} USD")
+                print(f"❌ Montant vente {notional_value:.2f} USD < minimum {MIN_NOTIONAL} {get_quote_currency()}")
+                print(f"   Quantité: {amount:.8f} {crypto} × Prix: {price:.2f} = {notional_value:.2f} {get_quote_currency()}")
                 return None
             
             if self.paper_trading:
@@ -956,7 +958,7 @@ class TradingMixin:
                     'position_size_crypto': amount, 'position_size_usd': amount * price
                 }
                 self.state.setdefault('positions', []).append(position)
-                print(f"🧪 PAPER - Ordre limite VENTE: {amount:.6f} {symbol} @ {price:.6f} ({notional_value:.2f} USD)")
+                print(f"🧪 PAPER - Ordre limite VENTE: {amount:.6f} {symbol} @ {price:.6f} ({notional_value:.2f} {get_quote_currency()})")
                 return order
             else:
                 balance = self.balance_manager.get_balance()
@@ -1007,12 +1009,12 @@ class TradingMixin:
                                 f"🎯 ORDRE LIMITE PLACÉ\n"
                                 f"Crypto: {crypto}\n"
                                 f"Quantité: {amount:.6f}\n"
-                                f"Prix cible: {price:.2f} USD\n"
-                                f"Valeur: {notional_value:.2f} USD\n"
+                                f"Prix cible: {price:.2f} {get_quote_currency()}\n"
+                                f"Valeur: {notional_value:.2f} {get_quote_currency()}\n"
                                 f"Profit attendu: +{profit_pct:.2f}%"
                             )
                 
-                print(f"✅ Ordre limite créé: {amount:.6f} {crypto} @ {price:.6f} ({notional_value:.2f} USD)")
+                print(f"✅ Ordre limite créé: {amount:.6f} {crypto} @ {price:.6f} ({notional_value:.2f} {get_quote_currency()})")
                 return order
         except Exception as e:
             print(f"❌ Erreur vente limite: {e}")
@@ -1066,7 +1068,7 @@ class TradingMixin:
                 price = float(open_pos[symbol].get('entry_price', 0.0) or 0.0)
                 if price > 0:
                     return price
-            std_sym = symbol.replace('/USD', '/USDT') if symbol.endswith('/USD') else symbol
+            std_sym = symbol.replace('/USD', '/USDT') if get_quote_currency() == 'USD' and symbol.endswith('/USD') else symbol
             if std_sym in open_pos:
                 price = float(open_pos[std_sym].get('entry_price', 0.0) or 0.0)
                 if price > 0:
@@ -1083,7 +1085,7 @@ class TradingMixin:
                     "SELECT buy_price FROM ml_trade_outcomes WHERE mode=? AND symbol=? ORDER BY timestamp DESC LIMIT 1",
                     (mode, symbol)
                 ).fetchone()
-                if not row and symbol.endswith('/USD'):
+                if not row and get_quote_currency() == 'USD' and symbol.endswith('/USD'):
                     row = conn.execute(
                         "SELECT buy_price FROM ml_trade_outcomes WHERE mode=? AND symbol=? ORDER BY timestamp DESC LIMIT 1",
                         (mode, symbol.replace('/USD', '/USDT'))
@@ -1135,7 +1137,7 @@ class TradingMixin:
                 sell_fee = price * amount * self.trading_fee
                 total_fees = buy_fee + sell_fee
                 
-                print(f"💰 P&L: {pnl:+.2f} USD (Frais: -{total_fees:.4f} USD)")
+                print(f"💰 P&L: {pnl:+.2f} USD (Frais: -{total_fees:.4f} {get_quote_currency()})")
                 
                 return pnl
         return None
@@ -1333,7 +1335,7 @@ class TradingMixin:
             previous_orders = dict(self.pending_orders)
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
+                symbol = normalize_symbol(pair)
                 open_orders = self.safe_request(self.exchange.fetch_open_orders, symbol)
                 
                 for order in open_orders:
@@ -1368,7 +1370,7 @@ class TradingMixin:
             print(f"⚠️ Erreur detect_order_modifications: {e}")
     
     def optimize_by_partial_sell(self, symbol, balance, min_cost_needed, usd_available):
-        """Optimise en vendant partiellement la position pour libérer des USD"""
+        """Optimise en vendant partiellement la position pour libérer des {get_quote_currency()}"""
         print(f"   🔄 OPTIMISATION PAR VENTE PARTIELLE:")
         
         base_currency = symbol.split('/')[0]
@@ -1428,7 +1430,7 @@ class TradingMixin:
             trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD').split(',')
             
             for pair in trading_pairs:
-                symbol = pair if '/' in pair else (f"{pair.strip()[:-3]}/{pair.strip()[-3:]}" if pair.strip().endswith('USD') else f"{pair.strip()[:3]}/{pair.strip()[3:]}")
+                symbol = normalize_symbol(pair)
                 
                 # Récupérer tous les trades des 30 derniers jours
                 trades = self.safe_request(self.exchange.fetch_my_trades, symbol, since=since)
@@ -1512,7 +1514,7 @@ class TradingMixin:
             self.state['global_stats_30d'] = stats
             self.save_state()
             
-            print(f"📊 Win Rate (30j): {stats['winrate']:.1f}% | {stats['total_cycles']} cycles | {stats['total_pnl']:+.2f} USD")
+            print(f"📊 Win Rate (30j): {stats['winrate']:.1f}% | {stats['total_cycles']} cycles | {stats['total_pnl']:+.2f} {get_quote_currency()}")
             
             return stats
             
