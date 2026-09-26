@@ -24,6 +24,7 @@ from core.ml_live_logger import MLLiveLogger
 from scripts.promote_challenger import compute_shadow_comparison
 from core.bot.trading import TradingMixin
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
+from utils.position_truth import classify_position_tradeability
 from scripts.train_and_evaluate_ml_model import build_training_bot_context
 from scripts.walk_forward_validation import _historical_spread_pct
 
@@ -378,6 +379,129 @@ class LiveFixTests(unittest.TestCase):
             self.assertEqual(bot.get_price("BTC/USD"), 123.45)
             self.assertEqual(bot.get_price("BTC/USD"), 123.45)
         self.assertEqual(bot.exchange.calls, 1)
+
+    def test_position_truth_classifies_dust_by_amount_and_value(self):
+        by_amount = classify_position_tradeability(
+            amount=0.00001,
+            price=3000.0,
+            min_amount=0.0001,
+            min_cost=0.5,
+        )
+        self.assertFalse(by_amount["tradeable"])
+        self.assertEqual(by_amount["reason"], "below_min_amount")
+
+        by_value = classify_position_tradeability(
+            amount=0.0001,
+            price=10.0,
+            min_amount=0.00001,
+            min_cost=0.5,
+        )
+        self.assertFalse(by_value["tradeable"])
+        self.assertEqual(by_value["reason"], "below_min_cost")
+
+        real = classify_position_tradeability(
+            amount=0.01,
+            price=3000.0,
+            min_amount=0.0001,
+            min_cost=0.5,
+        )
+        self.assertTrue(real["tradeable"])
+
+    def test_capital_manager_excludes_live_dust_ghost_from_open_positions(self):
+        class LoggerStub:
+            def _get_conn(self):
+                return object()
+
+            def _positions_from_accounting(self, conn, mode):
+                return [{
+                    "symbol": "ETH/USD",
+                    "side": "buy",
+                    "status": "opened",
+                    "amount": 1.0,
+                    "price": 3000.0,
+                    "closed_at": None,
+                }]
+
+        class BalanceStub:
+            def get_balance(self, **kwargs):
+                return {"ETH": {"free": 0.000001, "used": 0.0, "total": 0.000001}}
+
+        reconciled = []
+        bot = SimpleNamespace(
+            paper_trading=False,
+            ml_live_logger=LoggerStub(),
+            balance_manager=BalanceStub(),
+        )
+        bot._get_live_position_tradeability = lambda symbol, **kwargs: {
+            "tradeable": False,
+            "reason": "below_min_cost",
+            "amount": 0.000001,
+            "value": 0.003,
+        }
+        bot._reconcile_live_dust_position = lambda symbol, **kwargs: reconciled.append(symbol)
+
+        manager = CapitalManager(bot)
+        self.assertEqual(manager._open_positions_for_active_mode(), [])
+        self.assertEqual(reconciled, ["ETH/USD"])
+
+    def test_exit_engine_does_not_evaluate_live_dust_position(self):
+        from core.trading_bot import TradingBot
+
+        bot = object.__new__(TradingBot)
+        bot.paper_trading = False
+        bot.exit_decision_engine = object()
+        bot.trailing_stop_manager = SimpleNamespace(
+            positions={"ETH/USD": {"amount": 1.0, "entry_price": 3000.0}}
+        )
+        bot._get_live_position_tradeability = lambda *args, **kwargs: {
+            "tradeable": False,
+            "reason": "below_min_cost",
+            "amount": 0.000001,
+            "value": 0.003,
+        }
+        reconciled = []
+        bot._reconcile_live_dust_position = lambda symbol, **kwargs: reconciled.append(symbol)
+
+        result = TradingBot._evaluate_exit_engine_for_symbol(bot, "ETH/USD", 3000.0)
+        self.assertIsNone(result)
+        self.assertEqual(reconciled, ["ETH/USD"])
+
+    def test_logger_reconciles_dust_lineage_without_exit_outcome(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = os.path.join(td, "aegis.sqlite3")
+            logger = MLLiveLogger(data_dir=td, sqlite_file=db)
+            logger.mark_entry_opened(
+                "ETH/USD",
+                "entry-dust",
+                order={"id": "dust-order"},
+                price=3000.0,
+                amount=0.01,
+                mode="live",
+            )
+            self.assertIn("ETH/USD", logger.load_open_entries(mode="live"))
+
+            removed = logger.reconcile_open_entry_as_dust(
+                "ETH/USD",
+                mode="live",
+                actual_amount=0.000001,
+                actual_value=0.003,
+                reason="below_min_cost",
+            )
+            self.assertTrue(removed)
+            self.assertNotIn("ETH/USD", logger.load_open_entries(mode="live"))
+
+            conn = logger._get_conn()
+            outcomes = conn.execute(
+                "SELECT COUNT(*) FROM ml_trade_outcomes WHERE symbol=? AND mode='live'",
+                ("ETH/USD",),
+            ).fetchone()[0]
+            audits = conn.execute(
+                "SELECT COUNT(*) FROM sys_audit WHERE symbol=? AND event_type='position_reconciled_dust'",
+                ("ETH/USD",),
+            ).fetchone()[0]
+            self.assertEqual(outcomes, 0)
+            self.assertEqual(audits, 1)
+            logger.close()
 
     def test_execution_spread_uses_websocket_bid_ask(self):
         bot = FakeBot()
