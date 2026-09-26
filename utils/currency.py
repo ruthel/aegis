@@ -41,3 +41,24 @@ def quote_asset_for_symbol(symbol: str) -> str:
 
 def account_id(mode: str, exchange: str, quote: str | None = None) -> str:
     return f"{str(mode or 'paper').lower()}:{str(exchange or 'kraken').lower()}:{str(quote or get_quote_currency()).upper()}"
+
+
+def quote_asset_candidates(quote: str | None = None) -> tuple[str, ...]:
+    q = str(quote or get_quote_currency()).upper()
+    if q == "USD":
+        return ("USD", "USDT", "USDC")
+    return (q,)
+
+
+def get_quote_balance(balance: dict, quote: str | None = None) -> dict:
+    if not isinstance(balance, dict):
+        return {}
+    for asset in quote_asset_candidates(quote):
+        data = balance.get(asset)
+        if data:
+            return data
+    return {}
+
+
+def is_quote_asset(asset: str, quote: str | None = None) -> bool:
+    return str(asset or "").upper() in quote_asset_candidates(quote)
