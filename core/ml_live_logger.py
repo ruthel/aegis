@@ -225,8 +225,6 @@ class MLLiveLogger:
                 self._migrate_support_touch_results(conn)
                 self._migrate_bot_state_rows(conn)
                 self._migrate_bot_state_columns(conn)
-                self._ensure_column(conn, 'bot_state', 'quote_currency', 'TEXT')
-                conn.execute("UPDATE bot_state SET quote_currency='USD' WHERE quote_currency IS NULL OR TRIM(quote_currency)='' ")
                 self._migrate_bot_process_to_bot_state(conn)
                 self._ensure_cryptos_columns(conn)
                 self._ensure_column(conn, 'bot_market_context', 'symbol_regime', 'TEXT')
@@ -289,6 +287,11 @@ class MLLiveLogger:
                     pass
                 conn.execute('DROP TABLE IF EXISTS support_touch_trade_results')
                 Base.metadata.create_all(self._Session.kw['bind'])
+                self._ensure_column(conn, 'bot_state', 'quote_currency', 'TEXT')
+                conn.execute(
+                    "UPDATE bot_state SET quote_currency='USD' "
+                    "WHERE quote_currency IS NULL OR TRIM(quote_currency)=''"
+                )
                 self._migrate_ml_open_entries_mode(conn)
                 self._migrate_bot_daily_stats_mode(conn)
                 self._migrate_live_symbols_to_cryptos(conn)
