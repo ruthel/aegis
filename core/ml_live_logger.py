@@ -2262,8 +2262,9 @@ class MLLiveLogger:
             conn.execute(
                 f"""
                 INSERT OR REPLACE INTO bot_state
-                (mode, paper_balance, initial_balance, updated_at, created_at)
+                (mode, quote_currency, paper_balance, initial_balance, updated_at, created_at)
                 SELECT mode,
+                       COALESCE({select_columns['quote_currency']}, 'USD'),
                        {select_columns['paper_balance']},
                        {select_columns['initial_balance']},
                        COALESCE({select_columns['updated_at']}, datetime('now')),
