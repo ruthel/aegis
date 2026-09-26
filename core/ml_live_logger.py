@@ -4729,6 +4729,56 @@ class MLLiveLogger:
         except Exception:
             return {}
 
+    def reconcile_open_entry_as_dust(
+        self,
+        symbol,
+        mode='live',
+        actual_amount=None,
+        actual_value=None,
+        reason='dust_no_position',
+    ):
+        """Retire un lineage ouvert devenu dust sans créer de faux exit outcome."""
+        mode = str(mode or 'live').lower()
+        symbol = str(symbol or '')
+        if not symbol:
+            return False
+        try:
+            entry_id = None
+            removed = False
+            with self._orm_session() as session:
+                row = session.get(MlOpenEntry, (mode, symbol))
+                if row:
+                    entry_id = row.entry_id
+                    session.delete(row)
+                    removed = True
+                if entry_id:
+                    decision = session.get(DecisionLog, entry_id)
+                    if decision:
+                        decision.label_status = 'reconciled_dust'
+                session.commit()
+
+            if removed:
+                self.append_event({
+                    'event_id': self._new_id('position_reconciled_dust'),
+                    'event_type': 'position_reconciled_dust',
+                    'timestamp': datetime.now().isoformat(),
+                    'mode': mode,
+                    'symbol': symbol,
+                    'entry_id': entry_id,
+                    'actual_amount': self._clean(actual_amount),
+                    'actual_value': self._clean(actual_value),
+                    'reason': str(reason or 'dust_no_position'),
+                })
+            return removed
+        except Exception as exc:
+            LOGGER.exception(
+                "Dust reconciliation failed: symbol=%s mode=%s",
+                symbol,
+                mode,
+                exc_info=exc,
+            )
+            return False
+
     def load_open_entries(self, mode='paper'):
         try:
             mode = str(mode or 'paper').lower()
