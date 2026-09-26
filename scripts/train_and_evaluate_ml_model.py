@@ -34,6 +34,7 @@ from core.signal_engine import SignalEngine
 from utils.pattern_analyzer import PatternAnalyzer
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from utils.exit_engine import ExitDecisionEngine
+from utils.currency import get_quote_currency, make_symbol
 from scripts.trade_signals import simulate_trade
 
 
@@ -937,14 +938,14 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         if use_lightgbm is None:
             use_lightgbm = os.getenv('ML_USE_LIGHTGBM', 'true').lower() == 'true'
 
-        # Fetch historique via API REST Kraken directe (paires USD réelles), frais 0.4%
+        # Fetch historique sur la quote Aegis active; Kraken archive si assez profonde, Coinbase sinon.
         exchange = None  # plus utilisé pour le fetch, on passe par requests
         ml_engine = MLEngine(model_dir=output_dir)
         ml_engine.model_path = challenger_path
         analyzer = PatternAnalyzer(bot=None)
         signal_engine = SignalEngine(analyzer)
 
-        pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'ADA/USD']
+        pairs = [make_symbol(base) for base in ('BTC', 'ETH', 'SOL', 'ADA')]
         if os.getenv('ML_ARCHIVE_KRAKEN_BEFORE_TRAIN', 'true').lower() == 'true':
             try:
                 from scripts.archive_kraken_ohlcv import archive_universe
@@ -966,8 +967,9 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         exit_max_hold = int(os.getenv('ML_EXIT_MAX_HOLD_CANDLES', '960'))
         exit_trend_enabled = os.getenv('ML_EXIT_TREND_EXIT', 'true').lower() == 'true'
         exit_trend_confirm = int(os.getenv('ML_EXIT_TREND_CONFIRM_BARS', '2'))
-        btc_history = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='15m', start_date=start_date)
-        btc_history_1h = fetch_symbol_history_2026(exchange, 'BTC/USD', timeframe='1h', start_date=start_date)
+        btc_symbol = make_symbol('BTC')
+        btc_history = fetch_symbol_history_2026(exchange, btc_symbol, timeframe='15m', start_date=start_date)
+        btc_history_1h = fetch_symbol_history_2026(exchange, btc_symbol, timeframe='1h', start_date=start_date)
 
         X_samples, y_labels, sizing_targets, pnl_targets, sample_timestamps = [], [], [], [], []
         training_histories = {}
@@ -977,12 +979,12 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         signal_type_counts = {}
         for symbol in pairs:
             print(f"  📊 Fetch {symbol} (15m, 5m, 1h, 4h, 1d)...")
-            klines_15m = btc_history if symbol == 'BTC/USD' and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
+            klines_15m = btc_history if symbol == btc_symbol and btc_history else fetch_symbol_history_2026(exchange, symbol, timeframe='15m', start_date=start_date)
             if len(klines_15m) < 100:
                 continue
             # Fetch real multi-TF klines via Kraken REST
             klines_5m_full = fetch_symbol_history_2026(exchange, symbol, timeframe='5m', start_date=start_date)
-            klines_1h_full = btc_history_1h if symbol == 'BTC/USD' else fetch_symbol_history_2026(exchange, symbol, timeframe='1h', start_date=start_date)
+            klines_1h_full = btc_history_1h if symbol == btc_symbol else fetch_symbol_history_2026(exchange, symbol, timeframe='1h', start_date=start_date)
             # Coinbase ne supporte pas '4h' -> on l'agrège depuis le 1h (4 bougies 1h = 1 bougie 4h)
             klines_4h_full = aggregate_ohlcv(klines_1h_full, 4)
             klines_1d_full = fetch_symbol_history_2026(exchange, symbol, timeframe='1d', start_date=start_date)
@@ -1206,6 +1208,7 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
             'training_start': datetime.fromtimestamp(float(np.min(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
             'training_end': datetime.fromtimestamp(float(np.max(ts_train)), timezone.utc).isoformat() if len(ts_train) else None,
             'data_provider': '+'.join(sorted(_TRAINING_DATA_PROVIDERS)) if _TRAINING_DATA_PROVIDERS else 'unknown',
+            'quote_currency': get_quote_currency(),
         }
 
         # Stats du dataset d'entraînement
