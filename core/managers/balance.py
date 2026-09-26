@@ -2,7 +2,7 @@
 import time
 import os
 
-from utils.currency import get_quote_currency, get_quote_balance, is_quote_asset, split_symbol
+from utils.currency import get_quote_currency, get_quote_balance, get_trading_pairs, is_quote_asset, split_symbol
 
 class BalanceManager:
     """Gestionnaire centralisé pour les soldes spot et paper."""
@@ -20,7 +20,7 @@ class BalanceManager:
         
     def _get_allowed_assets(self):
         """Récupère la liste des cryptos autorisées depuis TRADING_PAIRS"""
-        trading_pairs = os.getenv('TRADING_PAIRS', 'BTCUSD,ETHUSD,SOLUSD').split(',')
+        trading_pairs = get_trading_pairs()
         allowed_assets = set([get_quote_currency(), 'USD', 'USDT', 'USDC', 'CAD', 'EUR', 'GBP', 'AUD', 'JPY'])
         extra_assets = os.getenv('EXTRA_BALANCE_ASSETS', '')
         for asset in extra_assets.split(','):
