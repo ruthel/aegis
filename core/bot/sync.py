@@ -198,10 +198,7 @@ class SyncMixin:
                 if trailing_manager:
                     for pair in trading_pairs:
                         raw = pair.strip()
-                        symbol = raw if '/' in raw else (
-                            f"{raw[:-3]}/{raw[-3:]}" if raw.endswith('USD')
-                            else f"{raw[:3]}/{raw[3:]}"
-                        )
+                        symbol = normalize_symbol(raw)
                         base_currency = symbol.split('/')[0]
                         asset_balance = balance.get(base_currency, {}) or {}
                         total = float(asset_balance.get('free') or 0.0) + float(
