@@ -8,10 +8,14 @@ import argparse
 import gzip
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 import ccxt
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from utils.currency import make_symbol
 
 
