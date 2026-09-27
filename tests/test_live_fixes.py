@@ -698,6 +698,17 @@ class LiveFixTests(unittest.TestCase):
         ):
             self.assertGreater(ws._compute_reconnect_delay(), 100.0)
 
+    def test_websocket_stale_price_forces_rest_fallback(self):
+        ws = self._minimal_ws_manager()
+        ws.prices = {"BTCUSD": 100.0}
+        ws.last_tick_ts = {"BTCUSD": time.time() - 300}
+        with patch.dict(os.environ, {"WS_PRICE_MAX_AGE_SECONDS": "30"}, clear=False):
+            self.assertIsNone(ws.get_price("BTC/USD"))
+
+        ws.last_tick_ts["BTCUSD"] = time.time()
+        with patch.dict(os.environ, {"WS_PRICE_MAX_AGE_SECONDS": "30"}, clear=False):
+            self.assertEqual(ws.get_price("BTC/USD"), 100.0)
+
     def test_execution_spread_uses_websocket_bid_ask(self):
         bot = FakeBot()
         manager = ExecutionManager(bot)
