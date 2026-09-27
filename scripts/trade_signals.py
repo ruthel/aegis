@@ -502,9 +502,18 @@ def main():
     try:
         from core.ml_live_logger import MLLiveLogger
         data_dir = os.path.dirname(args.output) or 'data'
+        sqlite_file = os.getenv(
+            'ML_LIVE_SQLITE_FILE',
+            os.path.join(data_dir, 'aegis_db.sqlite3'),
+        )
+        # The dashboard/bot already owns and initializes the live DB. Running
+        # full schema migrations from this helper subprocess can contend with
+        # live decision writes. Only bootstrap schema when the DB does not exist.
+        initialize_schema = not os.path.exists(sqlite_file)
         with MLLiveLogger(
             data_dir=data_dir,
-            sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', os.path.join(data_dir, 'aegis_db.sqlite3'))
+            sqlite_file=sqlite_file,
+            initialize_schema=initialize_schema,
         ) as logger:
             run_id = logger.record_support_touch_backtest(summary)
     except Exception:
