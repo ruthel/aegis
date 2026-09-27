@@ -584,8 +584,9 @@ class MLLiveLogger:
                 return None
             asset = str(asset or get_quote_currency()).upper()
             now = now_iso()
-            with self._lock:
-                conn = self._get_conn()
+            ledger_id = f"{self._account_id(mode)}:{entry_type}:{asset}:{uuid.uuid4().hex}"
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 if amount < 0:
                     current = conn.execute(
@@ -594,7 +595,6 @@ class MLLiveLogger:
                     ).fetchone()
                     if current and float(current[0] or 0.0) + amount < -1e-9:
                         return None
-                ledger_id = f"{account_id}:{entry_type}:{asset}:{uuid.uuid4().hex}"
                 self._insert_ledger_entry(
                     conn,
                     ledger_id,
@@ -629,9 +629,11 @@ class MLLiveLogger:
                         ),
                     )
                 self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return ledger_id
-        except Exception:
+                return ledger_id
+
+            return self._run_raw_write(_write, label='account_cash_movement')
+        except Exception as exc:
+            LOGGER.warning("SQLite cash movement failed: %s", exc)
             return None
 
     def record_order_transaction(self, symbol, side, amount, price=None, order_type='market', status='open', order_id=None, mode='paper', source='accounting_transaction', recalculate_balances=True):
@@ -641,8 +643,8 @@ class MLLiveLogger:
             side = str(side or '').lower()
             status = str(status or 'open').lower()
             order_id = str(order_id or f"{source}_{side}_{symbol.replace('/', '')}_{uuid.uuid4().hex[:12]}")
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 conn.execute(
                     """
@@ -671,9 +673,11 @@ class MLLiveLogger:
                 )
                 if recalculate_balances:
                     self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return order_id
-        except Exception:
+                return order_id
+
+            return self._run_raw_write(_write, label='record_order_transaction')
+        except Exception as exc:
+            LOGGER.warning("SQLite order transaction failed: %s", exc)
             return None
 
     def record_fill_transaction(self, order_id, symbol, side, amount, price, fee_amount=None, fee_asset=None, mode='paper', source='accounting_transaction', write_ledger=True, recalculate_balances=True):
@@ -691,8 +695,8 @@ class MLLiveLogger:
             fee_asset = str(fee_asset or quote).upper()
             order_id = str(order_id or f"{source}_{side}_{symbol.replace('/', '')}_{uuid.uuid4().hex[:12]}")
             fill_id = f"{self._account_id(mode)}:fill:{uuid.uuid4().hex}"
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 existing_order = conn.execute(
                     """
@@ -714,6 +718,7 @@ class MLLiveLogger:
                         (account_id, order_id, symbol, side, amount, price, source, now, now, now),
                     )
                     existing_order = (order_id, amount, 0.0, None)
+
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO fills
@@ -723,54 +728,43 @@ class MLLiveLogger:
                     """,
                     (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount, fee_asset, source, now, now, now),
                 )
+
                 gross = amount * price
-                usd_delta = 0.0
+                quote_delta = 0.0
                 if write_ledger:
                     if side == 'buy':
                         self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, -gross, order_id, fill_id, symbol, description='buy_quote_debit', source=source)
                         self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, amount, order_id, fill_id, symbol, description='buy_base_credit', source=source)
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='buy_fee', source=source)
-                        usd_delta = -gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
+                        quote_delta = -gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
                     else:
                         self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, -amount, order_id, fill_id, symbol, description='sell_base_debit', source=source)
                         self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, gross, order_id, fill_id, symbol, description='sell_quote_credit', source=source)
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='sell_fee', source=source)
-                        usd_delta = gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
+                        quote_delta = gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
+
                 requested_amount = float(existing_order[1] or amount)
                 previous_filled = float(existing_order[2] or 0.0)
                 previous_avg = float(existing_order[3] or 0.0)
                 new_filled = previous_filled + amount
-                if new_filled > 0:
-                    avg_fill_price = (
-                        (previous_avg * previous_filled) + (price * amount)
-                    ) / new_filled
-                else:
-                    avg_fill_price = price
+                avg_fill_price = (
+                    ((previous_avg * previous_filled) + (price * amount)) / new_filled
+                    if new_filled > 0 else price
+                )
                 is_filled = new_filled >= max(0.0, requested_amount - 1e-12)
                 order_status = 'filled' if is_filled else 'partially_filled'
                 closed_at = now if is_filled else None
                 conn.execute(
                     """
                     UPDATE orders
-                    SET status=?,
-                        filled_amount=?,
-                        avg_fill_price=?,
-                        closed_at=?,
-                        updated_at=?
+                    SET status=?, filled_amount=?, avg_fill_price=?, closed_at=?, updated_at=?
                     WHERE account_id=? AND order_id=?
                     """,
-                    (
-                        order_status,
-                        new_filled,
-                        avg_fill_price,
-                        closed_at,
-                        now,
-                        account_id,
-                        order_id,
-                    ),
+                    (order_status, new_filled, avg_fill_price, closed_at, now, account_id, order_id),
                 )
+
                 if side == 'sell':
                     conn.execute(
                         """
@@ -778,14 +772,12 @@ class MLLiveLogger:
                         SET status='cancelled',
                             closed_at=COALESCE(closed_at, ?),
                             updated_at=?
-                        WHERE account_id=?
-                          AND symbol=?
-                          AND side='sell'
-                          AND status='open'
-                          AND order_id<>?
+                        WHERE account_id=? AND symbol=? AND side='sell'
+                          AND status='open' AND order_id<>?
                         """,
                         (now, now, account_id, symbol, order_id),
                     )
+
                 if write_ledger and quote == get_quote_currency() and mode == 'paper':
                     state = conn.execute(
                         "SELECT paper_balance, created_at FROM bot_state WHERE mode=?",
@@ -801,25 +793,27 @@ class MLLiveLogger:
                         """,
                         (
                             mode,
-                            previous_balance + usd_delta,
+                            previous_balance + quote_delta,
                             mode,
-                            previous_balance + usd_delta,
+                            previous_balance + quote_delta,
                             created_at,
                             now,
                         ),
                     )
                 if recalculate_balances:
                     self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return fill_id
-        except Exception:
+                return fill_id
+
+            return self._run_raw_write(_write, label='record_fill_transaction')
+        except Exception as exc:
+            LOGGER.warning("SQLite fill transaction failed: %s", exc)
             return None
 
     def cancel_open_orders(self, symbol=None, side=None, mode='paper', source=None):
         try:
             now = now_iso()
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 clauses = ["account_id=?", "status='open'"]
                 params = [account_id]
@@ -839,9 +833,11 @@ class MLLiveLogger:
                 """
                 conn.execute(sql, [now, now, *params])
                 self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return True
-        except Exception:
+                return True
+
+            return bool(self._run_raw_write(_write, label='cancel_open_orders'))
+        except Exception as exc:
+            LOGGER.warning("SQLite cancel orders failed: %s", exc)
             return False
 
     def _sync_accounting_from_positions(self, conn, positions, mode='paper', paper_balance=None, initial_balance=None, state_created_at=None):
