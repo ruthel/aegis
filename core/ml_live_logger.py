@@ -4068,9 +4068,10 @@ class MLLiveLogger:
         settings = summary.get('settings') if isinstance(summary.get('settings'), dict) else {}
 
         try:
-            with self._orm_session() as session:
+            stored_at = now_iso()
+
+            def _write(session):
                 session.execute(delete(SupportTouchResult).where(SupportTouchResult.run_id == run_id))
-                stored_at = now_iso()
                 for item in results:
                     if not isinstance(item, dict):
                         continue
@@ -4100,9 +4101,11 @@ class MLLiveLogger:
                         worst_trade_percent=item.get('worst_trade_percent'),
                         stored_at=stored_at,
                     ))
-                session.commit()
-            return run_id
-        except Exception:
+                return run_id
+
+            return self._run_orm_write(_write, label='support_touch_backtest')
+        except Exception as exc:
+            LOGGER.warning("SQLite support-touch write failed: %s", exc)
             return None
 
     def _compact_support_touch_result(self, item):
@@ -4248,19 +4251,11 @@ class MLLiveLogger:
             ))
 
     def record_decision_journal(self, entry, mode='paper', max_entries=5000):
-        """Store final bot decisions in the unified decision log table.
-
-        Older code still calls this method after the decision journal tables were
-        folded into decision_logs. Keep the public API stable and map the useful
-        journal fields to the unified schema.
-        """
+        """Store final bot decisions in the unified decision log table."""
         if not isinstance(entry, dict):
             return False
         try:
             metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
-            # Les métriques d'entrée ML sont imbriquées sous metrics['ml_decision']
-            # (cf. _build_ml_entry_decision_metrics). On lit donc p_win/p_continue/min_*
-            # depuis ce sous-dict en priorité, avec fallback sur le niveau racine.
             ml_decision = metrics.get('ml_decision') if isinstance(metrics.get('ml_decision'), dict) else {}
             confidence = (
                 metrics.get('confidence')
@@ -4284,54 +4279,58 @@ class MLLiveLogger:
             price = metrics.get('price') if metrics.get('price') is not None else entry.get('price')
             action = str(entry.get('action') or 'decision').upper()
             allowed = bool(entry.get('allowed'))
-            event_id = (
-                entry.get('event_id')
-                or self._new_id(f"decision_{action.lower()}")
-            )
+            event_id = entry.get('event_id') or self._new_id(f"decision_{action.lower()}")
             timestamp = entry.get('timestamp') or now_iso()
+            row_mode = entry.get('mode') or mode
+            symbol = entry.get('symbol') or ''
 
-            with self._lock:
-                with self._orm_session() as session:
-                    session.merge(SysAudit(
-                        event_id=str(event_id),
-                        event_type=f"decision_{action.lower()}",
-                        timestamp=timestamp,
-                        symbol=entry.get('symbol') or '',
-                        mode=entry.get('mode') or mode,
-                    ))
-                    session.merge(DecisionLog(
-                        event_id=str(event_id),
-                        action_type=action,
-                        timestamp=timestamp,
-                        mode=entry.get('mode') or mode,
-                        symbol=entry.get('symbol') or '',
-                        entry_id=entry.get('entry_id'),
-                        decision='accepted' if allowed else 'rejected',
-                        reason=entry.get('reason'),
-                        price=self._clean(price),
-                        confidence=self._clean(confidence),
-                        min_confidence=self._clean(
-                            metrics.get('min_confidence')
-                            if metrics.get('min_confidence') is not None
-                            else metrics.get('min_score')
-                            if metrics.get('min_score') is not None
-                            else metrics.get('threshold')
-                        ),
-                        p_win=self._clean(p_win),
-                        p_continue=self._clean(p_continue),
-                        label_status='final',
-                        net_pnl_pct=self._clean(metrics.get('net_pnl_pct')),
-                        duration_minutes=self._clean(metrics.get('duration_minutes')),
-                        slippage_pct=self._clean(metrics.get('slippage_pct')),
-                        spread_pct=self._clean(metrics.get('spread_pct')),
-                        order_type=metrics.get('order_type'),
-                        duration_ms=self._clean(metrics.get('duration_ms')),
-                    ))
-                    self._trim_decision_logs(session, mode=entry.get('mode') or mode, max_entries=max_entries)
-                    session.commit()
-            return True
-        except Exception as e:
-            print(f"⚠️ Decision Log SQLite write failed: {e}")
+            def _write(session):
+                session.merge(SysAudit(
+                    event_id=str(event_id),
+                    event_type=f"decision_{action.lower()}",
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    mode=row_mode,
+                ))
+                session.merge(DecisionLog(
+                    event_id=str(event_id),
+                    action_type=action,
+                    timestamp=timestamp,
+                    mode=row_mode,
+                    symbol=symbol,
+                    entry_id=entry.get('entry_id'),
+                    decision='accepted' if allowed else 'rejected',
+                    reason=entry.get('reason'),
+                    price=self._clean(price),
+                    confidence=self._clean(confidence),
+                    min_confidence=self._clean(
+                        metrics.get('min_confidence')
+                        if metrics.get('min_confidence') is not None
+                        else metrics.get('min_score')
+                        if metrics.get('min_score') is not None
+                        else metrics.get('threshold')
+                    ),
+                    p_win=self._clean(p_win),
+                    p_continue=self._clean(p_continue),
+                    label_status='final',
+                    net_pnl_pct=self._clean(metrics.get('net_pnl_pct')),
+                    duration_minutes=self._clean(metrics.get('duration_minutes')),
+                    slippage_pct=self._clean(metrics.get('slippage_pct')),
+                    spread_pct=self._clean(metrics.get('spread_pct')),
+                    order_type=metrics.get('order_type'),
+                    duration_ms=self._clean(metrics.get('duration_ms')),
+                ))
+                self._trim_decision_logs(session, mode=row_mode, max_entries=max_entries)
+                return True
+
+            return bool(self._run_orm_write(_write, label='decision_journal'))
+        except Exception as exc:
+            LOGGER.exception(
+                "Decision Log SQLite write failed after retries: symbol=%s action=%s",
+                entry.get('symbol'),
+                entry.get('action'),
+                exc_info=exc,
+            )
             return False
 
     def record_shadow_prediction(
@@ -4687,6 +4686,12 @@ class MLLiveLogger:
                 'mode': mode,
                 'connection_mode': status.get('connection_mode'),
                 'reconnect_attempts': status.get('reconnect_attempts'),
+                'reconnect_pending': status.get('reconnect_pending'),
+                'last_message': status.get('last_message'),
+                'last_message_age_seconds': status.get('last_message_age_seconds'),
+                'last_disconnect_reason': status.get('last_disconnect_reason'),
+                'last_close_code': status.get('last_close_code'),
+                'next_reconnect_in_seconds': status.get('next_reconnect_in_seconds'),
                 'queue_size': status.get('queue_size'),
                 'queue_maxsize': status.get('queue_maxsize'),
                 'worker_alive': bool(status.get('worker_alive')),
@@ -4697,7 +4702,8 @@ class MLLiveLogger:
                     if self._normalize_live_symbol(symbol)
                 ],
             }
-            with self._orm_session() as session:
+
+            def _write(session):
                 state_key = f'live_status:{mode}'
                 row = session.get(BotAppState, state_key)
                 if not row:
@@ -4742,8 +4748,11 @@ class MLLiveLogger:
                     )
                     live_row.ws_connected = 1 if status.get('connected') else 0
                     live_row.updated_at = now
-                session.commit()
-            return True
+                return True
+
+            # Telemetry is lower priority than decisions/trades. It still retries,
+            # but with fewer attempts so it cannot block the trading loop for long.
+            return bool(self._run_orm_write(_write, label='live_status', attempts=3))
         except Exception:
             return False
 
