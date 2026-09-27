@@ -3009,7 +3009,8 @@ class MLLiveLogger:
             pid = payload.get('pid') if isinstance(payload, dict) else None
             started_at = payload.get('started_at') if isinstance(payload, dict) else None
             command = payload.get('command') if isinstance(payload, dict) else None
-            with self._orm_session() as session:
+
+            def _write(session):
                 row = session.get(BotProcess, key)
                 if row:
                     row.pid = pid
@@ -3025,19 +3026,21 @@ class MLLiveLogger:
                         created_at=now,
                         updated_at=now,
                     ))
-                session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='set_bot_process_state'))
         except Exception:
             return False
 
     def clear_bot_process_state(self, key='dashboard_bot'):
         try:
-            with self._orm_session() as session:
+            def _write(session):
                 row = session.get(BotProcess, key)
                 if row:
                     session.delete(row)
-                session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='clear_bot_process_state'))
         except Exception:
             return False
 
@@ -3053,8 +3056,7 @@ class MLLiveLogger:
 
     def refresh_accounting_mirror(self, key='paper', state=None):
         try:
-            with self._lock:
-                conn = self._get_conn()
+            def _write(conn):
                 if isinstance(state, dict):
                     self._sync_accounting_from_positions(
                         conn,
@@ -3065,9 +3067,11 @@ class MLLiveLogger:
                     )
                 else:
                     self._sync_accounting_from_bot_positions(conn, mode=key)
-                conn.commit()
-            return True
-        except Exception:
+                return True
+
+            return bool(self._run_raw_write(_write, label='refresh_accounting_mirror'))
+        except Exception as exc:
+            LOGGER.warning("SQLite accounting mirror refresh failed: %s", exc)
             return False
 
     def sync_external_balances(self, balances, mode='live', source='exchange_balance'):
@@ -3091,8 +3095,7 @@ class MLLiveLogger:
             if not clean_rows:
                 return False
 
-            with self._lock:
-                conn = self._get_conn()
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode=mode, initial_balance=0.0)
                 conn.execute("DELETE FROM balances WHERE account_id=?", (account_id,))
                 for asset, free, locked, total in clean_rows:
@@ -3104,9 +3107,11 @@ class MLLiveLogger:
                         """,
                         (account_id, asset, free, locked, total, account_id, asset, now, now),
                     )
-                conn.commit()
-            return True
-        except Exception:
+                return True
+
+            return bool(self._run_raw_write(_write, label='sync_external_balances'))
+        except Exception as exc:
+            LOGGER.warning("SQLite external balance sync failed: %s", exc)
             return False
 
     def latest_exchange_ledger_since_ms(self, mode='live', source='kraken_ledger'):
@@ -3141,12 +3146,12 @@ class MLLiveLogger:
         """Importe le ledger reel Kraken/CCXT sans deviner depuis les deltas de balance."""
         if mode == 'paper' or not entries:
             return 0
-        imported = 0
         try:
             now = now_iso()
             account_id = self._account_id(mode)
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
+                imported = 0
                 self._ensure_account(conn, mode=mode, initial_balance=0.0)
                 for entry in entries:
                     if not isinstance(entry, dict):
@@ -3164,7 +3169,6 @@ class MLLiveLogger:
                     entry_type = self._map_exchange_ledger_type(entry)
                     timestamp = entry.get('datetime') or entry.get('timestamp') or now
                     if isinstance(timestamp, (int, float)):
-                        from datetime import datetime, timezone
                         timestamp = datetime.fromtimestamp(float(timestamp) / 1000.0, tz=timezone.utc).isoformat()
                     balance_after = self._clean(entry.get('after'))
                     reference_id = entry.get('referenceId') or entry.get('reference_id')
@@ -3195,10 +3199,12 @@ class MLLiveLogger:
                     if not exists:
                         imported += 1
                 self._sync_orders_from_exchange_ledger(conn, account_id, source=source)
-                conn.commit()
-            return imported
-        except Exception:
-            return imported
+                return imported
+
+            return int(self._run_raw_write(_write, label='import_exchange_ledger') or 0)
+        except Exception as exc:
+            LOGGER.warning("SQLite exchange ledger import failed: %s", exc)
+            return 0
 
     def _sync_orders_from_exchange_ledger(self, conn, account_id, source='kraken_ledger'):
         """Cree les orders/fills locaux manquants depuis les paires trade du ledger exchange."""
