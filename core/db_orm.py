@@ -5,6 +5,8 @@ from sqlalchemy import Float, Index, Integer, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.pool import NullPool
 
+from core.runtime_tuning import SQLITE_BUSY_TIMEOUT_SECONDS
+
 
 class Base(DeclarativeBase):
     pass
@@ -568,7 +570,7 @@ def sqlite_url(sqlite_file):
 
 
 def create_sqlite_engine(sqlite_file):
-    busy_timeout_seconds = max(1.0, float(os.getenv('SQLITE_BUSY_TIMEOUT_SECONDS', '5')))
+    busy_timeout_seconds = SQLITE_BUSY_TIMEOUT_SECONDS
     busy_timeout_ms = int(busy_timeout_seconds * 1000)
     engine = create_engine(
         sqlite_url(sqlite_file),

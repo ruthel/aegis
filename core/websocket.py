@@ -6,6 +6,23 @@ from datetime import datetime
 from queue import Queue
 import websocket
 from core.ml_live_logger import MLLiveLogger
+from core.runtime_tuning import (
+    LIVE_STATUS_INTERVAL_SECONDS,
+    WS_STALE_TIMEOUT_SECONDS,
+    WS_WATCHDOG_INTERVAL_SECONDS,
+    WS_CLIENT_PING_INTERVAL_SECONDS,
+    WS_CLIENT_PING_TIMEOUT_SECONDS,
+    WS_RATE_LIMIT_BACKOFF_SECONDS,
+    WS_TRADE_PREFERRED_SECONDS,
+    WS_STABLE_CONNECTION_SECONDS,
+    WS_RECONNECT_BASE_SECONDS,
+    WS_RECONNECT_MAX_SECONDS,
+    WS_CIRCUIT_WINDOW_SECONDS,
+    WS_CIRCUIT_RECONNECTS,
+    WS_CIRCUIT_BACKOFF_SECONDS,
+    WS_CONNECT_TIMEOUT_SECONDS,
+    WS_PRICE_MAX_AGE_SECONDS,
+)
 from utils.currency import get_trading_pairs, normalize_symbol as normalize_pair
 
 websocket.enableTrace(False)
@@ -62,10 +79,7 @@ class WebSocketManager:
         self.trading_mode = 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
         # Telemetry is intentionally slower than market data. Writing the full
         # status on every second created unnecessary SQLite writer pressure.
-        self.live_status_interval = max(
-            2.0,
-            float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '5')),
-        )
+        self.live_status_interval = LIVE_STATUS_INTERVAL_SECONDS
         self._last_live_status_write = 0
         
         # Queue asynchrone pour callbacks non-bloquants
@@ -107,7 +121,7 @@ class WebSocketManager:
                 # les ticks de marché.
                 if self.is_ws_connected:
                     last_activity = float(self.last_message_ts or self.last_connected_ts or 0.0)
-                    stale_timeout = max(30.0, float(os.getenv('WS_STALE_TIMEOUT_SECONDS', '120')))
+                    stale_timeout = WS_STALE_TIMEOUT_SECONDS
                     age = (now - last_activity) if last_activity > 0 else 0.0
                     if age > stale_timeout:
                         reason = f'watchdog_stale_{age:.0f}s'
@@ -129,7 +143,7 @@ class WebSocketManager:
                         # pas le callback; le verrou empêche les doublons.
                         self._schedule_reconnect(reason)
 
-                time.sleep(max(1.0, float(os.getenv('WS_WATCHDOG_INTERVAL_SECONDS', '5'))))
+                time.sleep(WS_WATCHDOG_INTERVAL_SECONDS)
 
         _th.Thread(target=_hb, daemon=True).start()
 
@@ -186,16 +200,10 @@ class WebSocketManager:
         # repeated "ping/pong timed out" disconnects even while our reconnect
         # logic was otherwise healthy. Disable client pings by default and rely
         # on Kraken traffic + the watchdog; operators can opt back in explicitly.
-        ping_interval = max(
-            0.0,
-            float(os.getenv('WS_CLIENT_PING_INTERVAL_SECONDS', '0')),
-        )
+        ping_interval = WS_CLIENT_PING_INTERVAL_SECONDS
         run_kwargs = {'ping_interval': ping_interval}
         if ping_interval > 1.0:
-            configured_timeout = max(
-                1.0,
-                float(os.getenv('WS_CLIENT_PING_TIMEOUT_SECONDS', '10')),
-            )
+            configured_timeout = WS_CLIENT_PING_TIMEOUT_SECONDS
             run_kwargs['ping_timeout'] = min(
                 configured_timeout,
                 max(1.0, ping_interval - 1.0),
@@ -262,7 +270,7 @@ class WebSocketManager:
                     if self._looks_rate_limited(error_message):
                         self._rate_limited_until = max(
                             self._rate_limited_until,
-                            now + max(30.0, float(os.getenv('WS_RATE_LIMIT_BACKOFF_SECONDS', '120')))
+                            now + WS_RATE_LIMIT_BACKOFF_SECONDS
                         )
                 if event not in ('heartbeat', 'systemStatus', 'subscriptionStatus'):
                     print(f"[WS SYS] {event} pair={data.get('pair','')} status={data.get('status','')} err={error_message}", flush=True)
@@ -309,10 +317,7 @@ class WebSocketManager:
                 # Préférer les trades très récents, mais ne jamais laisser le
                 # flag source='trade' figer le prix indéfiniment si ce channel
                 # cesse d'émettre alors que ticker reste vivant.
-                trade_preferred_seconds = max(
-                    1.0,
-                    float(os.getenv('WS_TRADE_PREFERRED_SECONDS', '5')),
-                )
+                trade_preferred_seconds = WS_TRADE_PREFERRED_SECONDS
                 last_trade = float(self.last_trade_ts.get(symbol, 0.0) or 0.0)
                 if not last_trade or (now - last_trade) > trade_preferred_seconds:
                     current_price = float(ticker_data['c'][0])
@@ -497,7 +502,7 @@ class WebSocketManager:
         now = float(now or time.time())
         if not self.is_ws_connected or not self.connected_since_ts:
             return False
-        stable_seconds = max(30.0, float(os.getenv('WS_STABLE_CONNECTION_SECONDS', '120')))
+        stable_seconds = WS_STABLE_CONNECTION_SECONDS
         if self.reconnect_attempts > 0 and (now - self.connected_since_ts) >= stable_seconds:
             self.reconnect_attempts = 0
             self._reconnect_history.clear()
@@ -518,7 +523,7 @@ class WebSocketManager:
         if self._looks_rate_limited(message):
             self._rate_limited_until = max(
                 self._rate_limited_until,
-                now + max(30.0, float(os.getenv('WS_RATE_LIMIT_BACKOFF_SECONDS', '120')))
+                now + WS_RATE_LIMIT_BACKOFF_SECONDS
             )
         elif self._rate_limited_until <= now:
             self._rate_limited_until = 0.0
@@ -547,17 +552,17 @@ class WebSocketManager:
 
     def _compute_reconnect_delay(self, now=None):
         now = float(now or time.time())
-        base_delay = max(1.0, float(os.getenv('WS_RECONNECT_BASE_SECONDS', '2')))
-        max_delay = max(base_delay, float(os.getenv('WS_RECONNECT_MAX_SECONDS', '30')))
+        base_delay = WS_RECONNECT_BASE_SECONDS
+        max_delay = max(base_delay, WS_RECONNECT_MAX_SECONDS)
         delay = min(max_delay, base_delay * (2 ** max(0, self.reconnect_attempts - 1)))
 
-        window_seconds = max(60.0, float(os.getenv('WS_CIRCUIT_WINDOW_SECONDS', '600')))
-        threshold = max(2, int(os.getenv('WS_CIRCUIT_RECONNECTS', '5')))
+        window_seconds = WS_CIRCUIT_WINDOW_SECONDS
+        threshold = WS_CIRCUIT_RECONNECTS
         recent = [ts for ts in self._reconnect_history if now - ts <= window_seconds]
         if len(recent) >= threshold:
             delay = max(
                 delay,
-                max(15.0, float(os.getenv('WS_CIRCUIT_BACKOFF_SECONDS', '30')))
+                WS_CIRCUIT_BACKOFF_SECONDS
             )
         if self._rate_limited_until > now:
             delay = max(delay, self._rate_limited_until - now)
@@ -582,7 +587,7 @@ class WebSocketManager:
             return True
 
     def _reconnect_worker(self, reason):
-        connect_timeout = max(3.0, float(os.getenv('WS_CONNECT_TIMEOUT_SECONDS', '15')))
+        connect_timeout = WS_CONNECT_TIMEOUT_SECONDS
         try:
             while self.running and not self.is_connected():
                 self.is_ws_connected = False
@@ -669,7 +674,7 @@ class WebSocketManager:
             return None
         last_tick_map = getattr(self, 'last_tick_ts', {}) or {}
         last_tick = float(last_tick_map.get(ws_symbol, 0.0) or 0.0)
-        max_age = max(5.0, float(os.getenv('WS_PRICE_MAX_AGE_SECONDS', '120')))
+        max_age = WS_PRICE_MAX_AGE_SECONDS
         # Legacy/reconstructed objects may not expose freshness metadata. In
         # that narrow case preserve the historical behavior; normal runtime
         # objects always initialize last_tick_ts and therefore enforce max_age.
@@ -747,7 +752,7 @@ class WebSocketManager:
             return False
         last_message = float(getattr(self, 'last_message_ts', 0.0) or 0.0)
         if last_message > 0:
-            stale_timeout = max(30.0, float(os.getenv('WS_STALE_TIMEOUT_SECONDS', '120')))
+            stale_timeout = WS_STALE_TIMEOUT_SECONDS
             if time.time() - last_message > stale_timeout:
                 return False
         return True

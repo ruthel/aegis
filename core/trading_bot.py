@@ -15,6 +15,7 @@ from core.managers.balance import BalanceManager
 
 # WebSocket
 from core.websocket import WebSocketManager
+from core.runtime_tuning import TICKER_REST_CACHE_TTL_SECONDS, TICKER_REST_MIN_INTERVAL_SECONDS
 
 # Utils
 from utils.risk_manager import RiskManager, TrailingStopManager, CorrelationManager
@@ -1195,7 +1196,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def _get_rest_ticker_cached(self, symbol, force_refresh=False):
         """Fallback REST Kraken borné pour éviter une rafale quand le WS tombe."""
         now = time.time()
-        ttl = max(0.25, float(os.getenv('TICKER_REST_CACHE_TTL_SECONDS', '2')))
+        ttl = TICKER_REST_CACHE_TTL_SECONDS
         key = str(symbol)
         cached = self._rest_ticker_cache.get(key)
         if not force_refresh and cached and (now - cached.get('timestamp', 0.0)) <= ttl:
@@ -1207,7 +1208,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             if not force_refresh and cached and (now - cached.get('timestamp', 0.0)) <= ttl:
                 return cached.get('ticker')
 
-            min_interval = max(0.0, float(os.getenv('TICKER_REST_MIN_INTERVAL_SECONDS', '0.35')))
+            min_interval = TICKER_REST_MIN_INTERVAL_SECONDS
             elapsed = now - float(self._last_rest_ticker_request_ts or 0.0)
             if min_interval > 0 and elapsed < min_interval:
                 time.sleep(min_interval - elapsed)

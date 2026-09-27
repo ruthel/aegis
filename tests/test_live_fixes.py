@@ -328,8 +328,7 @@ class LiveFixTests(unittest.TestCase):
 
         ws.connected_since_ts = time.time() - 200
         ws._reconnect_history.extend([time.time() - 20, time.time() - 10])
-        with patch.dict(os.environ, {"WS_STABLE_CONNECTION_SECONDS": "30"}, clear=False):
-            self.assertTrue(ws._maybe_mark_connection_stable())
+        self.assertTrue(ws._maybe_mark_connection_stable())
         self.assertEqual(ws.reconnect_attempts, 0)
         self.assertEqual(len(ws._reconnect_history), 0)
 
@@ -338,9 +337,8 @@ class LiveFixTests(unittest.TestCase):
         ws.ws = object()
         ws.ws_thread = FakeThread()
         ws.is_ws_connected = True
-        ws.last_message_ts = time.time() - 120
-        with patch.dict(os.environ, {"WS_STALE_TIMEOUT_SECONDS": "30"}, clear=False):
-            self.assertFalse(ws.is_connected())
+        ws.last_message_ts = time.time() - 300
+        self.assertFalse(ws.is_connected())
 
     def test_websocket_ignores_close_from_stale_socket(self):
         ws = self._minimal_ws_manager()
@@ -368,16 +366,8 @@ class LiveFixTests(unittest.TestCase):
         bot._last_rest_ticker_request_ts = 0.0
         bot.safe_request = lambda fn, *args, **kwargs: fn(*args, **kwargs)
 
-        with patch.dict(
-            os.environ,
-            {
-                "TICKER_REST_CACHE_TTL_SECONDS": "10",
-                "TICKER_REST_MIN_INTERVAL_SECONDS": "0",
-            },
-            clear=False,
-        ):
-            self.assertEqual(bot.get_price("BTC/USD"), 123.45)
-            self.assertEqual(bot.get_price("BTC/USD"), 123.45)
+        self.assertEqual(bot.get_price("BTC/USD"), 123.45)
+        self.assertEqual(bot.get_price("BTC/USD"), 123.45)
         self.assertEqual(bot.exchange.calls, 1)
 
     def test_position_truth_classifies_dust_by_amount_and_value(self):
@@ -578,16 +568,11 @@ class LiveFixTests(unittest.TestCase):
                 logger.close()
 
     def test_decision_write_recovers_from_real_sqlite_writer_contention(self):
-        with tempfile.TemporaryDirectory() as td, patch.dict(
-            os.environ,
-            {
-                "SQLITE_BUSY_TIMEOUT_SECONDS": "0.05",
-                "SQLITE_WRITE_RETRY_ATTEMPTS": "8",
-                "SQLITE_WRITE_RETRY_BASE_SECONDS": "0.02",
-                "SQLITE_WRITE_RETRY_MAX_SECONDS": "0.08",
-            },
-            clear=False,
-        ):
+        with tempfile.TemporaryDirectory() as td, \
+            patch("core.db_orm.SQLITE_BUSY_TIMEOUT_SECONDS", 0.05), \
+            patch("core.ml_live_logger.SQLITE_WRITE_RETRY_ATTEMPTS", 8), \
+            patch("core.ml_live_logger.SQLITE_WRITE_RETRY_BASE_SECONDS", 0.02), \
+            patch("core.ml_live_logger.SQLITE_WRITE_RETRY_MAX_SECONDS", 0.08):
             db = os.path.join(td, "contention.sqlite3")
             logger = MLLiveLogger(data_dir=td, sqlite_file=db)
             blocker = sqlite3.connect(db, timeout=1.0, check_same_thread=False)
@@ -659,11 +644,7 @@ class LiveFixTests(unittest.TestCase):
             def start(self):
                 return None
 
-        with patch.dict(
-            os.environ,
-            {"WS_CLIENT_PING_INTERVAL_SECONDS": "0"},
-            clear=False,
-        ), patch("core.websocket.websocket.WebSocketApp", return_value=fake_app), patch(
+        with patch("core.websocket.websocket.WebSocketApp", return_value=fake_app), patch(
             "core.websocket.threading.Thread",
             ThreadCapture,
         ):
@@ -677,37 +658,47 @@ class LiveFixTests(unittest.TestCase):
         ws = self._minimal_ws_manager()
         ws.reconnect_attempts = 20
         ws._reconnect_history.extend([time.time() - 10] * 6)
-        with patch.dict(
-            os.environ,
-            {
-                "WS_RECONNECT_MAX_SECONDS": "30",
-                "WS_CIRCUIT_BACKOFF_SECONDS": "30",
-            },
-            clear=False,
-        ):
-            self.assertLessEqual(ws._compute_reconnect_delay(), 30.0)
+        self.assertLessEqual(ws._compute_reconnect_delay(), 30.0)
 
         ws._rate_limited_until = time.time() + 120
-        with patch.dict(
-            os.environ,
-            {
-                "WS_RECONNECT_MAX_SECONDS": "30",
-                "WS_RATE_LIMIT_BACKOFF_SECONDS": "120",
-            },
-            clear=False,
-        ):
-            self.assertGreater(ws._compute_reconnect_delay(), 100.0)
+        self.assertGreater(ws._compute_reconnect_delay(), 100.0)
 
     def test_websocket_stale_price_forces_rest_fallback(self):
         ws = self._minimal_ws_manager()
         ws.prices = {"BTCUSD": 100.0}
         ws.last_tick_ts = {"BTCUSD": time.time() - 300}
-        with patch.dict(os.environ, {"WS_PRICE_MAX_AGE_SECONDS": "30"}, clear=False):
-            self.assertIsNone(ws.get_price("BTC/USD"))
+        self.assertIsNone(ws.get_price("BTC/USD"))
 
         ws.last_tick_ts["BTCUSD"] = time.time()
-        with patch.dict(os.environ, {"WS_PRICE_MAX_AGE_SECONDS": "30"}, clear=False):
-            self.assertEqual(ws.get_price("BTC/USD"), 100.0)
+        self.assertEqual(ws.get_price("BTC/USD"), 100.0)
+
+    def test_runtime_resilience_tuning_is_not_env_configurable(self):
+        from core import runtime_tuning
+
+        with patch.dict(
+            os.environ,
+            {
+                "WS_RECONNECT_MAX_SECONDS": "999",
+                "SQLITE_BUSY_TIMEOUT_SECONDS": "999",
+                "LIVE_STATUS_INTERVAL_SECONDS": "999",
+            },
+            clear=False,
+        ):
+            self.assertEqual(runtime_tuning.WS_RECONNECT_MAX_SECONDS, 30.0)
+            self.assertEqual(runtime_tuning.SQLITE_BUSY_TIMEOUT_SECONDS, 5.0)
+            self.assertEqual(runtime_tuning.LIVE_STATUS_INTERVAL_SECONDS, 5.0)
+
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        for name in (
+            "WS_RECONNECT_MAX_SECONDS",
+            "WS_CLIENT_PING_INTERVAL_SECONDS",
+            "WS_PRICE_MAX_AGE_SECONDS",
+            "SQLITE_BUSY_TIMEOUT_SECONDS",
+            "SQLITE_WRITE_RETRY_ATTEMPTS",
+            "LIVE_STATUS_INTERVAL_SECONDS",
+            "TICKER_REST_CACHE_TTL_SECONDS",
+        ):
+            self.assertNotIn(f"{name}=", env_example)
 
     def test_execution_spread_uses_websocket_bid_ask(self):
         bot = FakeBot()
