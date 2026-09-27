@@ -150,17 +150,21 @@ def db_logger():
     global _DB_LOGGER_SCHEMA_READY
     from core.ml_live_logger import MLLiveLogger
 
-    initialize_schema = False
     if not _DB_LOGGER_SCHEMA_READY:
         with _DB_LOGGER_SCHEMA_LOCK:
             if not _DB_LOGGER_SCHEMA_READY:
-                initialize_schema = True
+                logger = MLLiveLogger(
+                    data_dir=str(DATA_DIR),
+                    sqlite_file=str(aegis_db_path()),
+                    initialize_schema=True,
+                )
                 _DB_LOGGER_SCHEMA_READY = True
+                return logger
 
     return MLLiveLogger(
         data_dir=str(DATA_DIR),
         sqlite_file=str(aegis_db_path()),
-        initialize_schema=initialize_schema,
+        initialize_schema=False,
     )
 
 
