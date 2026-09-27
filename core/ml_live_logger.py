@@ -4751,9 +4751,9 @@ class MLLiveLogger:
                     live_row.updated_at = now
                 return True
 
-            # Telemetry is lower priority than decisions/trades. It still retries,
-            # but with fewer attempts so it cannot block the trading loop for long.
-            return bool(self._run_orm_write(_write, label='live_status', attempts=3))
+            # Telemetry is lower priority than decisions/trades. If SQLite is
+            # busy, drop this sample rather than queueing behind critical writes.
+            return bool(self._run_orm_write(_write, label='live_status', attempts=1))
         except Exception:
             return False
 
