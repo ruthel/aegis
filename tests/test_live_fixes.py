@@ -544,6 +544,160 @@ class LiveFixTests(unittest.TestCase):
             self.assertTrue(reconciled_position.get("closed_at"))
             logger.close()
 
+    def test_logger_instances_share_process_writer_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = os.path.join(td, "shared-lock.sqlite3")
+            first = MLLiveLogger(data_dir=td, sqlite_file=db)
+            second = MLLiveLogger(data_dir=td, sqlite_file=db, initialize_schema=False)
+            try:
+                self.assertIs(first._lock, second._lock)
+            finally:
+                first.close()
+                second.close()
+
+    def test_raw_write_rolls_back_after_failure_and_does_not_poison_db(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = os.path.join(td, "rollback.sqlite3")
+            logger = MLLiveLogger(data_dir=td, sqlite_file=db)
+            try:
+                def failing_write(conn):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO bot_app_state "
+                        "(state_key, state_value, created_at, updated_at) "
+                        "VALUES ('rollback-test', 'bad', datetime('now'), datetime('now'))"
+                    )
+                    raise RuntimeError("force rollback")
+
+                with self.assertRaises(RuntimeError):
+                    logger._run_raw_write(failing_write, attempts=1)
+
+                self.assertFalse(logger._get_conn().in_transaction)
+                self.assertTrue(logger.set_state_value("rollback-test", "good"))
+                self.assertEqual(logger.get_state_value("rollback-test"), "good")
+            finally:
+                logger.close()
+
+    def test_decision_write_recovers_from_real_sqlite_writer_contention(self):
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ,
+            {
+                "SQLITE_BUSY_TIMEOUT_SECONDS": "0.05",
+                "SQLITE_WRITE_RETRY_ATTEMPTS": "8",
+                "SQLITE_WRITE_RETRY_BASE_SECONDS": "0.02",
+                "SQLITE_WRITE_RETRY_MAX_SECONDS": "0.08",
+            },
+            clear=False,
+        ):
+            db = os.path.join(td, "contention.sqlite3")
+            logger = MLLiveLogger(data_dir=td, sqlite_file=db)
+            blocker = sqlite3.connect(db, timeout=1.0, check_same_thread=False)
+            blocker.execute("PRAGMA journal_mode=WAL")
+            blocker.execute("BEGIN IMMEDIATE")
+            blocker.execute(
+                "INSERT OR REPLACE INTO bot_app_state "
+                "(state_key, state_value, created_at, updated_at) "
+                "VALUES ('blocker', '1', datetime('now'), datetime('now'))"
+            )
+
+            released = threading.Event()
+
+            def release_writer():
+                time.sleep(0.20)
+                blocker.commit()
+                blocker.close()
+                released.set()
+
+            thread = threading.Thread(target=release_writer, daemon=True)
+            thread.start()
+            try:
+                ok = logger.record_decision_journal(
+                    {
+                        "event_id": "contention-decision",
+                        "timestamp": datetime.now().isoformat(),
+                        "mode": "live",
+                        "symbol": "SOL/USD",
+                        "action": "exit_decision",
+                        "allowed": True,
+                        "reason": "test_lock_retry",
+                        "metrics": {"price": 100.0, "confidence": 60.0},
+                    },
+                    mode="live",
+                )
+                self.assertTrue(ok)
+                self.assertTrue(released.wait(2.0))
+                conn = sqlite3.connect(db)
+                row = conn.execute(
+                    "SELECT reason FROM decision_logs WHERE event_id=?",
+                    ("contention-decision",),
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row[0], "test_lock_retry")
+            finally:
+                if not released.is_set():
+                    try:
+                        blocker.rollback()
+                        blocker.close()
+                    except Exception:
+                        pass
+                logger.close()
+
+    def test_websocket_client_ping_is_disabled_by_default(self):
+        ws = object.__new__(WebSocketManager)
+        ws.symbols = ["BTCUSD"]
+        ws.ws = None
+        ws.ws_thread = None
+
+        fake_app = SimpleNamespace(run_forever=lambda **kwargs: None)
+
+        class ThreadCapture:
+            last_kwargs = None
+
+            def __init__(self, *args, **kwargs):
+                ThreadCapture.last_kwargs = kwargs
+                self.daemon = False
+
+            def start(self):
+                return None
+
+        with patch.dict(
+            os.environ,
+            {"WS_CLIENT_PING_INTERVAL_SECONDS": "0"},
+            clear=False,
+        ), patch("core.websocket.websocket.WebSocketApp", return_value=fake_app), patch(
+            "core.websocket.threading.Thread",
+            ThreadCapture,
+        ):
+            ws._connect_kraken()
+
+        run_kwargs = ThreadCapture.last_kwargs.get("kwargs") or {}
+        self.assertEqual(run_kwargs.get("ping_interval"), 0.0)
+        self.assertNotIn("ping_timeout", run_kwargs)
+
+    def test_generic_websocket_reconnect_backoff_caps_below_rate_limit_backoff(self):
+        ws = self._minimal_ws_manager()
+        ws.reconnect_attempts = 20
+        ws._reconnect_history.extend([time.time() - 10] * 6)
+        with patch.dict(
+            os.environ,
+            {
+                "WS_RECONNECT_MAX_SECONDS": "30",
+                "WS_CIRCUIT_BACKOFF_SECONDS": "30",
+            },
+            clear=False,
+        ):
+            self.assertLessEqual(ws._compute_reconnect_delay(), 30.0)
+
+        ws._rate_limited_until = time.time() + 120
+        with patch.dict(
+            os.environ,
+            {
+                "WS_RECONNECT_MAX_SECONDS": "30",
+                "WS_RATE_LIMIT_BACKOFF_SECONDS": "120",
+            },
+            clear=False,
+        ):
+            self.assertGreater(ws._compute_reconnect_delay(), 100.0)
+
     def test_execution_spread_uses_websocket_bid_ask(self):
         bot = FakeBot()
         manager = ExecutionManager(bot)
