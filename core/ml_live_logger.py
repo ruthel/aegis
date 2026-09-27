@@ -215,10 +215,9 @@ class MLLiveLogger:
     def append_event(self, event):
         try:
             clean_event = self._clean(event)
-            with self._lock:
-                self._insert_sqlite_event(clean_event)
+            return bool(self._insert_sqlite_event(clean_event))
         except Exception:
-            pass
+            return False
 
     def _init_sqlite(self):
         try:
@@ -2755,35 +2754,42 @@ class MLLiveLogger:
         self.close()
 
     def _insert_sqlite_event(self, event):
-        try:
-            event_type = event.get('event_type')
-            with self._orm_session() as session:
-                session.merge(SysAudit(
-                    event_id=event.get('event_id'),
-                    event_type=event_type,
-                    timestamp=event.get('timestamp'),
-                    symbol=event.get('symbol'),
-                    mode=event.get('mode'),
-                ))
+        event_type = event.get('event_type')
 
-                if event_type in ('entry_decision', 'exit_decision'):
-                    if self._should_store_decision_log(event):
-                        self._insert_decision(session, event)
-                elif event_type == 'entry_opened':
-                    self._insert_open_entry(session, event)
-                elif event_type == 'exit_outcome':
-                    self._insert_trade_outcome(session, event)
-                elif event_type == 'telegram_message':
-                    self._insert_telegram_message(session, event)
-                session.commit()
+        def _write(session):
+            session.merge(SysAudit(
+                event_id=event.get('event_id'),
+                event_type=event_type,
+                timestamp=event.get('timestamp'),
+                symbol=event.get('symbol'),
+                mode=event.get('mode'),
+            ))
+
+            if event_type in ('entry_decision', 'exit_decision'):
+                if self._should_store_decision_log(event):
+                    self._insert_decision(session, event)
+            elif event_type == 'entry_opened':
+                self._insert_open_entry(session, event)
+            elif event_type == 'exit_outcome':
+                self._insert_trade_outcome(session, event)
+            elif event_type == 'telegram_message':
+                self._insert_telegram_message(session, event)
+            return True
+
+        try:
+            return bool(self._run_orm_write(
+                _write,
+                label=f'event:{event_type}',
+            ))
         except Exception as exc:
             LOGGER.exception(
-                "SQLite event persistence failed: type=%s symbol=%s mode=%s",
+                "SQLite event persistence failed after retries: type=%s symbol=%s mode=%s",
                 event.get('event_type') if isinstance(event, dict) else None,
                 event.get('symbol') if isinstance(event, dict) else None,
                 event.get('mode') if isinstance(event, dict) else None,
                 exc_info=exc,
             )
+            return False
 
     def _should_store_decision_log(self, event):
         event_type = event.get('event_type')
@@ -3788,7 +3794,6 @@ class MLLiveLogger:
             now = now_iso()
             with self._lock:
                 with self._orm_session() as session:
-                    session.execute(text('BEGIN IMMEDIATE'))
                     with session.no_autoflush:
                         row = session.get(BotState, key)
                         if not row:
