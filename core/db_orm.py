@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import Float, Index, Integer, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.pool import NullPool
 
 
 class Base(DeclarativeBase):
@@ -567,17 +568,29 @@ def sqlite_url(sqlite_file):
 
 
 def create_sqlite_engine(sqlite_file):
+    busy_timeout_seconds = max(1.0, float(os.getenv('SQLITE_BUSY_TIMEOUT_SECONDS', '5')))
+    busy_timeout_ms = int(busy_timeout_seconds * 1000)
     engine = create_engine(
         sqlite_url(sqlite_file),
-        connect_args={'check_same_thread': False, 'timeout': 30},
+        connect_args={
+            'check_same_thread': False,
+            'timeout': busy_timeout_seconds,
+        },
+        # SQLite connections should be short-lived in Aegis because the UI,
+        # bot and helper subprocesses can all touch the same database. Keeping
+        # pooled connections around increases the chance of stale transactions
+        # and writer starvation.
+        poolclass=NullPool,
         future=True,
     )
+
     @event.listens_for(engine, 'connect')
     def _set_sqlite_pragmas(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
-        cursor.execute('PRAGMA busy_timeout=30000')
+        cursor.execute(f'PRAGMA busy_timeout={busy_timeout_ms}')
         cursor.execute('PRAGMA synchronous=NORMAL')
         cursor.close()
+
     return engine
 
 
