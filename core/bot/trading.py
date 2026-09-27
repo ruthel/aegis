@@ -2,11 +2,15 @@
 from datetime import datetime, timedelta
 import time
 import os
+import threading
+from ccxt import InsufficientFunds, InvalidOrder
 
 from utils.currency import get_quote_currency, get_quote_balance, normalize_symbol, quote_asset_for_symbol
 
 class TradingMixin:
     """Mixin pour les opérations de trading"""
+
+    _sell_execution_lock = threading.Lock()
 
     def _refresh_paper_balance_from_accounting(self):
         try:
@@ -216,7 +220,7 @@ class TradingMixin:
             filled = float(order.get('filled') or order.get('amount') or fallback_amount or 0.0)
             cost = float(order.get('cost') or 0.0)
             fee_amount = 0.0
-            fee_asset = quote_asset_for_symbol(symbol)
+            fee_asset = quote_asset_for_symbol(order.get('symbol') or '')
 
             if trades:
                 trade_amount = 0.0
@@ -260,7 +264,7 @@ class TradingMixin:
                 'amount': float(fallback_amount or 0.0),
                 'cost': float(fallback_amount or 0.0) * float(fallback_price or 0.0),
                 'fee_amount': None,
-                'fee_asset': quote_asset_for_symbol(symbol),
+                'fee_asset': quote_asset_for_symbol((order or {}).get('symbol') or ''),
             }
 
     def _resolve_exchange_execution(self, symbol, order, fallback_amount, fallback_price, side=None):
@@ -339,13 +343,23 @@ class TradingMixin:
                     fetched = self.safe_request(self.exchange.fetch_order, order_id, symbol)
                     if fetched:
                         snapshots.append(fetched)
+                        if side == 'sell' and str(fetched.get('status') or '').lower() in {'closed', 'filled', 'canceled', 'cancelled', 'expired'}:
+                            break
                 except Exception:
                     pass
 
         for snapshot in reversed(snapshots):
             status = str(snapshot.get('status') or '').lower()
             filled = float(snapshot.get('filled') or 0.0)
-            if filled > 0 or status in {'closed', 'filled'}:
+            if side == 'sell':
+                # A terminal status alone is not proof of quantity executed.
+                # Wait for terminal state so cumulative partial fills are booked once.
+                order.update(snapshot)
+                if status not in {'closed', 'filled', 'canceled', 'cancelled', 'expired'}:
+                    return None
+                if filled <= 0 and not snapshot.get('trades'):
+                    break
+            if filled > 0 or status in {'closed', 'filled'} or snapshot.get('trades'):
                 execution = self._extract_execution_details(snapshot, 0.0, 0.0)
                 if float(execution.get('amount') or 0.0) > 0 and float(execution.get('price') or 0.0) > 0:
                     return execution
@@ -368,6 +382,8 @@ class TradingMixin:
                 if matches:
                     execution = self._extract_execution_details({'trades': matches}, 0.0, 0.0)
                     if float(execution.get('amount') or 0.0) > 0 and float(execution.get('price') or 0.0) > 0:
+                        if side == 'sell':
+                            order.update(filled=execution['amount'], average=execution['price'], trades=matches)
                         return execution
             except Exception:
                 pass
@@ -393,7 +409,7 @@ class TradingMixin:
         except Exception:
             return False
 
-    def _calculate_fee_details(self, amount, sell_price, buy_price=None):
+    def _calculate_fee_details(self, amount, sell_price, buy_price=None, symbol=None):
         """Retourne les frais paper dans la devise de cotation pour audit des positions sell."""
         fee_rate = float(getattr(self, 'trading_fee', 0) or 0)
         amount = float(amount or 0)
@@ -719,6 +735,15 @@ class TradingMixin:
             return None
     
     def sell_market(self, symbol, amount, reason=""):
+        # Tick, main loop and manual exits must not submit competing SELLs.
+        if not self._sell_execution_lock.acquire(blocking=False):
+            return None
+        try:
+            return self._sell_market_locked(symbol, amount, reason)
+        finally:
+            self._sell_execution_lock.release()
+
+    def _sell_market_locked(self, symbol, amount, reason=""):
         price = self.get_price(symbol)
         buy_price = self.get_real_buy_price(symbol)
         
@@ -766,15 +791,39 @@ class TradingMixin:
                     f"latence {paper_exec['latency_ms']:.0f}ms"
                 )
             else:
-                balance = self.balance_manager.get_balance()
-                base_currency = symbol.split('/')[0]
-                available = balance.get(base_currency, {}).get('free', 0)
-                
-                if amount > available:
-                    print(f"❌ Pas assez de {base_currency}: {amount} > {available}")
+                pending = self.state.setdefault('live_exit_orders', {})
+                order = pending.get(symbol)
+                if order is not None and not order.get('id'):
+                    # Submission outcome unknown: never retry a non-idempotent POST.
+                    print(f"⚠️ SELL {symbol}: soumission incertaine, réconciliation Kraken requise.")
                     return None
-                
-                order = self.safe_request(self.exchange.create_market_sell_order, symbol, amount)
+                if order is not None and str(order.get('status') or '').lower() == 'open':
+                    # Finish/cancel a previously unresolved SELL before attempting its remainder.
+                    # A fill racing with this cancellation is resolved by fetch_order below.
+                    try:
+                        self.exchange.cancel_order(order['id'], symbol)
+                    except Exception:
+                        pass
+                if order is None:
+                    balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=True)
+                    available = float((balance.get(symbol.split('/')[0], {}) or {}).get('free') or 0)
+                    if amount <= 0 or amount > available:
+                        return None
+                    pending[symbol] = {'amount': amount, 'status': 'submitting'}
+                    if self.save_state() is not True:
+                        pending.pop(symbol, None)
+                        return None
+                    try:
+                        order = self.exchange.create_market_sell_order(symbol, amount)
+                    except (InsufficientFunds, InvalidOrder):
+                        pending.pop(symbol, None)
+                        self.save_state()
+                        raise
+                    if not order or not order.get('id'):
+                        return None
+                    order['_exit_position_amount'] = available
+                    pending[symbol] = order
+                    self.save_state()
             
             if order:
                 if self.paper_trading:
@@ -792,19 +841,23 @@ class TradingMixin:
                                 metrics={'price': price, 'order_id': order.get('id'), 'side': 'sell'},
                                 throttle_seconds=0
                             )
-                        return order
+                        if str(order.get('status') or '').lower() in {'canceled', 'cancelled', 'expired'} and float(order.get('filled') or 0) == 0:
+                            self.state['live_exit_orders'].pop(symbol, None)
+                        self.save_state()
+                        return None
                 exec_price = float(execution['price'])
                 exec_amount = float(execution['amount'] or 0.0)
                 if exec_amount <= 0 or exec_price <= 0:
                     print(f"⚠️ Exécution SELL invalide pour {symbol}: amount={exec_amount}, price={exec_price}")
                     return None
                 self._record_live_order_accounting(symbol, 'sell', exec_amount, exec_price, order, order_type='market', filled=True)
+                complete = self.paper_trading or exec_amount + 1e-12 >= float(order.get('_exit_position_amount') or order.get('amount') or amount)
                 # Mettre à jour la position sell existante → 'executed' au lieu d'insérer un doublon
                 updated = False
                 target_sym = str(symbol).replace('/', '').upper()
                 for p in reversed(self.state.get('positions', [])):
                     p_sym = str(p.get('symbol', '')).replace('/', '').upper()
-                    if p_sym == target_sym and p.get('side') == 'sell':
+                    if p_sym == target_sym and p.get('side') == 'sell' and str(p.get('order_id')) == str(order.get('id')):
                         p['status'] = 'executed'
                         p['price'] = exec_price
                         p['amount'] = exec_amount
@@ -813,7 +866,7 @@ class TradingMixin:
                         p['closed_at'] = datetime.now().isoformat()
                         if self.paper_trading:
                             p.update(self._calculate_fee_details(
-                                exec_amount, exec_price, buy_price
+                                exec_amount, exec_price, buy_price, symbol=symbol
                             ))
                         updated = True
                         break
@@ -827,10 +880,22 @@ class TradingMixin:
                     }
                     if self.paper_trading:
                         position.update(self._calculate_fee_details(
-                            exec_amount, exec_price, buy_price
+                            exec_amount, exec_price, buy_price, symbol=symbol
                         ))
                     self.state['positions'].append(position)
                 self.save_state()
+                self._close_buy_positions(symbol, exec_amount, exec_price)
+                manager = getattr(self, 'trailing_stop_manager', None)
+                if not self.paper_trading:
+                    self.state['live_exit_orders'].pop(symbol, None)
+                if manager and symbol in manager.positions:
+                    if complete:
+                        manager.remove_position(symbol)
+                    else:
+                        tracked = manager.positions[symbol]
+                        tracked['amount'] = max(0.0, float(tracked.get('amount') or amount) - exec_amount)
+                self.save_state()
+
                 self.total_trades += 1
                 
                 pnl = self.calculate_pnl(symbol, 'sell', exec_amount, exec_price, buy_price=buy_price)
@@ -867,7 +932,7 @@ class TradingMixin:
                         throttle_seconds=0
                     )
 
-                if hasattr(self, 'record_ml_exit_learning_sample'):
+                if complete and hasattr(self, 'record_ml_exit_learning_sample'):
                     self.record_ml_exit_learning_sample(
                         symbol,
                         exec_price,
@@ -879,13 +944,11 @@ class TradingMixin:
                         order=order
                     )
 
-                if hasattr(self, 'set_symbol_cooldown'):
+                if complete and hasattr(self, 'set_symbol_cooldown'):
                     self.set_symbol_cooldown(symbol, reason='sell_executed')
                     
-                self._close_buy_positions(symbol, exec_amount, exec_price)
-                
                 # Nettoyer le stuck_manager si présent
-                if hasattr(self, 'stuck_manager') and self.stuck_manager:
+                if complete and hasattr(self, 'stuck_manager') and self.stuck_manager:
                     if symbol in self.stuck_manager.stuck_positions:
                         del self.stuck_manager.stuck_positions[symbol]
                 
@@ -896,6 +959,8 @@ class TradingMixin:
                     except Exception as sync_err:
                         print(f"⚠️ Sync ledger post-vente échoué: {sync_err}")
             
+                if not complete:
+                    return None
             return order
         except Exception as e:
             print(f"Erreur vente: {e}")
@@ -1330,6 +1395,10 @@ class TradingMixin:
 
     def _handle_disappeared_order(self, order_id, order_data):
         """Classe un ordre disparu comme exécuté seulement si les trades le confirment."""
+        if any(str(order.get('id')) == str(order_id)
+               for order in self.state.get('live_exit_orders', {}).values()):
+            # The pending market-exit path owns confirmation and partial-fill accounting.
+            return False
         execution = self._confirm_order_execution(order_id, order_data)
         if execution:
             return self._record_confirmed_order_execution(order_id, order_data, execution)

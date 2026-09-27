@@ -2230,6 +2230,7 @@ class MLEngine:
             return {
                 'ml_exit_available': True,
                 'p_continue': round(p_continue, 1),
+                'min_p_continue': sell_threshold,
                 'decision': decision,
                 'reason': f'ml_continue_{p_continue:.1f}%_threshold_{sell_threshold:.1f}%'
             }

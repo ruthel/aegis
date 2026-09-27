@@ -471,6 +471,7 @@ class ExecutionManager:
                 resistance_price=position_data.get('resistance_price'),
                 target_gain_pct=position_data.get('ml_target_gain_pct')
             )
+            self.bot.save_state()
 
         # Placer ordre de vente (paper ET réel)
         if self.bot.paper_trading:

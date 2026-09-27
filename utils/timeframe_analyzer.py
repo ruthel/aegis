@@ -7,6 +7,8 @@ from utils.currency import make_symbol
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class TimeframeAnalyzer:
+    MIN_ANALYSIS_CANDLES = 99  # Longest indicator: EMA99 (Ichimoku also needs 52).
+
     def __init__(self):
         self.cache = {}
         self.data_cache = {}  # Cache des données par timeframe
@@ -83,13 +85,13 @@ class TimeframeAnalyzer:
         try:
             klines = bot.get_klines(symbol, limit, timeframe)
             if not klines:
-                return self.data_cache.get(cache_key, [])
+                return []
             result = list(klines)[-limit:]
             self.data_cache[cache_key] = result
             return result
         except Exception as e:
             print(f"Erreur récupération données {timeframe}: {e}")
-            return self.data_cache.get(cache_key, [])
+            return []
     
     def get_timeframe_multiplier(self, timeframe):
         """Retourne le multiplicateur pour le timeframe"""
@@ -137,8 +139,9 @@ class TimeframeAnalyzer:
     
     def analyze_timeframe(self, klines, current_price):
         """Analyse un timeframe spécifique avec 20 facteurs professionnels"""
-        if len(klines) < 50:
-            return {'trend': 'unknown', 'strength': 0, 'signals': [], 'confidence': 0}
+        if len(klines) < self.MIN_ANALYSIS_CANDLES:
+            return {'trend': 'unknown', 'strength': 0, 'signals': [], 'confidence': 0,
+                    'data_available': False, 'candle_count': len(klines)}
         
         closes = [k['close'] for k in klines]
         highs = [k['high'] for k in klines]
@@ -236,6 +239,8 @@ class TimeframeAnalyzer:
         
         return {
             'trend': trend,
+            'data_available': True,
+            'candle_count': len(klines),
             'strength': total_strength,
             'signals': active_signals[:8],  # Top 8 signaux
             'confidence': round(confidence, 1),
@@ -305,11 +310,17 @@ class TimeframeAnalyzer:
         
         timeframe_analysis = {}
         for tf in active_timeframes:
-            klines = self.get_klines_for_timeframe(bot, symbol, tf, 50)
+            klines = self.get_klines_for_timeframe(bot, symbol, tf, 100)
             analysis = self.analyze_timeframe(klines, current_price)
             timeframe_analysis[tf] = analysis
         
         global_signal = self.generate_global_signal(timeframe_analysis, current_price, symbol, volatility, weights)
+        missing = [tf for tf, analysis in timeframe_analysis.items() if not analysis.get('data_available')]
+        global_signal['data_available'] = not missing
+        global_signal['missing_timeframes'] = missing
+        if missing:
+            global_signal.update(action='HOLD', confidence=0.0,
+                                 summary='Données techniques insuffisantes: ' + ', '.join(missing))
         
         return {
             'timeframes': timeframe_analysis,
@@ -684,6 +695,14 @@ class TimeframeAnalyzer:
         
         avg_gain = np.mean(gains[:period])
         avg_loss = np.mean(losses[:period])
+
+        # Wilder smoothing must advance through the latest candle, not stop at
+        # the first period of the history window.
+        for gain, loss in zip(gains[period:], losses[period:]):
+            avg_gain = (avg_gain * (period - 1) + gain) / period
+            avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_gain == 0 and avg_loss == 0:
+            return 50.0
         
         if avg_loss == 0:
             return 100
@@ -1261,8 +1280,8 @@ class TimeframeAnalyzer:
                 return {'strength': 0, 'signal': 'neutral'}
             
             # Find periods since highest high and lowest low
-            high_period = 0
-            low_period = 0
+            high_period = None
+            low_period = None
             
             recent_highs = highs[-period:]
             recent_lows = lows[-period:]
@@ -1272,9 +1291,9 @@ class TimeframeAnalyzer:
             
             # Find last occurrence
             for i in range(len(recent_highs) - 1, -1, -1):
-                if recent_highs[i] == max_high and high_period == 0:
+                if recent_highs[i] == max_high and high_period is None:
                     high_period = len(recent_highs) - 1 - i
-                if recent_lows[i] == min_low and low_period == 0:
+                if recent_lows[i] == min_low and low_period is None:
                     low_period = len(recent_lows) - 1 - i
             
             aroon_up = ((period - high_period) / period) * 100

@@ -587,7 +587,7 @@ function DecisionEngine({
               ? Math.max(0, Math.min(100, 100 - Number(minPContinue)))
               : null
             const exitThresholdReached =
-              displayedPExit != null && exitThreshold != null && Number(displayedPExit) >= Number(exitThreshold)
+              exitDecision === 'FORCE_EXIT'
 
             const activeProbabilityLabel = inSellMode ? 'P_exit · décision courante' : 'P_win · décision courante'
             const activeProbability = inSellMode ? displayedPExit : displayedPWin

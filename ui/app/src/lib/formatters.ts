@@ -274,6 +274,7 @@ export function decisionReasonTitle(reason: unknown): string {
     buy_executed: 'Achat exécuté',
   }
   const key = String(reason || '').split(':')[0]
+  if (key === 'technical_data_unavailable') return 'Données techniques insuffisantes'
   if (key.startsWith('technical_action_')) {
     return `Signal technique ${key.replace('technical_action_', '')}`
   }
@@ -311,6 +312,10 @@ export function decisionExplanation(item: JsonMap): string {
   const mlDecision = metrics.ml_decision as JsonMap
   const mlInputs = metrics.ml_inputs as JsonMap
 
+  if (key === 'technical_data_unavailable') {
+    return "L'analyse technique attend un historique suffisant pour tous les timeframes actifs, notamment l'EMA99. Ce blocage vient des données disponibles, pas d'un signal de marché HOLD."
+  }
+
   if (key.startsWith('ml_filter_rejected') || key.startsWith('support_touch_ml_entry_rejected')) {
     return `ML refuse l'entrée: P_win ${metricNumber(mlDecision.p_win)}% < seuil ${metricNumber(mlDecision.min_p_win)}%. Signal ${asString(mlInputs.technical_action)} ${metricNumber(mlInputs.technical_confidence)}%, score ${metricNumber(mlInputs.crypto_score)}, support ${mlInputs.support_touch ? 'oui' : 'non'}.`
   }
@@ -326,7 +331,7 @@ export function decisionExplanation(item: JsonMap): string {
     const threshold = metrics.min_confidence !== undefined ? ` / seuil ${metricNumber(metrics.min_confidence)}%` : ''
     const adjusted = metrics.adjusted_strength !== undefined ? ` Force ajustée ${metricNumber(metrics.adjusted_strength, 3)}` : ''
     const trend = metrics.dominant_trend ? `, tendance dominante ${asString(metrics.dominant_trend)}` : ''
-    return `Le filtre technique a renvoyé ${action}. Seuls BUY ou STRONG_BUY autorisent le passage vers le ML.${confidence}${threshold}.${adjusted}${trend}. P_win n'a donc pas été évalué. Aucun cooldown de trading n'est créé par ce rejet.`
+    return `Le filtre technique a renvoyé ${action}. Seuls BUY ou STRONG_BUY autorisent le passage vers le ML.${confidence}${threshold}.${adjusted}${trend}. BUY exige une force ajustée ≥ 0,3 ; dépasser le seuil de confiance seul ne suffit pas. P_win n'a donc pas été évalué. Aucun cooldown de trading n'est créé par ce rejet.`
   }
   if (key === 'technical_signal_below_threshold' || key === 'technical_confidence_below_threshold' || key === 'technical_signal_confidence_below_threshold') {
     return `Le filtre technique a rejeté l'entrée avant le ML. Confiance technique ${metricNumber(metrics.confidence)}% / seuil ${metricNumber(metrics.min_confidence)}%.`

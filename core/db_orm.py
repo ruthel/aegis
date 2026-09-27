@@ -56,6 +56,14 @@ class BotState(Base):
     created_at: Mapped[str | None] = mapped_column(Text)
 
 
+class BotExitState(Base):
+    __tablename__ = 'bot_exit_state'
+
+    mode: Mapped[str] = mapped_column(Text, primary_key=True)
+    payload: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
 class Account(Base):
     __tablename__ = 'accounts'
 

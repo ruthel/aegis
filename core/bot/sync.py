@@ -20,6 +20,12 @@ class SyncMixin:
                 data = logger.load_bot_state(mode)
                 if isinstance(data, dict):
                     self.state.update(data)
+                    manager = getattr(self, 'trailing_stop_manager', None)
+                    if manager is not None:
+                        manager.positions = {
+                            symbol: dict(position)
+                            for symbol, position in data.get('trailing_stops', {}).items()
+                        }
                     if getattr(self, 'paper_trading', True) and data.get('paper_balance') is not None:
                         self.paper_balance = float(data.get('paper_balance') or self.paper_balance)
         except Exception as e:
@@ -34,9 +40,15 @@ class SyncMixin:
             if logger:
                 mode = 'paper' if getattr(self, 'paper_trading', True) else 'live'
                 self.state['paper_balance'] = getattr(self, 'paper_balance', self.state.get('paper_balance'))
-                logger.save_bot_state(self.state, mode)
+                manager = getattr(self, 'trailing_stop_manager', None)
+                if manager is not None:
+                    self.state['trailing_stops'] = {
+                        symbol: dict(position) for symbol, position in manager.positions.copy().items()
+                    }
+                return logger.save_bot_state(self.state, mode)
         except Exception as e:
             print(f"⚠️ Erreur sauvegarde état SQLite: {e}")
+        return False
 
     def sync_positions_from_exchange(self):
         """Réconcilie les positions LIVE avec les avoirs réellement présents sur Kraken.

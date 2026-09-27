@@ -1554,6 +1554,30 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             print(f"⚠️ Erreur évaluation ExitDecisionEngine {symbol}: {e}")
             return None
 
+    def _prepare_exit_amount(self, symbol, current_price):
+        """Release SELL reservations, then size from a fresh Kraken balance."""
+        pending = self.state.get('live_exit_orders', {}).get(symbol)
+        if not self.paper_trading and pending is not None:
+            return float(pending.get('amount') or 0.0)
+        if not self._cancel_sell_orders_for_symbol(symbol):
+            return None
+        balance = self.balance_manager.get_balance(
+            force_refresh=True, skip_ledger_sync=not self.paper_trading,
+        )
+        asset = balance.get(symbol.split('/')[0], {}) or {}
+        free = float(asset.get('free') or 0.0)
+        locked = float(asset.get('used') or asset.get('locked') or 0.0)
+        if not self.paper_trading and locked > 0:
+            return None
+        position = self.trailing_stop_manager.positions.get(symbol, {})
+        amount = max(free, float(position.get('amount') or 0.0)) if self.paper_trading else free
+        limits = self.get_min_amount(symbol)
+        if amount < float(limits.get('min_amount') or 0.00001) or amount * current_price < float(limits.get('min_cost') or 0.5):
+            if not self.paper_trading:
+                self._reconcile_live_dust_position(symbol, balance=balance, current_price=current_price)
+            return None
+        return amount
+
     def _apply_ml_exit_management(self, symbol, current_price, exit_result):
         """Applique uniquement les décisions de sortie ML actives (optimisé latence)."""
         if not exit_result:
@@ -1564,39 +1588,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         decision = exit_result.get('decision')
 
         if decision in ('FORCE_EXIT', 'TAKE_PROFIT'):
-            # Le cancel ne doit pas bloquer la vente s'il échoue
-            try:
-                self._cancel_sell_orders_for_symbol(symbol)
-            except Exception as e:
-                print(f"⚠️ Cancel sell orders échoué {symbol} (on continue): {e}")
-            
-            # Déterminer le montant à vendre
-            base_currency = symbol.split('/')[0]
-            position_data = self.trailing_stop_manager.positions.get(symbol, {})
-            pos_amount = float(position_data.get('amount') or position_data.get('position_size_crypto') or 0.0)
-            
-            # En live: se fier UNIQUEMENT à la balance réelle Kraken (pas au montant tracké)
-            # car le crypto a pu être vendu ailleurs (dashboard, manuel, autre process)
-            if self.paper_trading:
-                balance = self.balance_manager.get_balance(force_refresh=True)
-                available = balance.get(base_currency, {}).get('free', 0)
-                sell_amount = max(available, pos_amount)
-            else:
-                balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=True)
-                available = balance.get(base_currency, {}).get('free', 0)
-                sell_amount = available  # NE PAS fallback sur pos_amount en live
-            
-            # Vérifier le minimum exchange
-            try:
-                min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
-                min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
-            except Exception:
-                min_amount, min_cost = 0.00001, 0.5
-            
-            if sell_amount < min_amount or (sell_amount * current_price) < min_cost:
-                # Sécurité: crypto déjà vendu entre l'hydratation et maintenant → retirer du suivi
-                self.trailing_stop_manager.remove_position(symbol)
+            sell_amount = self._prepare_exit_amount(symbol, current_price)
+            if not sell_amount:
                 return False
+            base_currency = symbol.split('/')[0]
             print(f"🔴 ML EXIT {symbol}: {decision} → vente de {sell_amount:.8f} {base_currency}")
             order = self.sell_market(symbol, sell_amount, reason=f"ml_exit_{decision.lower()}")
             if order:
@@ -1652,6 +1647,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     )
                     continue
             if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
+                context = next((p for p in reversed(self.state.get('positions', []))
+                                if p.get('symbol') == symbol and p.get('side') == 'buy'
+                                and not p.get('closed_at')), {})
+                data = {**context, **{k: v for k, v in data.items() if v is not None}}
                 entry_price = float(data.get('entry_price', 0.0) or 0.0)
                 amount = float(data.get('amount', 0.0) or 0.0)
                 if entry_price <= 0 or amount <= 0:
@@ -1675,6 +1674,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'highest_price': float(data.get('highest_price') or entry_price),
                     'stop_price': float(
                         data.get('stop_price')
+                        or data.get('stop_loss_price')
                         or (entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0))
                     ),
                     'trailing_active': bool(data.get('trailing_active', False)),
@@ -1685,6 +1685,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'created_at': str(opened_at),
                     'buy_time': str(opened_at),
                 }
+                for key in ('highest_net_pnl_pct', 'trailing_percent', 'initial_trailing_percent',
+                            'breakeven_active', 'fee_rate', 'resistance_price', 'target_gain_pct'):
+                    if data.get(key) is not None:
+                        self.trailing_stop_manager.positions[symbol][key] = data[key]
 
     def _check_dynamic_breakeven_lock(self, symbol, current_price, position):
         """
@@ -1729,27 +1733,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         # Si le PnL actuel est sous le plancher → vente forcée
         if net_pnl_pct <= floor_pct:
-            base_currency = symbol.split('/')[0]
-            balance = self.balance_manager.get_balance(force_refresh=True, skip_ledger_sync=not self.paper_trading)
-            available = balance.get(base_currency, {}).get('free', 0)
-            
-            # Récupérer le vrai min amount de l'exchange pour ce symbole
-            try:
-                min_amount = self.get_min_amount(symbol).get('min_amount', 0.00001)
-                min_cost = self.get_min_amount(symbol).get('min_cost', 0.5)
-            except Exception:
-                min_amount, min_cost = 0.00001, 0.5
-
-            # En live: se fier à la balance réelle Kraken. En paper: fallback sur montant tracké.
-            if self.paper_trading:
-                sell_amount = available if available > min_amount else float(position.get('amount') or 0)
-            else:
-                sell_amount = available
-            position_value = sell_amount * current_price
-
-            # Sécurité: crypto déjà vendu entre l'hydratation et maintenant → retirer du suivi
-            if sell_amount < min_amount or position_value < min_cost:
-                self.trailing_stop_manager.remove_position(symbol)
+            sell_amount = self._prepare_exit_amount(symbol, current_price)
+            if not sell_amount:
                 return False
 
             print(f"🔒 BREAKEVEN LOCK {symbol}: PnL {net_pnl_pct:+.2f}% < plancher {floor_pct:+.2f}% (plus haut: {highest_net_pnl:+.2f}%) → Vente forcée")
@@ -1779,6 +1764,10 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
     def _update_trailing_stop_from_tick(self, symbol, current_price):
         """Évalue la sortie ML dès le tick WebSocket, sans attendre la boucle principale."""
+        pending = self.state.get('live_exit_orders', {}).get(symbol)
+        if not self.paper_trading and pending is not None:
+            self.sell_market(symbol, float(pending.get('amount') or 0.0), reason='pending_exit')
+            return
         if not hasattr(self, 'trailing_stop_manager'):
             return
         if symbol not in getattr(self.trailing_stop_manager, 'positions', {}):
@@ -1788,6 +1777,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
         try:
             position = self.trailing_stop_manager.positions[symbol]
+            previous_protection = dict(position)
 
             # Dynamic Breakeven Lock est une protection de sécurité, distincte
             # de la décision stratégique ML. Il peut fermer une position même si
@@ -1801,16 +1791,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # catastrophique. Si le stop de sécurité est touché, on tente une vente
             # et on ne retire le suivi qu'après confirmation de l'ordre.
             if ml_owns_exits and self.trailing_stop_manager.should_stop_loss(symbol, current_price):
-                base_currency = symbol.split('/')[0]
-                balance = self.balance_manager.get_balance(
-                    force_refresh=True,
-                    skip_ledger_sync=not self.paper_trading,
-                )
-                available = float((balance.get(base_currency, {}) or {}).get('free') or 0.0)
-                tracked_amount = float(position.get('amount') or position.get('position_size_crypto') or 0.0)
-                sell_amount = tracked_amount if self.paper_trading else available
-                if self.paper_trading and available > 0:
-                    sell_amount = min(tracked_amount, available) if tracked_amount > 0 else available
+                sell_amount = self._prepare_exit_amount(symbol, current_price) or 0.0
                 if sell_amount > 0:
                     order = self.sell_market(symbol, sell_amount, reason='safety_stop_loss')
                     if order:
@@ -1831,10 +1812,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
             save_interval = float(os.getenv('TRAILING_STOP_SAVE_INTERVAL_SECONDS', '1'))
             now = time.time()
-            if changed or eval_res:
+            self._exit_protection_dirty = getattr(self, '_exit_protection_dirty', False) or position != previous_protection
+            if changed or eval_res or self._exit_protection_dirty:
                 if now - self._last_trailing_stop_save >= save_interval:
                     self._last_trailing_stop_save = now
-                    self.save_state()
+                    if self.save_state():
+                        self._exit_protection_dirty = False
         except Exception as e:
             print(f"⚠️ Erreur update trailing live {symbol}: {e}")
     
@@ -2381,6 +2364,16 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             
             signal_action = global_signal.get('action')
             signal_confidence = global_signal.get('confidence', 0)
+            if global_signal.get('data_available') is False:
+                self.record_decision(
+                    symbol, 'buy', False, 'technical_data_unavailable',
+                    {'price': current_price,
+                     'missing_timeframes': global_signal.get('missing_timeframes', []),
+                     'candle_counts': {tf: item.get('candle_count', 0)
+                                       for tf, item in analysis.get('timeframes', {}).items()}},
+                    throttle_seconds=60,
+                )
+                return
                 
         except Exception as e:
             self.record_decision(
@@ -3569,7 +3562,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
             # En live, Kraken est la source de vérité. Même si la mémoire locale ne
             # contient rien, vérifier les ordres réellement ouverts sur l'exchange.
-            exchange_open = self.safe_request(self.exchange.fetch_open_orders, symbol) or []
+            exchange_open = self.safe_request(self.exchange.fetch_open_orders, symbol)
+            if exchange_open is None:
+                return False
             exchange_sell_ids = {
                 str(order.get('id'))
                 for order in exchange_open
@@ -3597,7 +3592,9 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
 
                     if not confirmed_canceled:
                         try:
-                            still_open = self.safe_request(self.exchange.fetch_open_orders, symbol) or []
+                            still_open = self.safe_request(self.exchange.fetch_open_orders, symbol)
+                            if still_open is None:
+                                raise RuntimeError('Kraken open orders unavailable')
                             open_ids = {str(o.get('id')) for o in still_open if o.get('id') is not None}
                             confirmed_canceled = order_id not in open_ids
                         except Exception:
@@ -3805,26 +3802,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
     def _execute_force_sell(self, symbol):
         """Force la vente de toute la crypto disponible pour un symbole"""
         try:
-            # 1. Annuler les ordres de vente actifs pour ce symbole
-            self._cancel_sell_orders_for_symbol(symbol)
-            
-            # 2. Récupérer le solde disponible
-            balance = self.balance_manager.get_balance(force_refresh=True)
+            amount_to_sell = self._prepare_exit_amount(symbol, self.get_price(symbol))
             base_currency = symbol.split('/')[0]
-            
-            if self.paper_trading:
-                # En paper trading, trouver les positions d'achat non encore clôturées
-                amount_to_sell = 0
-                for p in self.state.get('positions', []):
-                    if p.get('symbol') == symbol and p.get('side') == 'buy' and not p.get('closed_at'):
-                        amount_to_sell += float(p.get('amount') or 0)
-            else:
-                amount_to_sell = balance.get(base_currency, {}).get('free', 0)
-                
-            if amount_to_sell <= 0.00001:
-                print(f"❌ Impossible de forcer la vente: Aucun solde disponible pour {base_currency}")
+            if not amount_to_sell:
                 return
-                
+
             # 3. Exécuter la vente au marché
             if self.sell_market(symbol, amount_to_sell):
                 if hasattr(self, 'trailing_stop_manager'):

@@ -43,6 +43,7 @@ from core.db_orm import (
     Crypto,
     BotProcess,
     BotState,
+    BotExitState,
     Account,
     Balance,
     Order,
@@ -3588,6 +3589,8 @@ class MLLiveLogger:
                 state_row = session.get(BotState, key)
                 if not state_row:
                     return None
+                exit_row = session.get(BotExitState, key)
+                exit_state = json.loads(exit_row.payload) if exit_row else {}
                 live_symbol_rows = session.scalars(
                     select(Crypto).where(Crypto.mode == key).order_by(Crypto.symbol.asc())
                 ).all()
@@ -3652,6 +3655,7 @@ class MLLiveLogger:
                     exit_recommendations[row.symbol] = {
                         'decision': row.exit_decision,
                         'continuation_score': row.p_continue,
+                        'p_continue': row.p_continue,
                         'min_p_continue': row.min_p_continue,
                         'entry_price': row.entry_price,
                         'net_pnl_pct': row.net_pnl_pct,
@@ -3749,7 +3753,8 @@ class MLLiveLogger:
                         state['paper_balance'] = max(0.0, float(initial_balance) - open_cost)
             if pending_orders or 'pending_orders' not in state:
                 state['pending_orders'] = pending_orders
-            state['trailing_stops'] = {}
+            state['trailing_stops'] = exit_state.get('trailing_stops', {})
+            state['live_exit_orders'] = exit_state.get('live_exit_orders', {})
             journal = self.get_decision_journal(key, 5000)
             if journal:
                 state['decision_journal'] = journal
@@ -3803,6 +3808,10 @@ class MLLiveLogger:
                         row.quote_currency = get_quote_currency()
                         row.paper_balance = self._clean(clean_state.get('paper_balance'))
                         row.initial_balance = self._clean(clean_state.get('initial_balance'))
+                        session.merge(BotExitState(mode=key, updated_at=now, payload=json.dumps({
+                            'trailing_stops': trailing_stops,
+                            'live_exit_orders': clean_state.get('live_exit_orders', {}),
+                        })))
                         row.updated_at = now
 
                         for model in (

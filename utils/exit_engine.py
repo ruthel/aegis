@@ -200,6 +200,8 @@ class ExitDecisionEngine:
             "duration_minutes": round(duration_minutes, 1),
             "reason": reason,
             "ml_exit": ml_exit or {},
+            "p_continue": (ml_exit or {}).get('p_continue'),
+            "min_p_continue": (ml_exit or {}).get('min_p_continue'),
             "timestamp": datetime.now().isoformat()
         }
         return result
