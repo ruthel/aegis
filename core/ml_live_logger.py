@@ -1231,8 +1231,13 @@ class MLLiveLogger:
         jitter = (time.monotonic_ns() % 100_000_000) / 1_000_000_000.0
         return delay + min(0.10, jitter)
 
-    def _run_orm_write(self, operation, label='orm_write', attempts=None):
-        """Run a short ORM write transaction with rollback + lock retry."""
+    def _run_orm_write(self, operation, label='orm_write', attempts=None, immediate=False):
+        """Run a short ORM write transaction with rollback + lock retry.
+
+        immediate=True is reserved for atomic claim/check-and-set operations.
+        Ordinary writes should stay deferred so SQLite acquires its single writer
+        lock only when the first DML statement actually executes.
+        """
         max_attempts = max(1, int(attempts or self._write_retry_attempts))
         last_exc = None
         for attempt in range(max_attempts):
@@ -1240,6 +1245,8 @@ class MLLiveLogger:
             try:
                 with self._lock:
                     session = self._orm_session()
+                    if immediate:
+                        session.execute(text('BEGIN IMMEDIATE'))
                     result = operation(session)
                     session.commit()
                     return result
