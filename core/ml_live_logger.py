@@ -12,6 +12,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select, text, update
 
 from utils.currency import get_quote_currency, account_id as currency_account_id, is_quote_asset, make_symbol
+from core.runtime_tuning import (
+    SQLITE_WRITE_RETRY_ATTEMPTS,
+    SQLITE_WRITE_RETRY_BASE_SECONDS,
+    SQLITE_WRITE_RETRY_MAX_SECONDS,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,12 +80,9 @@ class MLLiveLogger:
         self._lock = _shared_db_lock(self.sqlite_file)
         self._conn = None
         self._Session = create_session_factory(self.sqlite_file)
-        self._write_retry_attempts = max(2, int(os.getenv('SQLITE_WRITE_RETRY_ATTEMPTS', '6')))
-        self._write_retry_base_seconds = max(0.01, float(os.getenv('SQLITE_WRITE_RETRY_BASE_SECONDS', '0.10')))
-        self._write_retry_max_seconds = max(
-            self._write_retry_base_seconds,
-            float(os.getenv('SQLITE_WRITE_RETRY_MAX_SECONDS', '1.0')),
-        )
+        self._write_retry_attempts = SQLITE_WRITE_RETRY_ATTEMPTS
+        self._write_retry_base_seconds = SQLITE_WRITE_RETRY_BASE_SECONDS
+        self._write_retry_max_seconds = SQLITE_WRITE_RETRY_MAX_SECONDS
         os.makedirs(self.data_dir, exist_ok=True)
         if initialize_schema:
             self._init_sqlite()
