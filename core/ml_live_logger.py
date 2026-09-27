@@ -3759,12 +3759,13 @@ class MLLiveLogger:
         def text_value(value):
             return str(value) if value is not None else None
 
-        for attempt in range(4):
+        max_attempts = self._write_retry_attempts
+        for attempt in range(max_attempts):
             try:
                 return self._save_bot_state_orm_once(state, key, text_value)
             except Exception as exc:
-                if 'database is locked' in str(exc).lower() and attempt < 3:
-                    time.sleep(0.25 * (attempt + 1))
+                if self._is_sqlite_locked_error(exc) and attempt < max_attempts - 1:
+                    time.sleep(self._write_retry_delay(attempt))
                     continue
                 print(f"⚠️ SQLite save_bot_state failed: {type(exc).__name__}: {exc}")
                 return False
@@ -4383,6 +4384,7 @@ class MLLiveLogger:
         """Persist monotonic execution-stage latencies inside one trading mode."""
         try:
             t = dict(trace or {})
+
             def _ms(a, b):
                 av, bv = t.get(a), t.get(b)
                 if av is None or bv is None:
@@ -4397,8 +4399,9 @@ class MLLiveLogger:
             if start_ns is not None and end_ns is not None:
                 total_ms = max(0.0, (float(end_ns) - float(start_ns)) / 1_000_000.0)
 
+            latency_id = self._new_id('latency')
             row = ExecutionLatency(
-                latency_id=self._new_id('latency'),
+                latency_id=latency_id,
                 timestamp=now_iso(),
                 mode=str(mode or 'paper').lower(),
                 symbol=str(symbol or ''),
@@ -4418,11 +4421,12 @@ class MLLiveLogger:
                 success=1 if success else 0,
                 trace_json=json.dumps(self._clean(t), separators=(',', ':')),
             )
-            with self._lock:
-                with self._orm_session() as session:
-                    session.add(row)
-                    session.commit()
-            return row.latency_id
+
+            def _write(session):
+                session.add(row)
+                return latency_id
+
+            return self._run_orm_write(_write, label='execution_latency')
         except Exception:
             return None
 
@@ -4895,20 +4899,21 @@ class MLLiveLogger:
         if not symbol:
             return False
         try:
-            entry_id = None
-            removed = False
-            with self._orm_session() as session:
+            state = {'entry_id': None, 'removed': False}
+
+            def _write(session):
                 row = session.get(MlOpenEntry, (mode, symbol))
                 if row:
-                    entry_id = row.entry_id
+                    state['entry_id'] = row.entry_id
                     session.delete(row)
-                    removed = True
-                if entry_id:
-                    decision = session.get(DecisionLog, entry_id)
+                    state['removed'] = True
+                if state['entry_id']:
+                    decision = session.get(DecisionLog, state['entry_id'])
                     if decision:
                         decision.label_status = 'reconciled_dust'
-                session.commit()
+                return state['removed']
 
+            removed = bool(self._run_orm_write(_write, label='reconcile_dust'))
             if removed:
                 self.append_event({
                     'event_id': self._new_id('position_reconciled_dust'),
@@ -4916,7 +4921,7 @@ class MLLiveLogger:
                     'timestamp': datetime.now().isoformat(),
                     'mode': mode,
                     'symbol': symbol,
-                    'entry_id': entry_id,
+                    'entry_id': state['entry_id'],
                     'actual_amount': self._clean(actual_amount),
                     'actual_value': self._clean(actual_value),
                     'reason': str(reason or 'dust_no_position'),
