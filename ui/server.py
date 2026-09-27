@@ -150,20 +150,26 @@ def db_logger():
     global _DB_LOGGER_SCHEMA_READY
     from core.ml_live_logger import MLLiveLogger
 
+    db_path = aegis_db_path()
     if not _DB_LOGGER_SCHEMA_READY:
         with _DB_LOGGER_SCHEMA_LOCK:
             if not _DB_LOGGER_SCHEMA_READY:
+                # start.py runs the canonical migration before importing the UI.
+                # If the DB already exists, never run DDL/migrations from request
+                # handling. Direct standalone UI startup can still bootstrap a
+                # brand-new database.
+                initialize_schema = not db_path.exists()
                 logger = MLLiveLogger(
                     data_dir=str(DATA_DIR),
-                    sqlite_file=str(aegis_db_path()),
-                    initialize_schema=True,
+                    sqlite_file=str(db_path),
+                    initialize_schema=initialize_schema,
                 )
                 _DB_LOGGER_SCHEMA_READY = True
                 return logger
 
     return MLLiveLogger(
         data_dir=str(DATA_DIR),
-        sqlite_file=str(aegis_db_path()),
+        sqlite_file=str(db_path),
         initialize_schema=False,
     )
 
