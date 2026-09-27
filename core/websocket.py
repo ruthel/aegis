@@ -54,6 +54,7 @@ class WebSocketManager:
         self.exchange_client = None  # Référence au client exchange
         self.tick_counts = {symbol: 0 for symbol in self.symbols}
         self.last_tick_ts = {}
+        self.last_trade_ts = {}
         self.last_analysis_ts = {}
         self.market_meta = {}
         self._last_bad_tick_log = {}
@@ -284,6 +285,7 @@ class WebSocketManager:
                 for trade in data[1]:
                     current_price = float(trade[0])
                 self.prices[symbol] = current_price
+                self.last_trade_ts[symbol] = now
                 self.market_meta.setdefault(symbol, {})['source'] = 'trade'
                 self._process_price_update(symbol, current_price)
 
@@ -304,10 +306,18 @@ class WebSocketManager:
                     'high_24h': high_24h,
                     'low_24h': low_24h,
                 }
-                # ticker met a jour le prix seulement si pas de trade recus
-                if self.market_meta.get(symbol, {}).get('source') != 'trade':
+                # Préférer les trades très récents, mais ne jamais laisser le
+                # flag source='trade' figer le prix indéfiniment si ce channel
+                # cesse d'émettre alors que ticker reste vivant.
+                trade_preferred_seconds = max(
+                    1.0,
+                    float(os.getenv('WS_TRADE_PREFERRED_SECONDS', '5')),
+                )
+                last_trade = float(self.last_trade_ts.get(symbol, 0.0) or 0.0)
+                if not last_trade or (now - last_trade) > trade_preferred_seconds:
                     current_price = float(ticker_data['c'][0])
                     self.prices[symbol] = current_price
+                    self.market_meta.setdefault(symbol, {})['source'] = 'ticker'
                     self._process_price_update(symbol, current_price)
 
             elif 'ohlc' in channel:
@@ -652,9 +662,16 @@ class WebSocketManager:
         }
     
     def get_price(self, symbol):
-        """Récupère le prix en temps réel"""
-        ws_symbol = symbol.replace('/', '')
-        return self.prices.get(ws_symbol, None)
+        """Récupère un prix WebSocket seulement s'il est suffisamment frais."""
+        ws_symbol = self._normalize_symbol(symbol)
+        price = self.prices.get(ws_symbol)
+        if price is None:
+            return None
+        last_tick = float(self.last_tick_ts.get(ws_symbol, 0.0) or 0.0)
+        max_age = max(5.0, float(os.getenv('WS_PRICE_MAX_AGE_SECONDS', '120')))
+        if not last_tick or (time.time() - last_tick) > max_age:
+            return None
+        return price
     
     def get_ticker(self, symbol):
         """Récupère le ticker Kraken WebSocket avec bid/ask réels."""
