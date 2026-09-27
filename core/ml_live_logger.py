@@ -15,6 +15,21 @@ from utils.currency import get_quote_currency, account_id as currency_account_id
 
 LOGGER = logging.getLogger(__name__)
 
+_DB_LOCK_REGISTRY_GUARD = threading.Lock()
+_DB_LOCK_REGISTRY = {}
+
+
+def _shared_db_lock(sqlite_file):
+    """Return one re-entrant writer lock per DB path inside this process."""
+    key = os.path.normcase(os.path.abspath(str(sqlite_file)))
+    with _DB_LOCK_REGISTRY_GUARD:
+        lock = _DB_LOCK_REGISTRY.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _DB_LOCK_REGISTRY[key] = lock
+        return lock
+
+
 from core.db_orm import (
     Base,
     BotAppState,
@@ -51,14 +66,24 @@ from core.db_orm import (
 class MLLiveLogger:
     """SQLite journal for live ML decisions and trade outcomes."""
 
-    def __init__(self, data_dir='data', open_file=None, sqlite_file=None):
+    def __init__(self, data_dir='data', open_file=None, sqlite_file=None, initialize_schema=True):
         self.data_dir = data_dir
         self.sqlite_file = sqlite_file or os.path.join(data_dir, 'aegis_db.sqlite3')
-        self._lock = threading.Lock()
+        # All logger instances in the same process share the same writer lock.
+        # WebSocketManager and TradingBot each create a logger, so an
+        # instance-local Lock was not enough to serialize writes.
+        self._lock = _shared_db_lock(self.sqlite_file)
         self._conn = None
         self._Session = create_session_factory(self.sqlite_file)
+        self._write_retry_attempts = max(2, int(os.getenv('SQLITE_WRITE_RETRY_ATTEMPTS', '6')))
+        self._write_retry_base_seconds = max(0.01, float(os.getenv('SQLITE_WRITE_RETRY_BASE_SECONDS', '0.10')))
+        self._write_retry_max_seconds = max(
+            self._write_retry_base_seconds,
+            float(os.getenv('SQLITE_WRITE_RETRY_MAX_SECONDS', '1.0')),
+        )
         os.makedirs(self.data_dir, exist_ok=True)
-        self._init_sqlite()
+        if initialize_schema:
+            self._init_sqlite()
 
     def record_entry_decision(
         self,
@@ -1191,6 +1216,93 @@ class MLLiveLogger:
 
     def _orm_session(self):
         return self._Session()
+
+    @staticmethod
+    def _is_sqlite_locked_error(exc):
+        text_value = str(exc or '').lower()
+        return (
+            'database is locked' in text_value
+            or 'database table is locked' in text_value
+            or 'database schema is locked' in text_value
+        )
+
+    def _write_retry_delay(self, attempt):
+        delay = min(
+            self._write_retry_max_seconds,
+            self._write_retry_base_seconds * (2 ** max(0, int(attempt))),
+        )
+        # Deterministic micro-jitter from monotonic time avoids synchronized
+        # retries across UI/bot processes without adding another dependency.
+        jitter = (time.monotonic_ns() % 100_000_000) / 1_000_000_000.0
+        return delay + min(0.10, jitter)
+
+    def _run_orm_write(self, operation, label='orm_write', attempts=None):
+        """Run a short ORM write transaction with rollback + lock retry."""
+        max_attempts = max(1, int(attempts or self._write_retry_attempts))
+        last_exc = None
+        for attempt in range(max_attempts):
+            session = None
+            try:
+                with self._lock:
+                    session = self._orm_session()
+                    result = operation(session)
+                    session.commit()
+                    return result
+            except Exception as exc:
+                last_exc = exc
+                if session is not None:
+                    try:
+                        session.rollback()
+                    except Exception:
+                        pass
+                if not self._is_sqlite_locked_error(exc) or attempt >= max_attempts - 1:
+                    raise
+            finally:
+                if session is not None:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+            time.sleep(self._write_retry_delay(attempt))
+        if last_exc:
+            raise last_exc
+        return None
+
+    def _run_raw_write(self, operation, label='raw_write', attempts=None):
+        """Run a raw sqlite write safely.
+
+        A failed raw DML statement used to leave the persistent sqlite3
+        connection inside an open transaction, which could keep the whole DB
+        locked for minutes. Always rollback on failure and retry lock errors.
+        """
+        max_attempts = max(1, int(attempts or self._write_retry_attempts))
+        last_exc = None
+        for attempt in range(max_attempts):
+            conn = None
+            try:
+                with self._lock:
+                    conn = self._get_conn()
+                    if getattr(conn, 'in_transaction', False):
+                        # Any transaction still open when a new top-level write
+                        # starts is stale; all raw write operations below are
+                        # serialized by the per-DB RLock.
+                        conn.rollback()
+                    result = operation(conn)
+                    conn.commit()
+                    return result
+            except Exception as exc:
+                last_exc = exc
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                if not self._is_sqlite_locked_error(exc) or attempt >= max_attempts - 1:
+                    raise
+            time.sleep(self._write_retry_delay(attempt))
+        if last_exc:
+            raise last_exc
+        return None
 
     def _quote_ident(self, name):
         return '"' + str(name).replace('"', '""') + '"'
