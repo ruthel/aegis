@@ -59,7 +59,12 @@ class WebSocketManager:
         self._last_bad_tick_log = {}
         self.live_logger = MLLiveLogger(data_dir='data', sqlite_file=os.getenv('ML_LIVE_SQLITE_FILE', 'data/aegis_db.sqlite3'))
         self.trading_mode = 'paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live'
-        self.live_status_interval = float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '1'))
+        # Telemetry is intentionally slower than market data. Writing the full
+        # status on every second created unnecessary SQLite writer pressure.
+        self.live_status_interval = max(
+            2.0,
+            float(os.getenv('LIVE_STATUS_INTERVAL_SECONDS', '5')),
+        )
         self._last_live_status_write = 0
         
         # Queue asynchrone pour callbacks non-bloquants
@@ -175,9 +180,30 @@ class WebSocketManager:
         )
         self.ws = ws_app
 
+        # Kraken already sends application-level heartbeats and Aegis has a
+        # last-message watchdog. websocket-client's own ping timeout was causing
+        # repeated "ping/pong timed out" disconnects even while our reconnect
+        # logic was otherwise healthy. Disable client pings by default and rely
+        # on Kraken traffic + the watchdog; operators can opt back in explicitly.
+        ping_interval = max(
+            0.0,
+            float(os.getenv('WS_CLIENT_PING_INTERVAL_SECONDS', '0')),
+        )
+        run_kwargs = {'ping_interval': ping_interval}
+        if ping_interval > 1.0:
+            configured_timeout = max(
+                1.0,
+                float(os.getenv('WS_CLIENT_PING_TIMEOUT_SECONDS', '10')),
+            )
+            run_kwargs['ping_timeout'] = min(
+                configured_timeout,
+                max(1.0, ping_interval - 1.0),
+            )
+
         self.ws_thread = threading.Thread(
             target=ws_app.run_forever,
-            kwargs={'ping_interval': 30, 'ping_timeout': 10}
+            kwargs=run_kwargs,
+            name='aegis-ws-public',
         )
         self.ws_thread.daemon = True
         self.ws_thread.start()
@@ -461,7 +487,7 @@ class WebSocketManager:
         now = float(now or time.time())
         if not self.is_ws_connected or not self.connected_since_ts:
             return False
-        stable_seconds = max(30.0, float(os.getenv('WS_STABLE_CONNECTION_SECONDS', '180')))
+        stable_seconds = max(30.0, float(os.getenv('WS_STABLE_CONNECTION_SECONDS', '120')))
         if self.reconnect_attempts > 0 and (now - self.connected_since_ts) >= stable_seconds:
             self.reconnect_attempts = 0
             self._reconnect_history.clear()
@@ -484,6 +510,8 @@ class WebSocketManager:
                 self._rate_limited_until,
                 now + max(30.0, float(os.getenv('WS_RATE_LIMIT_BACKOFF_SECONDS', '120')))
             )
+        elif self._rate_limited_until <= now:
+            self._rate_limited_until = 0.0
         if 'ping/pong timed out' not in message.lower():
             print(f"WS erreur: {message}")
         self.is_ws_connected = False
@@ -510,7 +538,7 @@ class WebSocketManager:
     def _compute_reconnect_delay(self, now=None):
         now = float(now or time.time())
         base_delay = max(1.0, float(os.getenv('WS_RECONNECT_BASE_SECONDS', '2')))
-        max_delay = max(base_delay, float(os.getenv('WS_RECONNECT_MAX_SECONDS', '120')))
+        max_delay = max(base_delay, float(os.getenv('WS_RECONNECT_MAX_SECONDS', '30')))
         delay = min(max_delay, base_delay * (2 ** max(0, self.reconnect_attempts - 1)))
 
         window_seconds = max(60.0, float(os.getenv('WS_CIRCUIT_WINDOW_SECONDS', '600')))
@@ -519,7 +547,7 @@ class WebSocketManager:
         if len(recent) >= threshold:
             delay = max(
                 delay,
-                max(30.0, float(os.getenv('WS_CIRCUIT_BACKOFF_SECONDS', '120')))
+                max(15.0, float(os.getenv('WS_CIRCUIT_BACKOFF_SECONDS', '30')))
             )
         if self._rate_limited_until > now:
             delay = max(delay, self._rate_limited_until - now)
