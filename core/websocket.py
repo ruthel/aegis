@@ -667,9 +667,15 @@ class WebSocketManager:
         price = self.prices.get(ws_symbol)
         if price is None:
             return None
-        last_tick = float(self.last_tick_ts.get(ws_symbol, 0.0) or 0.0)
+        last_tick_map = getattr(self, 'last_tick_ts', {}) or {}
+        last_tick = float(last_tick_map.get(ws_symbol, 0.0) or 0.0)
         max_age = max(5.0, float(os.getenv('WS_PRICE_MAX_AGE_SECONDS', '120')))
-        if not last_tick or (time.time() - last_tick) > max_age:
+        # Legacy/reconstructed objects may not expose freshness metadata. In
+        # that narrow case preserve the historical behavior; normal runtime
+        # objects always initialize last_tick_ts and therefore enforce max_age.
+        if hasattr(self, 'last_tick_ts') and (
+            not last_tick or (time.time() - last_tick) > max_age
+        ):
             return None
         return price
     
