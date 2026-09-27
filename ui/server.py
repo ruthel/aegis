@@ -85,8 +85,7 @@ def aegis_db_path() -> Path:
 
 def latest_support_touch_backtest():
     try:
-        from core.ml_live_logger import MLLiveLogger
-        with MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path())) as logger:
+        with db_logger() as logger:
             return logger.get_latest_support_touch_backtest()
     except Exception:
         return {}
@@ -137,9 +136,42 @@ def model_perf_metrics():
         return {}
 
 
+_DB_LOGGER_SCHEMA_READY = False
+_DB_LOGGER_SCHEMA_LOCK = threading.Lock()
+
+
 def db_logger():
+    """Create a lightweight DB logger.
+
+    The UI used to run the full schema/migration initializer on every request
+    that instantiated MLLiveLogger. That creates avoidable DDL/write contention
+    with the trading subprocess. Initialize at most once per UI process.
+    """
+    global _DB_LOGGER_SCHEMA_READY
     from core.ml_live_logger import MLLiveLogger
-    return MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path()))
+
+    db_path = aegis_db_path()
+    if not _DB_LOGGER_SCHEMA_READY:
+        with _DB_LOGGER_SCHEMA_LOCK:
+            if not _DB_LOGGER_SCHEMA_READY:
+                # start.py runs the canonical migration before importing the UI.
+                # If the DB already exists, never run DDL/migrations from request
+                # handling. Direct standalone UI startup can still bootstrap a
+                # brand-new database.
+                initialize_schema = not db_path.exists()
+                logger = MLLiveLogger(
+                    data_dir=str(DATA_DIR),
+                    sqlite_file=str(db_path),
+                    initialize_schema=initialize_schema,
+                )
+                _DB_LOGGER_SCHEMA_READY = True
+                return logger
+
+    return MLLiveLogger(
+        data_dir=str(DATA_DIR),
+        sqlite_file=str(db_path),
+        initialize_schema=False,
+    )
 
 
 def latest_model_evaluations(limit=5):
@@ -1059,8 +1091,7 @@ def load_bot_state(fallback=None, mode=None):
     fallback = fallback or {'positions': []}
     mode_key = mode or active_trading_mode()
     try:
-        from core.ml_live_logger import MLLiveLogger
-        with MLLiveLogger(data_dir=str(DATA_DIR), sqlite_file=str(aegis_db_path())) as logger:
+        with db_logger() as logger:
             state = logger.load_bot_state(mode_key)
         if state:
             return state

@@ -15,6 +15,21 @@ from utils.currency import get_quote_currency, account_id as currency_account_id
 
 LOGGER = logging.getLogger(__name__)
 
+_DB_LOCK_REGISTRY_GUARD = threading.Lock()
+_DB_LOCK_REGISTRY = {}
+
+
+def _shared_db_lock(sqlite_file):
+    """Return one re-entrant writer lock per DB path inside this process."""
+    key = os.path.normcase(os.path.abspath(str(sqlite_file)))
+    with _DB_LOCK_REGISTRY_GUARD:
+        lock = _DB_LOCK_REGISTRY.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _DB_LOCK_REGISTRY[key] = lock
+        return lock
+
+
 from core.db_orm import (
     Base,
     BotAppState,
@@ -51,14 +66,24 @@ from core.db_orm import (
 class MLLiveLogger:
     """SQLite journal for live ML decisions and trade outcomes."""
 
-    def __init__(self, data_dir='data', open_file=None, sqlite_file=None):
+    def __init__(self, data_dir='data', open_file=None, sqlite_file=None, initialize_schema=True):
         self.data_dir = data_dir
         self.sqlite_file = sqlite_file or os.path.join(data_dir, 'aegis_db.sqlite3')
-        self._lock = threading.Lock()
+        # All logger instances in the same process share the same writer lock.
+        # WebSocketManager and TradingBot each create a logger, so an
+        # instance-local Lock was not enough to serialize writes.
+        self._lock = _shared_db_lock(self.sqlite_file)
         self._conn = None
         self._Session = create_session_factory(self.sqlite_file)
+        self._write_retry_attempts = max(2, int(os.getenv('SQLITE_WRITE_RETRY_ATTEMPTS', '6')))
+        self._write_retry_base_seconds = max(0.01, float(os.getenv('SQLITE_WRITE_RETRY_BASE_SECONDS', '0.10')))
+        self._write_retry_max_seconds = max(
+            self._write_retry_base_seconds,
+            float(os.getenv('SQLITE_WRITE_RETRY_MAX_SECONDS', '1.0')),
+        )
         os.makedirs(self.data_dir, exist_ok=True)
-        self._init_sqlite()
+        if initialize_schema:
+            self._init_sqlite()
 
     def record_entry_decision(
         self,
@@ -190,10 +215,9 @@ class MLLiveLogger:
     def append_event(self, event):
         try:
             clean_event = self._clean(event)
-            with self._lock:
-                self._insert_sqlite_event(clean_event)
+            return bool(self._insert_sqlite_event(clean_event))
         except Exception:
-            pass
+            return False
 
     def _init_sqlite(self):
         try:
@@ -560,8 +584,9 @@ class MLLiveLogger:
                 return None
             asset = str(asset or get_quote_currency()).upper()
             now = now_iso()
-            with self._lock:
-                conn = self._get_conn()
+            ledger_id = f"{self._account_id(mode)}:{entry_type}:{asset}:{uuid.uuid4().hex}"
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 if amount < 0:
                     current = conn.execute(
@@ -570,7 +595,6 @@ class MLLiveLogger:
                     ).fetchone()
                     if current and float(current[0] or 0.0) + amount < -1e-9:
                         return None
-                ledger_id = f"{account_id}:{entry_type}:{asset}:{uuid.uuid4().hex}"
                 self._insert_ledger_entry(
                     conn,
                     ledger_id,
@@ -605,9 +629,11 @@ class MLLiveLogger:
                         ),
                     )
                 self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return ledger_id
-        except Exception:
+                return ledger_id
+
+            return self._run_raw_write(_write, label='account_cash_movement')
+        except Exception as exc:
+            LOGGER.warning("SQLite cash movement failed: %s", exc)
             return None
 
     def record_order_transaction(self, symbol, side, amount, price=None, order_type='market', status='open', order_id=None, mode='paper', source='accounting_transaction', recalculate_balances=True):
@@ -617,8 +643,8 @@ class MLLiveLogger:
             side = str(side or '').lower()
             status = str(status or 'open').lower()
             order_id = str(order_id or f"{source}_{side}_{symbol.replace('/', '')}_{uuid.uuid4().hex[:12]}")
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 conn.execute(
                     """
@@ -647,9 +673,11 @@ class MLLiveLogger:
                 )
                 if recalculate_balances:
                     self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return order_id
-        except Exception:
+                return order_id
+
+            return self._run_raw_write(_write, label='record_order_transaction')
+        except Exception as exc:
+            LOGGER.warning("SQLite order transaction failed: %s", exc)
             return None
 
     def record_fill_transaction(self, order_id, symbol, side, amount, price, fee_amount=None, fee_asset=None, mode='paper', source='accounting_transaction', write_ledger=True, recalculate_balances=True):
@@ -667,8 +695,8 @@ class MLLiveLogger:
             fee_asset = str(fee_asset or quote).upper()
             order_id = str(order_id or f"{source}_{side}_{symbol.replace('/', '')}_{uuid.uuid4().hex[:12]}")
             fill_id = f"{self._account_id(mode)}:fill:{uuid.uuid4().hex}"
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 existing_order = conn.execute(
                     """
@@ -690,6 +718,7 @@ class MLLiveLogger:
                         (account_id, order_id, symbol, side, amount, price, source, now, now, now),
                     )
                     existing_order = (order_id, amount, 0.0, None)
+
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO fills
@@ -699,54 +728,43 @@ class MLLiveLogger:
                     """,
                     (fill_id, account_id, order_id, symbol, side, amount, price, fee_amount, fee_asset, source, now, now, now),
                 )
+
                 gross = amount * price
-                usd_delta = 0.0
+                quote_delta = 0.0
                 if write_ledger:
                     if side == 'buy':
                         self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, -gross, order_id, fill_id, symbol, description='buy_quote_debit', source=source)
                         self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, amount, order_id, fill_id, symbol, description='buy_base_credit', source=source)
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='buy_fee', source=source)
-                        usd_delta = -gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
+                        quote_delta = -gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
                     else:
                         self._insert_ledger_entry(conn, f'{fill_id}:base', account_id, now, 'trade', base, -amount, order_id, fill_id, symbol, description='sell_base_debit', source=source)
                         self._insert_ledger_entry(conn, f'{fill_id}:quote', account_id, now, 'trade', quote, gross, order_id, fill_id, symbol, description='sell_quote_credit', source=source)
                         if fee_amount:
                             self._insert_ledger_entry(conn, f'{fill_id}:fee', account_id, now, 'fee', fee_asset, -fee_amount, order_id, fill_id, symbol, description='sell_fee', source=source)
-                        usd_delta = gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
+                        quote_delta = gross - (fee_amount if fee_asset == quote == get_quote_currency() else 0.0)
+
                 requested_amount = float(existing_order[1] or amount)
                 previous_filled = float(existing_order[2] or 0.0)
                 previous_avg = float(existing_order[3] or 0.0)
                 new_filled = previous_filled + amount
-                if new_filled > 0:
-                    avg_fill_price = (
-                        (previous_avg * previous_filled) + (price * amount)
-                    ) / new_filled
-                else:
-                    avg_fill_price = price
+                avg_fill_price = (
+                    ((previous_avg * previous_filled) + (price * amount)) / new_filled
+                    if new_filled > 0 else price
+                )
                 is_filled = new_filled >= max(0.0, requested_amount - 1e-12)
                 order_status = 'filled' if is_filled else 'partially_filled'
                 closed_at = now if is_filled else None
                 conn.execute(
                     """
                     UPDATE orders
-                    SET status=?,
-                        filled_amount=?,
-                        avg_fill_price=?,
-                        closed_at=?,
-                        updated_at=?
+                    SET status=?, filled_amount=?, avg_fill_price=?, closed_at=?, updated_at=?
                     WHERE account_id=? AND order_id=?
                     """,
-                    (
-                        order_status,
-                        new_filled,
-                        avg_fill_price,
-                        closed_at,
-                        now,
-                        account_id,
-                        order_id,
-                    ),
+                    (order_status, new_filled, avg_fill_price, closed_at, now, account_id, order_id),
                 )
+
                 if side == 'sell':
                     conn.execute(
                         """
@@ -754,14 +772,12 @@ class MLLiveLogger:
                         SET status='cancelled',
                             closed_at=COALESCE(closed_at, ?),
                             updated_at=?
-                        WHERE account_id=?
-                          AND symbol=?
-                          AND side='sell'
-                          AND status='open'
-                          AND order_id<>?
+                        WHERE account_id=? AND symbol=? AND side='sell'
+                          AND status='open' AND order_id<>?
                         """,
                         (now, now, account_id, symbol, order_id),
                     )
+
                 if write_ledger and quote == get_quote_currency() and mode == 'paper':
                     state = conn.execute(
                         "SELECT paper_balance, created_at FROM bot_state WHERE mode=?",
@@ -777,25 +793,27 @@ class MLLiveLogger:
                         """,
                         (
                             mode,
-                            previous_balance + usd_delta,
+                            previous_balance + quote_delta,
                             mode,
-                            previous_balance + usd_delta,
+                            previous_balance + quote_delta,
                             created_at,
                             now,
                         ),
                     )
                 if recalculate_balances:
                     self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return fill_id
-        except Exception:
+                return fill_id
+
+            return self._run_raw_write(_write, label='record_fill_transaction')
+        except Exception as exc:
+            LOGGER.warning("SQLite fill transaction failed: %s", exc)
             return None
 
     def cancel_open_orders(self, symbol=None, side=None, mode='paper', source=None):
         try:
             now = now_iso()
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode)
                 clauses = ["account_id=?", "status='open'"]
                 params = [account_id]
@@ -815,9 +833,11 @@ class MLLiveLogger:
                 """
                 conn.execute(sql, [now, now, *params])
                 self._recalculate_balances(conn, account_id)
-                conn.commit()
-            return True
-        except Exception:
+                return True
+
+            return bool(self._run_raw_write(_write, label='cancel_open_orders'))
+        except Exception as exc:
+            LOGGER.warning("SQLite cancel orders failed: %s", exc)
             return False
 
     def _sync_accounting_from_positions(self, conn, positions, mode='paper', paper_balance=None, initial_balance=None, state_created_at=None):
@@ -1191,6 +1211,100 @@ class MLLiveLogger:
 
     def _orm_session(self):
         return self._Session()
+
+    @staticmethod
+    def _is_sqlite_locked_error(exc):
+        text_value = str(exc or '').lower()
+        return (
+            'database is locked' in text_value
+            or 'database table is locked' in text_value
+            or 'database schema is locked' in text_value
+        )
+
+    def _write_retry_delay(self, attempt):
+        delay = min(
+            self._write_retry_max_seconds,
+            self._write_retry_base_seconds * (2 ** max(0, int(attempt))),
+        )
+        # Deterministic micro-jitter from monotonic time avoids synchronized
+        # retries across UI/bot processes without adding another dependency.
+        jitter = (time.monotonic_ns() % 100_000_000) / 1_000_000_000.0
+        return delay + min(0.10, jitter)
+
+    def _run_orm_write(self, operation, label='orm_write', attempts=None, immediate=False):
+        """Run a short ORM write transaction with rollback + lock retry.
+
+        immediate=True is reserved for atomic claim/check-and-set operations.
+        Ordinary writes should stay deferred so SQLite acquires its single writer
+        lock only when the first DML statement actually executes.
+        """
+        max_attempts = max(1, int(attempts or self._write_retry_attempts))
+        last_exc = None
+        for attempt in range(max_attempts):
+            session = None
+            try:
+                with self._lock:
+                    session = self._orm_session()
+                    if immediate:
+                        session.execute(text('BEGIN IMMEDIATE'))
+                    result = operation(session)
+                    session.commit()
+                    return result
+            except Exception as exc:
+                last_exc = exc
+                if session is not None:
+                    try:
+                        session.rollback()
+                    except Exception:
+                        pass
+                if not self._is_sqlite_locked_error(exc) or attempt >= max_attempts - 1:
+                    raise
+            finally:
+                if session is not None:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+            time.sleep(self._write_retry_delay(attempt))
+        if last_exc:
+            raise last_exc
+        return None
+
+    def _run_raw_write(self, operation, label='raw_write', attempts=None):
+        """Run a raw sqlite write safely.
+
+        A failed raw DML statement used to leave the persistent sqlite3
+        connection inside an open transaction, which could keep the whole DB
+        locked for minutes. Always rollback on failure and retry lock errors.
+        """
+        max_attempts = max(1, int(attempts or self._write_retry_attempts))
+        last_exc = None
+        for attempt in range(max_attempts):
+            conn = None
+            try:
+                with self._lock:
+                    conn = self._get_conn()
+                    if getattr(conn, 'in_transaction', False):
+                        # Any transaction still open when a new top-level write
+                        # starts is stale; all raw write operations below are
+                        # serialized by the per-DB RLock.
+                        conn.rollback()
+                    result = operation(conn)
+                    conn.commit()
+                    return result
+            except Exception as exc:
+                last_exc = exc
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                if not self._is_sqlite_locked_error(exc) or attempt >= max_attempts - 1:
+                    raise
+            time.sleep(self._write_retry_delay(attempt))
+        if last_exc:
+            raise last_exc
+        return None
 
     def _quote_ident(self, name):
         return '"' + str(name).replace('"', '""') + '"'
@@ -2643,35 +2757,42 @@ class MLLiveLogger:
         self.close()
 
     def _insert_sqlite_event(self, event):
-        try:
-            event_type = event.get('event_type')
-            with self._orm_session() as session:
-                session.merge(SysAudit(
-                    event_id=event.get('event_id'),
-                    event_type=event_type,
-                    timestamp=event.get('timestamp'),
-                    symbol=event.get('symbol'),
-                    mode=event.get('mode'),
-                ))
+        event_type = event.get('event_type')
 
-                if event_type in ('entry_decision', 'exit_decision'):
-                    if self._should_store_decision_log(event):
-                        self._insert_decision(session, event)
-                elif event_type == 'entry_opened':
-                    self._insert_open_entry(session, event)
-                elif event_type == 'exit_outcome':
-                    self._insert_trade_outcome(session, event)
-                elif event_type == 'telegram_message':
-                    self._insert_telegram_message(session, event)
-                session.commit()
+        def _write(session):
+            session.merge(SysAudit(
+                event_id=event.get('event_id'),
+                event_type=event_type,
+                timestamp=event.get('timestamp'),
+                symbol=event.get('symbol'),
+                mode=event.get('mode'),
+            ))
+
+            if event_type in ('entry_decision', 'exit_decision'):
+                if self._should_store_decision_log(event):
+                    self._insert_decision(session, event)
+            elif event_type == 'entry_opened':
+                self._insert_open_entry(session, event)
+            elif event_type == 'exit_outcome':
+                self._insert_trade_outcome(session, event)
+            elif event_type == 'telegram_message':
+                self._insert_telegram_message(session, event)
+            return True
+
+        try:
+            return bool(self._run_orm_write(
+                _write,
+                label=f'event:{event_type}',
+            ))
         except Exception as exc:
             LOGGER.exception(
-                "SQLite event persistence failed: type=%s symbol=%s mode=%s",
+                "SQLite event persistence failed after retries: type=%s symbol=%s mode=%s",
                 event.get('event_type') if isinstance(event, dict) else None,
                 event.get('symbol') if isinstance(event, dict) else None,
                 event.get('mode') if isinstance(event, dict) else None,
                 exc_info=exc,
             )
+            return False
 
     def _should_store_decision_log(self, event):
         event_type = event.get('event_type')
@@ -2724,7 +2845,8 @@ class MLLiveLogger:
         try:
             now = now_iso()
             sizing_id = payload.get('sizing_id') or self._new_id('sizing')
-            with self._orm_session() as session:
+
+            def _write(session):
                 session.merge(MlSizingRecommendation(
                     sizing_id=str(sizing_id),
                     timestamp=payload.get('timestamp') or now,
@@ -2748,8 +2870,9 @@ class MLLiveLogger:
                     created_at=now,
                     updated_at=now,
                 ))
-                session.commit()
-            return sizing_id
+                return sizing_id
+
+            return self._run_orm_write(_write, label='sizing_recommendation')
         except Exception as exc:
             print(f"⚠️ Erreur record_sizing_recommendation: {exc}")
             return None
@@ -2780,7 +2903,8 @@ class MLLiveLogger:
     def set_state_value(self, key, value):
         try:
             now = now_iso()
-            with self._orm_session() as session:
+
+            def _write(session):
                 row = session.get(BotAppState, str(key))
                 if row:
                     row.state_value = str(value)
@@ -2792,19 +2916,17 @@ class MLLiveLogger:
                         created_at=now,
                         updated_at=now,
                     ))
-                session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='set_state_value'))
         except Exception:
             return False
 
     def claim_interval(self, key, interval_seconds, now=None, initialize_only=False):
         """Atomically claim a periodic action slot across threads/processes."""
         now = float(now if now is not None else time.time())
-        session = None
         try:
-            with self._lock:
-                session = self._orm_session()
-                session.execute(text('BEGIN IMMEDIATE'))
+            def _write(session):
                 row = session.get(BotAppState, str(key))
                 last_value = float(row.state_value) if row and row.state_value is not None else None
                 stamp = now_iso()
@@ -2815,43 +2937,32 @@ class MLLiveLogger:
                         created_at=stamp,
                         updated_at=stamp,
                     ))
-                    session.commit()
-                    session.close()
                     return not initialize_only
 
                 if now - last_value < float(interval_seconds):
-                    session.commit()
-                    session.close()
                     return False
 
                 row.state_value = str(now)
                 row.updated_at = stamp
-                session.commit()
-                session.close()
                 return True
+
+            return bool(self._run_orm_write(
+                _write,
+                label='claim_interval',
+                immediate=True,
+            ))
         except Exception as exc:
-            try:
-                session.rollback()
-                session.close()
-            except Exception:
-                pass
             print(f"⚠️ SQLite claim_interval failed: {type(exc).__name__}: {exc}")
             return False
 
     def claim_daily_key(self, key, day_key):
         """Atomically claim a once-per-day action slot across threads/processes."""
-        session = None
         try:
-            with self._lock:
-                session = self._orm_session()
-                session.execute(text('BEGIN IMMEDIATE'))
+            def _write(session):
                 row = session.get(BotAppState, str(key))
                 stamp = now_iso()
                 if row and row.state_value == str(day_key):
-                    session.commit()
-                    session.close()
                     return False
-
                 if row:
                     row.state_value = str(day_key)
                     row.updated_at = stamp
@@ -2862,15 +2973,14 @@ class MLLiveLogger:
                         created_at=stamp,
                         updated_at=stamp,
                     ))
-                session.commit()
-                session.close()
                 return True
+
+            return bool(self._run_orm_write(
+                _write,
+                label='claim_daily_key',
+                immediate=True,
+            ))
         except Exception as exc:
-            try:
-                session.rollback()
-                session.close()
-            except Exception:
-                pass
             print(f"⚠️ SQLite claim_daily_key failed: {type(exc).__name__}: {exc}")
             return False
 
@@ -2895,7 +3005,8 @@ class MLLiveLogger:
             pid = payload.get('pid') if isinstance(payload, dict) else None
             started_at = payload.get('started_at') if isinstance(payload, dict) else None
             command = payload.get('command') if isinstance(payload, dict) else None
-            with self._orm_session() as session:
+
+            def _write(session):
                 row = session.get(BotProcess, key)
                 if row:
                     row.pid = pid
@@ -2911,19 +3022,21 @@ class MLLiveLogger:
                         created_at=now,
                         updated_at=now,
                     ))
-                session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='set_bot_process_state'))
         except Exception:
             return False
 
     def clear_bot_process_state(self, key='dashboard_bot'):
         try:
-            with self._orm_session() as session:
+            def _write(session):
                 row = session.get(BotProcess, key)
                 if row:
                     session.delete(row)
-                session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='clear_bot_process_state'))
         except Exception:
             return False
 
@@ -2939,8 +3052,7 @@ class MLLiveLogger:
 
     def refresh_accounting_mirror(self, key='paper', state=None):
         try:
-            with self._lock:
-                conn = self._get_conn()
+            def _write(conn):
                 if isinstance(state, dict):
                     self._sync_accounting_from_positions(
                         conn,
@@ -2951,9 +3063,11 @@ class MLLiveLogger:
                     )
                 else:
                     self._sync_accounting_from_bot_positions(conn, mode=key)
-                conn.commit()
-            return True
-        except Exception:
+                return True
+
+            return bool(self._run_raw_write(_write, label='refresh_accounting_mirror'))
+        except Exception as exc:
+            LOGGER.warning("SQLite accounting mirror refresh failed: %s", exc)
             return False
 
     def sync_external_balances(self, balances, mode='live', source='exchange_balance'):
@@ -2977,8 +3091,7 @@ class MLLiveLogger:
             if not clean_rows:
                 return False
 
-            with self._lock:
-                conn = self._get_conn()
+            def _write(conn):
                 account_id = self._ensure_account(conn, mode=mode, initial_balance=0.0)
                 conn.execute("DELETE FROM balances WHERE account_id=?", (account_id,))
                 for asset, free, locked, total in clean_rows:
@@ -2990,9 +3103,11 @@ class MLLiveLogger:
                         """,
                         (account_id, asset, free, locked, total, account_id, asset, now, now),
                     )
-                conn.commit()
-            return True
-        except Exception:
+                return True
+
+            return bool(self._run_raw_write(_write, label='sync_external_balances'))
+        except Exception as exc:
+            LOGGER.warning("SQLite external balance sync failed: %s", exc)
             return False
 
     def latest_exchange_ledger_since_ms(self, mode='live', source='kraken_ledger'):
@@ -3027,12 +3142,12 @@ class MLLiveLogger:
         """Importe le ledger reel Kraken/CCXT sans deviner depuis les deltas de balance."""
         if mode == 'paper' or not entries:
             return 0
-        imported = 0
         try:
             now = now_iso()
             account_id = self._account_id(mode)
-            with self._lock:
-                conn = self._get_conn()
+
+            def _write(conn):
+                imported = 0
                 self._ensure_account(conn, mode=mode, initial_balance=0.0)
                 for entry in entries:
                     if not isinstance(entry, dict):
@@ -3050,7 +3165,6 @@ class MLLiveLogger:
                     entry_type = self._map_exchange_ledger_type(entry)
                     timestamp = entry.get('datetime') or entry.get('timestamp') or now
                     if isinstance(timestamp, (int, float)):
-                        from datetime import datetime, timezone
                         timestamp = datetime.fromtimestamp(float(timestamp) / 1000.0, tz=timezone.utc).isoformat()
                     balance_after = self._clean(entry.get('after'))
                     reference_id = entry.get('referenceId') or entry.get('reference_id')
@@ -3081,10 +3195,12 @@ class MLLiveLogger:
                     if not exists:
                         imported += 1
                 self._sync_orders_from_exchange_ledger(conn, account_id, source=source)
-                conn.commit()
-            return imported
-        except Exception:
-            return imported
+                return imported
+
+            return int(self._run_raw_write(_write, label='import_exchange_ledger') or 0)
+        except Exception as exc:
+            LOGGER.warning("SQLite exchange ledger import failed: %s", exc)
+            return 0
 
     def _sync_orders_from_exchange_ledger(self, conn, account_id, source='kraken_ledger'):
         """Cree les orders/fills locaux manquants depuis les paires trade du ledger exchange."""
@@ -3643,12 +3759,13 @@ class MLLiveLogger:
         def text_value(value):
             return str(value) if value is not None else None
 
-        for attempt in range(4):
+        max_attempts = self._write_retry_attempts
+        for attempt in range(max_attempts):
             try:
                 return self._save_bot_state_orm_once(state, key, text_value)
             except Exception as exc:
-                if 'database is locked' in str(exc).lower() and attempt < 3:
-                    time.sleep(0.25 * (attempt + 1))
+                if self._is_sqlite_locked_error(exc) and attempt < max_attempts - 1:
+                    time.sleep(self._write_retry_delay(attempt))
                     continue
                 print(f"⚠️ SQLite save_bot_state failed: {type(exc).__name__}: {exc}")
                 return False
@@ -3676,7 +3793,6 @@ class MLLiveLogger:
             now = now_iso()
             with self._lock:
                 with self._orm_session() as session:
-                    session.execute(text('BEGIN IMMEDIATE'))
                     with session.no_autoflush:
                         row = session.get(BotState, key)
                         if not row:
@@ -3949,9 +4065,10 @@ class MLLiveLogger:
         settings = summary.get('settings') if isinstance(summary.get('settings'), dict) else {}
 
         try:
-            with self._orm_session() as session:
+            stored_at = now_iso()
+
+            def _write(session):
                 session.execute(delete(SupportTouchResult).where(SupportTouchResult.run_id == run_id))
-                stored_at = now_iso()
                 for item in results:
                     if not isinstance(item, dict):
                         continue
@@ -3981,9 +4098,11 @@ class MLLiveLogger:
                         worst_trade_percent=item.get('worst_trade_percent'),
                         stored_at=stored_at,
                     ))
-                session.commit()
-            return run_id
-        except Exception:
+                return run_id
+
+            return self._run_orm_write(_write, label='support_touch_backtest')
+        except Exception as exc:
+            LOGGER.warning("SQLite support-touch write failed: %s", exc)
             return None
 
     def _compact_support_touch_result(self, item):
@@ -4008,7 +4127,7 @@ class MLLiveLogger:
         trained_at = metadata.get('trained_at') or datetime.now().isoformat()
         model_id = self._stable_id('ml_model', f"{trained_at}:{model_path or ''}")
         try:
-            with self._orm_session() as session:
+            def _write(session):
                 row = session.get(MlModelMetadata, model_id)
                 if not row:
                     row = MlModelMetadata(model_id=model_id, stored_at=now_iso())
@@ -4022,8 +4141,9 @@ class MLLiveLogger:
                 self._add_feature_importance_orm(session, model_id, 'entry', metadata.get('feature_importance'))
                 self._add_feature_importance_orm(session, model_id, 'exit', metadata.get('exit_feature_importance'))
                 self._add_feature_importance_orm(session, model_id, 'sizing', metadata.get('sizing_feature_importance'))
-                session.commit()
-            return model_id
+                return model_id
+
+            return self._run_orm_write(_write, label='ml_model_metadata')
         except Exception:
             return None
 
@@ -4129,19 +4249,11 @@ class MLLiveLogger:
             ))
 
     def record_decision_journal(self, entry, mode='paper', max_entries=5000):
-        """Store final bot decisions in the unified decision log table.
-
-        Older code still calls this method after the decision journal tables were
-        folded into decision_logs. Keep the public API stable and map the useful
-        journal fields to the unified schema.
-        """
+        """Store final bot decisions in the unified decision log table."""
         if not isinstance(entry, dict):
             return False
         try:
             metrics = entry.get('metrics') if isinstance(entry.get('metrics'), dict) else {}
-            # Les métriques d'entrée ML sont imbriquées sous metrics['ml_decision']
-            # (cf. _build_ml_entry_decision_metrics). On lit donc p_win/p_continue/min_*
-            # depuis ce sous-dict en priorité, avec fallback sur le niveau racine.
             ml_decision = metrics.get('ml_decision') if isinstance(metrics.get('ml_decision'), dict) else {}
             confidence = (
                 metrics.get('confidence')
@@ -4165,54 +4277,58 @@ class MLLiveLogger:
             price = metrics.get('price') if metrics.get('price') is not None else entry.get('price')
             action = str(entry.get('action') or 'decision').upper()
             allowed = bool(entry.get('allowed'))
-            event_id = (
-                entry.get('event_id')
-                or self._new_id(f"decision_{action.lower()}")
-            )
+            event_id = entry.get('event_id') or self._new_id(f"decision_{action.lower()}")
             timestamp = entry.get('timestamp') or now_iso()
+            row_mode = entry.get('mode') or mode
+            symbol = entry.get('symbol') or ''
 
-            with self._lock:
-                with self._orm_session() as session:
-                    session.merge(SysAudit(
-                        event_id=str(event_id),
-                        event_type=f"decision_{action.lower()}",
-                        timestamp=timestamp,
-                        symbol=entry.get('symbol') or '',
-                        mode=entry.get('mode') or mode,
-                    ))
-                    session.merge(DecisionLog(
-                        event_id=str(event_id),
-                        action_type=action,
-                        timestamp=timestamp,
-                        mode=entry.get('mode') or mode,
-                        symbol=entry.get('symbol') or '',
-                        entry_id=entry.get('entry_id'),
-                        decision='accepted' if allowed else 'rejected',
-                        reason=entry.get('reason'),
-                        price=self._clean(price),
-                        confidence=self._clean(confidence),
-                        min_confidence=self._clean(
-                            metrics.get('min_confidence')
-                            if metrics.get('min_confidence') is not None
-                            else metrics.get('min_score')
-                            if metrics.get('min_score') is not None
-                            else metrics.get('threshold')
-                        ),
-                        p_win=self._clean(p_win),
-                        p_continue=self._clean(p_continue),
-                        label_status='final',
-                        net_pnl_pct=self._clean(metrics.get('net_pnl_pct')),
-                        duration_minutes=self._clean(metrics.get('duration_minutes')),
-                        slippage_pct=self._clean(metrics.get('slippage_pct')),
-                        spread_pct=self._clean(metrics.get('spread_pct')),
-                        order_type=metrics.get('order_type'),
-                        duration_ms=self._clean(metrics.get('duration_ms')),
-                    ))
-                    self._trim_decision_logs(session, mode=entry.get('mode') or mode, max_entries=max_entries)
-                    session.commit()
-            return True
-        except Exception as e:
-            print(f"⚠️ Decision Log SQLite write failed: {e}")
+            def _write(session):
+                session.merge(SysAudit(
+                    event_id=str(event_id),
+                    event_type=f"decision_{action.lower()}",
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    mode=row_mode,
+                ))
+                session.merge(DecisionLog(
+                    event_id=str(event_id),
+                    action_type=action,
+                    timestamp=timestamp,
+                    mode=row_mode,
+                    symbol=symbol,
+                    entry_id=entry.get('entry_id'),
+                    decision='accepted' if allowed else 'rejected',
+                    reason=entry.get('reason'),
+                    price=self._clean(price),
+                    confidence=self._clean(confidence),
+                    min_confidence=self._clean(
+                        metrics.get('min_confidence')
+                        if metrics.get('min_confidence') is not None
+                        else metrics.get('min_score')
+                        if metrics.get('min_score') is not None
+                        else metrics.get('threshold')
+                    ),
+                    p_win=self._clean(p_win),
+                    p_continue=self._clean(p_continue),
+                    label_status='final',
+                    net_pnl_pct=self._clean(metrics.get('net_pnl_pct')),
+                    duration_minutes=self._clean(metrics.get('duration_minutes')),
+                    slippage_pct=self._clean(metrics.get('slippage_pct')),
+                    spread_pct=self._clean(metrics.get('spread_pct')),
+                    order_type=metrics.get('order_type'),
+                    duration_ms=self._clean(metrics.get('duration_ms')),
+                ))
+                self._trim_decision_logs(session, mode=row_mode, max_entries=max_entries)
+                return True
+
+            return bool(self._run_orm_write(_write, label='decision_journal'))
+        except Exception as exc:
+            LOGGER.exception(
+                "Decision Log SQLite write failed after retries: symbol=%s action=%s",
+                entry.get('symbol'),
+                entry.get('action'),
+                exc_info=exc,
+            )
             return False
 
     def record_shadow_prediction(
@@ -4229,8 +4345,9 @@ class MLLiveLogger:
             champ = float(champion_p_win)
             chall = float(challenger_p_win)
             th = float(threshold)
+            shadow_id = self._new_id('shadow')
             row = MlShadowPrediction(
-                shadow_id=self._new_id('shadow'),
+                shadow_id=shadow_id,
                 timestamp=now_iso(),
                 mode=mode,
                 symbol=str(symbol or ''),
@@ -4243,11 +4360,12 @@ class MLLiveLogger:
                 challenger_take=1 if chall >= th else 0,
                 created_at=now_iso(),
             )
-            with self._lock:
-                with self._orm_session() as session:
-                    session.add(row)
-                    session.commit()
-            return row.shadow_id
+
+            def _write(session):
+                session.add(row)
+                return shadow_id
+
+            return self._run_orm_write(_write, label='shadow_prediction')
         except Exception:
             return None
 
@@ -4266,6 +4384,7 @@ class MLLiveLogger:
         """Persist monotonic execution-stage latencies inside one trading mode."""
         try:
             t = dict(trace or {})
+
             def _ms(a, b):
                 av, bv = t.get(a), t.get(b)
                 if av is None or bv is None:
@@ -4280,8 +4399,9 @@ class MLLiveLogger:
             if start_ns is not None and end_ns is not None:
                 total_ms = max(0.0, (float(end_ns) - float(start_ns)) / 1_000_000.0)
 
+            latency_id = self._new_id('latency')
             row = ExecutionLatency(
-                latency_id=self._new_id('latency'),
+                latency_id=latency_id,
                 timestamp=now_iso(),
                 mode=str(mode or 'paper').lower(),
                 symbol=str(symbol or ''),
@@ -4301,11 +4421,12 @@ class MLLiveLogger:
                 success=1 if success else 0,
                 trace_json=json.dumps(self._clean(t), separators=(',', ':')),
             )
-            with self._lock:
-                with self._orm_session() as session:
-                    session.add(row)
-                    session.commit()
-            return row.latency_id
+
+            def _write(session):
+                session.add(row)
+                return latency_id
+
+            return self._run_orm_write(_write, label='execution_latency')
         except Exception:
             return None
 
@@ -4447,7 +4568,8 @@ class MLLiveLogger:
             now_ts = time.time()
             now = now_iso()
             command_id = self._new_id('cmd')
-            with self._orm_session() as session:
+
+            def _write(session):
                 session.add(BotCommand(
                     command_id=command_id,
                     action=action,
@@ -4458,17 +4580,15 @@ class MLLiveLogger:
                     created_at=now,
                     updated_at=now,
                 ))
-                session.commit()
-            return command_id
+                return command_id
+
+            return self._run_orm_write(_write, label='add_bot_command')
         except Exception:
             return None
 
     def claim_pending_bot_commands(self, limit=100):
-        session = None
         try:
-            with self._lock:
-                session = self._orm_session()
-                session.execute(text('BEGIN IMMEDIATE'))
+            def _write(session):
                 rows = session.scalars(
                     select(BotCommand)
                     .where(BotCommand.status == 'pending')
@@ -4483,33 +4603,31 @@ class MLLiveLogger:
                         .where(BotCommand.command_id.in_(ids))
                         .values(status='claimed', updated_at=now)
                     )
-                session.commit()
-            commands = []
-            for row in rows:
-                commands.append({
-                    'command_id': row.command_id,
-                    'action': row.action,
-                    'symbol': row.symbol,
-                    'seconds': row.seconds,
-                    'timestamp': row.command_ts,
-                })
-            if session:
-                session.close()
-            return commands
+                return [
+                    {
+                        'command_id': row.command_id,
+                        'action': row.action,
+                        'symbol': row.symbol,
+                        'seconds': row.seconds,
+                        'timestamp': row.command_ts,
+                    }
+                    for row in rows
+                ]
+
+            return self._run_orm_write(
+                _write,
+                label='claim_pending_bot_commands',
+                immediate=True,
+            ) or []
         except Exception:
-            try:
-                if session:
-                    session.rollback()
-                    session.close()
-            except Exception:
-                pass
             return []
 
     def record_crypto_score(self, symbol, score, price, mode='paper'):
         try:
             now = now_iso()
             score_id = self._new_id('score')
-            with self._orm_session() as session:
+
+            def _write(session):
                 session.add(CryptoScore(
                     score_id=score_id,
                     timestamp=now,
@@ -4520,8 +4638,9 @@ class MLLiveLogger:
                     created_at=now,
                     updated_at=now,
                 ))
-                session.commit()
-            return score_id
+                return score_id
+
+            return self._run_orm_write(_write, label='crypto_score')
         except Exception:
             return None
 
@@ -4568,6 +4687,12 @@ class MLLiveLogger:
                 'mode': mode,
                 'connection_mode': status.get('connection_mode'),
                 'reconnect_attempts': status.get('reconnect_attempts'),
+                'reconnect_pending': status.get('reconnect_pending'),
+                'last_message': status.get('last_message'),
+                'last_message_age_seconds': status.get('last_message_age_seconds'),
+                'last_disconnect_reason': status.get('last_disconnect_reason'),
+                'last_close_code': status.get('last_close_code'),
+                'next_reconnect_in_seconds': status.get('next_reconnect_in_seconds'),
                 'queue_size': status.get('queue_size'),
                 'queue_maxsize': status.get('queue_maxsize'),
                 'worker_alive': bool(status.get('worker_alive')),
@@ -4578,7 +4703,8 @@ class MLLiveLogger:
                     if self._normalize_live_symbol(symbol)
                 ],
             }
-            with self._orm_session() as session:
+
+            def _write(session):
                 state_key = f'live_status:{mode}'
                 row = session.get(BotAppState, state_key)
                 if not row:
@@ -4623,8 +4749,11 @@ class MLLiveLogger:
                     )
                     live_row.ws_connected = 1 if status.get('connected') else 0
                     live_row.updated_at = now
-                session.commit()
-            return True
+                return True
+
+            # Telemetry is lower priority than decisions/trades. If SQLite is
+            # busy, drop this sample rather than queueing behind critical writes.
+            return bool(self._run_orm_write(_write, label='live_status', attempts=1))
         except Exception:
             return False
 
@@ -4709,7 +4838,8 @@ class MLLiveLogger:
             now = now_iso()
             mode = str(mode or 'paper').lower()
             stat_date = str(stats.get('date') or datetime.now().strftime('%Y-%m-%d'))
-            with self._orm_session() as session:
+
+            def _write(session):
                 row = session.get(BotDailyStat, (mode, stat_date))
                 if not row:
                     row = BotDailyStat(mode=mode, stat_date=stat_date, created_at=now)
@@ -4718,15 +4848,15 @@ class MLLiveLogger:
                 row.total_loss = self._clean(stats.get('total_loss') or 0)
                 row.total_profit = self._clean(stats.get('total_profit') or 0)
                 row.emergency_stop = 1 if stats.get('emergency_stop') else 0
-                # Persistance des compteurs gagnants/perdants (tolérance si colonne absente)
                 try:
                     row.winning_trades_count = int(stats.get('winning_trades_count') or 0)
                     row.losing_trades_count = int(stats.get('losing_trades_count') or 0)
                 except Exception:
                     pass
                 row.updated_at = now
-                session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='daily_stats'))
         except Exception:
             return False
 
@@ -4769,20 +4899,21 @@ class MLLiveLogger:
         if not symbol:
             return False
         try:
-            entry_id = None
-            removed = False
-            with self._orm_session() as session:
+            state = {'entry_id': None, 'removed': False}
+
+            def _write(session):
                 row = session.get(MlOpenEntry, (mode, symbol))
                 if row:
-                    entry_id = row.entry_id
+                    state['entry_id'] = row.entry_id
                     session.delete(row)
-                    removed = True
-                if entry_id:
-                    decision = session.get(DecisionLog, entry_id)
+                    state['removed'] = True
+                if state['entry_id']:
+                    decision = session.get(DecisionLog, state['entry_id'])
                     if decision:
                         decision.label_status = 'reconciled_dust'
-                session.commit()
+                return state['removed']
 
+            removed = bool(self._run_orm_write(_write, label='reconcile_dust'))
             if removed:
                 self.append_event({
                     'event_id': self._new_id('position_reconciled_dust'),
@@ -4790,7 +4921,7 @@ class MLLiveLogger:
                     'timestamp': datetime.now().isoformat(),
                     'mode': mode,
                     'symbol': symbol,
-                    'entry_id': entry_id,
+                    'entry_id': state['entry_id'],
                     'actual_amount': self._clean(actual_amount),
                     'actual_value': self._clean(actual_value),
                     'reason': str(reason or 'dust_no_position'),
@@ -4833,7 +4964,8 @@ class MLLiveLogger:
         """Enregistre les métriques d'exécution sur l'entrée ouverte du mode actif."""
         try:
             mode = str(mode or 'paper').lower()
-            with self._orm_session() as session:
+
+            def _write(session):
                 row = session.get(MlOpenEntry, (mode, str(symbol)))
                 if row:
                     row.expected_price = self._clean(expected_price)
@@ -4847,8 +4979,9 @@ class MLLiveLogger:
                     row.execution_success = 1 if success else 0
                     row.execution_reason = str(reason or '')
                     row.duration_ms = self._clean(duration_ms)
-                    session.commit()
-            return True
+                return True
+
+            return bool(self._run_orm_write(_write, label='execution_metric'))
         except Exception:
             return False
 
@@ -4918,38 +5051,31 @@ class MLLiveLogger:
     def record_governance_event(self, event_type, source_model=None, target_model=None, metrics=None, trigger_type='auto', reason=None, mode=None):
         """Enregistre un événement de gouvernance strictement rattaché à un mode."""
         mode = str(mode or ('paper' if os.getenv('PAPER_TRADING', 'True').lower() == 'true' else 'live')).lower()
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                now = now_iso()
-                gov_id = self._new_id('gov')
-                metrics_json = json.dumps(metrics, ensure_ascii=False) if isinstance(metrics, dict) else (str(metrics) if metrics else None)
-                with self._orm_session() as session:
-                    session.add(GovernanceLog(
-                        gov_id=gov_id,
-                        timestamp=now,
-                        mode=mode,
-                        event_type=str(event_type),
-                        source_model=str(source_model) if source_model else None,
-                        target_model=str(target_model) if target_model else None,
-                        metrics_json=metrics_json,
-                        trigger_type=str(trigger_type),
-                        reason=str(reason) if reason else None,
-                        created_at=now,
-                        updated_at=now,
-                    ))
-                    session.commit()
+        try:
+            now = now_iso()
+            gov_id = self._new_id('gov')
+            metrics_json = json.dumps(metrics, ensure_ascii=False) if isinstance(metrics, dict) else (str(metrics) if metrics else None)
+
+            def _write(session):
+                session.add(GovernanceLog(
+                    gov_id=gov_id,
+                    timestamp=now,
+                    mode=mode,
+                    event_type=str(event_type),
+                    source_model=str(source_model) if source_model else None,
+                    target_model=str(target_model) if target_model else None,
+                    metrics_json=metrics_json,
+                    trigger_type=str(trigger_type),
+                    reason=str(reason) if reason else None,
+                    created_at=now,
+                    updated_at=now,
+                ))
                 return gov_id
-            except Exception as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    import time
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                print(f"⚠️ Erreur record_governance_event: {e}")
-                return None
-        return None
-        """DEPRECATED - Shadow RL Agent supprimé."""
-        return None
+
+            return self._run_orm_write(_write, label='governance_event')
+        except Exception as exc:
+            print(f"⚠️ Erreur record_governance_event: {exc}")
+            return None
 
     def _clean(self, value):
         if isinstance(value, dict):
