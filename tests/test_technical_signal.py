@@ -82,17 +82,25 @@ class TechnicalSignalTests(unittest.TestCase):
                                  (-0.3, 'SELL'), (-1.5, 'STRONG_SELL')):
             self.assertEqual(self.analyzer.determine_action(strength, 'bullish', {}, trend_consistency=1), action)
 
-    def test_entry_strategy_passes_valid_buy_but_keeps_other_technical_gates(self):
-        class PassedTechnicalGate(Exception):
+    def test_entry_strategy_treats_market_and_technical_signals_as_advisory(self):
+        class ReachedPostTechnicalPipeline(Exception):
             pass
 
-        for action, confidence, available, expected_reason in (
-            ('BUY', 80, True, None),
-            ('HOLD', 99, True, 'technical_action_HOLD'),
-            ('BUY', 20, True, 'technical_confidence_below_threshold'),
-            ('BUY', 99, False, 'technical_data_unavailable'),
+        for action, confidence, score, available, should_continue in (
+            ('BUY', 80, 80, True, True),
+            ('HOLD', 99, 80, True, True),
+            ('SELL', 80, 80, True, True),
+            ('STRONG_SELL', 80, 80, True, True),
+            ('BUY', 20, 80, True, True),
+            ('HOLD', 20, 10, True, True),
+            ('BUY', 99, 80, False, False),
         ):
-            with self.subTest(action=action, confidence=confidence, available=available):
+            with self.subTest(
+                action=action,
+                confidence=confidence,
+                score=score,
+                available=available,
+            ):
                 bot = SimpleNamespace(
                     get_market_context=lambda symbol: {'falling_knife': {'is_falling': False},
                                                        'reversal': {'confirmed': False}},
@@ -100,20 +108,23 @@ class TechnicalSignalTests(unittest.TestCase):
                     get_symbol_cooldown_remaining=lambda symbol: 0,
                     can_open_position=lambda symbol: True,
                     check_support_touch=lambda symbol, price: {},
-                    market_analyzer=SimpleNamespace(score_crypto=lambda *args: 80, last_dynamic_threshold=40),
+                    market_analyzer=SimpleNamespace(
+                        score_crypto=lambda *args, _score=score: _score,
+                        last_dynamic_threshold=40,
+                    ),
                     _append_score_history=Mock(),
                     get_cached_analysis=lambda *args: {'global_signal': {
                         'action': action, 'confidence': confidence, 'data_available': available}},
                     risk_manager=SimpleNamespace(get_adaptive_confidence_threshold=lambda *args: 50),
                     record_decision=Mock(),
-                    get_signal_strength=Mock(side_effect=PassedTechnicalGate),
+                    get_signal_strength=Mock(side_effect=ReachedPostTechnicalPipeline),
                 )
-                if expected_reason is None:
-                    with self.assertRaises(PassedTechnicalGate):
+                if should_continue:
+                    with self.assertRaises(ReachedPostTechnicalPipeline):
                         TradingBot._intelligent_strategy_locked(bot, 'BTC/USD', 1, 100)
                 else:
                     TradingBot._intelligent_strategy_locked(bot, 'BTC/USD', 1, 100)
-                    self.assertEqual(bot.record_decision.call_args.args[3], expected_reason)
+                    self.assertEqual(bot.record_decision.call_args.args[3], 'technical_data_unavailable')
                     bot.get_signal_strength.assert_not_called()
 
 

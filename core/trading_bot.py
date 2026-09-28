@@ -2382,49 +2382,17 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             )
             return  # Silencieux - trop fréquent
 
-        # Les filtres affichés comme critères doivent réellement être des garde-fous.
-        if float(crypto_score or 0.0) < float(dynamic_min_score or 0.0):
-            self.record_decision(
-                symbol, 'buy', False, 'crypto_score_below_threshold',
-                {
-                    'price': current_price,
-                    'score': crypto_score,
-                    'min_score': dynamic_min_score,
-                },
-                throttle_seconds=60
-            )
-            return
-
-        if signal_action not in ('BUY', 'STRONG_BUY'):
-            self.record_decision(
-                symbol, 'buy', False, f'technical_action_{signal_action or "NONE"}',
-                {
-                    'price': current_price,
-                    'confidence': signal_confidence,
-                    'min_confidence': adaptive_threshold,
-                    'technical_strength': global_signal.get('strength'),
-                    'adjusted_strength': global_signal.get('adjusted_strength'),
-                    'dominant_trend': global_signal.get('dominant_trend'),
-                    'trend_consistency': global_signal.get('trend_consistency'),
-                    'technical_signals': global_signal.get('signals') or [],
-                    'volatility': volatility,
-                    'active_timeframes': analysis.get('active_timeframes') or [],
-                },
-                throttle_seconds=60
-            )
-            return
-
-        if float(signal_confidence or 0.0) < float(adaptive_threshold or 0.0):
-            self.record_decision(
-                symbol, 'buy', False, 'technical_confidence_below_threshold',
-                {
-                    'price': current_price,
-                    'confidence': signal_confidence,
-                    'min_confidence': adaptive_threshold,
-                },
-                throttle_seconds=60
-            )
-            return
+        # Le score marché et le verdict technique sont des signaux analytiques,
+        # pas des hard gates. Leurs valeurs sont transmises au contexte ML plus bas.
+        #
+        # Un HOLD, SELL, score faible ou une confiance technique sous le seuil ne
+        # doivent donc plus arrêter seuls le pipeline. Les protections absolues
+        # (données indisponibles, falling knife sans retournement, capital/position,
+        # modèle indisponible, contraintes d'exécution) restent bloquantes.
+        #
+        # On conserve en revanche le signal candidat canonique plus bas : le modèle
+        # d'entrée est entraîné sur cet univers de candidats et ne doit pas être
+        # sollicité hors distribution.
         
         # 6. Calculer position sizing avant le ML pour que le modèle voie la valeur réelle prévue.
         signal_strength = self.get_signal_strength(symbol, current_price)
