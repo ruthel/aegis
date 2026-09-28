@@ -906,11 +906,11 @@ class LiveFixTests(unittest.TestCase):
         self.assertIn("hold_advantage", source)
         self.assertIn("training_histories", source)
 
-    def test_live_strategy_has_hard_gates_and_expected_edge(self):
+    def test_live_strategy_keeps_candidate_and_ml_edge_gates_but_not_advisory_vetoes(self):
         source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
-        self.assertIn("crypto_score_below_threshold", source)
-        self.assertIn("technical_action_", source)
-        self.assertIn("technical_confidence_below_threshold", source)
+        self.assertNotIn("'crypto_score_below_threshold'", source)
+        self.assertNotIn("f'technical_action_", source)
+        self.assertNotIn("'technical_confidence_below_threshold'", source)
         self.assertIn("no_shared_candidate_signal", source)
         self.assertIn("ml_expected_net_edge_below_threshold", source)
         self.assertIn("ML_SHADOW_CHALLENGER_ENABLED", source)
