@@ -1,7 +1,7 @@
 """Shared candidate-signal engine used by live, training and backtests.
 
 The implementation intentionally delegates to the canonical signal functions in
-scripts.trade_signals so every path evaluates the same support/breakout/EMA
+scripts.trade_signals so every path evaluates the same support/breakout/EMA/reversal
 candidate rules. Keeping this tiny adapter in core prevents the live bot from
 inventing a second, divergent candidate universe.
 """
@@ -12,12 +12,27 @@ class SignalEngine:
     def __init__(self, pattern_analyzer):
         self.pattern_analyzer = pattern_analyzer
 
-    def detect_all(self, history: List[Dict], current_price: float) -> List[Dict]:
+    def detect_all(
+        self,
+        history: List[Dict],
+        current_price: float,
+        history_5m: Optional[List[Dict]] = None,
+    ) -> List[Dict]:
         from scripts.trade_signals import detect_all_trade_signals
-        return detect_all_trade_signals(self.pattern_analyzer, history, current_price) or []
+        return detect_all_trade_signals(
+            self.pattern_analyzer,
+            history,
+            current_price,
+            history_5m=history_5m,
+        ) or []
 
-    def detect_best(self, history: List[Dict], current_price: float) -> Optional[Dict]:
-        signals = self.detect_all(history, current_price)
+    def detect_best(
+        self,
+        history: List[Dict],
+        current_price: float,
+        history_5m: Optional[List[Dict]] = None,
+    ) -> Optional[Dict]:
+        signals = self.detect_all(history, current_price, history_5m=history_5m)
         if not signals:
             return None
         return max(
@@ -28,5 +43,10 @@ class SignalEngine:
             )
         )
 
-    def is_candidate(self, history: List[Dict], current_price: float) -> bool:
-        return bool(self.detect_all(history, current_price))
+    def is_candidate(
+        self,
+        history: List[Dict],
+        current_price: float,
+        history_5m: Optional[List[Dict]] = None,
+    ) -> bool:
+        return bool(self.detect_all(history, current_price, history_5m=history_5m))
