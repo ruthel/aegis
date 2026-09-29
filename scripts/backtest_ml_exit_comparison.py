@@ -265,7 +265,13 @@ def main():
                 continue
             history = k15[max(0, index - 200):index]
             entry_price = float(k15[index]["close"])
-            signal = signal_engine.detect_best(history, entry_price)
+            entry_5m, _ = _slice_until(k5, k15[index]["timestamp"], 30)
+            candidate_history_5m = entry_5m[:-1] if len(entry_5m) > 1 else entry_5m
+            signal = signal_engine.detect_best(
+                history,
+                entry_price,
+                history_5m=candidate_history_5m[-36:],
+            )
             if not signal:
                 continue
 

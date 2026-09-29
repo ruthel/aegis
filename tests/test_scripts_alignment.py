@@ -28,6 +28,7 @@ class ScriptsAlignmentTests(unittest.TestCase):
     def test_training_uses_same_best_signal_as_live(self):
         source = self.read("train_and_evaluate_ml_model.py")
         self.assertIn("best_signal = signal_engine.detect_best", source)
+        self.assertIn("history_5m=candidate_history_5m", source)
         self.assertNotIn("signals_here = signal_engine.detect_all", source)
         self.assertIn("btc_context_index", source)
 
@@ -55,6 +56,11 @@ class ScriptsAlignmentTests(unittest.TestCase):
         self.assertNotIn("/USDT", source)
         self.assertIn("TRADING_FEE_PERCENT", source)
         self.assertIn('"0.4"', source)
+
+    def test_exit_backtest_passes_5m_context_to_candidate_engine(self):
+        source = self.read("backtest_ml_exit_comparison.py")
+        self.assertIn("history_5m=candidate_history_5m", source)
+        self.assertIn("reversal", (ROOT / "core/signal_engine.py").read_text(encoding="utf-8"))
 
     def test_sizing_backtest_is_notional_normalized(self):
         source = self.read("backtest_ml_sizing.py")

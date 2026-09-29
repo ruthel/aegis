@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from utils.timeframe_analyzer import TimeframeAnalyzer
+from utils.pattern_analyzer import PatternAnalyzer
 from core.trading_bot import TradingBot
+from scripts.trade_signals import _detect_reversal_rebound_5m, detect_all_trade_signals
 
 
 def candles(count=100):
@@ -76,6 +78,77 @@ class TechnicalSignalTests(unittest.TestCase):
         result = self.analyzer.generate_global_signal(frames, 100)
         self.assertEqual(result['action'], 'HOLD')
         self.assertGreater(result['confidence'], 50)
+
+    def _reversal_5m_rows(self):
+        price = 100.0
+        prices = []
+        for _ in range(20):
+            price -= 0.12
+            prices.append(price)
+        for delta in (-0.08, -0.05, 0.02, 0.08, 0.12, 0.16, 0.18, 0.20):
+            price += delta
+            prices.append(price)
+
+        rows = []
+        for index, close in enumerate(prices):
+            open_price = close - 0.05 if index >= 23 else close + 0.03
+            rows.append({
+                'timestamp': index * 300000,
+                'open': open_price,
+                'high': max(open_price, close) + 0.04,
+                'low': min(open_price, close) - 0.04,
+                'close': close,
+                'volume': 120.0 if index >= 23 else 100.0,
+            })
+        return rows
+
+    def test_reversal_rebound_detects_confirmed_5m_turn(self):
+        rows = self._reversal_5m_rows()
+        signal = _detect_reversal_rebound_5m(rows, rows[-1]['close'] + 0.10)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal['type'], 'reversal_rebound_5m')
+        self.assertGreater(signal['previous_drop_pct'], 0.45)
+        self.assertGreater(signal['rebound_from_low_pct'], 0.20)
+        self.assertTrue(signal['higher_low'])
+
+    def test_reversal_rebound_rejects_weak_noise(self):
+        rows = []
+        price = 100.0
+        for index in range(24):
+            price -= 0.10
+            rows.append({
+                'timestamp': index * 300000,
+                'open': price + 0.04,
+                'high': price + 0.06,
+                'low': price - 0.03,
+                'close': price,
+                'volume': 100.0,
+            })
+        weak_price = rows[-1]['close'] * 1.001
+        self.assertIsNone(_detect_reversal_rebound_5m(rows, weak_price))
+
+    def test_reversal_rebound_can_survive_bearish_15m_legacy_filter(self):
+        rows_5m = self._reversal_5m_rows()
+        history_15m = []
+        price = 105.0
+        for index in range(30):
+            price -= 0.20
+            history_15m.append({
+                'timestamp': index * 900000,
+                'open': price + 0.08,
+                'high': price + 0.10,
+                'low': price - 0.10,
+                'close': price,
+                'volume': 100.0,
+            })
+        current_price = rows_5m[-1]['close'] + 0.10
+        signals = detect_all_trade_signals(
+            PatternAnalyzer(bot=None),
+            history_15m,
+            current_price,
+            history_5m=rows_5m,
+        )
+        self.assertIn('reversal_rebound_5m', {item['type'] for item in signals})
 
     def test_buy_sell_and_hold_boundaries_remain_unchanged(self):
         for strength, action in ((0.299, 'HOLD'), (0.3, 'BUY'), (1.5, 'STRONG_BUY'),

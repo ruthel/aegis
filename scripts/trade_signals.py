@@ -48,13 +48,135 @@ def create_public_exchange(exchange_name):
     return exchange
 
 
-def detect_trade_signal(pattern_analyzer, history, current_price):
+def _detect_reversal_rebound_5m(history_5m, current_price):
+    """Détecte un retournement haussier précoce après une baisse courte.
+
+    Le signal ne déclenche jamais un achat à lui seul : il élargit uniquement
+    l'univers de candidats que P_win / edge / P_continue peuvent ensuite juger.
+    La protection falling-knife reste appliquée en amont dans le bot.
+    """
+    rows = list(history_5m or [])
+    if len(rows) < 24:
+        return None
+
+    rows = rows[-36:]
+    closes = [float(k['close']) for k in rows]
+    opens = [float(k.get('open', k['close'])) for k in rows]
+    lows = [float(k.get('low', k['close'])) for k in rows]
+    volumes = [float(k.get('volume', 0.0) or 0.0) for k in rows]
+    px = float(current_price)
+
+    def calc_rsi(prices, period=14):
+        if len(prices) < period + 1:
+            return 50.0
+        deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+        gains = [max(delta, 0.0) for delta in deltas[-period:]]
+        losses = [max(-delta, 0.0) for delta in deltas[-period:]]
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss <= 1e-12:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    # Il doit d'abord y avoir eu une vraie baisse récente, sinon ce n'est pas un rebound.
+    prior_peak = max(closes[-18:-4])
+    recent_low = min(lows[-8:])
+    if prior_peak <= 0 or recent_low <= 0:
+        return None
+
+    previous_drop_pct = (prior_peak - recent_low) / prior_peak * 100.0
+    rebound_from_low_pct = (px - recent_low) / recent_low * 100.0
+    if previous_drop_pct < 0.45 or rebound_from_low_pct < 0.20:
+        return None
+
+    # Momentum : le bloc récent doit être positif ET accélérer par rapport au bloc précédent.
+    recent_base = closes[-4]
+    prior_base = closes[-8]
+    if recent_base <= 0 or prior_base <= 0:
+        return None
+    recent_momentum_pct = (px - recent_base) / recent_base * 100.0
+    prior_momentum_pct = (closes[-4] - prior_base) / prior_base * 100.0
+    momentum_accel_pct = recent_momentum_pct - prior_momentum_pct
+    if recent_momentum_pct <= 0.10 or momentum_accel_pct <= 0.10:
+        return None
+
+    seq = closes + [px]
+    rsi_now = calc_rsi(seq, 14)
+    rsi_prev = calc_rsi(seq[:-1], 14)
+    ema9_now = sum(seq[-9:]) / 9.0
+    ema9_prev = sum(seq[-10:-1]) / 9.0
+    ema_turning_up = ema9_now > ema9_prev
+    price_above_ema9 = px > ema9_now
+    rsi_rising = rsi_now > rsi_prev + 1.0
+
+    previous_low = min(lows[-7:-3])
+    newest_low = min(lows[-3:])
+    higher_low = newest_low >= previous_low * 0.9995
+
+    green_count = sum(
+        1 for close_px, open_px in zip(closes[-3:], opens[-3:])
+        if close_px > open_px
+    )
+
+    recent_vol = sum(volumes[-3:]) / 3.0
+    prior_vol_slice = volumes[-12:-3]
+    prior_vol = (sum(prior_vol_slice) / len(prior_vol_slice)) if prior_vol_slice else recent_vol
+    volume_ratio = recent_vol / prior_vol if prior_vol > 0 else 1.0
+
+    confirmations = sum((
+        rsi_rising,
+        ema_turning_up,
+        price_above_ema9,
+        higher_low,
+        green_count >= 2,
+        volume_ratio >= 0.90,
+    ))
+    if confirmations < 4:
+        return None
+
+    confidence = 60.0
+    confidence += min(8.0, rebound_from_low_pct * 4.0)
+    confidence += min(7.0, max(0.0, momentum_accel_pct) * 8.0)
+    if higher_low:
+        confidence += 5.0
+    if rsi_rising:
+        confidence += 4.0
+    if volume_ratio >= 1.15:
+        confidence += 4.0
+    confidence = min(88.0, confidence)
+
+    return {
+        'type': 'reversal_rebound_5m',
+        'support_price': recent_low,
+        'resistance_price': prior_peak,
+        'rebounds': 1,
+        'confidence': round(confidence, 1),
+        'volume_ratio': round(volume_ratio, 3),
+        'rsi': round(rsi_now, 2),
+        'previous_drop_pct': round(previous_drop_pct, 3),
+        'rebound_from_low_pct': round(rebound_from_low_pct, 3),
+        'momentum_accel_pct': round(momentum_accel_pct, 3),
+        'higher_low': bool(higher_low),
+        'reason': (
+            f"Reversal rebound 5m: drop {previous_drop_pct:.2f}%, "
+            f"rebond {rebound_from_low_pct:.2f}%, accel {momentum_accel_pct:.2f}%"
+        ),
+    }
+
+
+def detect_trade_signal(pattern_analyzer, history, current_price, history_5m=None):
     """Retourne le meilleur signal du moteur canonique partagé.
 
     Toute la logique de détection vit dans detect_all_trade_signals(); ce wrapper
     empêche le backtest standalone de diverger du SignalEngine utilisé en live.
     """
-    signals = detect_all_trade_signals(pattern_analyzer, history, current_price)
+    signals = detect_all_trade_signals(
+        pattern_analyzer,
+        history,
+        current_price,
+        history_5m=history_5m,
+    )
     if not signals:
         return None
     return max(
@@ -66,18 +188,23 @@ def detect_trade_signal(pattern_analyzer, history, current_price):
     )
 
 
-def detect_all_trade_signals(pattern_analyzer, history, current_price):
-    """Comme detect_trade_signal, mais retourne la LISTE de TOUS les signaux qui matchent
-    à cet index (au lieu du premier seulement).
+def detect_all_trade_signals(pattern_analyzer, history, current_price, history_5m=None):
+    """Retourne tous les candidats canoniques valides à cet instant.
 
-    Utilisé par l'entraînement pour NE PAS écraser les signaux 15m sous support_touch:
-    chaque signal applicable génère son propre sample. Les mêmes filtres (pente baissière,
-    falling knife) s'appliquent globalement.
+    Les signaux historiques 15m (support/breakout/pullback/cross) conservent leurs
+    filtres baissiers. Le candidat reversal_rebound_5m est évalué séparément afin
+    qu'un retournement court terme puisse atteindre le ML avant que le 15m soit
+    complètement redevenu haussier.
     """
     if len(history) < 15:
         return []
 
     closes = [k['close'] for k in history]
+    signals = []
+
+    reversal_rebound = _detect_reversal_rebound_5m(history_5m, current_price)
+    if reversal_rebound:
+        signals.append(reversal_rebound)
 
     # Helper: Calcul RSI simplifié
     def calc_rsi(prices, period=14):
@@ -102,13 +229,15 @@ def detect_all_trade_signals(pattern_analyzer, history, current_price):
     # Calcul RSI 14 périodes
     rsi_14 = calc_rsi(closes, 14)
 
-    # Filtres globaux (identiques à detect_trade_signal)
+    # Filtres baissiers des anciens signaux 15m. Un reversal 5m confirmé peut
+    # survivre à ces filtres et être soumis au ML, mais ils continuent de bloquer
+    # support/breakout/EMA tant que le 15m reste franchement baissier.
     if len(closes) >= 12:
         ema10_curr = sum(closes[-10:]) / 10.0
         ema10_prev = sum(closes[-13:-3]) / 10.0
         slope = (ema10_curr - ema10_prev) / ema10_prev if ema10_prev else 0
         if slope < -0.0002:
-            return []
+            return signals
 
     last_candle = history[-1]
     open_px = float(last_candle.get('open', current_price))
@@ -116,9 +245,7 @@ def detect_all_trade_signals(pattern_analyzer, history, current_price):
     if close_px < open_px:
         drop_pct = (open_px - close_px) / open_px
         if drop_pct >= 0.006:
-            return []
-
-    signals = []
+            return signals
 
     # SIGNAL 1 : Support Touch (AMÉLIORÉ avec RSI + volume)
     levels = pattern_analyzer.find_support_resistance_levels(history)
@@ -146,7 +273,7 @@ def detect_all_trade_signals(pattern_analyzer, history, current_price):
                 'confidence': confidence, 'rsi': rsi_14, 'volume_ratio': volume_ratio,
                 'reason': f"Support {rebounds} rebonds @ {support_price:.2f} (RSI:{rsi_14:.0f}, Vol:{volume_ratio:.1f}x)",
             })
-            break  # un seul support suffit
+            break
 
     # SIGNAL 2 : Pattern Breakout (AMÉLIORÉ avec volume spike)
     if len(closes) >= 20:
@@ -176,14 +303,12 @@ def detect_all_trade_signals(pattern_analyzer, history, current_price):
         ema20_older = sum(closes[-25:-5]) / 20.0 if len(closes) >= 25 else ema20_prev
         ema20_slope = (ema20 - ema20_older) / ema20_older if ema20_older else 0.0
         
-        # RELAXÉ: Volume confirmé si >= 1.1× (était 1.3×)
         volume_confirmed = avg_vol > 0 and cur_vol >= avg_vol * 1.1
         
         candle_range = float(history[-1].get('high', close_px)) - float(history[-1].get('low', close_px))
         body = close_px - open_px
         strong_green = close_px > open_px and candle_range > 0 and (body / candle_range) >= 0.5
 
-        # RELAXÉ: Pente EMA20 > 0.10% (était 0.15%)
         near_ema20 = abs(current_price - ema20) / ema20 <= 0.002 if ema20 else False
         if (ema9 > ema20 and ema20_slope > 0.0010 and near_ema20 and strong_green and volume_confirmed):
             signals.append({
@@ -193,7 +318,6 @@ def detect_all_trade_signals(pattern_analyzer, history, current_price):
                 'reason': f"Pullback EMA20 15m (pente:{ema20_slope*100:.2f}%, Vol:{volume_ratio:.1f}x)",
             })
 
-        # RELAXÉ: Gap >= 0.10% (était 0.15%), volume >= 1.1× (était 1.3×)
         fresh_cross = ema9 > ema20 and ema9_prev <= ema20_prev
         cross_gap = (ema9 - ema20) / ema20 if ema20 else 0.0
         price_above_emas = current_price > ema9 and current_price > ema20
