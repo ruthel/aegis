@@ -809,6 +809,73 @@ class LiveFixTests(unittest.TestCase):
         stop_idx = engine.exit_feature_names.index("dist_to_stop_pct")
         self.assertAlmostEqual(float(features[stop_idx]), 10.0, places=5)
 
+    def test_unconfirmed_safety_breach_does_not_sell(self):
+        bot = object.__new__(TradingBot)
+        bot.state = {"live_exit_orders": {}}
+        bot.paper_trading = True
+        bot.trailing_stop_manager = TrailingStopManager()
+        bot.trailing_stop_manager.positions["ADA/USD"] = {
+            "buy_price": 0.2528,
+            "safety_stop_price": 0.2500,
+            "safety_stop_percent": 1.1,
+            "stop_price": 0.2510,
+        }
+        bot._check_dynamic_breakeven_lock = lambda *args, **kwargs: False
+        bot._confirm_safety_stop_breach = lambda *args, **kwargs: {
+            "triggered": True,
+            "confirmed": False,
+            "trigger_price": 0.2392,
+            "safety_stop_price": 0.2500,
+            "confirmed_price": 0.2530,
+            "confirmation_source": "kraken_rest_bid",
+        }
+        bot.record_decision = Mock()
+        bot.sell_market = Mock()
+        with patch.dict(os.environ, {"ML_OWNS_EXITS": "true"}, clear=False):
+            TradingBot._update_trailing_stop_from_tick(bot, "ADA/USD", 0.2392)
+        bot.sell_market.assert_not_called()
+        self.assertEqual(
+            bot.record_decision.call_args.args[3],
+            "safety_stop_unconfirmed_tick",
+        )
+
+    def test_confirmed_safety_breach_sells_immediately(self):
+        bot = object.__new__(TradingBot)
+        bot.state = {"live_exit_orders": {}}
+        bot.paper_trading = True
+        bot.trailing_stop_manager = TrailingStopManager()
+        bot.trailing_stop_manager.positions["ADA/USD"] = {
+            "buy_price": 0.2528,
+            "safety_stop_price": 0.2500,
+            "safety_stop_percent": 1.1,
+            "stop_price": 0.2510,
+        }
+        bot._check_dynamic_breakeven_lock = lambda *args, **kwargs: False
+        bot._confirm_safety_stop_breach = lambda *args, **kwargs: {
+            "triggered": True,
+            "confirmed": True,
+            "trigger_price": 0.2495,
+            "safety_stop_price": 0.2500,
+            "confirmed_price": 0.2490,
+            "confirmation_source": "kraken_rest_bid",
+        }
+        bot._prepare_exit_amount = Mock(return_value=20.0)
+        bot.sell_market = Mock(return_value={"id": "sell-1"})
+        bot.set_symbol_cooldown = Mock()
+        bot.record_decision = Mock()
+        with patch.dict(os.environ, {"ML_OWNS_EXITS": "true"}, clear=False):
+            TradingBot._update_trailing_stop_from_tick(bot, "ADA/USD", 0.2495)
+        bot.sell_market.assert_called_once_with(
+            "ADA/USD",
+            20.0,
+            reason="safety_stop_loss",
+        )
+        self.assertNotIn("ADA/USD", bot.trailing_stop_manager.positions)
+        self.assertEqual(
+            bot.record_decision.call_args.args[3],
+            "safety_stop_trigger_confirmed",
+        )
+
     def test_ml_owned_exit_no_longer_uses_trailing_stop_as_safety_gate(self):
         source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
         update_start = source.index("    def _update_trailing_stop_from_tick")
@@ -852,6 +919,9 @@ class LiveFixTests(unittest.TestCase):
         self.assertEqual(bot.exchange.limit_calls, 1)
         self.assertEqual(bot.exchange.market_calls, 0)
         self.assertTrue(bot.exchange.last_limit_params.get("postOnly"))
+        position = bot.state["positions"][-1]
+        self.assertAlmostEqual(position["safety_stop_percent"], 5.0, places=6)
+        self.assertAlmostEqual(position["safety_stop_price"], 99.9 * 0.95, places=6)
 
     def test_execution_uses_market_at_or_above_80_percent(self):
         bot = FakeBot()
