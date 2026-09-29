@@ -479,7 +479,8 @@ class ExecutionManager:
                 'avg_entry_price': avg_entry_price,
                 'position_size_usd': position_data.get('position_size_usd'),
                 'position_size_crypto': executed_amount,
-                'stop_loss_price': position_data.get('stop_loss_price'),
+                'stop_loss_price': safety_stop_price,
+                'analytical_stop_price': position_data.get('stop_loss_price'),
                 'safety_stop_price': safety_stop_price,
                 'safety_stop_percent': safety_stop_percent,
                 'risk_reward_ratio': position_data.get('risk_reward_ratio'),
@@ -507,7 +508,7 @@ class ExecutionManager:
         position_count = len(existing_positions)
         
         slippage_str = f" | Slippage: {slippage_pct:+.2f}%" if abs(slippage_pct) > 0.01 else ""
-        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} {get_quote_currency()} ({executed_amount * executed_price:.1f} {get_quote_currency()}) [{order_type.upper()}]{slippage_str} | Stop {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
+        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} {get_quote_currency()} ({executed_amount * executed_price:.1f} {get_quote_currency()}) [{order_type.upper()}]{slippage_str} | Safety {safety_stop_price:.2f} (-{safety_stop_percent:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
 
         # Enregistrer dans SQLite
         self._log_execution(symbol, 'buy', order_type, expected_price, requested_price, executed_price, slippage_pct, micro['spread_pct'], executed_amount, exec_duration_ms, True, reason)
