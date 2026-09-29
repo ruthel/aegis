@@ -1669,17 +1669,52 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 opened_at = data.get('opened_at') or data.get('created_at') or data.get('timestamp')
                 if not opened_at:
                     opened_at = datetime.now().isoformat()
+                try:
+                    safety_stop_percent = float(
+                        data.get('safety_stop_percent')
+                        or data.get('stop_loss_percent')
+                        or getattr(self, 'stop_loss_percent', 5.0)
+                        or 5.0
+                    )
+                except Exception:
+                    safety_stop_percent = float(getattr(self, 'stop_loss_percent', 5.0) or 5.0)
+                safety_stop_percent = max(0.1, min(safety_stop_percent, 50.0))
+
+                try:
+                    safety_stop_price = float(data.get('safety_stop_price') or 0.0)
+                except Exception:
+                    safety_stop_price = 0.0
+                if safety_stop_price <= 0:
+                    # Legacy positions: ne surtout pas réutiliser l'ancien stop_price
+                    # trailing comme stop catastrophe après un redémarrage.
+                    safety_stop_price = entry_price * (1.0 - safety_stop_percent / 100.0)
+
+                try:
+                    trailing_percent = float(
+                        data.get('trailing_percent')
+                        or data.get('initial_trailing_percent')
+                        or os.getenv('TRAILING_STOP_PERCENT', '3')
+                    )
+                except Exception:
+                    trailing_percent = 3.0
+                trailing_percent = self.trailing_stop_manager._normalize_trailing_percent(trailing_percent)
+                try:
+                    trailing_stop_price = float(data.get('stop_price') or 0.0)
+                except Exception:
+                    trailing_stop_price = 0.0
+                if trailing_stop_price <= 0:
+                    trailing_stop_price = entry_price * (1.0 - trailing_percent / 100.0)
+
                 self.trailing_stop_manager.positions[symbol] = {
                     'entry_price': entry_price,
                     'buy_price': entry_price,
                     'avg_entry_price': entry_price,
                     'price': entry_price,
                     'highest_price': float(data.get('highest_price') or entry_price),
-                    'stop_price': float(
-                        data.get('stop_price')
-                        or data.get('stop_loss_price')
-                        or (entry_price * (1 - getattr(self, 'stop_loss_percent', 5.0) / 100.0))
-                    ),
+                    'stop_price': trailing_stop_price,
+                    'safety_stop_price': safety_stop_price,
+                    'safety_stop_percent': safety_stop_percent,
+                    'stop_loss_price': safety_stop_price,
                     'trailing_active': bool(data.get('trailing_active', False)),
                     'amount': amount,
                     'ml_buy_prob': data.get('ml_buy_prob') or data.get('entry_p_win'),
@@ -1689,7 +1724,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                     'buy_time': str(opened_at),
                 }
                 for key in ('highest_net_pnl_pct', 'trailing_percent', 'initial_trailing_percent',
-                            'breakeven_active', 'fee_rate', 'resistance_price', 'target_gain_pct'):
+                            'breakeven_active', 'fee_rate', 'resistance_price', 'target_gain_pct',
+                            'support_price', 'target_price'):
                     if data.get(key) is not None:
                         self.trailing_stop_manager.positions[symbol][key] = data[key]
 
@@ -3886,6 +3922,8 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             # Ne pas appliquer de réduction de bear mode pour un force buy manuel
             position_data['target_price'] = self.get_price(symbol) * 1.015  # cible +1.5% par défaut
             position_data['stop_loss_price'] = self.get_price(symbol) * 0.95  # stop -5% par défaut
+            position_data['safety_stop_price'] = position_data['stop_loss_price']
+            position_data['safety_stop_percent'] = 5.0
             
             reason = "Achat manuel forcé via UI"
             
