@@ -112,9 +112,20 @@ class TechnicalSignalTests(unittest.TestCase):
         self.assertTrue(signal['higher_low'])
 
     def test_reversal_rebound_rejects_weak_noise(self):
-        rows = self._reversal_5m_rows()
-        weak_price = rows[-4]['close'] * 1.0002
-        self.assertIsNone(_detect_reversal_rebound_5m(rows[:-3], weak_price))
+        rows = []
+        price = 100.0
+        for index in range(24):
+            price -= 0.10
+            rows.append({
+                'timestamp': index * 300000,
+                'open': price + 0.04,
+                'high': price + 0.06,
+                'low': price - 0.03,
+                'close': price,
+                'volume': 100.0,
+            })
+        weak_price = rows[-1]['close'] * 1.001
+        self.assertIsNone(_detect_reversal_rebound_5m(rows, weak_price))
 
     def test_reversal_rebound_can_survive_bearish_15m_legacy_filter(self):
         rows_5m = self._reversal_5m_rows()
