@@ -358,6 +358,39 @@ class ExecutionManager:
         slippage_pct = ((executed_price - expected_price) / expected_price * 100.0) if expected_price > 0 else 0.0
         exec_duration_ms = (time.time() - start_time) * 1000.0
 
+        # Recaler le hard safety stop sur le prix réellement exécuté. On conserve
+        # la distance risque/ATR calculée avant l'ordre, mais on évite qu'un slippage
+        # d'entrée rapproche artificiellement le stop.
+        try:
+            safety_stop_percent = float(position_data.get('safety_stop_percent') or 0.0)
+        except (TypeError, ValueError):
+            safety_stop_percent = 0.0
+        if safety_stop_percent <= 0:
+            try:
+                configured_stop = float(
+                    position_data.get('safety_stop_price')
+                    or position_data.get('stop_loss_price')
+                    or 0.0
+                )
+                reference_price = float(current_price or expected_price or executed_price)
+                if configured_stop > 0 and reference_price > 0:
+                    safety_stop_percent = max(
+                        0.0,
+                        (1.0 - configured_stop / reference_price) * 100.0,
+                    )
+            except Exception:
+                safety_stop_percent = 0.0
+        if safety_stop_percent <= 0:
+            safety_stop_percent = float(
+                position_data.get('stop_loss_percent')
+                or getattr(self.bot, 'stop_loss_percent', 5.0)
+                or 5.0
+            )
+        safety_stop_percent = max(0.1, min(safety_stop_percent, 50.0))
+        safety_stop_price = executed_price * (1.0 - safety_stop_percent / 100.0)
+        position_data['safety_stop_percent'] = safety_stop_percent
+        position_data['safety_stop_price'] = safety_stop_price
+
         if (order_type in ('limit', 'hybrid') or composite_accounted) and not self.bot.paper_trading:
             if not composite_accounted:
                 self.bot._record_live_order_accounting(
@@ -386,9 +419,42 @@ class ExecutionManager:
                 'ml_buy_prob': ml_buy_prob,
                 'ml_target_gain_pct': position_data.get('ml_target_gain_pct'),
                 'ml_target_price': position_data.get('ml_target_price'),
+                'safety_stop_price': safety_stop_price,
+                'safety_stop_percent': safety_stop_percent,
+                'stop_loss_price': safety_stop_price,
+                'stop_loss_percent': safety_stop_percent,
+                'trailing_stop_percent': position_data.get('trailing_stop_percent'),
+                'support_price': position_data.get('support_price'),
+                'resistance_price': position_data.get('resistance_price'),
+                'target_price': position_data.get('target_price'),
             }
             self.bot.state.setdefault('positions', []).append(position)
             self.bot.save_state()
+
+        # Le chemin MARKET passe par buy_market(), qui a déjà créé la ligne locale.
+        # Mettre à jour la position ouverte dans tous les cas afin que le safety stop
+        # survive à un redémarrage et reste identique entre MARKET/LIMIT/HYBRID.
+        for state_position in reversed(self.bot.state.get('positions', [])):
+            if state_position.get('symbol') != symbol or state_position.get('side') != 'buy':
+                continue
+            if state_position.get('closed_at'):
+                continue
+            state_order_id = state_position.get('order_id')
+            current_order_id = order.get('id') if isinstance(order, dict) else None
+            if current_order_id and state_order_id and str(state_order_id) != str(current_order_id):
+                continue
+            state_position.update({
+                'safety_stop_price': safety_stop_price,
+                'safety_stop_percent': safety_stop_percent,
+                'stop_loss_price': safety_stop_price,
+                'stop_loss_percent': safety_stop_percent,
+                'trailing_stop_percent': position_data.get('trailing_stop_percent'),
+                'support_price': position_data.get('support_price'),
+                'resistance_price': position_data.get('resistance_price'),
+                'target_price': position_data.get('target_price'),
+            })
+            break
+        self.bot.save_state()
 
         if ml_entry_learning_id and getattr(self.bot, 'ml_live_logger', None):
             try:
@@ -413,7 +479,10 @@ class ExecutionManager:
                 'avg_entry_price': avg_entry_price,
                 'position_size_usd': position_data.get('position_size_usd'),
                 'position_size_crypto': executed_amount,
-                'stop_loss_price': position_data.get('stop_loss_price'),
+                'stop_loss_price': safety_stop_price,
+                'analytical_stop_price': position_data.get('stop_loss_price'),
+                'safety_stop_price': safety_stop_price,
+                'safety_stop_percent': safety_stop_percent,
                 'risk_reward_ratio': position_data.get('risk_reward_ratio'),
                 'slippage_pct': round(slippage_pct, 4),
                 'order_type': order_type,
@@ -439,7 +508,7 @@ class ExecutionManager:
         position_count = len(existing_positions)
         
         slippage_str = f" | Slippage: {slippage_pct:+.2f}%" if abs(slippage_pct) > 0.01 else ""
-        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} {get_quote_currency()} ({executed_amount * executed_price:.1f} {get_quote_currency()}) [{order_type.upper()}]{slippage_str} | Stop {position_data['stop_loss_price']:.2f} (-{position_data['stop_loss_percent']:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
+        print(f"✅ ACHAT {crypto} (#{position_count}): {executed_amount:.6f} {crypto} @ {executed_price:.2f} {get_quote_currency()} ({executed_amount * executed_price:.1f} {get_quote_currency()}) [{order_type.upper()}]{slippage_str} | Safety {safety_stop_price:.2f} (-{safety_stop_percent:.1f}%) | R/R 1:{position_data['risk_reward_ratio']:.1f}")
 
         # Enregistrer dans SQLite
         self._log_execution(symbol, 'buy', order_type, expected_price, requested_price, executed_price, slippage_pct, micro['spread_pct'], executed_amount, exec_duration_ms, True, reason)
@@ -465,11 +534,14 @@ class ExecutionManager:
         trailing_manager = getattr(self.bot, 'trailing_stop_manager', None)
         if trailing_manager and (not (os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true') or hybrid_safety):
             trailing_manager.add_position(
-                symbol, executed_price, 
+                symbol,
+                executed_price,
                 trailing_percent=position_data.get('trailing_stop_percent'),
                 support_price=position_data.get('support_price'),
                 resistance_price=position_data.get('resistance_price'),
-                target_gain_pct=position_data.get('ml_target_gain_pct')
+                target_gain_pct=position_data.get('ml_target_gain_pct'),
+                safety_stop_price=safety_stop_price,
+                safety_stop_percent=safety_stop_percent,
             )
             self.bot.save_state()
 

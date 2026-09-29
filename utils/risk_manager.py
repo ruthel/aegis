@@ -730,24 +730,59 @@ class TrailingStopManager:
             percent *= 100.0
         return max(0.05, min(percent, 25.0))
     
-    def add_position(self, symbol, buy_price, trailing_percent=None, support_price=None, resistance_price=None, fee_rate=None, target_gain_pct=None):
-        """Ajoute une nouvelle position avec trailing stop adaptatif, support technique et résistance"""
-        percent = self._normalize_trailing_percent(trailing_percent if trailing_percent is not None else self.trailing_percent)
+    def add_position(
+        self,
+        symbol,
+        buy_price,
+        trailing_percent=None,
+        support_price=None,
+        resistance_price=None,
+        fee_rate=None,
+        target_gain_pct=None,
+        safety_stop_price=None,
+        safety_stop_percent=None,
+    ):
+        """Ajoute une position en séparant trailing/breakeven et hard safety stop."""
+        percent = self._normalize_trailing_percent(
+            trailing_percent if trailing_percent is not None else self.trailing_percent
+        )
         stop_price = buy_price * (1 - percent / 100)
         if fee_rate is None:
             fee_rate = float(os.getenv('TRADING_FEE_PERCENT', '0.1')) / 100
-        
-        # Si un support technique est spécifié, caler le stop initial dessous s'il est plus protecteur
+
+        # Le stop technique peut continuer à guider le trailing classique lorsque le
+        # ML ne possède pas les sorties, mais il ne remplace jamais le hard safety stop.
         if support_price is not None:
             technical_stop = float(support_price) * 0.99
             if technical_stop > stop_price:
                 stop_price = technical_stop
-                print(f"🏰 {symbol}: Stop initial calé sous le support technique à {stop_price:.2f}")
-                
+                print(f"🏰 {symbol}: Stop trailing initial calé sous le support technique à {stop_price:.2f}")
+
+        try:
+            safety_percent = float(safety_stop_percent or 0.0)
+        except (TypeError, ValueError):
+            safety_percent = 0.0
+        try:
+            hard_stop = float(safety_stop_price or 0.0)
+        except (TypeError, ValueError):
+            hard_stop = 0.0
+
+        if hard_stop <= 0 and safety_percent > 0:
+            hard_stop = float(buy_price) * (1.0 - safety_percent / 100.0)
+        if hard_stop <= 0:
+            hard_stop = float(buy_price) * 0.95
+            safety_percent = 5.0
+        elif safety_percent <= 0 and buy_price > 0:
+            safety_percent = max(0.0, (1.0 - hard_stop / float(buy_price)) * 100.0)
+
         self.positions[symbol] = {
             'buy_price': buy_price,
             'highest_price': buy_price,
             'stop_price': stop_price,
+            'safety_stop_price': hard_stop,
+            'safety_stop_percent': safety_percent,
+            # Alias explicite pour les features de sortie historiques.
+            'stop_loss_price': hard_stop,
             'trailing_percent': percent,
             'initial_trailing_percent': percent,
             'breakeven_active': False,

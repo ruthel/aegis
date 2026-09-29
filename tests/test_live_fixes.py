@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import joblib
@@ -23,6 +23,8 @@ from core.exchange.kraken import KrakenClient
 from core.ml_live_logger import MLLiveLogger
 from scripts.promote_challenger import compute_shadow_comparison
 from core.bot.trading import TradingMixin
+from core.trading_bot import TradingBot
+from utils.risk_manager import TrailingStopManager
 from utils.market_structure import detect_falling_knife, detect_reversal_confirmation
 from utils.position_truth import classify_position_tradeability
 from scripts.train_and_evaluate_ml_model import build_training_bot_context
@@ -700,6 +702,191 @@ class LiveFixTests(unittest.TestCase):
         ):
             self.assertNotIn(f"{name}=", env_example)
 
+    def test_realtime_tick_far_from_bid_ask_is_replaced_with_mid(self):
+        bot = object.__new__(TradingBot)
+        bot.websocket = SimpleNamespace(
+            market_meta={
+                "ADAUSD": {
+                    "bid": 0.2529,
+                    "ask": 0.2531,
+                }
+            }
+        )
+        bot._decision_log_throttle = {}
+        clean = TradingBot._sanitize_realtime_price(bot, "ADA/USD", 0.2392)
+        self.assertAlmostEqual(clean, 0.2530, places=6)
+
+    def test_safety_stop_rejects_false_tick_when_kraken_bid_is_above_stop(self):
+        bot = object.__new__(TradingBot)
+        bot.stop_loss_percent = 5.0
+        bot._get_rest_ticker_cached = lambda symbol, force_refresh=False: {
+            "bid": 0.2530,
+            "ask": 0.2531,
+            "last": 0.2530,
+        }
+        bot.websocket = SimpleNamespace(
+            is_connected=lambda: True,
+            get_ticker=lambda symbol: {"bid": 0.2530, "ask": 0.2531, "last": 0.2530},
+        )
+        position = {
+            "buy_price": 0.2528,
+            "safety_stop_price": 0.2500,
+            "safety_stop_percent": 1.1,
+        }
+        result = TradingBot._confirm_safety_stop_breach(
+            bot,
+            "ADA/USD",
+            0.2392,
+            position,
+        )
+        self.assertTrue(result["triggered"])
+        self.assertFalse(result["confirmed"])
+        self.assertAlmostEqual(result["confirmed_price"], 0.2530, places=6)
+        self.assertEqual(result["confirmation_source"], "kraken_rest_bid")
+
+    def test_safety_stop_confirms_real_break_with_kraken_bid(self):
+        bot = object.__new__(TradingBot)
+        bot.stop_loss_percent = 5.0
+        bot._get_rest_ticker_cached = lambda symbol, force_refresh=False: {
+            "bid": 0.2490,
+            "ask": 0.2491,
+            "last": 0.2490,
+        }
+        bot.websocket = SimpleNamespace(
+            is_connected=lambda: True,
+            get_ticker=lambda symbol: {"bid": 0.2490, "ask": 0.2491, "last": 0.2490},
+        )
+        position = {
+            "buy_price": 0.2528,
+            "safety_stop_price": 0.2500,
+            "safety_stop_percent": 1.1,
+        }
+        result = TradingBot._confirm_safety_stop_breach(
+            bot,
+            "ADA/USD",
+            0.2495,
+            position,
+        )
+        self.assertTrue(result["triggered"])
+        self.assertTrue(result["confirmed"])
+        self.assertAlmostEqual(result["confirmed_price"], 0.2490, places=6)
+
+    def test_trailing_manager_keeps_safety_stop_separate_from_trailing_stop(self):
+        manager = TrailingStopManager(trailing_percent=0.5)
+        manager.add_position(
+            "ADA/USD",
+            100.0,
+            trailing_percent=0.5,
+            safety_stop_price=95.0,
+            safety_stop_percent=5.0,
+        )
+        position = manager.positions["ADA/USD"]
+        self.assertAlmostEqual(position["stop_price"], 99.5, places=6)
+        self.assertAlmostEqual(position["safety_stop_price"], 95.0, places=6)
+        self.assertAlmostEqual(position["stop_loss_price"], 95.0, places=6)
+
+    def test_exit_features_use_safety_stop_instead_of_trailing_stop(self):
+        engine = MLEngine(model_dir="data/nonexistent-safety-stop-feature-test")
+        h15 = _trend_klines(80, 100.0, 0.02, 900_000)
+        features = engine.extract_exit_features(
+            h15,
+            100.0,
+            {
+                "buy_price": 100.0,
+                "entry_price": 100.0,
+                "safety_stop_price": 90.0,
+                "stop_loss_price": 95.0,
+                "stop_price": 99.5,
+                "fee_rate": 0.004,
+                "created_at": datetime.now().isoformat(),
+            },
+            continuation_score=60.0,
+            entry_p_win=65.0,
+            btc_klines=h15[-30:],
+            bot_context={"symbol_regime": "BULL", "btc_regime": "BULL"},
+        )
+        self.assertIsNotNone(features)
+        stop_idx = engine.exit_feature_names.index("dist_to_stop_pct")
+        self.assertAlmostEqual(float(features[stop_idx]), 10.0, places=5)
+
+    def test_unconfirmed_safety_breach_does_not_sell(self):
+        bot = object.__new__(TradingBot)
+        bot.state = {"live_exit_orders": {}}
+        bot.paper_trading = True
+        bot.trailing_stop_manager = TrailingStopManager()
+        bot.trailing_stop_manager.positions["ADA/USD"] = {
+            "buy_price": 0.2528,
+            "safety_stop_price": 0.2500,
+            "safety_stop_percent": 1.1,
+            "stop_price": 0.2510,
+        }
+        bot._check_dynamic_breakeven_lock = lambda *args, **kwargs: False
+        bot._confirm_safety_stop_breach = lambda *args, **kwargs: {
+            "triggered": True,
+            "confirmed": False,
+            "trigger_price": 0.2392,
+            "safety_stop_price": 0.2500,
+            "confirmed_price": 0.2530,
+            "confirmation_source": "kraken_rest_bid",
+        }
+        bot.record_decision = Mock()
+        bot.sell_market = Mock()
+        with patch.dict(os.environ, {"ML_OWNS_EXITS": "true"}, clear=False):
+            TradingBot._update_trailing_stop_from_tick(bot, "ADA/USD", 0.2392)
+        bot.sell_market.assert_not_called()
+        self.assertEqual(
+            bot.record_decision.call_args.args[3],
+            "safety_stop_unconfirmed_tick",
+        )
+
+    def test_confirmed_safety_breach_sells_immediately(self):
+        bot = object.__new__(TradingBot)
+        bot.state = {"live_exit_orders": {}}
+        bot.paper_trading = True
+        bot.trailing_stop_manager = TrailingStopManager()
+        bot.trailing_stop_manager.positions["ADA/USD"] = {
+            "buy_price": 0.2528,
+            "safety_stop_price": 0.2500,
+            "safety_stop_percent": 1.1,
+            "stop_price": 0.2510,
+        }
+        bot._check_dynamic_breakeven_lock = lambda *args, **kwargs: False
+        bot._confirm_safety_stop_breach = lambda *args, **kwargs: {
+            "triggered": True,
+            "confirmed": True,
+            "trigger_price": 0.2495,
+            "safety_stop_price": 0.2500,
+            "confirmed_price": 0.2490,
+            "confirmation_source": "kraken_rest_bid",
+        }
+        bot._prepare_exit_amount = Mock(return_value=20.0)
+        bot.sell_market = Mock(return_value={"id": "sell-1"})
+        bot.set_symbol_cooldown = Mock()
+        bot.record_decision = Mock()
+        with patch.dict(os.environ, {"ML_OWNS_EXITS": "true"}, clear=False):
+            TradingBot._update_trailing_stop_from_tick(bot, "ADA/USD", 0.2495)
+        bot.sell_market.assert_called_once_with(
+            "ADA/USD",
+            20.0,
+            reason="safety_stop_loss",
+        )
+        self.assertNotIn("ADA/USD", bot.trailing_stop_manager.positions)
+        self.assertEqual(
+            bot.record_decision.call_args.args[3],
+            "safety_stop_trigger_confirmed",
+        )
+
+    def test_ml_owned_exit_no_longer_uses_trailing_stop_as_safety_gate(self):
+        source = (ROOT / "core/trading_bot.py").read_text(encoding="utf-8")
+        update_start = source.index("    def _update_trailing_stop_from_tick")
+        update_end = source.index("    def _check_paper_orders_for_symbol", update_start)
+        update_source = source[update_start:update_end]
+        self.assertIn("_confirm_safety_stop_breach", update_source)
+        self.assertNotIn(
+            "ml_owns_exits and self.trailing_stop_manager.should_stop_loss",
+            update_source,
+        )
+
     def test_execution_spread_uses_websocket_bid_ask(self):
         bot = FakeBot()
         manager = ExecutionManager(bot)
@@ -732,6 +919,9 @@ class LiveFixTests(unittest.TestCase):
         self.assertEqual(bot.exchange.limit_calls, 1)
         self.assertEqual(bot.exchange.market_calls, 0)
         self.assertTrue(bot.exchange.last_limit_params.get("postOnly"))
+        position = bot.state["positions"][-1]
+        self.assertAlmostEqual(position["safety_stop_percent"], 5.0, places=6)
+        self.assertAlmostEqual(position["safety_stop_price"], 99.9 * 0.95, places=6)
 
     def test_execution_uses_market_at_or_above_80_percent(self):
         bot = FakeBot()
