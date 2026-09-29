@@ -759,7 +759,7 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         return normalize_symbol(pair)
 
     def _sanitize_realtime_price(self, symbol, price):
-        """Valide qu'un tick temps reel correspond bien au bid/ask de sa paire."""
+        """Valide qu'un tick temps réel reste cohérent avec le bid/ask de la paire."""
         try:
             clean_symbol = str(symbol).replace('/', '').upper()
             tick_price = float(price or 0.0)
@@ -770,8 +770,11 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             bid = float(meta.get('bid') or 0.0)
             ask = float(meta.get('ask') or 0.0)
             if bid > 0 and ask > 0:
-                lower = bid * 0.80
-                upper = ask * 1.20
+                # Un trade tick situé à plusieurs pourcents d'un carnet liquide est
+                # presque toujours stale/mal routé. Les anciennes bornes ±20% laissaient
+                # passer des faux prints suffisamment bas pour déclencher un safety stop.
+                lower = bid * 0.98
+                upper = ask * 1.02
                 if tick_price < lower or tick_price > upper:
                     replacement = (bid + ask) / 2.0
                     now = time.time()
@@ -1762,6 +1765,92 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             return False
         return False
 
+    def _get_position_safety_stop_price(self, position):
+        """Retourne le stop catastrophe dédié, indépendant du trailing."""
+        try:
+            stop_price = float(position.get('safety_stop_price') or 0.0)
+            if stop_price > 0:
+                return stop_price
+
+            entry_price = float(
+                position.get('entry_price')
+                or position.get('buy_price')
+                or position.get('avg_entry_price')
+                or position.get('price')
+                or 0.0
+            )
+            if entry_price <= 0:
+                return 0.0
+
+            safety_percent = float(
+                position.get('safety_stop_percent')
+                or position.get('stop_loss_percent')
+                or getattr(self, 'stop_loss_percent', 5.0)
+                or 5.0
+            )
+            safety_percent = max(0.1, min(safety_percent, 50.0))
+            return entry_price * (1.0 - safety_percent / 100.0)
+        except Exception:
+            return 0.0
+
+    def _confirm_safety_stop_breach(self, symbol, trigger_price, position):
+        """Confirme un hard stop avec un prix exécutable indépendant du tick déclencheur."""
+        stop_price = self._get_position_safety_stop_price(position)
+        try:
+            trigger_price = float(trigger_price or 0.0)
+        except Exception:
+            trigger_price = 0.0
+
+        result = {
+            'triggered': bool(stop_price > 0 and trigger_price > 0 and trigger_price <= stop_price),
+            'confirmed': False,
+            'safety_stop_price': stop_price,
+            'trigger_price': trigger_price,
+            'confirmed_price': None,
+            'confirmation_source': None,
+        }
+        if not result['triggered']:
+            return result
+
+        confirmed_price = None
+        source = None
+
+        # Source primaire: ticker REST Kraken forcé, indépendant du trade tick WebSocket.
+        try:
+            ticker = self._get_rest_ticker_cached(symbol, force_refresh=True) or {}
+            bid = float(ticker.get('bid') or 0.0)
+            last = float(ticker.get('last') or ticker.get('close') or 0.0)
+            confirmed_price = bid if bid > 0 else (last if last > 0 else None)
+            if confirmed_price is not None:
+                source = 'kraken_rest_bid' if bid > 0 else 'kraken_rest_last'
+        except Exception:
+            confirmed_price = None
+
+        # Fallback indépendant du trade tick: bid/last du ticker WebSocket.
+        if confirmed_price is None:
+            try:
+                ws = getattr(self, 'websocket', None)
+                ticker = ws.get_ticker(symbol) if ws and ws.is_connected() else None
+                if ticker:
+                    bid = float(ticker.get('bid') or 0.0)
+                    last = float(ticker.get('last') or 0.0)
+                    confirmed_price = bid if bid > 0 else (last if last > 0 else None)
+                    if confirmed_price is not None:
+                        source = 'websocket_bid' if bid > 0 else 'websocket_last'
+            except Exception:
+                confirmed_price = None
+
+        # La sécurité ne doit pas disparaître si les deux sources de confirmation sont
+        # indisponibles au même instant. Dans ce cas seulement, on retombe sur le tick.
+        if confirmed_price is None:
+            confirmed_price = trigger_price
+            source = 'raw_tick_fallback'
+
+        result['confirmed_price'] = confirmed_price
+        result['confirmation_source'] = source
+        result['confirmed'] = bool(confirmed_price <= stop_price)
+        return result
+
     def _update_trailing_stop_from_tick(self, symbol, current_price):
         """Évalue la sortie ML dès le tick WebSocket, sans attendre la boucle principale."""
         pending = self.state.get('live_exit_orders', {}).get(symbol)
@@ -1788,24 +1877,52 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
             ml_owns_exits = os.getenv('ML_OWNS_EXITS', 'true').lower() == 'true'
 
             # Le ML peut posséder la stratégie de sortie, mais jamais la sécurité
-            # catastrophique. Si le stop de sécurité est touché, on tente une vente
-            # et on ne retire le suivi qu'après confirmation de l'ordre.
-            if ml_owns_exits and self.trailing_stop_manager.should_stop_loss(symbol, current_price):
-                sell_amount = self._prepare_exit_amount(symbol, current_price) or 0.0
-                if sell_amount > 0:
-                    order = self.sell_market(symbol, sell_amount, reason='safety_stop_loss')
-                    if order:
-                        self.trailing_stop_manager.remove_position(symbol)
-                        self.set_symbol_cooldown(symbol, reason='safety_stop_loss')
+            # catastrophique. Le hard stop est désormais séparé du trailing et toute
+            # cassure issue d'un trade tick est confirmée par un prix exécutable Kraken.
+            if ml_owns_exits:
+                safety_check = self._confirm_safety_stop_breach(symbol, current_price, position)
+                if safety_check.get('triggered'):
+                    if not safety_check.get('confirmed'):
                         self.record_decision(
                             symbol,
                             'sell',
-                            True,
-                            'safety_stop_loss',
-                            {'price': current_price, 'amount': sell_amount},
-                            throttle_seconds=0,
+                            False,
+                            'safety_stop_unconfirmed_tick',
+                            {
+                                'price': current_price,
+                                'trigger_price': safety_check.get('trigger_price'),
+                                'safety_stop_price': safety_check.get('safety_stop_price'),
+                                'confirmed_price': safety_check.get('confirmed_price'),
+                                'confirmation_source': safety_check.get('confirmation_source'),
+                            },
+                            throttle_seconds=10,
                         )
                         return
+
+                    sell_amount = self._prepare_exit_amount(
+                        symbol,
+                        float(safety_check.get('confirmed_price') or current_price),
+                    ) or 0.0
+                    if sell_amount > 0:
+                        order = self.sell_market(symbol, sell_amount, reason='safety_stop_loss')
+                        if order:
+                            self.trailing_stop_manager.remove_position(symbol)
+                            self.set_symbol_cooldown(symbol, reason='safety_stop_loss')
+                            self.record_decision(
+                                symbol,
+                                'sell',
+                                True,
+                                'safety_stop_trigger_confirmed',
+                                {
+                                    'trigger_price': safety_check.get('trigger_price'),
+                                    'safety_stop_price': safety_check.get('safety_stop_price'),
+                                    'confirmed_price': safety_check.get('confirmed_price'),
+                                    'confirmation_source': safety_check.get('confirmation_source'),
+                                    'amount': sell_amount,
+                                },
+                                throttle_seconds=0,
+                            )
+                            return
 
             changed = False if ml_owns_exits else self.trailing_stop_manager.update_position(symbol, current_price)
             eval_res = self._evaluate_exit_engine_for_symbol(symbol, current_price)
@@ -2400,6 +2517,12 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
         position_data = self.stuck_manager.calculate_position_size(symbol, signal_strength, account_balance)
 
         position_data = self.apply_market_context_position_adjustment(position_data, market_context)
+
+        # Le hard safety stop doit rester le stop risque/ATR calculé par PositionManager.
+        # Les stops structurels/support et le trailing restent des informations de gestion
+        # de position, mais ne doivent plus devenir implicitement le stop catastrophe.
+        position_data['safety_stop_price'] = position_data.get('stop_loss_price')
+        position_data['safety_stop_percent'] = position_data.get('stop_loss_percent')
         position_data['trailing_stop_percent'] = adaptive_trailing
         if support_check.get('is_support_touch'):
             position_data['target_price'] = support_check.get('target_price')
