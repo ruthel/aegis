@@ -1719,7 +1719,12 @@ class MLEngine:
                 except Exception:
                     duration_minutes = 0.0
 
-            stop_price = float(position_data.get('stop_price') or position_data.get('stop_loss_price') or 0.0)
+            stop_price = float(
+                position_data.get('safety_stop_price')
+                or position_data.get('stop_loss_price')
+                or position_data.get('stop_price')
+                or 0.0
+            )
             target_price = float(position_data.get('target_price') or position_data.get('resistance_price') or 0.0)
             dist_to_stop_pct = ((current_price - stop_price) / max(current_price, 1e-9)) * 100.0 if stop_price > 0 else 0.0
             dist_to_target_pct = ((target_price - current_price) / max(current_price, 1e-9)) * 100.0 if target_price > 0 else 0.0
