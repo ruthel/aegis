@@ -20,6 +20,8 @@ from utils.exit_engine import ExitDecisionEngine
 class ExitBot(TradingMixin, SyncMixin):
     _prepare_exit_amount = TradingBot._prepare_exit_amount
     _check_dynamic_breakeven_lock = TradingBot._check_dynamic_breakeven_lock
+    _get_position_safety_stop_price = TradingBot._get_position_safety_stop_price
+    _confirm_safety_stop_breach = TradingBot._confirm_safety_stop_breach
     _update_trailing_stop_from_tick = TradingBot._update_trailing_stop_from_tick
     _apply_ml_exit_management = TradingBot._apply_ml_exit_management
     _rehydrate_open_positions_for_exit_evaluation = TradingBot._rehydrate_open_positions_for_exit_evaluation
