@@ -2458,9 +2458,14 @@ class TradingBot(TradingMixin, SyncMixin, AnalysisMixin, DisplayMixin):
                 _market_data_ready_ns = time.perf_counter_ns()
 
                 # Le live et le training doivent voir le même univers de candidats.
-                # On ne consulte le modèle que lorsqu'un signal canonique support/breakout/EMA existe.
+                # On ne consulte le modèle que lorsqu'un signal canonique support/breakout/EMA/reversal existe.
                 signal_history = list(klines_15m[:-1] if len(klines_15m) > 1 else klines_15m)
-                candidate_signal = self.signal_engine.detect_best(signal_history[-200:], current_price)
+                candidate_history_5m = list(klines_5m[:-1] if len(klines_5m) > 1 else klines_5m)
+                candidate_signal = self.signal_engine.detect_best(
+                    signal_history[-200:],
+                    current_price,
+                    history_5m=candidate_history_5m[-36:],
+                )
                 if not candidate_signal:
                     self.record_decision(
                         symbol, 'buy', False, 'no_shared_candidate_signal',
