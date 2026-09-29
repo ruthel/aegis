@@ -607,11 +607,6 @@ def generate_samples_from_klines(
         history = klines_15m[max(0, index - hist_window):index]
         current_price = float(klines_15m[index]['close'])
         ts = klines_15m[index]['timestamp']
-        signal = signal_engine.detect_best(history[-200:], current_price)
-        if not signal:
-            continue
-
-        support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
 
         # Important: ne jamais laisser une feature multi-timeframe voir une bougie future.
         def _history_until(key, fallback, count):
@@ -623,6 +618,16 @@ def generate_samples_from_klines(
 
         # Feature windows match live inference exactly.
         history_5m = _history_until('5m', klines_15m[max(0, index - 20):index], 30)
+        candidate_history_5m = history_5m[:-1] if len(history_5m) > 1 else history_5m
+        signal = signal_engine.detect_best(
+            history[-200:],
+            current_price,
+            history_5m=candidate_history_5m[-36:],
+        )
+        if not signal:
+            continue
+
+        support_stats = support_stats_from_history(support_pnls) if signal.get('type') == 'support_touch' else None
         history_1h = _history_until('1h', aggregate_ohlcv(history, 4), 30)
         history_4h = _history_until('4h', aggregate_ohlcv(history, 16), 30)
         history_1d = _history_until('1d', aggregate_ohlcv(history, 96), 30)
@@ -764,11 +769,16 @@ def generate_exit_training_samples(
             entry_price = float(symbol_15m[index]['close'])
             entry_ts = int(symbol_15m[index]['timestamp'])
             history = symbol_15m[max(0, index - 200):index]
-            candidate = signal_engine.detect_best(history[-200:], entry_price)
+            entry_5m = _slice_until(tf_bundle.get('5m'), entry_ts, 30)
+            candidate_history_5m = entry_5m[:-1] if len(entry_5m) > 1 else entry_5m
+            candidate = signal_engine.detect_best(
+                history[-200:],
+                entry_price,
+                history_5m=candidate_history_5m[-36:],
+            )
             if not candidate:
                 continue
 
-            entry_5m = _slice_until(tf_bundle.get('5m'), entry_ts, 30)
             entry_1h = _slice_until(tf_bundle.get('1h'), entry_ts, 40)
             entry_4h = _slice_until(tf_bundle.get('4h'), entry_ts, 80)
             entry_1d = _slice_until(tf_bundle.get('1d'), entry_ts, 80)
@@ -975,7 +985,8 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
         training_histories = {}
         # Compteur de samples générés par TYPE de signal (diagnostic: voir combien
         # chaque déclencheur produit — support_touch, pattern_breakout, ema_pullback_15m,
-        # ema_cross_15m). Permet de savoir si les signaux 15m génèrent réellement des samples.
+        # ema_cross_15m, reversal_rebound_5m). Permet de vérifier que chaque famille
+        # de candidat génère réellement des samples.
         signal_type_counts = {}
         for symbol in pairs:
             print(f"  📊 Fetch {symbol} (15m, 5m, 1h, 4h, 1d)...")
@@ -1036,12 +1047,6 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 current_price = klines_15m[index]['close']
                 ts = klines_15m[index]['timestamp']
 
-                # Même univers que le live: une seule opportunité canonique par timestamp.
-                best_signal = signal_engine.detect_best(history, current_price)
-                if not best_signal:
-                    continue
-                signals_here = [best_signal]
-
                 # Klines multi-TF (communes à tous les signaux de cet index)
                 candle_ts = klines_15m[index]['timestamp']
                 cur_btc_15m = _advance_cursor(btc_history, cur_btc_15m, candle_ts) if btc_history else 0
@@ -1051,6 +1056,18 @@ def train_challenger_model(output_dir='data', db_file=None, fast_mode=False, use
                 cur_4h = _advance_cursor(klines_4h_full, cur_4h, candle_ts)
                 cur_1d = _advance_cursor(klines_1d_full, cur_1d, candle_ts)
                 history_5m = klines_5m_full[max(0, cur_5m - 30):cur_5m]
+                candidate_history_5m = history_5m[:-1] if len(history_5m) > 1 else history_5m
+
+                # Même univers que le live: une seule opportunité canonique par timestamp.
+                best_signal = signal_engine.detect_best(
+                    history,
+                    current_price,
+                    history_5m=candidate_history_5m[-36:],
+                )
+                if not best_signal:
+                    continue
+                signals_here = [best_signal]
+
                 history_1h = klines_1h_full[max(0, cur_1h - 30):cur_1h]
                 history_4h = klines_4h_full[max(0, cur_4h - 30):cur_4h]
                 history_1d = klines_1d_full[max(0, cur_1d - 30):cur_1d]
